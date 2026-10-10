@@ -27,4 +27,13 @@ describe('Blink: the page keeps compiled modules', () => {
     expect(hits('small', 16)).toBe(16);
     expect(kept().bytes).toBeLessThanOrEqual(4 << 20);
   });
+
+  it('memory pressure shrinks them to 2 MiB', () => {
+    run('more', 64);
+    expect(kept().bytes).toBeGreaterThan(2 << 20);
+    keep('pressed', SIZE, true);
+    expect(kept().bytes).toBeLessThanOrEqual(2 << 20);
+    expect(kept('pressed').has).toBe(true);
+    keep('relieved', SIZE, false);
+  });
 });

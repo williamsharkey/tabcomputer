@@ -194,6 +194,8 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
         // bash/dpkg in a 6-round A/B (docs/BENCHMARKS.md, perf-kernel round 10)
         poolWake: canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_POOL_WAKE === 'atomics' ? 'atomics' : 'message',
         restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1',
+        // the compiled modules the page has: the process doesn't post them again
+        wjKept: proc.env?.TABCOMPUTER_BLINK_WJ_KEEP === '0' ? [] : [...keptModules.keys()],
       },
     });
     return runner(proc, kernel);
@@ -236,6 +238,21 @@ function keepBudget(): number {
   }
   return keepBudgetBytes;
 }
+/**
+ * The page's JavaScript heap past 60% of its limit (Chromium's
+ * performance.memory, looked at once a second at most): the kept modules
+ * shrink to the smallest tier's 2 MiB, rather than add to the pressure.
+ */
+let pressureCheckedAt = -Infinity;
+let pressure = false;
+function underMemoryPressure(): boolean {
+  const now = Date.now();
+  if (now - pressureCheckedAt < 1000) return pressure;
+  pressureCheckedAt = now;
+  const mem = (globalThis as { performance?: { memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number } } }).performance?.memory;
+  pressure = !!(mem?.usedJSHeapSize && mem.jsHeapSizeLimit && mem.usedJSHeapSize > 0.6 * mem.jsHeapSizeLimit);
+  return pressure;
+}
 const keptModules = new Map<string, { module: unknown; size: number }>();
 let keptBytes = 0;
 /** how often each module (by key) was compiled lately, halved every WJ_AGE_EVERY */
@@ -246,8 +263,9 @@ let compiledSinceAging = 0;
 export function keptCompiledModules(key?: string): { count: number; bytes: number; has: boolean } {
   return { count: keptModules.size, bytes: keptBytes, has: key !== undefined && keptModules.has(key) };
 }
-/** (tests) as a Blink process's compiled module arriving */
-export function keepCompiledModuleForTest(key: string, size: number): void {
+/** (tests) as a Blink process's compiled module arriving; `pressure` as memory pressure would be seen */
+export function keepCompiledModuleForTest(key: string, size: number, underPressure?: boolean): void {
+  if (underPressure !== undefined) { pressure = underPressure; pressureCheckedAt = Infinity; }
   keepCompiledModule(key, {}, size);
 }
 /**
@@ -261,9 +279,15 @@ export function keepCompiledModuleForTest(key: string, size: number): void {
  * usual, so a new program's next run finds its modules. The counts are
  * halved now and then, so what's no longer run fades.
  */
+/** `module` null: one the page keeps (the process had its key), compiled again */
 function keepCompiledModule(key: unknown, module: unknown, size: number): void {
-  const budget = keepBudget();
-  if (typeof key !== 'string' || !module || size <= 0 || size > budget / 4) return;
+  const budget = underMemoryPressure() ? Math.min(keepBudget(), 2 * MIB) : keepBudget();
+  for (const [k, v] of keptModules) {  // (a budget cut by memory pressure)
+    if (keptBytes <= budget) break;
+    keptModules.delete(k);
+    keptBytes -= v.size;
+  }
+  if (typeof key !== 'string' || size <= 0 || size > budget / 4) return;
   if (++compiledSinceAging >= WJ_AGE_EVERY || compiledCounts.size >= WJ_AGE_EVERY) {
     compiledSinceAging = 0;
     for (const [k, n] of compiledCounts) {
@@ -279,6 +303,7 @@ function keepCompiledModule(key: unknown, module: unknown, size: number): void {
     keptModules.set(key, old);
     return;
   }
+  if (!module) return;
   let free = budget - keptBytes;
   const victims: string[] = [];
   for (const [k, v] of keptModules) {
@@ -480,7 +505,9 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         void ch.watch();
       }
     } else if (m?.type === 'blink-wjmod') {
-      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0') keepCompiledModule(m.key, m.module, m.size | 0);
+      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0' && Array.isArray(m.modules)) {
+        for (const d of m.modules) keepCompiledModule(d?.key, d?.module, d?.size | 0);
+      }
     } else if (m?.type === 'blink-kick') {
       // A guest thread is in a kernel call with a signal to take (it came
       // between the call's start and the kernel's interrupt, or another

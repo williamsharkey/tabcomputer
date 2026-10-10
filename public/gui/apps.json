@@ -7195,18 +7195,6 @@
    "when": "librsvg2-common"
   },
   {
-   "path": "/etc/firefox-esr/shared-memory.js",
-   "sha256": "6841b52604d147a01d889654c856c1e91504cfd521a6541c094f964e0ae912f9",
-   "size": 373,
-   "when": "firefox-esr"
-  },
-  {
-   "path": "/etc/thunderbird/pref/shared-memory.js",
-   "sha256": "6841b52604d147a01d889654c856c1e91504cfd521a6541c094f964e0ae912f9",
-   "size": 373,
-   "when": "thunderbird"
-  },
-  {
    "path": "/var/cache/fontconfig/d589a48862398ed80a3d6066f4f56f4c-le64.cache-8",
    "sha256": "ef2debd82c04cbcf82b01ff5847540a7fa5314bf090e0318e09863e3ec042695",
    "size": 16136,

@@ -52,4 +52,15 @@ describe('LazyTextMap (node in the page)', () => {
     expect(cache.has('/tmp/lz/node_modules/pkg/index.js')).toBe(false);
     expect(cache.get('/tmp/lz/node_modules/pkg/index.js')).toBeUndefined();
   });
+
+  it('skips a named pipe (reading one waits for a writer: node never started)', async () => {
+    const fs = await tree();
+    await fs.mkfifo('/tmp/lz/pipe');
+    fs.fifoIO = { read: () => new Promise<Uint8Array>(() => {}), write: () => new Promise<void>(() => {}) };
+    const cache = new LazyTextMap(fs);
+    await preloadDir({ fs } as any, cache, new Map(), '/tmp/lz');
+    expect(cache.has('/tmp/lz/pipe')).toBe(false);
+    expect(cache.has('/tmp/lz/main.js')).toBe(true);
+  });
 });
+

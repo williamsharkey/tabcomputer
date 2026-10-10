@@ -85,6 +85,7 @@ export function createWatchApi(deps: WatchDeps) {
         if (!p) continue;
         const name = nameFor(p);
         if (name === null) continue;
+        if (event === 'attrib') { queue('change', name); continue; } // chmod, utimes: node says 'change'
         if (event === 'write' && known.has(p)) { queue('change', name); continue; }
         if (event === 'write') { known.add(p); queue('rename', name); queue('change', name); continue; }
         if (gone) known.delete(p); else known.add(p);

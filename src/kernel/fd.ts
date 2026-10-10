@@ -1171,6 +1171,12 @@ export async function exchangeInodes(fs: FileSystem, a: string, b: string): Prom
   };
 }
 
+/** link() gave the file at `path` another name: an open one's st_ctime moves (its fstat answers from the inode). */
+export function touchInodeCtime(fs: FileSystem, path: string): void {
+  const ino = findInode(fs, path);
+  if (ino) ino.ctimeMs = Date.now();
+}
+
 /**
  * Call before unlinking `path`: open descriptions keep its data but never
  * write it back (this waits out a write-back already under way). A file
@@ -1184,6 +1190,7 @@ export async function unlinkInode(fs: FileSystem, path: string): Promise<void> {
   if (!ino) return;
   if (others.length) {
     if (ino.path === path) { await ino.flush(); ino.path = others[0]; }
+    ino.ctimeMs = Date.now(); // (st_nlink changed)
     return;
   }
   orphanInode(ino);

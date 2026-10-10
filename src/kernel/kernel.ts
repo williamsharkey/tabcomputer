@@ -21,7 +21,7 @@ import * as A from './abi';
 import { elfInterpreter } from '../elf-interp';
 import {
   type OpenFile, FdTable, BufferFile, DevNull, DevZero, DevRandom, DevFull,
-  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
+  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
   linkCount, writeBackAll, attachInodeShared, detachOpenFileShared, unlinkedFileKey, sharedBufferOf,
 } from './fd';
 import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
@@ -2654,7 +2654,7 @@ export class Kernel {
               }
               else if (f instanceof SymlinkPathFile) await fs().link(f.path, to, { follow: false });
               else if (f.kind === 'dir') return -A.EPERM;
-              else if (f instanceof RegularFile) await fs().link(f.inode.path, to, { follow: false });
+              else if (f instanceof RegularFile) { await fs().link(f.inode.path, to, { follow: false }); f.inode.ctimeMs = Date.now(); }
               else return -A.ENOENT;
             } catch (e) {
               return A.errnoFromError(e);
@@ -2675,6 +2675,7 @@ export class Kernel {
           } catch (e) {
             return A.errnoFromError(e);
           }
+          touchInodeCtime(fs(), to); // an open fd's fstat sees st_ctime move (st_nlink did)
           return 0;
         }
         case A.SYS_readlink:

@@ -61,7 +61,7 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
         // fs.watch in the guest: the filesystem's changes (every process's writes) go to it
         if (watching || !kernel.fs) return;
         watching = true;
-        const off = kernel.fs.onChange((event, path, newPath) => toGuest({ type: 'node-guest-fs', event, path, newPath }));
+        const off = kernel.fs.onChange((event, path, newPath, detail) => toGuest({ type: 'node-guest-fs', event, path, newPath, detail }));
         proc.onTerminate(off);
         return;
       }

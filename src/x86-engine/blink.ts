@@ -67,6 +67,8 @@ let wasmUrl: Promise<string | undefined> | null = null;
 let wasmModule: Promise<WebAssembly.Module | undefined> | null = null;
 function blinkWasmUrl(): Promise<string | undefined> {
   if (isNode()) return Promise.resolve(undefined);
+  // A versioned engine directory is immutable already: its own blink.wasm
+  if (typeof __BLINK_ENGINE_DIR__ === 'string' && __BLINK_ENGINE_DIR__ && !assetBase) return Promise.resolve(defaultAssetBase() + 'blink.wasm');
   return (wasmUrl ??= (async () => {
     try {
       const r = await fetch(new URL('../manifest.json', defaultAssetBase()).href, { cache: 'no-cache' });
@@ -117,7 +119,9 @@ function defaultAssetBase(): string {
     }
   }
   const base = typeof document !== 'undefined' && document.baseURI ? document.baseURI : (globalThis as any).location?.href;
-  return new URL('engines/blink/', base || 'http://localhost/').href;
+  // The build's own engine version (#18): a deploy mid-session must not mix engines
+  const dir = typeof __BLINK_ENGINE_DIR__ === 'string' && __BLINK_ENGINE_DIR__ ? __BLINK_ENGINE_DIR__ : 'engines/blink/';
+  return new URL(dir, base || 'http://localhost/').href;
 }
 
 /** True when this environment can run the Blink engine at all. */

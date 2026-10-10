@@ -34,6 +34,8 @@ export async function preloadDir(
         if (st.isDirectory()) {
           fileMtimes.set(fp, st.mtime?.getTime?.() || Date.now());
           await preloadDir(ctx, fileCache, fileMtimes, fp, depth + 1, maxDepth);
+        } else if (st.isFIFO?.()) {
+          continue; // a named pipe: reading it waits for a writer (node would never start)
         } else if (st.size < 16777216) { // 16MB limit
           // The cache holds text; a binary file (image, wasm) decoded as UTF-8 comes
           // back corrupted, so those stay out and are read as bytes on demand.

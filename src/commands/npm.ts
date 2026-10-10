@@ -1,5 +1,5 @@
 import { Command, CommandContext } from './index';
-import { quoteArgsForShell } from '../shell';
+import { quoteArgsForShell, terminalForCommand } from '../shell';
 import { extractTarGzToFS, type FileSystemWriter } from '../utils/tar-utils';
 import { buildTree, binDirOf, binEntries, WASM_ALTERNATES, type BuildResult, type PackageMetadata, type TreeNode, type Wanted } from './npm-tree';
 
@@ -142,7 +142,7 @@ async function npmMain(ctx: CommandContext): Promise<number> {
       case 'x': {
         // npm exec [--] <pkg> [args]: npx
         const rest = ctx.args.slice(1).filter((a, i) => !(i === 0 && a === '--'));
-        return ctx.shell.execute(quoteArgsForShell(['npx', ...rest]), (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+        return ctx.shell.execute(quoteArgsForShell(['npx', ...rest]), (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, scriptTerminal(ctx), true);
       }
       case 'install':
       case 'i':
@@ -214,7 +214,7 @@ async function npmCreate(ctx: CommandContext): Promise<number> {
   const rest = ctx.args.slice(2);
   const args = rest[0] === '--' ? rest.slice(1) : rest.filter((a, i) => !(a === '--' && i === rest.indexOf('--')));
   return ctx.shell.execute(quoteArgsForShell(['npx', initializerPackage(spec), ...args]),
-    (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+    (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, scriptTerminal(ctx), true);
 }
 
 async function npmInit(ctx: CommandContext): Promise<number> {
@@ -743,15 +743,15 @@ const scriptId = (pkg: PackageJson) => pkg.name ? `${pkg.name}${pkg.version ? '@
 
 /** npm's "> name@version script" lines: before the script's output, which may go to the terminal as it runs */
 function scriptHeader(ctx: CommandContext, text: string): void {
-  const term = scriptTerminal(ctx) as { writeOutput?: (s: string) => void } | undefined;
+  const term = (ctx.stdoutIsTTY !== false ? ctx.terminal : undefined) as { writeOutput?: (s: string) => void } | undefined;
   if (term?.writeOutput) term.writeOutput(text.replace(/\n/g, '\r\n'));
   else if (ctx.streamStdout) ctx.streamStdout(text);
   else ctx.stdout += text;
 }
 
-/** A script's terminal: npm's own, when npm's stdout is it (not redirected or piped); else collected */
+/** A script's terminal: npm's, not writing on the screen what npm's redirects or pipe take */
 function scriptTerminal(ctx: CommandContext): unknown {
-  return ctx.terminal && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined;
+  return ctx.terminal && terminalForCommand(ctx.terminal, ctx);
 }
 
 async function npmUninstall(ctx: CommandContext): Promise<number> {

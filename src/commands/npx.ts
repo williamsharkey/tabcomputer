@@ -1,5 +1,5 @@
 import { Command, CommandContext } from './index';
-import { quoteArgsForShell } from '../shell';
+import { quoteArgsForShell, terminalForCommand } from '../shell';
 
 /**
  * npx: Execute npm package binaries
@@ -76,7 +76,9 @@ export const npxCmd: Command = {
     // (as it comes where the shell streams npx's output: a redirect's file)
     const out = (s: string) => { s = s.replace(/\r\n/g, '\n'); if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
     const err = (s: string) => { s = s.replace(/\r\n/g, '\n'); if (ctx.streamStderr) ctx.streamStderr(s); else ctx.stderr += s; };
-    const run = (line: string) => ctx.shell.execute(line, out, err, false, ctx.terminal, true);
+    // (what it runs doesn't write on the screen what npx's redirects take)
+    const terminal = ctx.terminal && terminalForCommand(ctx.terminal, ctx);
+    const run = (line: string) => ctx.shell.execute(line, out, err, false, terminal, true);
     // The package's command reads npx's own (piped) stdin
     const runBin = (line: string) => ctx.stdin ? ctx.shell.executeWithStdin(line, ctx.stdin, out, err) : run(line);
 

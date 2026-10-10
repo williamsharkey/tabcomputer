@@ -74,6 +74,21 @@ describe('redirected output with a terminal attached', () => {
     expect((await run('npm run e > /tmp/np/o.txt')).code).toBe(0);
     expect(await fs.readFile('/tmp/np/o.txt', 'utf8')).toBe('> e\n> echo hi; node -e "console.log(1)"\n\nhi\n1\n');
   });
+
+  it("npx and npm exec run a package's bin into the redirect, not on the screen", async () => {
+    const { fs, run, screen } = await setup();
+    await run('mkdir -p /tmp/nx/node_modules/.bin /tmp/nx/node_modules/hi && cd /tmp/nx');
+    await fs.writeFile('/tmp/nx/package.json', JSON.stringify({ name: 'nx' }));
+    await fs.writeFile('/tmp/nx/node_modules/hi/package.json', JSON.stringify({ name: 'hi', bin: { hi: 'cli.js' } }));
+    await fs.writeFile('/tmp/nx/node_modules/hi/cli.js', '#!/usr/bin/env node\nconsole.log("hi", process.stdout.isTTY === true);\nconsole.error("e");\n');
+    await fs.symlink('../hi/cli.js', '/tmp/nx/node_modules/.bin/hi');
+    expect((await run('npx hi > /tmp/nx/o.txt 2> /tmp/nx/e.txt')).code).toBe(0);
+    expect(await fs.readFile('/tmp/nx/o.txt', 'utf8')).toBe('hi false\n');
+    expect(await fs.readFile('/tmp/nx/e.txt', 'utf8')).toBe('e\n');
+    expect((await run('npm exec hi > /tmp/nx/o2.txt 2>&1')).code).toBe(0);
+    expect(await fs.readFile('/tmp/nx/o2.txt', 'utf8')).toBe('hi false\ne\n');
+    expect(screen()).toBe('');
+  });
 });
 
 describe('redirected output of what a builtin runs', () => {

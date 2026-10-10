@@ -99,8 +99,6 @@ async function vite(h, add) {
   add('create', create.ms); add('create_peak', create.peak);
   const inst = await termStep(h, 'cd ~/app && npm i', 600000);
   add('npm_i', inst.ms); add('npm_i_peak', inst.peak); if (inst.net != null) add('npm_i_net', inst.net);
-  const build = await termStep(h, 'npm run build', 600000);
-  addCpu(add, 'vite_build', build);
   const dev = await h.withPeakRss(() => typeAndWait(h, 'npm run dev\r', /ready in \d+ ms|Local:\s+http/, 300000, 'vite ready'), { buffer: true });
   add('dev_ready', dev.result.ms); add('dev_peak', dev.peakDelta / MB); if (dev.peakDeltaNet != null) add('dev_net', dev.peakDeltaNet / MB);
   let t0 = Date.now();
@@ -116,6 +114,10 @@ async function vite(h, add) {
   await frame.waitForFunction(() => /Edited by HMR/.test(document.body?.innerText ?? ''), null, { timeout: 60000 });
   add('hmr', Date.now() - t0);
   if (!await frame.evaluate(() => window.__notReloaded === true)) throw new Error('the preview reloaded instead of hot-updating');
+  // vite build from a second shell while the dev server runs (the sequence above stays as before)
+  const build = await h.withHostCpu(async () => { const t = Date.now(); const r = await side(h, 'cd ~/app && npm run build'); return { ...r, ms: Date.now() - t }; });
+  if (build.result.code !== 0) throw new Error(`npm run build: exit ${build.result.code}: ${build.result.out.slice(-200)}`);
+  addCpu(add, 'vite_build', { ms: build.result.ms, user: build.user, sys: build.sys });
 }
 
 const VITE = ['workflow.vite', 'workflow.vite.create', 'workflow.vite.build', 'workflow.vite.npm_i', 'workflow.vite.dev_ready', 'workflow.vite.preview', 'workflow.vite.hmr', 'workflow.peak_rss.vite_npm_i', 'workflow.peak_rss.vite_dev', 'workflow.peak_rss.vite_npm_i_net', 'workflow.peak_rss.vite_dev_net'];
@@ -176,7 +178,7 @@ export async function run(h) {
     }
     S(R, 'workflow.vite.create', 'create', 'ms', '`npm create vite@7 app -- --template react --no-interactive` typed at the terminal, fresh profile (pinned: @latest moves to new majors)');
     S(R, 'workflow.vite.npm_i', 'npm_i', 'ms', '`npm i` in the new app (react, vite, plugins; registry from the bench cache)');
-    S(R, 'workflow.vite.build', 'vite_build', 'ms', '`npm run build` (vite build of the React template) typed at the terminal');
+    S(R, 'workflow.vite.build', 'vite_build', 'ms', '`npm run build` (vite build of the React template) from a second shell, after the HMR check');
     S(R, 'workflow.vite.build.user', 'vite_build_user', 's', 'host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `npm run build`');
     S(R, 'workflow.vite.build.sys', 'vite_build_sys', 's', 'host sys CPU of the Chromium tree during `npm run build`');
     S(R, 'workflow.vite.dev_ready', 'dev_ready', 'ms', '`npm run dev` until vite prints ready');

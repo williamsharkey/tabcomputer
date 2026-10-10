@@ -64,7 +64,7 @@ async function syncToNative(py: any, ctx: CommandContext, dir: string) {
         if (stat.isDirectory()) {
           try { py.FS.mkdir(pyPath); } catch { /* exists */ }
           await syncToNative(py, ctx, fullPath);
-        } else {
+        } else if (stat.isFile()) { // (not a named pipe: reading one waits for a writer)
           const content = await ctx.fs.readFile(fullPath);
           const dir = pyPath.split('/').slice(0, -1).join('/');
           try { py.FS.mkdirTree(dir); } catch { /* exists */ }

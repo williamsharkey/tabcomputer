@@ -471,7 +471,10 @@ async function entries(fs: Fs, dir: string, withWork: boolean, ref = 'HEAD'): Pr
       if (filepath === '.git') return null; // the work tree walker lists the repository itself
       const [stage, ...more] = ents;
       const head = hasHead ? more.shift() : null;
-      const work = withWork ? more.shift() : null;
+      let work = withWork ? more.shift() : null;
+      // A named pipe or socket in the work tree isn't git's (and reading one would wait for a writer)
+      if (work && (await work.type()) === 'special') work = null;
+      if (!stage && !head && !work) return null;
       const types = await Promise.all([stage, head, work].map((e) => (e ? e.type() : null)));
       if (types.includes('tree')) return true; // a directory: descend
       const pick = async (e: any) => (e ? { oid: await e.oid(), mode: await e.mode() } : undefined);
@@ -482,14 +485,15 @@ async function entries(fs: Fs, dir: string, withWork: boolean, ref = 'HEAD'): Pr
   if (withWork) {
     // the work tree's content hash only for files the index has (untracked ones are listed as such)
     for (const e of out) {
-      if (!e.work) continue;
+      if (!e.work || (!e.stage && !e.head)) continue; // (untracked: listed, never read)
       try {
         const data = await fs.promises.readFile(`${dir}/${e.path}`);
         e.work.oid = (await git.hashBlob({ object: data })).oid;
       } catch { e.work = undefined; }
     }
   }
-  return out;
+  // git's order: by path, byte-wise (the walk gave a directory's files before its subdirectories')
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /** Ignored by .gitignore (untracked files only) */

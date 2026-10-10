@@ -8797,6 +8797,11 @@ export class Shell {
       else if (r.type === '2>' || r.type === '2>>') err2 = path(r.target);
       else if (r.type === '2>&1') err2 = out1;
     }
+    // A new `> file` is made by the command's one write at its end; a command looking
+    // at its fds (stat -L /proc/self/fd/1) sees it exist already, as on Linux
+    for (const p of new Set([out1, err2])) {
+      if (p.startsWith('/') && !p.startsWith('/dev/') && this.fs.lookupCached?.(p) === null) void this.fs.writeNow(p, new Uint8Array(0)).catch(() => {});
+    }
     return [[0, in0], [1, out1], [2, err2]];
   }
 

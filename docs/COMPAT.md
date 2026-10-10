@@ -227,7 +227,12 @@ Shell and platform fixes these needed (all with tests in the same file):
   and connections, as node does, and drops its module and file caches; one
   that goes idle while serving keeps them (its servers still run its code).
   The page's esbuild (bundling browser packages, `build`, `reload`) stops
-  after 60 s without a build and starts again on the next. What it took:
+  after 60 s without a build and starts again on the next. Its esbuild.wasm
+  is the bundled esbuild-wasm's, served from tabcomputer's own origin (it
+  came from unpkg.com, so a blocked or slow CDN broke vite). If a browser
+  build fails to load, importing the package says so and why
+  (`ERR_BROWSER_BUILD`) instead of failing on what its node files need. What
+  it took:
   - Rolldown runs as its browser build. `npm install` puts `@rolldown/browser`
     where `rolldown` goes (same API and versions); a process that imports it
     gets it bundled from the VFS with the page's esbuild
@@ -332,9 +337,21 @@ Shell and platform fixes these needed (all with tests in the same file):
     serves and keeps writing; `$!` is node's pid. In the page
     (`TABCOMPUTER_NODE_WORKER=0`), a script that only serves returns once idle
     and its server stays up; what its request handlers print after that is
-    lost.
+    lost. Started in the background there, timers its handlers set after the
+    script has gone idle don't run, so a server-sent events stream never
+    starts; in the foreground it does.
   Not yet, in the page: node output into a pipe, with a terminal attached,
   comes when the process exits (a guest's streams).
+- `node:wasi` (preview1) works when node runs as a guest: node's `WASI` class
+  (`getImportObject`/`wasiImport`, `start`, `initialize`, `finalizeBindings`,
+  `returnOnExit`, `args`, `env`, `preopens`) on the preview1 code WASM
+  processes run, so a module's files, pipes and terminal are the process's own
+  fds and a preopen is a directory fd. napi-rs WebAssembly bindings load and
+  run their emnapi threads on worker_threads: `@rolldown/binding-wasm32-wasi`
+  (sync and async APIs) and rolldown's node build bundling on it
+  (`tests/browser/node-wasi.mjs`). In the page there is no blocking channel:
+  `new WASI()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `stdin`/`stdout`/
+  `stderr` other than 0, 1 and 2 aren't supported.
 - SvelteKit 2 (Svelte 5, Vite 7, adapter-static; `APP=sveltekit` in
   tests/browser/vite-react.mjs, a minimal site written there): `npm i` 2.6 s,
   `vite dev` ready 3.8 s, the preview 3.1 s, an edit to `+page.svelte` by HMR
@@ -357,10 +374,9 @@ Shell and platform fixes these needed (all with tests in the same file):
     a Worker has no DOM (decode-named-character-reference's `index.dom.js`
     wants `document`: `astro dev` failed at startup). In the page, browser
     builds still come first.
-  - A Worker's own globals (`self`, `WorkerGlobalScope`, `addEventListener`,
-    `postMessage`, `importScripts`) are hidden from node code: Prism (in
-    Astro) took the guest for a Web Worker and parsed its syscall channel's
-    messages.
+  - A Worker's own `self` and `WorkerGlobalScope` are hidden from node code:
+    Prism (in Astro) took the guest for a Web Worker and parsed its syscall
+    channel's messages.
   - fs.watch drops a change older than the watch: changes reach a guest later
     than its own reads see them, and chokidar reported the creation of
     `.astro/settings.json`, which it had found by reading the directory, as
@@ -745,10 +761,12 @@ tabcomputer changes these programs needed (tests in `x86-engine.test.ts`,
   the program's working directory.
 - `rename` keeps a file's modification time (it set it to now): `rsync -a`
   sets times on a temp file and renames it. `filesystem.test.ts`.
-- `link(2)` still copies (the filesystem has no hard links) but the copy
-  reports the source's inode number, which git's local clone checks, and
-  both names report a link count of 2 (shadow's lock files: `groupadd`,
-  `useradd` in openssh-client's and other postinsts). `kernel-core.test.ts`.
+- `link(2)` makes a real hard link (053330da): both names are one file with
+  one inode number, which git's local clone checks, and a link count that
+  follows links and unlinks (shadow's lock files: `groupadd`, `useradd` in
+  openssh-client's and other postinsts). Node's `fs.link` does the same, and so do
+  the built-in `ln`, `cp -l` and tar's hard-link members. `kernel-core.test.ts`,
+  `builtins-hardlinks.test.ts`.
 - Files keep no owner, so `stat` reports them as the caller's (root's in a
   root shell): git refused root's own repositories ("dubious ownership").
 - tabcomputer's commands look like files only where exec runs them (`/bin`,

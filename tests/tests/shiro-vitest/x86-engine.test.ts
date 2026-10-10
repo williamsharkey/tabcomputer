@@ -71,6 +71,12 @@ const shmobjBin = join(out, 'shmobj');
 const haveShmobj = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', shmobjBin, 'shmobj.c']);
 const shmoddBin = join(out, 'shmodd');
 const haveShmodd = tryBuild('gcc', ['-static', '-O1', '-o', shmoddBin, 'shmodd.c']);
+const fdreopenBin = join(out, 'fdreopen');
+const haveFdreopen = tryBuild('gcc', ['-static', '-O1', '-o', fdreopenBin, 'fdreopen.c']);
+const statpathBin = join(out, 'statpath');
+const haveStatpath = tryBuild('gcc', ['-static', '-O1', '-o', statpathBin, 'statpath.c']);
+const execenvBin = join(out, 'execenv');
+const haveExecenv = tryBuild('gcc', ['-static', '-O1', '-o', execenvBin, 'execenv.c']);
 const shmpreadBin = join(out, 'shmpread');
 const haveShmpread = tryBuild('gcc', ['-static', '-O1', '-o', shmpreadBin, 'shmpread.c']);
 const fsidentBin = join(out, 'fsident');
@@ -152,6 +158,14 @@ const sse41bBin = join(out, 'sse41b');
 const haveSse41b = tryBuild('gcc', ['-static', '-O1', '-msse4.1', '-o', sse41bBin, 'sse41b.c']);
 const ssefloatBin = join(out, 'ssefloat');
 const haveSsefloat = tryBuild('gcc', ['-static', '-O1', '-msse4.1', '-o', ssefloatBin, 'ssefloat.c', '-lm']);
+const sigwakeBin = join(out, 'sigwake');
+const haveSigwake = tryBuild('gcc', ['-static', '-O1', '-w', '-o', sigwakeBin, 'sigwake.c']);
+const freewhilewriteBin = join(out, 'freewhilewrite');
+const haveFreewhilewrite = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', freewhilewriteBin, 'freewhilewrite.c']);
+const shmunlinkedBin = join(out, 'shmunlinked');
+const haveShmunlinked = tryBuild('gcc', ['-static', '-O1', '-o', shmunlinkedBin, 'shmunlinked.c']);
+const shmremoteBin = join(out, 'shmremote');
+const haveShmremote = tryBuild('gcc', ['-static', '-O1', '-o', shmremoteBin, 'shmremote.c']);
 const sharedmapBin = join(out, 'sharedmap');
 const haveSharedmap = tryBuild('gcc', ['-static', '-O1', '-o', sharedmapBin, 'sharedmap.c']);
 const roundingBin = join(out, 'rounding');
@@ -284,6 +298,9 @@ const haveTimerthread = blinkHasTimerthread && tryBuild('gcc', ['-static', '-O1'
 const mmaptailBin = join(out, 'mmaptail');
 const blinkHasMmaptail = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmaptail');
 const haveMmaptail = blinkHasMmaptail && tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmaptailBin, 'mmaptail.c']);
+// a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
+const semreopenBin = join(out, 'semreopen');
+const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
 const argv0Bin = join(out, 'argv0');
 const haveArgv0 = tryBuild('gcc', ['-static', '-nostdlib', '-fno-builtin', '-Os', '-fno-pie', '-no-pie', '-o', argv0Bin, 'argv0.c']);
 
@@ -971,6 +988,12 @@ it.skipIf(!haveMmaptail)('a file mapping whose length ends mid-page shows the fi
   expect(r.output.replace(/\r\n/g, '\n')).toBe('tail a\nreplaced 1 tail b\n');
 }, 60_000);
 
+it.skipIf(!haveSemreopen)('a named semaphore keeps its count across sem_close and sem_open: a /dev/shm object goes back to the names link() gave it (Open POSIX sem_close_3-2)', async () => {
+  const { shell } = await setup(readFileSync(semreopenBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('value 1\n');
+}, 60_000);
+
 // Linux keeps argv[0] as the caller gave it; only the binary is found through the symlink
 // (busybox picks its applet by it; Debian's redis-server -> redis-check-rdb)
 describe('argv[0] through a symlink', () => {
@@ -1296,6 +1319,42 @@ describe('Blink engine: CPU and syscall fixes', () => {
     expect(r.output.replace(/\r\n/g, '\n')).toBe('arith eed21c69e00391d6 flags 26e847fc95974f53 conv 591355aeff2dce87\narith eed21c69e00391d6 flags 26e847fc95974f53 conv 591355aeff2dce87\narith eed21c69e00391d6 flags 26e847fc95974f53 conv 591355aeff2dce87\n');
   }, 60_000);
 
+  // a signal that comes while the guest is between kernel calls wakes the
+  // epoll_wait it goes into next (0123 and the page's pending kick): the
+  // rawepoll SIGWINCH flake, made likely
+  it.skipIf(!haveSigwake)('a signal between kernel calls still wakes the next epoll_wait (300 rounds)', async () => {
+    const { shell } = await setup(readFileSync(sigwakeBin));
+    const r = await run(shell, './prog; BLINK_WJIT=0 ./prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('300 wakeups\n300 wakeups\n');
+  }, 150_000);
+
+  // free() of a buffer another thread is writing to a pipe: munmap waited
+  // for the write's page locks holding the GIL the reader needed (0122)
+  it.skipIf(!haveFreewhilewrite)('munmap of a buffer another thread is still writing doesn\'t deadlock, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(freewhilewriteBin));
+    const r = await run(shell, 'timeout 20 ./prog; echo rc $?; BLINK_WJIT=0 timeout 20 ./prog; echo rc $?');
+    const ok = 'writer and reader done: read what was written\nrc 0\n';
+    expect(r.output.replace(/\r\n/g, '\n')).toBe(ok + ok);
+  }, 90_000);
+
+  // Open POSIX mmap_7-4: the object is unlinked before it's mapped, so its
+  // fd's inode is no longer the path's; the fd still reads the mapping
+  it.skipIf(!haveShmunlinked)('an unlinked /dev/shm object: a fork child\'s private map and pread see the parent\'s shared store', async () => {
+    const { shell } = await setup(readFileSync(shmunlinkedBin));
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe("child private map 'a' pread 'a'\n");
+  }, 60_000);
+
+  // a /dev/shm object as remote pages (0112): stores to more pages than a
+  // thread keeps leased all land (0121), and a pwrite through the fd is what
+  // the mapping sees (the kernel's inode uses the object's buffer)
+  it.skipIf(!haveShmremote)('a /dev/shm mapping keeps every store and agrees with pwrite and read, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(shmremoteBin));
+    const r = await run(shell, './prog 65536 6291456; BLINK_WJIT=0 ./prog 65536 6291456');
+    const ok = '65536: read 65536 map-and-fd-agree 1 bad 0 first -1\n6291456: read 6291456 map-and-fd-agree 1 bad 0 first -1\n';
+    expect(r.output.replace(/\r\n/g, '\n')).toBe(ok + ok);
+  }, 180_000);
+
   // apt's pkgcache.bin: a 27 MB writable MAP_SHARED file mapping; msync and
   // munmap write back only this process's changes, so a child's writes
   // through its own mapping stay (0098; a hash per 128 bytes since 0120)
@@ -1490,6 +1549,33 @@ describe('Blink engine: CPU and syscall fixes', () => {
       "anon after fork 'c' munmap rounded 0\nshm after close 'qwerty' mapped 'qwerty'\ndone\nrc 0\n";
     expect(r.output.replace(/\r\n/g, '\n')).toBe(ok + ok);
   }, 120_000);
+
+  // open() of /proc/self/fd/N reopens what the fd refers to (LTP splice07, bash's <(…))
+  it.skipIf(!haveFdreopen)('opening /proc/self/fd/N and /dev/fd/N: a pipe\'s other end, a file at its own offset, a memfd', async () => {
+    const { shell } = await setup(readFileSync(fdreopenBin));
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('pipe pipe\nfile file offset 4\nmemfd memfd ro-write refused\n');
+  }, 60_000);
+
+  // Path lookup errors (LTP lstat02), as uid 1000
+  it.skipIf(!haveStatpath)('stat and lstat: EACCES, ENOENT for "", ENAMETOOLONG, ENOTDIR, ELOOP past 40 links', async () => {
+    const { shell } = await setup(readFileSync(statpathBin));
+    const r = await run(shell, 'rm -rf sp; ./prog; rm -rf sp');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe(
+      'eacces lstat Permission denied stat Permission denied\n' +
+      'enoent lstat No such file or directory stat No such file or directory\n' +
+      'enametoolong lstat File name too long stat File name too long\n' +
+      'enotdir lstat Not a directory stat Not a directory\n' +
+      'eloop lstat Too many levels of symbolic links stat Too many levels of symbolic links\n' +
+      'ok-30 lstat ok stat ok\n');
+  }, 60_000);
+
+  // execve's envp is the new program's whole environment (LTP execve01)
+  it.skipIf(!haveExecenv)('execve passes exactly the envp it was given', async () => {
+    const { shell } = await setup(readFileSync(execenvBin));
+    const r = await run(shell, './prog; env -i ./prog; ./prog fork; ./prog self');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('child env 1 PATH (none) ONLY 1\n'.repeat(4));
+  }, 60_000);
 
   // The fd and the mapping of a /dev/shm object are one file (conformance's report, Open POSIX shm_open)
   it.skipIf(!haveShmpread)('a /dev/shm object: pread sees the mapping, the mapping sees pwrite, an fd opened while mapped too', async () => {

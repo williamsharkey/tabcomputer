@@ -10,6 +10,7 @@ import { patchPackageSource } from './source-patches';
 import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
 import { asyncContext, carryAsyncContext } from './async-context';
 import { ProcessExitError } from '../commands/jseval/utils';
+import { BrowserBuildFailure } from './browser-packages';
 import { nodeGuestOf } from '../node-worker/hooks';
 import { WORKER_ONLY_GLOBALS } from './process-global';
 
@@ -101,6 +102,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     }
     // A package that runs as its browser build (browser-packages.ts)
     const browser = deps.browserModules?.get(modPath);
+    if (browser instanceof BrowserBuildFailure) throw browser.error(modPath);
     if (browser) return browser;
     let result: any;
     try { result = _requireModule(modPath, fromDir); } finally { freshNext = false; }

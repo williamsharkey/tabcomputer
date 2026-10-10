@@ -30,6 +30,16 @@ export const SYS_exit = 60;
 export const SYS_wait4 = 61;
 export const SYS_kill = 62;
 export const SYS_fcntl = 72;
+export const SYS_flock = 73;
+export const SYS_splice = 275;
+export const SYS_tee = 276;
+export const SYS_vmsplice = 278;
+export const SYS_copy_file_range = 326;
+/** flock(2) operations */
+export const LOCK_SH = 1;
+export const LOCK_EX = 2;
+export const LOCK_NB = 4;
+export const LOCK_UN = 8;
 export const SYS_fsync = 74;
 export const SYS_ftruncate = 77;
 export const SYS_getcwd = 79;
@@ -369,6 +379,9 @@ export const F_OFD_SETLKW = 38;
 export const FLOCK_SIZE = 32;
 export const F_SETPIPE_SZ = 1031;
 export const F_GETPIPE_SZ = 1032;
+/** fcntl leases (F_RDLCK/F_WRLCK/F_UNLCK as the argument) */
+export const F_SETLEASE = 1024;
+export const F_GETLEASE = 1025;
 export const F_ADD_SEALS = 1033;
 export const F_GET_SEALS = 1034;
 export const F_SEAL_SEAL = 1;

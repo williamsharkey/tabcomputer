@@ -7,7 +7,9 @@ import { createTestShell } from './helpers';
 
 // Big files (FSNode.blob): stored as block records, written and read by the
 // kernel's open files a page at a time. Small BLOB_MIN/BLOCK keep it quick.
-describe('FileSystem big files', () => {
+// Generous timeouts: these run many IndexedDB transactions and kernel writes,
+// slow under a full parallel suite run (5 s, the default, was hit once)
+describe('FileSystem big files', { timeout: 60_000 }, () => {
   const saved = { min: FileSystem.BLOB_MIN, block: FileSystem.BLOCK };
   beforeEach(() => { FileSystem.BLOB_MIN = 8 << 10; FileSystem.BLOCK = 1 << 10; });
   afterEach(() => { FileSystem.BLOB_MIN = saved.min; FileSystem.BLOCK = saved.block; });
@@ -262,7 +264,9 @@ describe('FileSystem big files', () => {
         // What another tab (or this one after a reload) would find: only committed transactions
         const other = await fresh();
         const got = await other.readFile('/tmp/crash.bin') as Uint8Array;
-        expect(got).toEqual(data.subarray(0, got.length)); // a prefix: never a hole or a torn block
+        // A prefix: never a hole or a torn block (the first differing byte, if any, says where)
+        const bad = got.findIndex((x, i) => x !== data[i]);
+        expect(bad, `byte ${bad} of a ${got.length}-byte snapshot`).toBe(-1);
         checkStore(await stored(other).catch(() => new Map()) as Map<string, any>);
         checks++;
       }
@@ -347,5 +351,50 @@ describe('FileSystem big files', () => {
     expect(recs.get('/tmp/lazy/small').blob).toBeUndefined();
     const other = await fresh(); // no loader: it is local now
     expect(await other.readFile('/tmp/lazy/big.so')).toEqual(bytes.big);
+  });
+  it('createWriter: a big file goes to blocks as written and appears at close; small ones are plain; abort leaves nothing', async () => {
+    const fs = await fresh();
+    await fs.mkdir('/tmp/w', { recursive: true });
+    await fs.writeFile('/tmp/w/big', pattern(20000, 1)); // replaced below
+    const oldId = (await stored(fs)).get('/tmp/w/big').blob;
+    const data = pattern(50000, 2);
+    const w = await fs.createWriter('/tmp/w/big');
+    for (let i = 0; i < data.length; i += 3333) await w.write(data.slice(i, i + 3333));
+    expect(await fs.readFile('/tmp/w/big')).toEqual(pattern(20000, 1)); // not yet
+    await w.close();
+    expect(await fs.readFile('/tmp/w/big')).toEqual(data);
+    const s = await fs.createWriter('/tmp/w/small');
+    await s.write(new TextEncoder().encode('hello '));
+    await s.write(new TextEncoder().encode('world'));
+    await s.close();
+    const a = await fs.createWriter('/tmp/w/aborted');
+    for (let i = 0; i < 30; i++) await a.write(pattern(1000, i));
+    a.abort();
+    const recs = await stored(fs);
+    checkStore(recs);
+    expect(blocksOf(recs, oldId)).toHaveLength(0);
+    expect(recs.get('/tmp/w/big').blob).toBeTruthy();
+    expect(recs.get('/tmp/w/small').blob).toBeUndefined();
+    expect(recs.has('/tmp/w/aborted')).toBe(false);
+    expect([...recs.keys()].some((k) => k.startsWith('\u0001w/'))).toBe(false);
+    expect(await (await fresh()).readFile('/tmp/w/small', 'utf8')).toBe('hello world');
+    expect(await (await fresh()).readFile('/tmp/w/big')).toEqual(data);
+  });
+
+  it('createWriter: blocks of a file never closed (the page went away) are dropped by the next start', async () => {
+    const fs = await fresh();
+    await fs.mkdir('/tmp/w2', { recursive: true });
+    const w = await fs.createWriter('/tmp/w2/f');
+    for (let i = 0; i < 40; i++) await w.write(pattern(1000, i));
+    await fs.sync(); // its blocks are in IndexedDB; no node yet
+    let recs = await stored(fs);
+    const writing = [...recs.get('\u0001blobs').blobs].filter(([p]: [string]) => p.startsWith('\u0001w/'));
+    expect(writing).toHaveLength(1);
+    expect(blocksOf(recs, writing[0][1]).length).toBeGreaterThan(30);
+    const next = await fresh(); // a reload
+    recs = await stored(next);
+    checkStore(recs);
+    expect(blocksOf(recs, writing[0][1])).toHaveLength(0);
+    expect(await next.exists('/tmp/w2/f')).toBe(false);
   });
 });

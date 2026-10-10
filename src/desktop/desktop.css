@@ -563,7 +563,8 @@ body.sd-active #shiro-layout { display: none; }
 .sd-desktop[data-theme='dark'] .sd-welcome { background-color: #262c31; border: 1px solid rgba(236,240,238,.12); --sd-welcome-grid: rgba(236,240,238,.04); --sd-welcome-ink: #ecf0ee; }
 .sd-welcome { cursor: grab; }
 .sd-welcome h2 { touch-action: none; }
-.sd-welcome.sd-dragging { cursor: grabbing; user-select: none; animation: none; }
+.sd-welcome.sd-dragging { cursor: grabbing; user-select: none; }
+.sd-welcome.sd-moved:not(.sd-leaving) { animation: none; }
 .sd-welcome button { cursor: default; }
 .sd-compact .sd-welcome { cursor: auto; }
 .sd-welcome.sd-leaving { animation: sd-sheet-out .2s var(--sd-ease) forwards; }

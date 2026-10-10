@@ -122,11 +122,13 @@ export function showWelcome(ctx: AppContext): void {
 function draggable(el: HTMLElement, root: HTMLElement): void {
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('button, a, input, kbd') || root.classList.contains('sd-compact')) return;
+    // measured without its entrance animation (a drag right after it appears: mid-slide), which
+    // stays off afterwards: turning it back on would replay it
+    el.classList.add('sd-dragging', 'sd-moved');
     const r = el.getBoundingClientRect(), box = root.getBoundingClientRect();
     const dx = e.clientX - r.left, dy = e.clientY - r.top;
     // from its corner anchoring to left/top
     Object.assign(el.style, { left: `${r.left - box.left}px`, top: `${r.top - box.top}px`, right: 'auto', bottom: 'auto' });
-    el.classList.add('sd-dragging');
     try { el.setPointerCapture(e.pointerId); } catch {}
     const move = (m: PointerEvent) => {
       const x = Math.max(0, Math.min(box.width - r.width, m.clientX - box.left - dx));

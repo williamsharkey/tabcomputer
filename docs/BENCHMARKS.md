@@ -844,6 +844,34 @@ medians 1240 and 1215 proc/s, base 1200. One of those passes stalled at
 ≈10 proc/s for its last 11 samples and did not recur in two more; worth
 watching if it shows up on other branches.
 
+### unix/perf-blink 16 — direct kernel channels in their own buffers, on by default
+
+Blink 0600 (docs/X86_ENGINES.md): each Blink thread's own kernel channel
+is a small SharedArrayBuffer the page watches. Round 8 proposed this
+("a way out, not built"). Before, every call was proxied to host.mjs's
+thread and took two messages. The page never holds the wasm memory, so
+the round-8 peak RSS cost is gone.
+
+`node bench/ab.mjs origin/unix/integration --suites x86 --only
+'x86\.blink\.' --rounds 3` (Chromium, isolated; the base is 549dc219,
+whose committed blink.wasm predates its patch 0517, inotify, and the new
+side includes it):
+
+| metric (isolated) | base | new | shift | verdict |
+|---|---:|---:|---:|---|
+| x86.blink.vim_defaults | 697 ms | 490 ms | -29.2% | improved |
+| x86.blink.vim_startup | 1466 ms | 1144 ms | -21.8% | improved |
+| x86.blink.go_nethttp | 337 ms | 277 ms | -17.6% | improved |
+| x86.blink.go_hello | 152 ms | 142 ms | -8.8% | same |
+| x86.blink.hello_musl | 71 ms | 66 ms | -7.2% | same |
+| x86.blink.peak_rss.vim_startup | 7.5 MiB | 4.3 MiB | -26.7% | same |
+| x86.blink.peak_rss.go_nethttp | 12.4 MiB | 10.3 MiB | -18.8% | same |
+| x86.blink.peak_rss.go_hello | 2.5 MiB | 3.4 MiB | +4.4% | same |
+
+Of 13 metrics with results, 3 improved and 10 are the same, peak RSS
+included; gh_version gave no result on either side. In Node (scratch harness), a statically linked
+program's getppid/stat/pread round trip goes from ~120-145 µs to 5-16 µs.
+
 ### unix/perf-blink 15 — SSE float arithmetic in compiled code
 
 Blink patch 0116: compiled code computes SSE float arithmetic (ss/sd/ps/pd),

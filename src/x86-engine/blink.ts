@@ -178,23 +178,30 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
     const create = await workerFactory();
     const mounts = kernel.fs ? (await kernel.fs.readdir('/')).map((n) => '/' + n) : [];
     const pool = Array.from({ length: POOL_CHANNELS }, poolBuffer);
+    // each Blink thread's own channel (direct channels); TABCOMPUTER_BLINK_DIRECT=0: none
+    const dch = directChannelsOn(proc) ? Array.from({ length: DIRECT_SPARE }, directBuffer) : [];
     const wasm = await blinkWasmUrl();
     const wasmModule = proc.env?.TABCOMPUTER_BLINK_SHARED_MODULE === '0' ? undefined : await blinkWasmModule(wasm);
     const runner = workerRunner((p) => {
       const w = create();
-      wireWorker(p, w, kernel, pool);
+      wireWorker(p, w, kernel, pool, dch);
       return w;
     }, {
       // TABCOMPUTER_BLINK_DEBUG=1: the worker logs kernel syscalls and Blink's own messages to the console
       // poolWake 'atomics': the page watches the pool channels' state words, so
       // host.mjs posts no blink-sys and waits for no blink-done (as WASI guests)
       startData: {
-        path, moduleUrl: defaultAssetBase() + 'blink.mjs', wasmUrl: wasm, wasmModule, mounts, pool, poolAsBytes: POOL_AS_BYTES,
+        path, moduleUrl: defaultAssetBase() + 'blink.mjs', wasmUrl: wasm, wasmModule, mounts, pool, poolAsBytes: POOL_AS_BYTES, dch,
         // Opt-in (TABCOMPUTER_BLINK_POOL_WAKE=atomics): no measurable gain on
         // bash/dpkg in a 6-round A/B (docs/BENCHMARKS.md, perf-kernel round 10)
         poolWake: canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_POOL_WAKE === 'atomics' ? 'atomics' : 'message',
         restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1',
       },
+      // With direct channels a signal goes to whichever reply comes first:
+      // host.mjs's channel would take it at once, and its thread hand it to
+      // Blink only once it reads the reply to its blink-signal getpid, after
+      // the guest's own call (sigqueue to itself) has returned without it
+      listen: dch.length === 0,
     });
     return runner(proc, kernel);
   };
@@ -300,7 +307,23 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
  * (the worker installs handlers for them) are posted as `blink-signal`.
  * (Exported for tests.)
  */
-export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: SharedArrayBuffer[]): void {
+/**
+ * Direct channels: each Blink thread's own small channel (a SharedArrayBuffer
+ * this page watches), which the thread uses itself, with no proxy to
+ * host.mjs's thread and no messages (getppid in Node ~120 -> ~5-10 us).
+ * They're their own buffers, so the page never holds a process's wasm
+ * memory (patch 0065's channels in it kept a finished process's memory
+ * until the page's next GC). host.mjs starts with DIRECT_SPARE and asks for
+ * more (blink-dch-req) as threads take them.
+ */
+const DIRECT_SPARE = 3;
+const DIRECT_DATA = 65536;  // bigger transfers take the pool (1 MiB chunks)
+const directBuffer = (): SharedArrayBuffer => createChannelBuffer(DIRECT_DATA);
+function directChannelsOn(proc: Process): boolean {
+  return canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_DIRECT !== '0';
+}
+
+export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: SharedArrayBuffer[], dch: SharedArrayBuffer[] = []): void {
   const busy = new Set<SharedArrayBuffer>();
   const direct: KernelChannel[] = [];
   // a blink-kick that found no call of this process in the kernel
@@ -308,8 +331,8 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
   // Same-instance fork children (Blink): kernel processes this worker runs
   // too. The worker outlives its own process until the last of them ends.
   const hosted = new Set<number>();
-  // Direct channels' views keep Blink's whole wasm memory alive: let go of
-  // them when this worker ends (an exec's new worker brings its own) or the process does
+  // Direct channels: stop serving them when this worker ends (an exec's new
+  // worker brings its own) or the process does
   const stopDirect = () => { for (const ch of direct) ch.stop(); direct.length = 0; };
   // Pool channels watched by their state words (start data poolWake 'atomics'):
   // a request is served when host.mjs sets it, with no message either way
@@ -353,6 +376,13 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
     }
   };
   for (const sab of pool) watchPool(sab);
+  // direct channels (each Blink thread's own): served as their state words change
+  const serveDirect = (sab: SharedArrayBuffer) => {
+    const ch = new KernelChannel(sab, kernel, proc, { listen: false });
+    direct.push(ch);
+    void ch.watch();
+  };
+  for (const sab of dch) serveDirect(sab);
   // Shared objects (docs/research/SHARED_MAPPINGS.md): this worker is one
   // engine instance; the kernel's blink-shmobj / blink-publish go to it
   const instance = kernel.registerEngineInstance((m) => w.postMessage(m));
@@ -427,6 +457,12 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         }
         void served.then((ok) => { if (ok) w.postMessage({ type: 'blink-done', ch: m.ch }); });
       }
+    } else if (m?.type === 'blink-dch-req') {
+      // host.mjs is running out of direct channels to give its thread Workers
+      if (!directChannelsOn(proc)) return;
+      const sabs = Array.from({ length: Math.min(8, m.n | 0) }, directBuffer);
+      for (const sab of sabs) serveDirect(sab);
+      w.postMessage({ type: 'blink-dch', sabs });
     } else if (m?.type === 'blink-direct') {
       // Channels in Blink's wasm memory that its threads use themselves
       // (Blink patch 0065): served here by watching their state words, with
@@ -484,7 +520,12 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
     } else if (m?.type === 'blink-watch') watch(m.fd);
     else if (m?.type === 'blink-unwatch') { subs.get(m.fd)?.(); subs.delete(m.fd); }
   });
-  const unlisten = proc.addSignalListener((sig: number) => { if (sig > 0) w.postMessage({ type: 'blink-signal', sig }); });
+  // (not while the kernel runs a direct channel's call: its reply takes the
+  // signal, with the guest's thread waiting for it, where host.mjs's thread
+  // would take it while that thread runs on, as for sigqueue to itself)
+  const unlisten = proc.addSignalListener((sig: number) => {
+    if (sig > 0 && !direct.some((ch) => ch.serving)) w.postMessage({ type: 'blink-signal', sig });
+  });
   proc.onTerminate(() => {
     unlisten();
     for (const off of subs.values()) off();

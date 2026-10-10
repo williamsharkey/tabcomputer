@@ -151,13 +151,13 @@ export const diffCmd: Command = {
   },
 };
 
-type Kind = 'file' | 'dir' | 'missing';
+type Kind = 'file' | 'dir' | 'fifo' | 'missing';
 
 async function kindOf(ctx: CommandContext, name: string): Promise<Kind> {
   if (name === '-') return 'file';
   try {
     const s = await ctx.fs.stat(ctx.fs.resolvePath(name, ctx.cwd));
-    return s.isDirectory() ? 'dir' : 'file';
+    return s.isDirectory() ? 'dir' : s.isFIFO?.() ? 'fifo' : 'file';
   } catch {
     return 'missing';
   }
@@ -165,6 +165,12 @@ async function kindOf(ctx: CommandContext, name: string): Promise<Kind> {
 
 function joinPath(dir: string, name: string): string {
   return dir.endsWith('/') ? dir + name : `${dir}/${name}`;
+}
+
+function dirName(p: string): string {
+  const s = p.replace(/\/+$/, '');
+  const i = s.lastIndexOf('/');
+  return i < 0 ? '.' : s.slice(0, i) || '/';
 }
 
 function baseName(p: string): string {
@@ -175,6 +181,19 @@ function baseName(p: string): string {
 async function diffPaths(ctx: CommandContext, o: Opts, st: { stdinUsed: FileData | null; out: string }, A: string, B: string, top: boolean): Promise<number> {
   let ka = await kindOf(ctx, A);
   let kb = await kindOf(ctx, B);
+  // A named pipe found while recursing isn't read (it would wait for a writer), as GNU diff
+  if (!top && (ka === 'fifo' || kb === 'fifo')) {
+    const what = (k: Kind) => (k === 'dir' ? 'directory' : k === 'fifo' ? 'fifo' : 'regular file');
+    if (ka === 'missing' || kb === 'missing') {
+      st.out += `Only in ${ka === 'missing' ? dirName(B) : dirName(A)}: ${baseName(ka === 'missing' ? B : A)}\n`;
+      return 1;
+    }
+    st.out += `File ${A} is a ${what(ka)} while file ${B} is a ${what(kb)}\n`;
+    return 1;
+  }
+  // Named pipes given as operands are read, as files
+  if (ka === 'fifo') ka = 'file';
+  if (kb === 'fifo') kb = 'file';
   if (top) {
     if (ka === 'missing' && !(o.newFile && kb !== 'missing')) throw new DiffError(`${A}: No such file or directory`);
     if (kb === 'missing' && !(o.newFile && ka !== 'missing')) throw new DiffError(`${B}: No such file or directory`);

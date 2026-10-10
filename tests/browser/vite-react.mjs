@@ -1,8 +1,8 @@
 // Vite's React template end to end in Chromium, from a fresh profile, typing
 // into the real terminal: npm create vite, npm i, npm run dev, the preview
 // renders the app, an edit to src/App.jsx reaches it by HMR (no reload).
-// APP=next: a minimal Next.js 16 App Router site, `next dev --webpack` with node in
-// a Worker (TABCOMPUTER_NODE_WORKER=1), the same checks, then `next build --webpack`.
+// APP=astro|next|sveltekit: a minimal site of that framework instead, the same checks
+// (APPS below says how each is made, edited and built).
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/vite-react.mjs [URL] [--shots DIR]
@@ -23,11 +23,7 @@ const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
 const LIMIT = Number(process.env.STEP_LIMIT_MS || 600_000);
 // VITE=7 for vite 7's template (esbuild and Rollup as their WebAssembly builds)
 const VITE = process.env.VITE || 'latest';
-// APP=astro: a minimal Astro 5 site instead (written here: create-astro fetches its
-// template from codeload.github.com); its page edits reload rather than hot-update
-const ASTRO = process.env.APP === 'astro';
-const NEXT = process.env.APP === 'next';
-const PORT = ASTRO ? 4321 : NEXT ? 3000 : 5173;
+const APP_NAME = process.env.APP || 'vite';
 if (shots) mkdirSync(shots, { recursive: true });
 
 const bufferOf = (page) => page.evaluate(() => {
@@ -76,13 +72,13 @@ const side = (page, cmd) => page.evaluate(async (cmd) => {
 /** The preview of port 5173's frame, once it has loaded the app's page */
 async function preview(page) {
   for (let i = 0; i < 300; i++) {
-    for (const el of await page.$$(`iframe[data-virtual-port="${PORT}"]`)) {
+    for (const el of await page.$$(`iframe[data-virtual-port="${app.port}"]`)) {
       const f = await el.contentFrame();
       if (f && f.url() !== 'about:blank' && f.url() !== '') return f;
     }
     await page.waitForTimeout(100);
   }
-  throw new Error(`no preview of :${PORT}`);
+  throw new Error(`no preview of :${app.port}`);
 }
 
 /** A heap snapshot of the page (where the memory goes): HEAPSNAP (dev up), HEAPSNAP_AFTER_BUILD */
@@ -116,6 +112,97 @@ async function rss(when) {
 }
 
 const proxy = process.env.HTTPS_PROXY ? process.env.HTTPS_PROXY.replace(/^\w+:\/\//, '').replace(/\/$/, '') : '';
+
+/** Write files into tabcomputer's filesystem (path → text) */
+const writeFiles = (page, files) => page.evaluate(async (files) => {
+  const fs = window.__tabcomputer.fs;
+  for (const [path, text] of Object.entries(files)) {
+    await fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true }).catch(() => {});
+    await fs.writeFile(path, text);
+  }
+}, files);
+const H = '/home/user/app';
+const editH1 = (file) => `sed -i 's|<h1>[^<]*</h1>|<h1>Edited by HMR</h1>|' ${file}`;
+const builtH1 = (out) => /<h1>Edited (live|by HMR)<\/h1>/.test(out);
+
+/** The apps: how each is made, when its dev server is up, its edit and its build */
+const APPS = {
+  vite: {
+    label: `vite@${VITE} react template`, port: 5173,
+    async setup(page) {
+      await step(page, `npm create vite@${VITE} app -- --template react --no-interactive`);
+      await step(page, 'cd app && npm i');
+    },
+    ready: /ready in \d+ ms|Local:\s+http/,
+    edit: { cmd: editH1('~/app/src/App.jsx'), shows: /Edited by HMR/, hmr: true, label: 'edit App.jsx → HMR update' },
+    build: { cmd: 'cd ~/app && npm run build && ls dist/assets', ok: (out) => /\.css\b/.test(out) && /\.js\b/.test(out), label: 'npm run build (vite build)' },
+  },
+  // (written here: create-astro fetches its template from codeload.github.com); its page edits reload
+  astro: {
+    label: 'astro@5 minimal site', port: 4321,
+    async setup(page) {
+      const t0 = Date.now();
+      await writeFiles(page, {
+        [`${H}/package.json`]: JSON.stringify({ name: 'app', type: 'module', scripts: { dev: 'astro dev', build: 'astro build' }, dependencies: { astro: '^5' } }),
+        [`${H}/astro.config.mjs`]: 'import { defineConfig } from "astro/config";\nexport default defineConfig({});\n',
+        [`${H}/src/pages/index.astro`]: '---\nconst title = "Hello Astro";\n---\n<html><body><h1>{title}</h1><p>count is 0</p></body></html>\n',
+      });
+      await record(page, 'write a minimal Astro site', t0);
+      await step(page, 'cd app && npm i');
+    },
+    ready: /Local\s+http:\/\/localhost:\d+/,
+    edit: { cmd: "sed -i 's|Hello Astro|Edited live|' ~/app/src/pages/index.astro", shows: /Edited live/, hmr: false, label: 'edit index.astro → preview updates' },
+    build: { cmd: 'cd ~/app && npm run build && cat dist/index.html', ok: builtH1, label: 'npm run build (astro build)' },
+  },
+  // `next dev --webpack` with node in a Worker, then `next build --webpack`
+  next: {
+    label: 'next@16 minimal site', port: 3000,
+    async setup(page) {
+      // (Next's SWC is its wasm build: NEXT_TEST_WASM_DIR, since the relay can't fetch
+      // its download; jest-worker's child processes would need fork IPC, so worker threads)
+      await step(page, 'export TABCOMPUTER_NODE_WORKER=1 NEXT_TELEMETRY_DISABLED=1 NEXT_TEST_WASM_DIR=$HOME/app/node_modules/@next/swc-wasm-nodejs');
+      const t0 = Date.now();
+      await writeFiles(page, {
+        [`${H}/package.json`]: JSON.stringify({ name: 'app', private: true, scripts: { dev: 'next dev --webpack -p 3000', build: 'next build --webpack' } }),
+        [`${H}/next.config.mjs`]: 'export default { experimental: { webpackBuildWorker: false, workerThreads: true, cpus: 1 } };\n',
+        [`${H}/app/layout.js`]: 'export const metadata = { title: "app" };\nexport default function RootLayout({ children }) { return <html lang="en"><body>{children}</body></html>; }\n',
+        [`${H}/app/page.js`]: '"use client";\nimport { useState } from "react";\nexport default function Page() { const [n, setN] = useState(0); return <main><h1>Hello Next</h1><button onClick={() => setN(n + 1)}>count is {n}</button></main>; }\n',
+      });
+      await record(page, 'write a minimal Next.js site', t0);
+      await step(page, 'cd ~/app && npm i next@16 react@19 react-dom@19 && npm i @next/swc-wasm-nodejs@$(node -p "require(\'next/package.json\').version")');
+      // Behind a proxy the relay can't fetch Next's download of its native SWC (which
+      // couldn't load anyway): an empty one, so Next goes on to the wasm build. (A failed
+      // download rejects inside Next's loadBindings promise executor: it never settles.)
+      if (proxy) await side(page, 'mkdir -p ~/app/node_modules/next/next-swc-fallback/@next/swc-linux-x64-gnu ~/app/node_modules/next/next-swc-fallback/@next/swc-linux-x64-musl');
+    },
+    ready: /Ready in/,
+    edit: { cmd: editH1('~/app/app/page.js'), shows: /Edited by HMR/, hmr: true, label: 'edit app/page.js → HMR update' },
+    build: { cmd: 'cd ~/app && npm run build && cat .next/server/app/index.html', ok: builtH1, label: 'npm run build (next build)' },
+  },
+  // SvelteKit 2 + Svelte 5 on Vite 7, prerendered by adapter-static
+  sveltekit: {
+    label: 'sveltekit@2 minimal site', port: 5173,
+    async setup(page) {
+      const t0 = Date.now();
+      await writeFiles(page, {
+        [`${H}/package.json`]: JSON.stringify({ name: 'app', private: true, type: 'module', scripts: { dev: 'vite dev', build: 'vite build' },
+          devDependencies: { '@sveltejs/kit': '^2', '@sveltejs/adapter-static': '^3', '@sveltejs/vite-plugin-svelte': '^6', svelte: '^5', vite: '^7' } }),
+        [`${H}/svelte.config.js`]: 'import adapter from "@sveltejs/adapter-static";\nexport default { kit: { adapter: adapter() } };\n',
+        [`${H}/vite.config.js`]: 'import { sveltekit } from "@sveltejs/kit/vite";\nimport { defineConfig } from "vite";\nexport default defineConfig({ plugins: [sveltekit()] });\n',
+        [`${H}/src/app.html`]: '<!doctype html>\n<html lang="en"><head><meta charset="utf-8" />%sveltekit.head%</head><body><div style="display: contents">%sveltekit.body%</div></body></html>\n',
+        [`${H}/src/routes/+layout.js`]: 'export const prerender = true;\n',
+        [`${H}/src/routes/+page.svelte`]: '<script>\n  let n = $state(0);\n</script>\n\n<h1>Hello Svelte</h1>\n<button onclick={() => n++}>count is {n}</button>\n',
+      });
+      await record(page, 'write a minimal SvelteKit site', t0);
+      await step(page, 'cd app && npm i');
+    },
+    ready: /ready in \d+ ms|Local:\s+http/,
+    edit: { cmd: editH1('~/app/src/routes/+page.svelte'), shows: /Edited by HMR/, hmr: true, label: 'edit +page.svelte → HMR update' },
+    build: { cmd: 'cd ~/app && npm run build && cat build/index.html', ok: builtH1, label: 'npm run build (vite build, prerendered)' },
+  },
+};
+const app = APPS[APP_NAME];
+if (!app) { console.error(`APP=${APP_NAME}: one of ${Object.keys(APPS).join(', ')}`); process.exit(2); }
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox', '--enable-precise-memory-info', ...(proxy ? [`--proxy-server=${proxy}`] : [])] });
 const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, ignoreHTTPSErrors: !!proxy });
 const page = await context.newPage();
@@ -124,6 +211,8 @@ globalThis.__page = page;
 // a request for it to a CDN fails the run (unpkg.com is refused in the cloud containers)
 const cdnRequests = [];
 await context.route(/^https:\/\/(unpkg\.com|cdn\.jsdelivr\.net)\/esbuild-wasm/, (r) => { cdnRequests.push(r.request().url()); return r.abort(); });
+let previewNavs = 0;
+page.on('framenavigated', (f) => { if (/\/__preview\//.test(f.url())) previewNavs++; });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message + (process.env.VERBOSE ? ' @ ' + (e.stack || '').split('\n').slice(1, 6).join(' | ') : '')));
 const consoleErrors = [];
@@ -147,70 +236,54 @@ try {
   });
   await page.evaluate(() => window.__tabcomputer.terminal.term.focus());
 
-  if (NEXT) {
-    // (Next's SWC is its wasm build: NEXT_TEST_WASM_DIR, since the relay can't fetch
-    // its download; jest-worker's child processes would need fork IPC, so worker threads)
-    await step(page, 'export TABCOMPUTER_NODE_WORKER=1 NEXT_TELEMETRY_DISABLED=1 NEXT_TEST_WASM_DIR=$HOME/app/node_modules/@next/swc-wasm-nodejs');
-    t0 = Date.now();
-    const made = await side(page, `mkdir -p ~/app/app && cd ~/app && printf '%s' '{"name":"app","private":true,"scripts":{"dev":"next dev --webpack -p 3000","build":"next build --webpack"}}' > package.json && printf 'export default { experimental: { webpackBuildWorker: false, workerThreads: true, cpus: 1 } };\\n' > next.config.mjs && printf 'export const metadata = { title: "app" };\\nexport default function RootLayout({ children }) { return <html lang="en"><body>{children}</body></html>; }\\n' > app/layout.js && printf '"use client";\\nimport { useState } from "react";\\nexport default function Page() { const [n, setN] = useState(0); return <main><h1>Hello Next</h1><button onClick={() => setN(n + 1)}>count is {n}</button></main>; }\\n' > app/page.js`);
-    if (made.code !== 0) throw new Error(made.out);
-    await record(page, 'write a minimal Next.js site', t0);
-    await step(page, 'cd ~/app && npm i next@16 react@19 react-dom@19 && npm i @next/swc-wasm-nodejs@$(node -p "require(\'next/package.json\').version")');
-    // Behind a proxy the relay can't fetch Next's download of its native SWC (which
-    // couldn't load anyway): an empty one, so Next goes on to the wasm build. (A failed
-    // download rejects inside Next's loadBindings promise executor: it never settles.)
-    if (proxy) await side(page, 'mkdir -p ~/app/node_modules/next/next-swc-fallback/@next/swc-linux-x64-gnu ~/app/node_modules/next/next-swc-fallback/@next/swc-linux-x64-musl');
-  } else if (ASTRO) {
-    t0 = Date.now();
-    const made = await side(page, `mkdir -p ~/app/src/pages && cd ~/app && printf '%s' '{"name":"app","type":"module","scripts":{"dev":"astro dev","build":"astro build"},"dependencies":{"astro":"^5"}}' > package.json && printf 'import { defineConfig } from "astro/config";\\nexport default defineConfig({});\\n' > astro.config.mjs && printf -- '---\\nconst title = "Hello Astro";\\n---\\n<html><body><h1>{title}</h1><p>count is 0</p></body></html>\\n' > src/pages/index.astro`);
-    if (made.code !== 0) throw new Error(made.out);
-    await record(page, 'write a minimal Astro site', t0);
-  } else {
-    await step(page, `npm create vite@${VITE} app -- --template react --no-interactive`);
-  }
-  if (!NEXT) await step(page, 'cd app && npm i');
+  await app.setup(page);
   await rss('installed');
 
   t0 = Date.now();
   const from = (await bufferOf(page)).length;
   await page.keyboard.type('npm run dev\r', { delay: 2 });
-  await waitBuffer(page, ASTRO ? /Local\s+http:\/\/localhost:\d+/ : NEXT ? /Ready in/ : /ready in \d+ ms|Local:\s+http/, from, 'dev server ready');
+  await waitBuffer(page, app.ready, from, 'dev server ready');
   await record(page, 'npm run dev → ready', t0);
   await rss('dev up');
   if (process.env.HEAPSNAP) await heapSnapshot(page, process.env.HEAPSNAP);
 
   t0 = Date.now();
-  const opened = await side(page, `serve open ${PORT}`);
-  if (opened.code !== 0) throw new Error(`serve open ${PORT}: ${opened.out}`);
+  const opened = await side(page, `serve open ${app.port}`);
+  if (opened.code !== 0) throw new Error(`serve open ${app.port}: ${opened.out}`);
   let frame = await preview(page);
   await frame.waitForFunction(() => /count is \d/i.test(document.body?.innerText ?? ''), null, { timeout: LIMIT });
   frame = await preview(page);
   await record(page, 'preview renders the app', t0);
+  // Vite reloads the page once if it optimized more dependencies on the first load:
+  // the edit is made once the preview has gone 3 s without navigating
+  for (let quiet = Date.now(), n = previewNavs; Date.now() - quiet < 3000; await page.waitForTimeout(250)) {
+    if (previewNavs !== n) { n = previewNavs; quiet = Date.now(); }
+  }
+  frame = await preview(page);
+  await frame.waitForFunction(() => /count is \d/i.test(document.body?.innerText ?? ''), null, { timeout: LIMIT });
   await frame.evaluate(() => { window.__notReloaded = true; });
 
-  // The edit, from a shell of its own (the terminal's is running vite)
+  // The edit, from a shell of its own (the terminal's is running the dev server)
   t0 = Date.now();
-  if (ASTRO) {
-    await side(page, "sed -i 's|Hello Astro|Edited live|' ~/app/src/pages/index.astro");
+  await side(page, app.edit.cmd);
+  if (app.edit.hmr) {
+    await frame.waitForFunction((src) => new RegExp(src).test(document.body?.innerText ?? ''), app.edit.shows.source, { timeout: 60_000 });
+    if (!await frame.evaluate(() => window.__notReloaded === true)) throw new Error('the preview reloaded instead of hot-updating');
+  } else {
+    // (a full reload: the frame is a new one)
     for (let i = 0; ; i++) {
       frame = await preview(page);
-      if (await frame.evaluate(() => /Edited live/.test(document.body?.innerText ?? '')).catch(() => false)) break;
+      if (await frame.evaluate((src) => new RegExp(src).test(document.body?.innerText ?? ''), app.edit.shows.source).catch(() => false)) break;
       if (i > 240) throw new Error('the preview never showed the edit');
       await page.waitForTimeout(250);
     }
-    await record(page, 'edit index.astro → preview updates', t0);
-  } else {
-    await side(page, NEXT ? "sed -i 's|<h1>[^<]*</h1>|<h1>Edited by HMR</h1>|' ~/app/app/page.js" : "sed -i 's|<h1>[^<]*</h1>|<h1>Edited by HMR</h1>|' ~/app/src/App.jsx");
-    await frame.waitForFunction(() => /Edited by HMR/.test(document.body?.innerText ?? ''), null, { timeout: 60_000 });
-    if (!await frame.evaluate(() => window.__notReloaded === true)) throw new Error('the preview reloaded instead of hot-updating');
-    await record(page, NEXT ? 'edit app/page.js → HMR update' : 'edit App.jsx → HMR update', t0);
   }
+  await record(page, app.edit.label, t0);
 
   t0 = Date.now();
-  const built = await side(page, ASTRO ? 'cd ~/app && npm run build && cat dist/index.html'
-    : NEXT ? 'cd ~/app && npm run build && cat .next/server/app/index.html' : 'cd ~/app && npm run build && ls dist/assets');
-  if (built.code !== 0 || (ASTRO || NEXT ? !/<h1>Edited (live|by HMR)<\/h1>/.test(built.out) : !/\.css\b/.test(built.out) || !/\.js\b/.test(built.out))) throw new Error(`npm run build: ${built.out.slice(-1500)}`);
-  await record(page, ASTRO ? 'npm run build (astro build)' : NEXT ? 'npm run build (next build)' : 'npm run build (vite build)', t0);
+  const built = await side(page, app.build.cmd);
+  if (built.code !== 0 || !app.build.ok(built.out)) throw new Error(`npm run build: ${built.out.slice(-1500)}`);
+  await record(page, app.build.label, t0);
   await rss('after build');
   if (process.env.MEM) {
     await page.waitForTimeout(20_000);
@@ -247,6 +320,6 @@ try {
   }
 }
 if (shots) await page.screenshot({ path: `${shots}/vite-react.png` }).catch(() => {});
-console.log(`${failed ? 'FAIL' : 'ok  '} ${ASTRO ? 'astro@5 minimal site' : NEXT ? 'next@16 minimal site' : `vite@${VITE} react template`}  ${((Date.now() - T) / 1000).toFixed(0)} s`);
+console.log(`${failed ? 'FAIL' : 'ok  '} ${app.label}  ${((Date.now() - T) / 1000).toFixed(0)} s`);
 await browser.close();
 process.exit(failed ? 1 : 0);

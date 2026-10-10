@@ -53,10 +53,20 @@ const PROCESS_LOCAL = new Set<PropertyKey>(['fs', 'require']);
 const WORKER_THROUGH = new Set<PropertyKey>(['postMessage', 'onmessage', 'importScripts']);
 const inWorker = typeof window === 'undefined' && typeof (globalThis as any).WorkerGlobalScope !== 'undefined';
 
-export function createProcessGlobal(own: Record<string, unknown>): any {
+/**
+ * A Web Worker's own globals, which node doesn't have: hidden from node code run
+ * as a kernel guest (in a Worker), as module parameters and on its global. Prism
+ * (in Astro) took the guest for a Web Worker and JSON-parsed the messages of its
+ * syscall channel ("[object Object]" is not valid JSON): node ended at startup.
+ * (postMessage and the like stay: a script may set its own, WORKER_THROUGH)
+ */
+export const WORKER_ONLY_GLOBALS = ['self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'] as const;
+
+/** `hide`: globals the process doesn't have (WORKER_ONLY_GLOBALS for a guest) */
+export function createProcessGlobal(own: Record<string, unknown>, hide: readonly string[] = []): any {
   const page = globalThis as any;
   const target: Record<PropertyKey, any> = Object.create(null);
-  const deleted = new Set<PropertyKey>();
+  const deleted = new Set<PropertyKey>(hide);
   const bound = new WeakMap<Function, Function>();
   let self: any;
 

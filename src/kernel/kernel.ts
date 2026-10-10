@@ -21,7 +21,7 @@ import * as A from './abi';
 import { elfInterpreter } from '../elf-interp';
 import {
   type OpenFile, FdTable, BufferFile, DevNull, DevZero, DevRandom, DevFull,
-  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
+  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
   linkCount, writeBackAll, attachInodeShared, detachOpenFileShared, unlinkedFileKey, sharedBufferOf,
 } from './fd';
 import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
@@ -1321,7 +1321,7 @@ export class Kernel {
       }
       if (own.node.type === 'symlink') return flags & A.O_NOFOLLOW ? -A.ELOOP : undefined;
       if ((flags & A.O_CREAT) && (flags & A.O_EXCL)) return -A.EEXIST;
-      if (own.node.type !== 'file' || own.node.lazy || own.node.special) return undefined;
+      if (own.node.type !== 'file' || own.node.lazy || own.node.evicted || own.node.special) return undefined;
       if (flags & A.O_DIRECTORY) return -A.ENOTDIR;
       if (ownerDenies(proc, own.node.mode, flags)) return -A.EACCES;
       const file = new RegularFile(openInodeSync(fs, own.path, own.node), statusFlags);
@@ -1333,7 +1333,7 @@ export class Kernel {
     if (hit === null) return -A.ENOENT;
     if (hit.node.type === 'dir') return canWrite(flags) ? -A.EISDIR : new DirFile(fs, hit.path, statusFlags);
     if (flags & A.O_DIRECTORY) return -A.ENOTDIR;
-    if (hit.node.type !== 'file' || hit.node.lazy || hit.node.special) return undefined; // lazy: open() fetches it; FIFOs block
+    if (hit.node.type !== 'file' || hit.node.lazy || hit.node.evicted || hit.node.special) return undefined; // lazy, evicted: open() reads it; FIFOs block
     return new RegularFile(openInodeSync(fs, hit.path, hit.node), statusFlags);
   }
 
@@ -2818,7 +2818,7 @@ export class Kernel {
               }
               else if (f instanceof SymlinkPathFile) await fs().link(f.path, to, { follow: false });
               else if (f.kind === 'dir') return -A.EPERM;
-              else if (f instanceof RegularFile) await fs().link(f.inode.path, to, { follow: false });
+              else if (f instanceof RegularFile) { await fs().link(f.inode.path, to, { follow: false }); f.inode.ctimeMs = Date.now(); }
               else return -A.ENOENT;
             } catch (e) {
               return A.errnoFromError(e);
@@ -2839,6 +2839,7 @@ export class Kernel {
           } catch (e) {
             return A.errnoFromError(e);
           }
+          touchInodeCtime(fs(), to); // an open fd's fstat sees st_ctime move (st_nlink did)
           return 0;
         }
         case A.SYS_readlink:

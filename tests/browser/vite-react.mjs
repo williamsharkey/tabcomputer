@@ -3,6 +3,8 @@
 // renders the app, an edit to src/App.jsx reaches it by HMR (no reload).
 // APP=astro|next|sveltekit: a minimal site of that framework instead, the same checks
 // (APPS below says how each is made, edited and built).
+// REDIRECT=1: the dev server runs as agents start one, `npm run dev > dev.log 2>&1 &`
+// (ready when its log says so), and the build is typed with its output to a file.
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/vite-react.mjs [URL] [--shots DIR]
@@ -24,6 +26,7 @@ const LIMIT = Number(process.env.STEP_LIMIT_MS || 600_000);
 // VITE=7 for vite 7's template (esbuild and Rollup as their WebAssembly builds)
 const VITE = process.env.VITE || 'latest';
 const APP_NAME = process.env.APP || 'vite';
+const REDIRECT = process.env.REDIRECT === '1';
 if (shots) mkdirSync(shots, { recursive: true });
 
 const bufferOf = (page) => page.evaluate(() => {
@@ -53,12 +56,16 @@ async function waitBuffer(page, re, from, what) {
 }
 let marks = 0;
 /** Type `cmd` and wait for it to exit 0 */
-async function step(page, cmd) {
+async function step(page, cmd, strict = true) {
   const mark = `@@step${++marks}`;
   const t0 = Date.now();
+  // (at the prompt: keys typed before it came lost their first ones, "command not found: d")
+  for (let i = 0; i < 100 && !/\$ ?$/.test((await bufferOf(page)).trimEnd() + ' '); i++) await page.waitForTimeout(100);
   const from = (await bufferOf(page)).length;
   await page.keyboard.type(`${cmd}; echo "${mark} $?"\r`, { delay: 2 });
   const m = await waitBuffer(page, new RegExp(`^${mark} (\\d+)$`, 'm'), from, cmd);
+  // (not strict: the exit status, for the caller to judge)
+  if (!strict) return Number(m[1]);
   if (m[1] !== '0') throw new Error(`exit ${m[1]}: ${cmd}\n${(await bufferOf(page)).slice(from).split('\n').slice(-25).join('\n')}`);
   await record(page, cmd, t0);
 }
@@ -217,6 +224,9 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(e.message + (process.env.VERBOSE ? ' @ ' + (e.stack || '').split('\n').slice(1, 6).join(' | ') : '')));
 const consoleErrors = [];
 const responses = [];
+// DUMP_DEPS: the optimized dependencies as the page got them (vite may write them again since)
+const depBodies = new Map();
+if (process.env.DUMP_DEPS) context.on('response', (r) => { if (/\/\.vite\/deps\//.test(r.url())) r.text().then((t) => depBodies.set(`${depBodies.size}_${r.url()}`, t), () => {}); });
 page.on('response', (r) => { if (!/localhost:5299\/(assets|$)/.test(r.url())) responses.push(`${r.status()} ${r.headers()['content-type'] ?? ''} ${r.url().slice(0, 150)}`); });
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 300)); });
 let failed = false;
@@ -241,9 +251,18 @@ try {
 
   t0 = Date.now();
   const from = (await bufferOf(page)).length;
-  await page.keyboard.type('npm run dev\r', { delay: 2 });
-  await waitBuffer(page, app.ready, from, 'dev server ready');
-  await record(page, 'npm run dev → ready', t0);
+  if (REDIRECT) {
+    await page.keyboard.type('npm run dev > /home/user/app/dev.log 2>&1 &\r', { delay: 2 });
+    for (let log = ''; !app.ready.test(log); await page.waitForTimeout(250)) {
+      if (Date.now() - t0 > LIMIT) throw new Error(`timed out waiting for dev server ready in dev.log:\n${log.slice(-2000)}`);
+      log = (await side(page, 'cat ~/app/dev.log')).out;
+    }
+    await record(page, 'npm run dev > dev.log 2>&1 & → ready (in the log)', t0);
+  } else {
+    await page.keyboard.type('npm run dev\r', { delay: 2 });
+    await waitBuffer(page, app.ready, from, 'dev server ready');
+    await record(page, 'npm run dev → ready', t0);
+  }
   await rss('dev up');
   if (process.env.HEAPSNAP) await heapSnapshot(page, process.env.HEAPSNAP);
 
@@ -281,9 +300,12 @@ try {
   await record(page, app.edit.label, t0);
 
   t0 = Date.now();
-  const built = await side(page, app.build.cmd);
+  // (REDIRECT: typed at the terminal, the dev server being in the background, its output to a file)
+  const built = REDIRECT
+    ? { code: await step(page, `(${app.build.cmd}) > /home/user/app/build.log 2>&1`, false), out: (await side(page, 'cat ~/app/build.log')).out }
+    : await side(page, app.build.cmd);
   if (built.code !== 0 || !app.build.ok(built.out)) throw new Error(`npm run build: ${built.out.slice(-1500)}`);
-  await record(page, app.build.label, t0);
+  await record(page, app.build.label + (REDIRECT ? ' > build.log' : ''), t0);
   await rss('after build');
   if (process.env.MEM) {
     await page.waitForTimeout(20_000);
@@ -307,6 +329,15 @@ try {
 } catch (e) {
   failed = true;
   console.log(`FAIL ${String(e.message).replace(/\n/g, '\n  ')}`);
+  if (process.env.DUMP_DEPS) for (const [u, body] of depBodies) {
+    (await import('node:fs')).writeFileSync(`${process.env.DUMP_DEPS}/served_${u.replace(/^.*\//, '').replace(/[^\w.=-]/g, '_')}`, body);
+    console.log(`  saved as served: ${u}`);
+  }
+  if (process.env.DUMP_DEPS) for (const m of new Set(String(e.message).match(/node_modules\/\.vite\/deps\/[\w.-]+\.js/g) ?? [])) {
+    const r = await side(page, `ls -la ~/app/${m} ~/app/node_modules/.vite/deps | head -50; cat ~/app/${m}`).catch((x) => ({ out: String(x) }));
+    (await import('node:fs')).writeFileSync(`${process.env.DUMP_DEPS}/${m.replace(/\//g, '_')}`, r.out);
+    console.log(`  dumped ${m}`);
+  }
   for (const f of page.frames()) {
     const text = await f.evaluate(() => document.body?.innerText.slice(0, 200) ?? '').catch((err) => `(${err.message})`);
     console.log(`  frame ${f.url()}: ${JSON.stringify(text)}`);

@@ -23,6 +23,7 @@ import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
 import { redirectWordSpans } from './shell-redirect-words';
+import { commandStarted, commandEnded, watchdogCheckpoint } from './watchdog';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -563,6 +564,8 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** Kernel fd kinds a command reads as data when given no file (ripgrep's is_readable_stdin) */
+const READABLE_STDIN_KINDS = new Set(['file', 'pipe', 'socket']);
 /** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
 const PREFIX_REDIR_RE = /^\s*(\d*(?:&>>?|>>|>\||<>|>&|<&|>|<)\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+)(?=\s)/;
 /** A command word as it stands after expansion */
@@ -718,6 +721,7 @@ let lastYield = 0;
  * each other) otherwise never give the page a turn. Cheap when not due.
  */
 async function maybeYield(): Promise<void> {
+  watchdogCheckpoint(); // the watchdog's kill switch (an outside agent, or `watchdog abort-after`)
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
   if (now - lastYield < 30) return;
   await yieldToEventLoop();
@@ -1799,13 +1803,21 @@ export class Shell {
     const outerInCommand = this.inCommand;
     this.activeTerminal = terminalOverride;
     this.inCommand = 0;
+    // In flight for the watchdog: a freeze report names the innermost line
+    const watch = commandStarted(line, this.watchDepth++, this);
+    let status: number | undefined;
     try {
-      return await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
+      return status = await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
     } finally {
+      this.watchDepth--;
+      commandEnded(watch, status);
       this.activeTerminal = outerTerminal;
       this.inCommand = outerInCommand;
     }
   }
+
+  /** execute() calls in progress on this shell, for the watchdog (0: a top-level line) */
+  private watchDepth = 0;
 
   /** `exec -a NAME prog`: argv[0] for the next kernel program named `name` */
   execArgv0?: { name: string; argv0: string };
@@ -2436,10 +2448,10 @@ export class Shell {
       return lastExit;
     }
 
-    // Handle heredocs before anything else
-    const heredoc = this.parseHeredoc(trimmed);
-    const effectiveLine = heredoc ? heredoc.command : trimmed;
-    const heredocStdin = heredoc ? heredoc.body : (injectedStdin ?? '');
+    // (here-documents are `< MARKER` redirections by now: extractHeredocs above;
+    // a `<<` still here is quoted, as in `eval 'cat <<E …'`, and stays as written)
+    const effectiveLine = trimmed;
+    const heredocStdin = injectedStdin ?? '';
 
     // Strip control characters from history entries (ink UI can leak ANSI/DEL chars)
     // Only record user-typed commands (not programmatic calls from child_process, spawn, etc.)
@@ -4726,6 +4738,10 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
+            // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
+            : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
+              !redirects.some(r => r.type === '<' && /^\/dev\/(null|zero|tty)$/.test(r.target)),
           // (not when the caller collects stdout: $(...), a builtin's own sink)
           stdoutIsTTY: i === pipeline.length - 1 && !redirects.some(r => r.type === '>' || r.type === '>>') &&
             !(terminalOverride || this.terminal)?.captureStdout,
@@ -6310,56 +6326,6 @@ export class Shell {
     return alts;
   }
 
-  private parseHeredoc(input: string): { command: string; body: string } | null {
-    // Match <<DELIM, <<'DELIM', <<"DELIM", or <<-DELIM patterns
-    const lines = input.split(/\r?\n/);
-    if (lines.length < 2) return null;
-
-    // Find <<DELIM on the first line (could be anywhere in the command)
-    const heredocMatch = lines[0].match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))/);
-    if (!heredocMatch) return null;
-
-    const delimiter = heredocMatch[1] || heredocMatch[2] || heredocMatch[3];
-    const quoted = !!(heredocMatch[1] || heredocMatch[2]);
-    const stripTabs = lines[0].match(/<<-/) !== null;
-
-    // Remove the <<DELIM token from the command line
-    const command = lines[0].replace(/<<-?\s*(?:'[^']+'|"[^"]+"|(\S+))/, '').trim();
-
-    // Collect body lines until we find the delimiter on its own line
-    const bodyLines: string[] = [];
-    let found = false;
-    let delimiterIndex = -1;
-    for (let i = 1; i < lines.length; i++) {
-      const line = stripTabs ? lines[i].replace(/^\t+/, '') : lines[i];
-      if (line.trim() === delimiter) {
-        found = true;
-        delimiterIndex = i;
-        break;
-      }
-      bodyLines.push(line);
-    }
-
-    if (!found) return null;
-
-    // Capture any commands after the closing delimiter line
-    let finalCommand = command;
-    const remaining = lines.slice(delimiterIndex + 1).map(l => l.trim()).filter(Boolean);
-    if (remaining.length > 0) {
-      finalCommand = finalCommand + ' && ' + remaining.join(' && ');
-    }
-
-    let body = bodyLines.join('\n');
-    // If delimiter was not quoted, expand variables
-    if (!quoted) {
-      body = restoreExpansion(this.expandVars(body));
-    }
-    // Add trailing newline (standard heredoc behavior)
-    body += '\n';
-
-    return { command: finalCommand, body };
-  }
-
   private parseCompound(line: string): { operator: '' | '&&' | '||' | ';'; command: string }[] {
     const result: { operator: '' | '&&' | '||' | ';'; command: string }[] = [];
     let current = '';
@@ -7446,6 +7412,8 @@ export class Shell {
   private compoundsBalanced(src: string): boolean {
     const close: Record<string, string> = { for: 'done', while: 'done', until: 'done', select: 'done', if: 'fi', case: 'esac' };
     const stack: string[] = [];
+    // (here-document bodies are data: `if`, `case`, `{` there aren't keywords)
+    if (hasHeredoc(src)) src = extractHeredocs(src, new HeredocStore());
     for (const { word } of this.shellTokenScan(src)) {
       if (close[word]) stack.push(close[word]);
       else if (word === 'done' || word === 'fi' || word === 'esac') { if (stack.pop() !== word) return false; }
@@ -8796,6 +8764,11 @@ export class Shell {
       else if ((r.type === '>' || r.type === '>>') && r.fd === undefined) out1 = path(r.target);
       else if (r.type === '2>' || r.type === '2>>') err2 = path(r.target);
       else if (r.type === '2>&1') err2 = out1;
+    }
+    // A new `> file` is made by the command's one write at its end; a command looking
+    // at its fds (stat -L /proc/self/fd/1) sees it exist already, as on Linux
+    for (const p of new Set([out1, err2])) {
+      if (p.startsWith('/') && !p.startsWith('/dev/') && this.fs.lookupCached?.(p) === null) void this.fs.writeNow(p, new Uint8Array(0)).catch(() => {});
     }
     return [[0, in0], [1, out1], [2, err2]];
   }

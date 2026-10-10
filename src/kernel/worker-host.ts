@@ -48,6 +48,9 @@ export function workerRunner(createWorker: (proc: Process) => GuestWorker, opts:
     proc.onTerminate(() => {
       channel.stop();
       try { void worker.terminate(); } catch { /* already gone */ }
+      // (a zombie waiting to be reaped doesn't keep the worker and its channel)
+      delete proc.data.worker;
+      delete proc.data.channel;
       resolve();
     });
     const wake = serve(channel, worker);

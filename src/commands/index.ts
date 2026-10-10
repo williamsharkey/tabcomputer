@@ -45,6 +45,11 @@ export interface CommandContext {
   readStdin?: () => Promise<string>;
   /** stdin is the terminal, not a pipe, file or here-doc (set by the shell; unset: the terminal if there is one) */
   stdinIsTTY?: boolean;
+  /**
+   * stdin is data to read: a pipe, a regular file, a here-doc or here-string
+   * (not the terminal, /dev/null or nothing). rg searches it when given no path.
+   */
+  stdinReadable?: boolean;
   /** A live stdin read as its data arrives, chunks then null at EOF (a spawned node child's pipe: node-compat/live-stdin.ts) */
   stdinStream?: { read(): Promise<Uint8Array | null> };
   /** Byte writers that get the command's stdout/stderr as it writes them, bytes as written (a spawned node child's pipes) */

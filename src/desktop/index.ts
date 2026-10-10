@@ -609,7 +609,15 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   };
   const menus = (): MenuSpec[] => {
     const w = wm.focused();
+    // Code (the editor, src/commands/code-editor.ts): opening files first, where people look for it
+    const codeDir = w?.appId === 'code' ? (w as { codeDir?: string }).codeDir : undefined;
+    const codeItems: MenuSpec['items'] = w?.appId === 'code' ? [
+      { label: 'Open…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'file', codeDir)) },
+      { label: 'Open Folder…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'folder', codeDir)) },
+      'separator',
+    ] : [];
     const file: MenuSpec = { title: 'File', items: [
+      ...codeItems,
       { label: 'New Terminal Window', shortcut: 'Alt+Shift+Enter', action: () => openTerminal({ cwd: '/home/user' }) },
       { label: 'New Tab', shortcut: 'Alt+Shift+T', disabled: !termView(), action: () => termView()?.newTab() },
       { label: 'New Files Window', shortcut: 'Alt+Shift+F', action: () => void wm.openApp('files') },

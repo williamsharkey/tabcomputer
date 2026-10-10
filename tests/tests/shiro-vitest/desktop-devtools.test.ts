@@ -45,6 +45,21 @@ describe('Developer and AI agents stacks', () => {
     expect(r2.output).toContain('INSTALLING');
     expect(r2.output).toContain('RAN');
   });
+
+  it('a tool installed under ~ (grok, agy, aider) runs right after installing and is not installed again', async () => {
+    const { shell } = await createTestShell();
+    const install = 'echo INSTALLING; mkdir -p ~/.faketool/bin && printf \'#!/bin/sh\\necho FAKE-RAN\\n\' > ~/.faketool/bin/faketool && chmod +x ~/.faketool/bin/faketool';
+    const tool = { id: 'faketool', name: 'Fake', group: 'agents' as const, order: 1, bins: ['faketool'], install, home: true, run: 'faketool' };
+    const first = await run(shell, launchScript(tool));
+    expect(first.output).toContain('INSTALLING');
+    expect(first.output).toContain('FAKE-RAN');
+    const { shell: later } = await createTestShell(); // a new Terminal window: PATH as at boot
+    const again = await run(later, launchScript(tool));
+    expect(again.output).not.toContain('INSTALLING');
+    expect(again.output).toContain('FAKE-RAN');
+    for (const id of ['grok', 'agy', 'aider']) expect(DEV_TOOLS.find(t => t.id === id)!.home, id).toBe(true);
+    expect(DEV_TOOLS.find(t => t.id === 'grok')!.install).toMatch(/^pkg install curl && /);
+  });
 });
 
 describe('Clone and branch folders', () => {

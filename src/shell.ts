@@ -7552,7 +7552,7 @@ export class Shell {
    */
   private async expandRedirectTarget(raw: string, writeStderr: (s: string) => void): Promise<string | null> {
     if (/^[<>]\(/.test(raw) || /^&(\d+|-)$/.test(raw)) return raw;
-    if (!/[$`'"\\{]/.test(raw)) return raw;
+    if (!/[$`'"\\{]/.test(raw) && !raw.startsWith('~')) return raw;
     const words = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
     if (words.length !== 1) { writeStderr(`tabcomputer: ${raw}: ambiguous redirect\r\n`); return null; }
     return words[0];

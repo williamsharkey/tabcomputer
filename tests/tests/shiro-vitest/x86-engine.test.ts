@@ -317,6 +317,14 @@ const haveProcbits = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const inotifyBin = join(out, 'inotifywatch');
 const haveInotify = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_inotify') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', inotifyBin, 'inotifywatch.c']);
+// Blink 0518: whole reads of regular files, mremap of a file's shared mapping, write-back to the file's end
+const mapfileBin = join(out, 'mapfile');
+const haveMapfile = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapfile') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapfileBin, 'mapfile.c']);
+// Blink 0519: mmap's argument checks, MAP_32BIT below 2 GiB
+const mmapargsBin = join(out, 'mmapargs');
+const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmapargs') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmapargsBin, 'mmapargs.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1032,6 +1040,18 @@ it.skipIf(!haveInotify)('inotify: a guest hears its own changes and, blocked in 
     'mask 100 name mine', 'mask 2 name mine', 'mask 8 name mine', 'mask 40 name mine', 'mask 80 name moved', 'waiting',
     'mask 100 name outside', 'mask 2 name outside', 'mask 8 name outside', 'mask 200 name moved', 'mask 2 name moved', '',
   ].join('\n'));
+}, 60_000);
+
+it.skipIf(!haveMapfile)('a 6 MiB read of a file is whole; a shared mapping grown by mremap writes the file back; a page past the file\'s end stays in the mapping (LTP mmap21, mremap01, mmap01)', async () => {
+  const { shell } = await setup(readFileSync(mapfileBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('read 6291456 of 6291456, first wrong -1\nsize 12\n');
+}, 60_000);
+
+it.skipIf(!haveMmapargs)('mmap checks in Linux\'s order: a bad fd, no length, access, a fixed address past user space, MAP_SHARED_VALIDATE\'s unknown flags; MAP_32BIT below 2 GiB (LTP mmap06, 08, 15, 20, 23, 24)', async () => {
+  const { shell } = await setup(readFileSync(mmapargsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('bad fd no length 9\nno length 22\nread-only shared write 13\nhigh fixed 12\nvalidate 95\n32bit below 2G 1\n32bit 2G 12\n');
 }, 60_000);
 
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {

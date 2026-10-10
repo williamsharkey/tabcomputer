@@ -2723,6 +2723,18 @@ others oldest first beyond 64 MiB. Reads load it from IndexedDB again.
 Only idle files go: evicting what a running apt reads again raised its
 install peak before (entry 13).
 
+*Update (ec7adfa):* the 64 KiB floor is gone. Every clean idle file's bytes
+leave memory after `CONTENT_IDLE_MS` (30 s), whatever its size; a file with
+hard links still goes whole. The node stays in memory without its bytes, so
+`stat`, `ls -l`, `readdir` and path walks answer without IndexedDB.
+`holdSmallContent()` keeps small files resident for node in the page (pages
+without SharedArrayBuffer, `TABCOMPUTER_NODE_WORKER=0`, `executeNodeScript`),
+which reads the cache synchronously. Reading an idle file brings back up to
+256 of its directory's idle files in one transaction. Vite dev
+(`bench/content-mem.mjs`) after 50 s idle: small-file content 14.1 → 0 MiB,
+renderer RSS 496 → 477 MiB; `cat` of 1000 idle files 33 ms (162 ms before
+the directory batch; 6.6 ms with everything in memory).
+
 | scratch probe, renderer RSS above the pre-run level | before | after |
 |---|---:|---:|
 | `apt-get update`: peak | +656 MiB | +677 MiB |

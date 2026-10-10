@@ -34,6 +34,8 @@ export interface GuiApp {
   links?: [string, string][];
   /** Settings written into the user's home (relative path: contents) before a launch, when not there yet */
   home?: Record<string, string>;
+  /** Arguments every launch starts with (Audacious's Qt interface is `--qt`) */
+  args?: string[];
 }
 /**
  * A file a postinst would generate, built by gen-apps.py (public/gui/overlay/SHA256), applied when `when` is
@@ -551,7 +553,7 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   const p = kernel.spawn({
     // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
     // oosplash finds soffice.bin next to argv[0])
-    path: app.bin, argv: [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...args], cwd: '/home/user',
+    path: app.bin, argv: [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args], cwd: '/home/user',
     env: appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env }), fds: { 0: new BufferFile(''), 1: out, 2: out },
   });
   ids.pidAppIds.set(p.pid, name);

@@ -4,7 +4,7 @@ Debian 12 GUI apps installed from the streaming manifest (`public/gui/apps.json`
 
 Columns: **installs**; **window**: a desktop window appears, with the time from launch (installed) to it; **renders**: its largest window isn't one flat colour after 8 s; **input**: focusing it and typing `abc 123` changes its pixels (or, if not, clicking into its middle and typing does, or Ctrl+O opens a window or changes them); **text**: the DOM text layer has spans for it (GTK via libshiro-text-hook.so, core X text; Qt and others draw pixels only).
 
-**38/38 install, 34/38 open a window, 33/38 render, 31/38 react to input, 30/38 have DOM text.**
+**38/38 install, 37/38 open a window, 37/38 render, 37/38 react to input, 32/38 have DOM text.**
 
 
 ### Editors & viewers
@@ -27,9 +27,9 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 |---|---|---:|---:|:-:|---:|:-:|:-:|:-:|---|
 | gimp | gtk2 | 66.1 MB | 10 s | ✓ | 35 s | ✓ | ✓ | ✓ (1) | main window at 285 s |
 | inkscape | gtk3 | 83 MB | 14 s | ✓ | 54 s | ✓ | ✓ | ✓ (18) |  |
-| krita | qt5 | 118.3 MB | 13 s | ✓ | 16 s | ✓ | ✗ | ✓ (1) | opened with an image |
+| krita | qt5 | 121.9 MB | 6.6 s | ✓ | 8.8 s | ✓ | ✓ | ✗ | main window at 422 s; opened with an image |
 | blender | gl | 231.5 MB | 22 s | ✗ | – | – | – | – | exited (status 256) before a window; past the CPU check and PI futexes (engine fixes); needs OpenGL 3.3 over GLX, which Xshiro doesn't provide |
-| shotwell | gtk3 | 60.2 MB | 9.1 s | ✓ | 21 s | ✓ | ✗ | ✗ | opened with an image |
+| shotwell | gtk3 | 60.2 MB | 8.7 s | ✓ | 11 s | ✓ | ✓ | ✓ (11) | opened with an image |
 | simple-scan | gtk3 | 51.7 MB | 7.1 s | ✓ | 20 s | ✓ | ✓ | ✗ |  |
 
 ### Desktop
@@ -54,15 +54,15 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 
 | App | Toolkit | Download | Install | Window | First window | Renders | Input | Text | Notes |
 |---|---|---:|---:|:-:|---:|:-:|:-:|:-:|---|
-| firefox-esr | gtk3 | 125.1 MB | 24 s | ✗ | – | – | – | – | exited (status 34304) before a window; runs (~4.5 min to its window): content processes get the font list by message (an overlay pref) until shared mappings work across processes; its text isn't reported |
+| firefox-esr | gtk3 | 125.1 MB | 25 s | ✓ | 224 s | ✓ | ✓ | ✗ | first paint more than 8 s after its window; its text isn't reported (no DOM text hook for Gecko) |
 | netsurf | gtk3 | 56.6 MB | 7.2 s | ✓ | 13 s | ✓ | ✓ | ✓ (42) |  |
 | dillo | fltk | 11.4 MB | 1.4 s | ✓ | 5.1 s | ✓ | ✓ | ✗ | FLTK draws its text as pixels |
-| thunderbird | gtk3 | 119.4 MB | 22 s | ✗ | – | – | – | – | exited (status 34304) before a window |
+| thunderbird | gtk3 | 119.4 MB | 19 s | ✓ | 152 s | ✓ | ✓ | ✗ | first paint more than 8 s after its window; its text isn't reported (no DOM text hook for Gecko) |
 | pidgin | gtk2 | 55.1 MB | 6.1 s | ✓ | 18 s | ✓ | ✓ | ✓ (38) |  |
 | hexchat | gtk2 | 46.4 MB | 7.9 s | ✓ | 8.5 s | ✓ | ✓ | ✓ (8) |  |
 | vlc | qt5 | 39.4 MB | 5.1 s | ✓ | 13 s | ✓ | ✓ | ✓ (11) |  |
-| audacity | gtk3 | 64.3 MB | 8.6 s | ✓ | 45 s | ✗ | ✓ | ✓ (64) | main window at 103 s; its first window is the first-run plugin scan; the main window follows (~70 s); wxWidgets text isn't reported |
-| audacious | qt5 | 37.8 MB | 8.3 s | ✗ | – | – | – | – | exited (status 134) before a window |
+| audacity | gtk3 | 64.3 MB | 8.2 s | ✓ | 20 s | ✓ | ✓ | ✓ (113) | main window at 45 s; its first window is the first-run plugin scan; the main window follows (~70 s); wxWidgets text isn't reported |
+| audacious | qt5 | 38.2 MB | 3.9 s | ✓ | 6.5 s | ✓ | ✓ | ✓ (13) |  |
 
 ### Qt
 
@@ -73,7 +73,7 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 | qpdfview | qt5 | 40.1 MB | 8.0 s | ✓ | 21 s | ✓ | ✓ | ✓ (6) |  |
 | keepassxc | qt5 | 48 MB | 5.3 s | ✓ | 21 s | ✓ | ✓ | ✓ (21) |  |
 | kcalc | qt5 | 44.4 MB | 5.2 s | ✓ | 13 s | ✓ | ✓ | ✓ (8) |  |
-| lximage-qt | qt5 | 36.8 MB | 5.7 s | ✓ | 13 s | ✓ | ✗ | ✗ | opened with an image |
+| lximage-qt | qt5 | 36.8 MB | 4.4 s | ✓ | 5.8 s | ✓ | ✓ | ✓ (7) | opened with an image |
 
 2026-10-10; per-app details (output tails, window titles) in .gui-score/results.json.
 
@@ -231,8 +231,11 @@ Fourth round (nine more apps; input; startup time):
   loaders key on. They are now part of its set (+3.5 MB); the other plug-ins
   are optional.
 - **Audacious** exited at once: its Qt interface (`qtui.so`, `libaudqt`) is
-  a plug-in, so Qt wasn't in its set; then "No output plugin found". It now
-  has the Qt UI and the file-writer output (there's no sound device).
+  a plug-in, so Qt wasn't in its set; then "No output plugin found" (it
+  probes OSS and skips the file writer); then "No interface plugin found":
+  Debian's build runs its GTK interface unless started with `--qt`. It now
+  has the Qt UI, the ALSA output (which starts without a sound card) and
+  `--qt` (manifest field `args`, arguments every launch starts with).
 - **Audacity**'s main window paints more than 8 s after it appears: the
   render check also takes a sample after the input steps.
 - **qpdfview** gets Qt's SQLite driver (its bookmarks database).
@@ -250,8 +253,15 @@ Fourth round (nine more apps; input; startup time):
   at. Reported to the engine owners with the profiles (compiled blocks
   starting at return addresses).
 
-Scores in the tables for Krita, Audacious, LXImage-Qt, Shotwell and Audacity
-predate these fixes; they are re-scored next.
+Re-scored after these fixes (Build 955, Blink 0117–0119): Audacious,
+LXImage-Qt, Shotwell and Audacity pass every check. Krita got past its
+splash (~7 min: building its resource database in the engine) and then
+asserted in its OpenGL probe (`KisOpenGLModeProber::Result` empty): Qt's GLX
+integration is a plug-in, so Qt had no OpenGL at all. With
+`libqxcb-glx-integration.so` in its set it gets glshiro's GL (it warns that
+`glXCreatePbuffer` isn't implemented and uses its QPainter canvas), and its
+main window opens with the image at 422 s and reacts to input (zoom). The
+scoreboard now waits up to 10 min for a main window.
 
 Since the last scoring run (Build 940), not yet scored:
 
@@ -264,8 +274,17 @@ Since the last scoring run (Build 940), not yet scored:
 - **Firefox ESR and Thunderbird** exited before a window on Blink's
   `memorymalloc.c:834` assert, mapping a shared `memfd:mozilla-ipc` region
   whose length isn't a whole page. Blink 0117 fixes the assert and 0118 passes
-  memfd `F_ADD_SEALS`/`F_GET_SEALS` to the kernel. Neither app has been
-  confirmed to open a window since; their rows stand until they are re-scored.
+  memfd `F_ADD_SEALS`/`F_GET_SEALS` to the kernel. Re-scored on Build 955:
+  both open their windows (Firefox after 224 s, Thunderbird after 152 s),
+  render and react to input; their text isn't reported (no DOM text hook for
+  Gecko).
+- **Firefox without the font-list overlay** (`/etc/firefox-esr/shared-memory.js`
+  removed, so content processes map the parent's shared font list): the same
+  browser window after ~4 min, and the parent, three tab processes, the
+  socket and RDD processes all still running 5 min in: no
+  `mFontFamilies.Count() > 0` crash. Shared mappings across processes work
+  (Blink 0112), so the overlay is no longer needed; it is still shipped,
+  pending a run that loads a page with text in a tab.
 
 Known failures, not fixed here:
 

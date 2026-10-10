@@ -205,6 +205,9 @@
    "toolkit": "gtk3"
   },
   "audacious": {
+   "args": [
+    "--qt"
+   ],
    "bin": "/usr/bin/audacious",
    "closureSize": 147094988,
    "description": "Music player (Qt5)",
@@ -213,14 +216,17 @@
     "libxcomposite1",
     "libwavpack1",
     "libvorbisfile3",
+    "libvorbis0a",
+    "libogg0",
+    "libvorbisenc2",
     "libsoxr0",
     "libgomp1",
     "libsndio7.0",
-    "libasound2",
-    "libasound2-data",
     "libsndfile1",
     "libopus0",
     "libmpg123-0",
+    "libmp3lame0",
+    "libflac12",
     "libsidplayfp6",
     "libsdl2-2.0-0",
     "libxss1",
@@ -416,11 +422,8 @@
     "liblzma5",
     "libicu72",
     "libstdc++6",
-    "libvorbis0a",
-    "libogg0",
-    "libvorbisenc2",
-    "libmp3lame0",
-    "libflac12",
+    "libasound2",
+    "libasound2-data",
     "libgcrypt20",
     "libgpg-error0",
     "x11-common",
@@ -510,6 +513,7 @@
     "/usr/lib/x86_64-linux-gnu/audacious/Input/amidi-plug.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/cdaudio-ng.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/ffaudio.so",
+    "/usr/lib/x86_64-linux-gnu/audacious/Input/flacng.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/madplug.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/modplug.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/openmpt.so",
@@ -518,7 +522,7 @@
     "/usr/lib/x86_64-linux-gnu/audacious/Input/vorbis.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/vtx.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Input/wavpack.so",
-    "/usr/lib/x86_64-linux-gnu/audacious/Output/alsa.so",
+    "/usr/lib/x86_64-linux-gnu/audacious/Output/filewriter.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Output/jack-ng.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Output/pulse_audio.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Output/qtaudio.so",
@@ -530,7 +534,7 @@
     "/usr/lib/x86_64-linux-gnu/audacious/Visualization/cairo-spectrum.so",
     "/usr/lib/x86_64-linux-gnu/audacious/Visualization/gl-spectrum.so"
    ],
-   "size": 38573104,
+   "size": 38195316,
    "toolkit": "qt5"
   },
   "audacity": {
@@ -3417,7 +3421,6 @@
     "libblkid1",
     "libraw20",
     "libgomp1",
-    "libxcb-glx0",
     "libssl3",
     "libmtdev1",
     "libinput10",
@@ -3555,6 +3558,7 @@
     "libxcb-image0",
     "libxcb-util1",
     "libxcb-icccm4",
+    "libxcb-glx0",
     "libx11-xcb1",
     "libudev1",
     "libsm6",
@@ -3649,7 +3653,7 @@
     "/usr/lib/x86_64-linux-gnu/kritaplugins/kritaseexprgenerator.so",
     "/usr/lib/x86_64-linux-gnu/kritaplugins/kritatouchdocker.so"
    ],
-   "size": 121771476,
+   "size": 121893868,
    "toolkit": "qt5"
   },
   "l3afpad": {
@@ -10710,6 +10714,12 @@
    "filename": "pool/main/libx/libxcb/libxcb-dri3-0_1.15-1_amd64.deb",
    "sha256": "02699b144b9467de8636d27a76984b8f4e7b66e2d25d96df2b9677be86ee9a29",
    "size": 106676,
+   "version": "1.15-1"
+  },
+  "libxcb-glx0": {
+   "filename": "pool/main/libx/libxcb/libxcb-glx0_1.15-1_amd64.deb",
+   "sha256": "1bce55fc292d93fa5f7fa50f84cef99ec29be70d0ffe98e86b8008e59f4a34fa",
+   "size": 122392,
    "version": "1.15-1"
   },
   "libxcb-icccm4": {

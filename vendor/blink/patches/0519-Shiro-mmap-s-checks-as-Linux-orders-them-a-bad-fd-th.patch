@@ -1,0 +1,72 @@
+From 8cf2850c769448b088dc28a36a9e855248da703c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 22:25:15 +0000
+Subject: [PATCH] Shiro: mmap's checks as Linux orders them (a bad fd, then no
+ length, a fixed address past user space, MAP_SHARED_VALIDATE's unknown
+ flags); MAP_32BIT maps below 2 GiB
+
+---
+ blink/shiro.inc | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 10df758..abac40e 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2609,6 +2609,8 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_procbits(void) { return 1; }
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_inotify(void) { return 1; }
+ // 0518: whole reads of regular files, mremap of a file's shared mapping, write-back to the file's end
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_mapfile(void) { return 1; }
++// 0519: mmap's argument checks and MAP_32BIT below 2 GiB
++EMSCRIPTEN_KEEPALIVE int blink_shiro_mmapargs(void) { return 1; }
+ 
+ // the same with the signal's siginfo (the kernel's call 1030, made as `pid`)
+ EMSCRIPTEN_KEEPALIVE void blink_shiro_signal_pid_info(int pid, int sig, int w0, int w1, int w2,
+@@ -4929,12 +4931,44 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       r = -EBADF_LINUX;
+       break;
+     case 0x009:                                                       // mmap
++      // Linux's checks first: no length (EINVAL; LTP mmap06), a fixed address
++      // past the 47-bit user space (ENOMEM; mmap15), MAP_SHARED_VALIDATE with
++      // a flag it doesn't know (EOPNOTSUPP; mmap20). (Linux looks the fd
++      // up first: a bad one is EBADF even with no length; mmap08)
++      if (!b) {
++        if (!(d & 0x20) && (r = KS(m, 72, A12((int)e, 3, 0))) < 0) break;  // F_GETFL
++        r = -EINVAL_LINUX;
++        break;
++      }
++      if ((d & 0x10) && (a >= ((i64)1 << 47) || b > ((u64)1 << 47) - (u64)a)) { r = -ENOMEM_LINUX; break; }
++      // MAP_32BIT (not fixed): somewhere below 2 GiB, or ENOMEM (mmap23, mmap24)
++      if ((d & 0x40) && !(d & 0x10)) {
++        i64 at;
++        u64 len = ROUNDUP(b, 4096);
++        if (len > 0x40000000) { r = -ENOMEM_LINUX; break; }
++        for (at = 0x40000000; at + (i64)len <= 0x80000000; at += 0x100000) {
++          if (IsFullyUnmapped(m->system, at, len)) break;
++        }
++        if (at + (i64)len > 0x80000000) { r = -ENOMEM_LINUX; break; }
++        a = at, d = (d & ~(u64)0x40) | 0x10;  // there, as MAP_FIXED
++        if (d & 0x20) {  // (anonymous: Blink's own mmap, with these arguments)
++          r = SysMmap(m, a, b, c, d, e, f);
++          if (r == -1) r = ShiroErr();
++          break;
++        }
++      }
+       // MAP_HUGETLB with a huge page size Linux doesn't have (2 MiB, 1 GiB):
+       // EINVAL (flags of ~0, Open POSIX mmap_21-1)
+       if ((d & 0x40000) && ((d >> 26) & 63) && ((d >> 26) & 63) != 21 && ((d >> 26) & 63) != 30) {
+         r = -EINVAL_LINUX;
+         break;
+       }
++      // (after that one, as Linux checks: flags of ~0 are EINVAL)
++      if ((d & 3) == 3 && (d & ~(u64)(0x3 | 0x10 | 0x20 | 0x40 | 0x100 | 0x800 | 0x1000 | 0x2000 | 0x4000 |
++                                      0x8000 | 0x10000 | 0x20000 | 0x40000 | 0x100000 | 0x4000000 | (0x3fu << 26)))) {
++        r = -EOPNOTSUPP_LINUX;
++        break;
++      }
+       if (d & 0x10) ShiroBusDrop(m, a, b);  // (MAP_FIXED: what it replaces)
+       if ((d & 0x20) || (i64)e < 0) return false;
+       r = ShiroMmapFile(m, a, b, c, d, e, f);  // SysMmap/SysMprotect take mmap_lock
+-- 
+2.43.0
+

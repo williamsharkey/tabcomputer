@@ -1,0 +1,124 @@
+From bc78ddfa340c5e78a00f0807520d0b801e8ebac8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 22:00:48 +0000
+Subject: [PATCH] Shiro: a read of a regular file is whole, past a chunk;
+ mremap of a file's shared mapping maps the file again; a mapping's write-back
+ stops at the file's end
+
+---
+ blink/shiro.inc | 64 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 64 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 9d27f77..fcf15a8 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -416,6 +416,8 @@ static int ShiroDirfd(i64 fd) {
+ 
+ // ── read / write ─────────────────────────────────────────────────────────
+ 
++static i64 ShiroStatAt(struct Machine *, int, i64, i64, int, u8 *);
++
+ static i64 ShiroRead(struct Machine *m, int fd, i64 addr, u64 len) {
+   i64 r;
+   u8 *buf;
+@@ -424,6 +426,22 @@ static i64 ShiroRead(struct Machine *m, int fd, i64 addr, u64 len) {
+   buf = (u8 *)ShiroAlloc(m, n);
+   r = ShiroCall(m, 0, A12(fd, n), buf, 0, n, true, true);
+   if (r > 0 && CopyToUserWrite(m, addr, buf, r) == -1) return -EFAULT_LINUX;
++  // More than a chunk from a regular file: all of it, as Linux reads one
++  // (a pipe or socket gives what it has). LTP mmap21 reads 4 MiB at once.
++  if (r == n && len > (u64)n) {
++    u8 st[144];
++    i64 done = r;
++    if (ShiroStatAt(m, fd, 0, 0, 0x1000, st) < 0 || (Read32(st + 24) & 0170000) != 0100000) return r;
++    while ((u64)done < len) {
++      n = MIN(len - done, (u64)g_shiro_chunk);
++      r = ShiroCall(m, 0, A12(fd, n), buf, 0, n, true, false);
++      if (r <= 0) break;
++      if (CopyToUserWrite(m, addr + done, buf, r) == -1) break;
++      done += r;
++      if (r < n) break;
++    }
++    return done;
++  }
+   return r;
+ }
+ 
+@@ -2584,6 +2602,8 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_cpulimit(void) { return 1; }
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_procbits(void) { return 1; }
+ // 0517: inotify goes to the kernel
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_inotify(void) { return 1; }
++// 0518: whole reads of regular files, mremap of a file's shared mapping, write-back to the file's end
++EMSCRIPTEN_KEEPALIVE int blink_shiro_mapfile(void) { return 1; }
+ 
+ // the same with the signal's siginfo (the kernel's call 1030, made as `pid`)
+ EMSCRIPTEN_KEEPALIVE void blink_shiro_signal_pid_info(int pid, int sig, int w0, int w1, int w2,
+@@ -3368,6 +3388,10 @@ static void ShiroWriteBack(struct Machine *m, struct ShiroSharedMap *s, i64 addr
+   i64 hi = MIN(ROUNDUP(addr + size - s->addr, kShiroBlk), s->size);
+   bool insyscall = m->insyscall;
+   int rc;
++  u8 st[144];
++  // nothing past the file's end goes to it: what a page holds beyond it is
++  // the mapping's alone, as on Linux (LTP mmap01)
++  if (ShiroStatAt(m, s->fd, 0, 0, 0x1000, st) >= 0) hi = MIN(hi, (i64)Read64(st + 48) - s->off);
+   lo &= -kShiroBlk;
+   for (o = lo; buf && o < hi; o += n) {
+     int n2, i, j;
+@@ -3428,6 +3452,43 @@ static void ShiroSyncMaps(struct Machine *m, i64 addr, i64 size, bool drop) {
+   UNLOCK(&g_shiro_maps_lock);
+ }
+ 
++static void ShiroBusDrop(struct Machine *, i64, i64);
++static i64 ShiroMmapFile(struct Machine *, i64, u64, int, int, int, i64);
++
++// mremap of a whole MAP_SHARED mapping of a file: what it holds goes back
++// to the file, then the file is mapped again at the new size (in place when
++// there's room, else where MREMAP_MAYMOVE or MREMAP_FIXED says), so the
++// pages it gained are the file's and are written back too (LTP mremap01:
++// Blink's own mremap gives anonymous pages). SHIRO_NOT_REMOTE: not one.
++static i64 ShiroMremapFile(struct Machine *m, i64 old, u64 osz, u64 nsz, int flags, i64 naddr) {
++  struct ShiroSharedMap *sm;
++  i64 off = 0, target, r;
++  int kfd = -1, prot, mflags = 1;  // MAP_SHARED
++  u64 entry;
++  if (flags & ~3) return SHIRO_NOT_REMOTE;  // (Blink's checks answer)
++  LOCK(&g_shiro_maps_lock);
++  for (sm = g_shiro_maps; sm; sm = sm->next) {
++    if (sm->sys == m->system && sm->addr == old && (u64)sm->size == ROUNDUP(osz, 4096)) break;
++  }
++  if (sm) kfd = (int)KS(m, 32, A12(sm->fd)), off = sm->off;  // dup: munmap closes its own
++  UNLOCK(&g_shiro_maps_lock);
++  if (!sm) return SHIRO_NOT_REMOTE;
++  if (kfd < 0) return kfd;
++  entry = PeekPte(m->system, old);
++  prot = (entry & PAGE_U ? 1 : 0) | (entry & (PAGE_RW | PAGE_COWRW) ? 2 : 0) | (entry & PAGE_XD ? 0 : 4);
++  nsz = ROUNDUP(nsz, 4096), osz = ROUNDUP(osz, 4096);
++  if (flags & 2) target = naddr, mflags |= 0x10;  // MREMAP_FIXED
++  else if (nsz <= osz || IsFullyUnmapped(m->system, old + osz, nsz - osz)) target = old, mflags |= 0x10;
++  else if (flags & 1) target = 0;  // MREMAP_MAYMOVE
++  else { KS(m, 3, A12(kfd)); return -ENOMEM_LINUX; }
++  ShiroSyncMaps(m, old, osz, true);
++  ShiroBusDrop(m, old, osz);
++  if (SysMunmap(m, old, osz) == -1) { r = ShiroErr(); KS(m, 3, A12(kfd)); return r; }
++  r = ShiroMmapFile(m, target, nsz, prot, mflags, kfd, off);
++  KS(m, 3, A12(kfd));
++  return r;
++}
++
+ // Does process `pid` exist? (the kernel's kill(pid, 0): only ESRCH says no)
+ bool ShiroPidExists(struct Machine *m, int pid) {
+   return KS(m, 62, A12(pid, 0)) != -ESRCH_LINUX;
+@@ -4878,6 +4939,9 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       if (g_shiro_maps) ShiroSyncMaps(m, a, b, true);
+       if (g_shiro_remote) ShiroRemoteDrop(m, m->system->pid, a, b);
+       return false;
++    case 0x019:                                                       // mremap
++      if (!g_shiro_maps || (r = ShiroMremapFile(m, a, b, c, d, e)) == SHIRO_NOT_REMOTE) return false;
++      break;
+     case 0x01A:                                                       // msync
+       if (g_shiro_maps) ShiroSyncMaps(m, a, b, false);
+       r = 0;
+-- 
+2.43.0
+

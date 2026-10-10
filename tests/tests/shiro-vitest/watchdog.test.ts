@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   noteLag, noteLongTask, diagnostics, formatDiagnostics, clearWatchdog, clearActive,
-  commandStarted, commandEnded, activeCommands, snapshot, LAG_RECORD_MS, STALL_MS,
+  commandStarted, commandEnded, activeCommands, snapshot, LAG_RECORD_MS, STALL_MS, abortForeground,
 } from '@shiro/watchdog';
 import { createTestShell } from './helpers';
 
@@ -84,4 +84,17 @@ describe('freeze watchdog', () => {
     expect(s.active.map((a) => a.line)).toEqual(['while true; do :; done', 'source ~/.profile']);
     expect(s.recent).toContain('source ~/.profile');
   });
+
+  it('abortForeground stops a running shell command like Ctrl-C', async () => {
+    const { shell } = await createTestShell();
+    const t0 = Date.now();
+    const running = shell.execute('slow() { sleep 20; }; slow; echo after', () => {});
+    await new Promise((r) => setTimeout(r, 200));
+    const hit = abortForeground('test');
+    expect(hit.join('\n')).toContain('slow() { sleep 20; }');
+    const code = await running;
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(code).toBe(130);
+    expect(diagnostics({ kind: 'note' }).events.at(-1)!.text).toMatch(/watchdog abort \(test\)/);
+  }, 30_000);
 });

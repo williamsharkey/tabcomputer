@@ -3,6 +3,7 @@ import { Shell } from '../shell';
 import { createRemotePanel, type RemotePanel, type LogType } from '../remote-panel';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { RelayChannel, newRelayInfo, type RelayInfo } from '../remote-relay';
+import { workerRelay } from '../watchdog';
 
 // LocalStorage key for persisting remote session code across page reloads
 const REMOTE_CODE_KEY = 'tabcomputer-remote-code';
@@ -306,6 +307,14 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         return JSON.stringify({ type: 'console_result', ...result, requestId });
       }
 
+      case 'abort': {
+        // Like Ctrl-C in every terminal (the watchdog worker handles this one
+        // itself when it hosts the relay, so it works while the page is frozen)
+        const { abortForeground } = await import('../watchdog');
+        const hit = abortForeground('remote request');
+        return JSON.stringify({ type: 'abort_result', requested: true, hit, requestId });
+      }
+
       case 'diag': {
         // Why is the page slow or frozen: event-loop lag, long tasks, heap,
         // commands in flight, the watchdog's events (or the previous load's
@@ -317,7 +326,10 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         let procs: string[] = [];
         try { procs = tc?.processTable?.list().slice(0, 200).map((p: any) => `${p.pid} ${p.status} ${String(p.command).slice(0, 80)}`) ?? []; } catch { /* source threw */ }
         const pendingWrites = tc?.fs?.pendingWrites;
-        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, requestId });
+        // Kernel processes: syscalls in progress, sockets, pipes (kernel: false skips)
+        const kernel = cmd.kernel === false ? undefined
+          : (await import('../kernel-diag')).kernelDiagnostics({ grep: cmd.procGrep, limit: cmd.procLimit });
+        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, kernel, requestId });
       }
 
       case 'eval': {
@@ -675,10 +687,9 @@ function switchToRelay(session: RemoteSession) {
   console.log('[remote] Peer asked for the HTTPS relay');
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
   session.transport = 'relay';
-  const relay = new RelayChannel({
-    base: SIGNALING_URL, info: session.relay!, code: session.code, as: 'tab',
-    log: (m) => console.warn(`[remote] ${m}`),
-  });
+  // In the watchdog worker when it runs: `diag` then answers while this page is frozen
+  const opts = { base: SIGNALING_URL, info: session.relay!, code: session.code };
+  const relay = workerRelay(opts) ?? new RelayChannel({ ...opts, as: 'tab', log: (m) => console.warn(`[remote] ${m}`) });
   wireSession(session, relay);
 }
 

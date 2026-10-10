@@ -1231,6 +1231,8 @@ export class Kernel {
 
   /** Named pipes in use: canonical path → the pipe all opens of it share (until every end closes). */
   private fifos = new Map<string, Pipe>();
+  /** Named pipes open now, for diagnostics: path, readers, writers, bytes, waiters */
+  fifoInfo() { return [...this.fifos].map(([path, p]) => ({ path, ...p.debugInfo() })); }
 
   /**
    * open() of a named pipe (POSIX): readers and writers of the same path

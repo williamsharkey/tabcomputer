@@ -23,7 +23,7 @@ import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
 import { redirectWordSpans } from './shell-redirect-words';
-import { commandStarted, commandEnded } from './watchdog';
+import { commandStarted, commandEnded, watchdogCheckpoint } from './watchdog';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -719,6 +719,7 @@ let lastYield = 0;
  * each other) otherwise never give the page a turn. Cheap when not due.
  */
 async function maybeYield(): Promise<void> {
+  watchdogCheckpoint(); // the watchdog's kill switch (an outside agent, or `watchdog abort-after`)
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
   if (now - lastYield < 30) return;
   await yieldToEventLoop();
@@ -1801,7 +1802,7 @@ export class Shell {
     this.activeTerminal = terminalOverride;
     this.inCommand = 0;
     // In flight for the watchdog: a freeze report names the innermost line
-    const watch = commandStarted(line, this.watchDepth++);
+    const watch = commandStarted(line, this.watchDepth++, this);
     let status: number | undefined;
     try {
       return status = await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);

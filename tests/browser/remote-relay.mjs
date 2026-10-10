@@ -8,6 +8,7 @@
 // 2. A 4 s freeze shows up in diag as a stall, with the command that froze.
 // 3. A page frozen for good and then closed leaves a wedge record that the next
 //    load reports (`watchdog --prev`, previousWedge).
+// 4. `watchdog --kernel` lists kernel processes; `watchdog off` holds across a load.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -110,6 +111,15 @@ const prev = JSON.parse((await sh(next, 'watchdog --json -k wedge')).out);
 check(prev.previousWedge && prev.previousWedge.seenAt - prev.previousWedge.since >= 3000, `the next load found the wedge record (${prev.previousWedge ? Math.round((prev.previousWedge.seenAt - prev.previousWedge.since) / 1000) + 's' : 'none'})`);
 check(prev.previousWedge?.snapshot?.active?.some((a) => a.line.includes('for (;;)')), `…naming what was running (${prev.previousWedge?.snapshot?.active?.[0]?.line})`);
 check((await sh(next, 'watchdog --prev -n 400')).out.includes('js-eval'), 'watchdog --prev shows the previous load\'s commands');
+// 4. The kernel side of diag, and the kill switch
+const kd = JSON.parse((await sh(next, 'watchdog --kernel')).out);
+check(kd && kd.total > 0 && kd.procs.every((p) => Array.isArray(p.fds)), `watchdog --kernel lists kernel processes (${kd?.total})`);
+await sh(next, 'watchdog off');
+const off = await boot();
+check(await off.evaluate(() => !window.__tabcomputerWatchdog), 'watchdog off: not installed on the next load');
+check((await sh(off, 'watchdog')).out.includes('not running'), '…and the command says so');
+await sh(off, 'watchdog on');
+await off.close();
 await sh(next, 'remote stop');
 
 await browser.close();

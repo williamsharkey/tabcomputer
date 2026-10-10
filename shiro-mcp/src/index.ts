@@ -282,7 +282,10 @@ A frozen page can't answer until it recovers; if this times out, retry after a r
         limit: { type: "number", description: "Newest events returned. Default 200, max 1500" },
         since: { type: "number", description: "Only events at/after this ms epoch; negative = that many ms ago" },
         kind: { type: "string", description: "Comma list of kinds: lag,stall,longtask,loaf,cmd,cmd-end,wedge,note" },
-        previous: { type: "boolean", description: "Events saved by the previous page load instead" }
+        previous: { type: "boolean", description: "Events saved by the previous page load instead" },
+        kernel: { type: "boolean", description: "Include kernel processes (default true): per process state, syscalls in progress ([nr, args…] oldest first, x86-64 numbers) and their age, kernelMs, engine sleeps, signals, threads; per fd: sockets (state, rxLen queued unread, rxEof, shutdowns, soError, relay WebSocket readyState/bufferedAmount/unacked) and pipes (readers, writers, bytes, waiters); plus open named pipes (fifos)" },
+        procGrep: { type: "string", description: "Only kernel processes whose command line matches this regex (e.g. 'claude|node')" },
+        procLimit: { type: "number", description: "Max kernel processes. Default 100" }
       }
     }
   },
@@ -747,7 +750,8 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "diag": {
-      const result: any = await sendCommand({ type: "diag", limit: args.limit, since: args.since, kind: args.kind, previous: args.previous });
+      const result: any = await sendCommand({ type: "diag", limit: args.limit, since: args.since, kind: args.kind, previous: args.previous,
+        kernel: args.kernel, procGrep: args.procGrep, procLimit: args.procLimit });
       attachUserMessages(result);
       return result;
     }

@@ -303,6 +303,8 @@ interface StreamPeer {
   consumed(n: number): void;
   /** Bytes accepted by send() and not yet handed to the network / peer reader. */
   buffered(): number;
+  /** State for diagnostics (the remote `diag` request) */
+  debugInfo?(): Record<string, unknown>;
 }
 
 class LoopbackPeer implements StreamPeer {
@@ -384,6 +386,12 @@ class RelayPeer implements StreamPeer {
     }
   }
   buffered() { return this.ws.bufferedAmount; }
+  debugInfo() {
+    // The relay URL may carry a sign-in token: keep only origin and path
+    let url = '';
+    try { const u = new URL(this.ws.url); url = u.origin + u.pathname; } catch { /* not a URL */ }
+    return { kind: 'relay', readyState: this.ws.readyState, bufferedAmount: this.ws.bufferedAmount, unacked: this.unacked, ackEvery: this.stack.config.ackEvery, draining: !!this.drainTimer, url };
+  }
   // WebSocket has no drain event: watch bufferedAmount while data is queued so
   // writers blocked on SNDBUF and POLLOUT waiters wake up.
   private startDrain() {
@@ -465,6 +473,17 @@ export class KSocket implements OpenFile {
   /** @internal */ _error(errno: number) { this.soError = errno; this.q.notify(); }
   /** @internal */ _peerGone() { this.wrShut = true; this.q.notify(); }
   /** @internal */ _wake() { this.q.notify(); }
+  /** State for diagnostics (the remote `diag` request): why a reader or poller isn't woken */
+  debugInfo(): Record<string, unknown> {
+    const addr = (a: SockAddr | null) => (a ? JSON.stringify(a) : null);
+    return {
+      type: this.type, state: this.state, local: addr(this.local), remote: addr(this.remote),
+      rxLen: this.rxLen, rxChunks: this.rx.length, rxEof: this.rxEof, rdShut: this.rdShut, wrShut: this.wrShut,
+      soError: this.soError, everConnected: this.everConnected, backlog: this.backlog.length,
+      peer: this.peer ? (this.peer.debugInfo?.() ?? { kind: this.peer.constructor.name }) : null,
+      buffered: this.peer?.buffered() ?? 0,
+    };
+  }
   /** @internal */ _rxBytes() { return this.rxLen + (this.messages ? this.rx.length * MSG_OVERHEAD : 0); }
   /** @internal */ _attach(peer: StreamPeer, local: SockAddr, remote: SockAddr) {
     this.peer = peer; this.local = local; this.remote = remote;

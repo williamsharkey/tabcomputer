@@ -361,8 +361,14 @@ function idbTake(before: number): Promise<WedgeRecord | null> {
 
 // ── install ───────────────────────────────────────────────────────────────
 
-function persist(): void {
+// localStorage writes are synchronous: at most one every PERSIST_MIN_MS, except at pagehide
+const PERSIST_MIN_MS = 3000;
+let lastPersist = 0;
+function persist(force = false): void {
   if (!dirty || safe) return;
+  const now = Date.now();
+  if (!force && now - lastPersist < PERSIST_MIN_MS) return;
+  lastPersist = now;
   dirty = false;
   try { localStorage.setItem(PERSIST_KEY, JSON.stringify({ pageStart, events: events.slice(-PERSIST_EVENTS) })); } catch { /* quota */ }
 }
@@ -373,6 +379,7 @@ function install(): void {
   let wasHidden = document.visibilityState === 'hidden';
   let worker: Worker | null = null;
   let lastSnap = 0;
+  let lastHidden = wasHidden;
   setInterval(() => {
     const now = performance.now();
     const hidden = document.visibilityState === 'hidden';
@@ -384,10 +391,10 @@ function install(): void {
     }
     wasHidden = hidden;
     if (worker) {
+      // One heartbeat a second (sooner when visibility changes). The snapshot
+      // in it is what the worker saves if the page stops answering.
       const t = Date.now();
-      // The snapshot is what the worker saves if the page stops answering
-      if (t - lastSnap >= 1000) { lastSnap = t; worker.postMessage({ snap: snapshot(t), hidden }); }
-      else worker.postMessage({ hidden });
+      if (t - lastSnap >= 1000 || hidden !== lastHidden) { lastSnap = t; lastHidden = hidden; worker.postMessage({ snap: snapshot(t), hidden }); }
     }
   }, TICK_MS);
 
@@ -420,7 +427,7 @@ function install(): void {
   }, MEM_EVERY_MS);
 
   if (!safe) setInterval(persist, PERSIST_EVERY_MS);
-  addEventListener('pagehide', persist);
+  addEventListener('pagehide', () => persist(true));
 
   try {
     const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
@@ -448,7 +455,19 @@ function install(): void {
   }
 }
 
-if (typeof window !== 'undefined' && typeof document !== 'undefined' && !(window as any).__tabcomputerWatchdog) {
-  try { install(); } catch { /* never break boot */ }
+/** Kill switch: `watchdog off` (localStorage, honored in safe mode too) or ?watchdog=0 for one load */
+export const WATCHDOG_OFF_KEY = 'tabcomputer-watchdog-off';
+export function watchdogDisabled(): string | null {
+  try {
+    if (new URLSearchParams(location.search).get('watchdog') === '0') return '?watchdog=0';
+    if (localStorage.getItem(WATCHDOG_OFF_KEY) === '1') return '`watchdog off`';
+  } catch { /* no storage */ }
+  return null;
+}
+let installed = false;
+export const watchdogInstalled = () => installed;
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && !(window as any).__tabcomputerWatchdog && !watchdogDisabled()) {
+  try { install(); installed = true; } catch { /* never break boot */ }
   (window as any).__tabcomputerWatchdog = { diagnostics, format: formatDiagnostics, clear: clearWatchdog };
 }

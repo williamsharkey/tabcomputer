@@ -317,7 +317,10 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         let procs: string[] = [];
         try { procs = tc?.processTable?.list().slice(0, 200).map((p: any) => `${p.pid} ${p.status} ${String(p.command).slice(0, 80)}`) ?? []; } catch { /* source threw */ }
         const pendingWrites = tc?.fs?.pendingWrites;
-        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, requestId });
+        // Kernel processes: syscalls in progress, sockets, pipes (kernel: false skips)
+        const kernel = cmd.kernel === false ? undefined
+          : (await import('../kernel-diag')).kernelDiagnostics({ grep: cmd.procGrep, limit: cmd.procLimit });
+        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, kernel, requestId });
       }
 
       case 'eval': {

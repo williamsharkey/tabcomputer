@@ -57,6 +57,11 @@ export class Pipe {
   }
 
   get available(): number { return this.count; }
+  /** State for diagnostics (the remote `diag` request) */
+  debugInfo() {
+    return { ino: this.ino, readers: this.readers, writers: this.writers, available: this.count, capacity: this.capacity,
+      readWaiters: this.readWaiters.size, writeWaiters: this.writeWaiters.size, openWaiters: this.openWaiters.size };
+  }
   get space(): number { return this.capacity - this.count; }
   /**
    * Linux keeps a pipe's data in page-sized buffers and calls it writable

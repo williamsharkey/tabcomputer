@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import type { Plugin } from 'vite';
 
@@ -33,6 +33,52 @@ export function hashEngineWasm(): Plugin {
         }
       }
       writeFileSync(path.join(engines, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+    },
+  };
+}
+
+/** The files one Blink engine version is made of (host.mjs loads blink.mjs, which loads blink.wasm and itself again for each guest thread). */
+const BLINK_FILES = ['host.mjs', 'blink.mjs', 'blink.wasm'];
+
+/** engines/blink/v-<sha of BLINK_FILES>/ for the engine in public/, or '' without one. */
+function blinkVersionDir(root: string): string {
+  const dir = path.join(root, 'public', 'engines', 'blink');
+  if (!BLINK_FILES.every((f) => existsSync(path.join(dir, f)))) return '';
+  const h = createHash('sha256');
+  for (const f of BLINK_FILES) h.update(f).update(readFileSync(path.join(dir, f)));
+  return `engines/blink/v-${h.digest('hex').slice(0, 12)}/`;
+}
+
+/**
+ * A copy of the Blink engine in a directory named by its content
+ * (dist/engines/blink/v-<sha>/), and that directory compiled into the page as
+ * __BLINK_ENGINE_DIR__. A page then runs only the engine it was built with:
+ * blink.mjs starts each guest thread's worker from `new URL("blink.mjs",
+ * import.meta.url)`, so with plain names a deploy during a long session gave
+ * new threads the new blink.mjs next to the old one, and every x86 process
+ * trapped with "func is not a function" (#18). release.sh keeps old versions.
+ */
+export function versionBlinkEngine(): Plugin {
+  let root = process.cwd();
+  let outDir = 'dist';
+  let dir = '';
+  return {
+    name: 'version-blink-engine',
+    apply: 'build',
+    config(config) {
+      root = path.resolve(config.root ?? process.cwd());
+      dir = blinkVersionDir(root);
+      return { define: { __BLINK_ENGINE_DIR__: JSON.stringify(dir) } };
+    },
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    closeBundle() {
+      if (!dir) return;
+      const from = path.join(outDir, 'engines', 'blink');
+      const to = path.join(outDir, dir);
+      mkdirSync(to, { recursive: true });
+      for (const f of BLINK_FILES) copyFileSync(path.join(from, f), path.join(to, f));
     },
   };
 }

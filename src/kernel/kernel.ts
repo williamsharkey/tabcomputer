@@ -775,9 +775,15 @@ export class Kernel {
   }
 
   private scheduleInitReap(proc: Process): void {
+    // The timer holds the process weakly: one its runner reaped at once (the
+    // usual case) goes now with its worker and channel, not 30 s later (an
+    // agent starting `#!/usr/bin/env node` scripts kept hundreds alive)
+    const ref = new WeakRef(proc);
+    const pid = proc.pid;
     const t = setTimeout(() => {
-      if (proc.ppid === 1 && this.procs.get(proc.pid) === proc && proc.state === 'zombie') {
-        this.procs.delete(proc.pid);
+      const proc = ref.deref();
+      if (proc && proc.ppid === 1 && this.procs.get(pid) === proc && proc.state === 'zombie') {
+        this.procs.delete(pid);
         this.notify();
       }
     }, this.initReapDelayMs);

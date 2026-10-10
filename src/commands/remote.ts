@@ -3,6 +3,7 @@ import { Shell } from '../shell';
 import { createRemotePanel, type RemotePanel, type LogType } from '../remote-panel';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { RelayChannel, newRelayInfo, type RelayInfo } from '../remote-relay';
+import { workerRelay } from '../watchdog';
 
 // LocalStorage key for persisting remote session code across page reloads
 const REMOTE_CODE_KEY = 'tabcomputer-remote-code';
@@ -678,10 +679,9 @@ function switchToRelay(session: RemoteSession) {
   console.log('[remote] Peer asked for the HTTPS relay');
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
   session.transport = 'relay';
-  const relay = new RelayChannel({
-    base: SIGNALING_URL, info: session.relay!, code: session.code, as: 'tab',
-    log: (m) => console.warn(`[remote] ${m}`),
-  });
+  // In the watchdog worker when it runs: `diag` then answers while this page is frozen
+  const opts = { base: SIGNALING_URL, info: session.relay!, code: session.code };
+  const relay = workerRelay(opts) ?? new RelayChannel({ ...opts, as: 'tab', log: (m) => console.warn(`[remote] ${m}`) });
   wireSession(session, relay);
 }
 

@@ -26,6 +26,8 @@
  */
 
 import { isSafeMode } from './safe-mode';
+import { kernelDiagnostics } from './kernel-diag';
+import type { RelayInfo } from './remote-relay';
 
 export type WatchdogKind = 'lag' | 'longtask' | 'loaf' | 'cmd' | 'cmd-end' | 'stall' | 'wedge' | 'note';
 
@@ -87,7 +89,7 @@ const MEM_SERIES = 120;
 const PERSIST_KEY = 'tabcomputer-watchdog';
 const PERSIST_EVENTS = 400;
 const PERSIST_EVERY_MS = 5000;
-const IDB_NAME = 'tabcomputer-watchdog';
+const IDB_NAME = 'tabcomputer-watchdog'; // = WATCHDOG_IDB in watchdog-worker.ts
 
 const events: WatchdogEvent[] = [];
 let dropped = 0;
@@ -177,13 +179,60 @@ function heap(): { usedMB?: number; totalMB?: number; limitMB?: number } {
 }
 
 export function snapshot(now = Date.now()): Snapshot {
+  // While an outside agent is attached over the relay, the worker may have to
+  // answer `diag` for a frozen page: give it the kernel's state every 5 s
+  if (relayProxy && now - lastKernelAt >= 5000) {
+    lastKernelAt = now;
+    try { lastKernel = kernelDiagnostics({ limit: 30 }); } catch { lastKernel = null; }
+  }
   return {
     t: now,
     active: activeCommands(now).slice(0, 8).map(({ line, ms }) => ({ line, ms })),
     lastLagMs: lastLag,
     heapMB: heap().usedMB,
     recent: recent.slice(-5),
+    ...(relayProxy && lastKernel ? { kernel: lastKernel } : {}),
   };
+}
+let lastKernelAt = 0;
+let lastKernel: Record<string, unknown> | null = null;
+
+/** The relay as hosted by the worker, seen from the page (remote.ts wires it like a data channel) */
+export interface WorkerRelay {
+  readyState: string;
+  onopen: (() => void) | null;
+  onclose: (() => void) | null;
+  onmessage: ((ev: { data: string }) => void) | null;
+  send(text: string): void;
+  close(): void;
+}
+let relayProxy: WorkerRelay | null = null;
+
+/**
+ * Run a remote session's relay in the watchdog worker, so `diag` is answered
+ * even while this page is frozen. Null when the worker isn't running (then
+ * the caller runs the relay in the page).
+ */
+export function workerRelay(opts: { base: string; info: RelayInfo; code: string }): WorkerRelay | null {
+  const w = watchWorker;
+  if (!w || !workerAlive) return null;
+  if (relayProxy) { const old = relayProxy; relayProxy = null; old.readyState = 'closed'; }
+  const proxy: WorkerRelay = {
+    readyState: 'connecting', onopen: null, onclose: null, onmessage: null,
+    send(text) {
+      if (proxy.readyState !== 'open') throw new Error('relay channel is not open');
+      w.postMessage({ relaySend: text });
+    },
+    close() {
+      if (proxy.readyState === 'closed') return;
+      proxy.readyState = 'closed';
+      if (relayProxy === proxy) { relayProxy = null; w.postMessage({ relayStop: true }); }
+      proxy.onclose?.();
+    },
+  };
+  relayProxy = proxy;
+  w.postMessage({ relayStart: opts });
+  return proxy;
 }
 
 function prune(ring: [number, number][], now: number) {
@@ -294,46 +343,7 @@ export function clearWatchdog(): void {
 /** Reset the in-flight table (tests). */
 export function clearActive(): void { active.clear(); }
 
-// ── IndexedDB: the worker's wedge record ─────────────────────────────────
-
-const WORKER_SOURCE = `
-const WEDGE_MS = ${WEDGE_MS};
-let lastBeat = Date.now(), snap = null, hidden = false, wedged = false;
-let db = null;
-function open() {
-  return db || (db = new Promise((res, rej) => {
-    const r = indexedDB.open('${IDB_NAME}', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('kv');
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  }));
-}
-async function put(v) {
-  try {
-    const d = await open();
-    const tx = d.transaction('kv', 'readwrite');
-    v === null ? tx.objectStore('kv').delete('wedge') : tx.objectStore('kv').put(v, 'wedge');
-  } catch {}
-}
-onmessage = (e) => {
-  const m = e.data;
-  if (m.hidden !== undefined) hidden = m.hidden;
-  if (m.snap) snap = m.snap;
-  const now = Date.now();
-  if (wedged) {
-    wedged = false;
-    put(null);
-    postMessage({ stall: now - lastBeat, since: lastBeat });
-  }
-  lastBeat = now;
-};
-setInterval(() => {
-  const now = Date.now();
-  if (hidden || now - lastBeat < WEDGE_MS) return;
-  wedged = true;
-  put({ since: lastBeat, seenAt: now, snapshot: snap });
-}, 1000);
-`;
+// ── IndexedDB: the worker's wedge record (src/watchdog-worker.ts writes it) ──
 
 /** Take a wedge record left by an earlier load (one from this load is left alone). */
 function idbTake(before: number): Promise<WedgeRecord | null> {
@@ -430,13 +440,14 @@ function install(): void {
   addEventListener('pagehide', () => persist(true));
 
   try {
-    const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
-    worker = watchWorker = new Worker(url);
-    URL.revokeObjectURL(url);
+    worker = watchWorker = new Worker(new URL('./watchdog-worker.ts', import.meta.url), { type: 'module', name: 'watchdog' });
     workerAlive = true;
     worker.onmessage = (e) => {
-      const { stall, since } = e.data || {};
-      if (stall) recordEvent({ t: since, kind: 'note', ms: stall, text: `worker saw the page frozen for ${Math.round(stall / 1000)}s` });
+      const m = e.data || {};
+      if (m.stall) recordEvent({ t: m.since, kind: 'note', ms: m.stall, text: `worker saw the page frozen for ${Math.round(m.stall / 1000)}s` });
+      else if (m.relayOpen) { if (relayProxy) { relayProxy.readyState = 'open'; relayProxy.onopen?.(); } }
+      else if (m.relayMessage !== undefined) relayProxy?.onmessage?.({ data: m.relayMessage });
+      else if (m.relayClose) { const p = relayProxy; relayProxy = null; if (p) { p.readyState = 'closed'; p.onclose?.(); } }
     };
     worker.onerror = () => { workerAlive = false; };
   } catch { worker = null; }

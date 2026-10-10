@@ -5,7 +5,8 @@
 //   node tests/browser/remote-relay.mjs [http://localhost:5299/]
 // 1. `remote start` in the page offers a relay mailbox; shiro-mcp (forced to
 //    the relay, as in a container without UDP) connects, runs exec and diag.
-// 2. A 4 s freeze shows up in diag as a stall, with the command that froze.
+// 2. A 4 s freeze shows up in diag as a stall, with the command that froze;
+//    during a 10 s freeze the watchdog worker answers diag itself.
 // 3. A page frozen for good and then closed leaves a wedge record that the next
 //    load reports (`watchdog --prev`, previousWedge).
 // 4. `watchdog --kernel` lists kernel processes; `watchdog off` holds across a load.
@@ -96,6 +97,17 @@ check(stall && stall.ms >= 3000, `diag shows the stall (${stall?.ms} ms)`);
 check(stall?.active?.some((a) => a.includes('js-eval')), `…with the command in flight (${stall?.active?.[0]})`);
 check(diag.events?.some((e) => e.kind === 'note' && /worker saw the page frozen/.test(e.text)), 'the worker saw the freeze too');
 check(typeof diag.lag?.maxMs1m === 'number' && Array.isArray(diag.procs), 'diag has lag and the process table');
+
+// 2b. While the page is frozen, the watchdog worker (which hosts the relay) answers diag
+page.evaluate(() => window.__tabcomputer.shell.execute(`js-eval 'const t = Date.now(); while (Date.now() - t < 10000) {}'`, () => {})).catch(() => {});
+await wait(1000);
+const t0 = Date.now();
+const frozen = await tool('diag', {}).catch((e) => ({ error: e.message }));
+check(frozen.frozen === true && Date.now() - t0 < 8000, `diag answers during a freeze (${frozen.error ?? `frozen ${frozen.frozenMs} ms, in ${Date.now() - t0} ms`})`);
+check(frozen.snapshot?.active?.some((a) => a.line.includes('js-eval')), `…naming what is running (${frozen.snapshot?.active?.[0]?.line})`);
+await wait(10000);
+const after = await tool('diag', { kind: 'stall' }).catch((e) => ({ error: e.message }));
+check(!after.frozen && after.events?.length > 0, 'the page answers diag itself again afterwards');
 mcp.kill();
 
 // 3. Frozen for good, then closed: the next load reports it

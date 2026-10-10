@@ -583,20 +583,12 @@
    ]
   },
   "pipeline": {
-   "pass": 22,
+   "pass": 24,
    "total": 26,
    "failures": [
     {
      "i": 10,
      "name": "|&"
-    },
-    {
-     "i": 17,
-     "name": "! is not a command"
-    },
-    {
-     "i": 18,
-     "name": "Evaluation of argv[0] in pipeline occurs in child"
     },
     {
      "i": 22,
@@ -605,32 +597,14 @@
    ]
   },
   "exit-status": {
-   "pass": 8,
+   "pass": 11,
    "total": 11,
-   "failures": [
-    {
-     "i": 8,
-     "name": "If subshell false -- exit code is propagated in a weird way (strict_argv prevents)"
-    },
-    {
-     "i": 9,
-     "name": "Exit code when command sub evaluates to empty str, e.g. `false` (#2416)"
-    },
-    {
-     "i": 10,
-     "name": "More test cases with empty argv"
-    }
-   ]
+   "failures": []
   },
   "errexit": {
-   "pass": 34,
+   "pass": 35,
    "total": 35,
-   "failures": [
-    {
-     "i": 26,
-     "name": "pipeline process respects errexit"
-    }
-   ]
+   "failures": []
   },
   "subshell": {
    "pass": 2,

@@ -1,5 +1,5 @@
 import { Command, CommandContext } from './index';
-import { quoteArgsForShell, terminalForCommand } from '../shell';
+import { quoteArgsForShell } from '../shell';
 import { extractTarGzToFS, type FileSystemWriter } from '../utils/tar-utils';
 import { buildTree, binDirOf, binEntries, WASM_ALTERNATES, type BuildResult, type PackageMetadata, type TreeNode, type Wanted } from './npm-tree';
 
@@ -743,15 +743,15 @@ const scriptId = (pkg: PackageJson) => pkg.name ? `${pkg.name}${pkg.version ? '@
 
 /** npm's "> name@version script" lines: before the script's output, which may go to the terminal as it runs */
 function scriptHeader(ctx: CommandContext, text: string): void {
-  const term = (ctx.stdoutIsTTY !== false ? ctx.terminal : undefined) as { writeOutput?: (s: string) => void } | undefined;
+  const term = scriptTerminal(ctx) as { writeOutput?: (s: string) => void } | undefined;
   if (term?.writeOutput) term.writeOutput(text.replace(/\n/g, '\r\n'));
   else if (ctx.streamStdout) ctx.streamStdout(text);
   else ctx.stdout += text;
 }
 
-/** A script's terminal: npm's, not writing on the screen what npm's redirects or pipe take */
+/** A script's terminal: npm's own, when npm's stdout is it (not redirected or piped); else collected */
 function scriptTerminal(ctx: CommandContext): unknown {
-  return ctx.terminal && terminalForCommand(ctx.terminal, ctx);
+  return ctx.terminal && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined;
 }
 
 async function npmUninstall(ctx: CommandContext): Promise<number> {

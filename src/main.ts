@@ -15,6 +15,7 @@ Object.defineProperty(window, '__shiroCapturedMessages', {
 
 import '@xterm/xterm/css/xterm.css';
 import { FileSystem } from './filesystem';
+import { canBlock } from './kernel/channel';
 import { Shell } from './shell';
 import { CommandRegistry, Command } from './commands/index';
 import { registry } from './registry';
@@ -153,6 +154,8 @@ async function main() {
   // Initialize filesystem
   const fs = new FileSystem();
   fs.holdKeyIndex(); // until the first prompt (below)
+  // Node can't run in a Worker here (no SharedArrayBuffer): it runs in the page, reading small files synchronously
+  if (canBlock() !== 'sab') void fs.holdSmallContent();
   await fs.init();
   setActiveFileSystem(fs);
   // Persistent storage (no eviction under storage pressure) once the machine

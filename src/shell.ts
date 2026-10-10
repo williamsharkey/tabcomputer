@@ -2736,6 +2736,7 @@ export class Shell {
         segCount = i + 1;
         // A builtin that captured its output `continue`d here: pipe/redirect it now
         await flushCapture();
+        await maybeYield(); // a long line of builtins lets the page run (and the watchdog's abort in)
 
         // Check for SIGINT (abort)
         if (this.abortController?.signal.aborted) {
@@ -8123,6 +8124,11 @@ export class Shell {
     return results;
   }
 
+  /** Ctrl-C (or the watchdog's abort) reached the command this loop belongs to */
+  private loopAborted(): boolean {
+    return !!(this.abortController ?? this.inheritedAbort)?.signal.aborted;
+  }
+
   private async execWhile(
     input: string, writeStdout: (s: string) => void, writeStderr: (s: string) => void,
     pipeStdin?: string,
@@ -8157,7 +8163,9 @@ export class Shell {
     let status = 0;
     let iter = 0;
     while (iter++ < LOOP_ITERATION_LIMIT) {
-      if (iter % 1000 === 0) await yieldToEventLoop(); // keep the page responsive in long loops
+      // Give the page a turn every 30 ms, whatever an iteration costs; Ctrl-C ends the loop
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       try {
         // Expand vars in condition each iteration (loop vars like $X change)
         const expandedCond = await this.conditionText(parsed.condition, writeStderr);
@@ -8200,7 +8208,8 @@ export class Shell {
       let status = 0;
       let iter = 0;
       while (iter++ < LOOP_ITERATION_LIMIT) {
-        if (iter % 1000 === 0) await yieldToEventLoop();
+        await maybeYield();
+        if (this.loopAborted()) return 130;
         // Evaluate test — 0 means false (stop)
         if (test && this.evalArithmetic(test) === 0) break;
         // Execute body
@@ -8228,6 +8237,8 @@ export class Shell {
       : this.getPositionalArgs();
     let status = 0;
     for (const item of items) {
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       const err = this.setVar(varName, item);
       if (err) {
         writeStderr(`tabcomputer: ${err}\r\n`);

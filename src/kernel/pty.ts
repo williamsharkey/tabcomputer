@@ -372,6 +372,16 @@ export class Pty {
     this.wake();
   }
 
+  /**
+   * What no reader took (finished lines, the line being edited, raw bytes),
+   * removed: type-ahead a job left unread, for the shell to read after it.
+   */
+  takeInput(): Uint8Array {
+    const bytes = [...this.lines.flatMap((l) => l.data), ...this.edit, ...this.rawq];
+    this.flushInput();
+    return Uint8Array.from(bytes);
+  }
+
   flushInput(): void {
     this.rawq = [];
     this.lines = [];

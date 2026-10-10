@@ -344,6 +344,8 @@ class RelayPeer implements StreamPeer {
   private inflight = 0;
   /** The window-full line was logged; again only once in-flight fell to half the window */
   private stalled = false;
+  /** The relay has a window's worth unacked: it has stopped sending until the program reads (diag) */
+  get windowFull(): boolean { return this.inflight >= this.stack.config.relayWindow; }
   private drainTimer: ReturnType<typeof setInterval> | null = null;
   constructor(private ws: WebSocket, private sock: KSocket, private stack: NetStack) {}
 

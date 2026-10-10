@@ -272,18 +272,10 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     const nr = i32[CH_SYSNO];
     const args = Array.from(i32.subarray(CH_ARGS, CH_ARGS + CH_NARGS));
     const target = as ? kernel.procs.get(as) : proc;
-    // (the calling guest thread isn't known here yet: its calls count as the main thread's)
-    const th = target?.thread(target.pid);
-    if (th) { th.syscalls++; th.nr = nr; th.args = args; th.since = Date.now(); }
     // A call the kernel can answer from memory (stat, fstat, getpid, pipe and
     // file I/O that needn't wait) skips the async path, as WASI guests' do
-    let result: number;
-    try {
-      const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
-      result = fast !== undefined ? fast : target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
-    } finally {
-      if (th) th.nr = -1;
-    }
+    const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
+    let result = fast !== undefined ? fast : target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
     if (!as && proc.exiting) return false;
     if (result > 0x7fffffff || result < -0x80000000) {
       i32[CH_ARGS] = Math.floor(result / 0x100000000);

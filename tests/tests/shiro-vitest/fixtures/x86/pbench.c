@@ -166,7 +166,9 @@ static double bench_forkexec(long n) {
 static int timed(const char *mode, double (*fn)(long), long n) {
   if (!n) {
     double target = (getenv("PBENCH_MS") ? atof(getenv("PBENCH_MS")) : 500) * 1e6, t;
-    for (n = 1; (t = fn(n)) < target / 8; n *= 2) {}
+    // each calibration run's per-op cost: shows whether the first calls cost more (warm-up)
+    for (n = 1; (t = fn(n)) < target / 8; n *= 2) printf("calib_%ld=%.1f\n", n, t / n);
+    printf("calib_%ld=%.1f\n", n, t / n);
     n = (long)(n * target / t) + 1;
   }
   result(mode, n, fn(n));

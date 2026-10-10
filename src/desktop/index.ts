@@ -832,9 +832,11 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
           // xterm measured the fallback if the font arrived after it was created
           .then(() => fontsAtBoot ? undefined : useMonoFont(terms)));
       }
-      hold(restoreSession(wm, session, openTerminal).finally(() => {
-        // The main terminal keeps focus (and the menu bar its app name)
-        first.win.focus();
+      let restoredFocus: DesktopWindow | null = null;
+      hold(restoreSession(wm, session, openTerminal).catch(() => null).then((focused) => {
+        // The window that had the focus gets it back (and the menu bar its app name); else the main terminal
+        restoredFocus = focused;
+        (focused ?? first.win).focus();
         trackSession(wm);
       }));
       const reveal = () => {
@@ -845,7 +847,9 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         void root.offsetHeight; // settle those styles while transitions are still off
         root.classList.remove('sd-booting');
         document.getElementById('boot-mark')?.remove();
-        term.term.focus();
+        // the keyboard goes to the focused window (a DOM focus on the main terminal would raise it)
+        if (restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed') restoredFocus.focus();
+        else term.term.focus();
         performance.mark('shiro:desktop:revealed');
         // A first visit gets the tour
         // A first visit gets the welcome (welcome.ts, loaded only until it's dismissed)

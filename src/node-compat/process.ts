@@ -27,7 +27,7 @@ export function createFakeProcess(
   pendingPromises: Promise<any>[],
 ): any {
   const processEnv: Record<string, string> = {
-    ...ctx.env,
+    ...exportedOnly(ctx),
     MCP_CONNECTION_NONBLOCKING: '1',
     // Route API calls through CORS proxy when in browser (the page, or a guest's Worker)
     ...((typeof window !== 'undefined' || (ctx as any).nodeGuest) && !ctx.env['ANTHROPIC_BASE_URL'] ? {
@@ -711,4 +711,18 @@ function completeEmitter(obj: any, table: Record<string, Function[]>): any {
   };
   for (const [k, f] of Object.entries(add)) if (typeof obj[k] !== 'function') obj[k] = f;
   return obj;
+}
+
+/**
+ * The environment a program gets: the shell's variables minus those it never
+ * exported (bash's readonly SHELLOPTS/BASHOPTS among them; codex re-exports
+ * what it inherits and failed on them). A value the command line set for this
+ * run (`X=1 node ...`) differs from the shell's and stays.
+ */
+function exportedOnly(ctx: CommandContext): Record<string, string> {
+  const sh = ctx.shell as { localVars?: Set<string>; env?: Record<string, string> } | undefined;
+  if (!sh?.localVars?.size) return ctx.env;
+  const env = { ...ctx.env };
+  for (const n of sh.localVars) if (env[n] === sh.env?.[n]) delete env[n];
+  return env;
 }

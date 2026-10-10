@@ -431,6 +431,12 @@ async function runTar(ctx: CommandContext): Promise<number> {
         }
         return;
       }
+      // A named pipe is a header only (type 6), never read
+      if (st.isFIFO?.()) {
+        blocks.push(...headerBlocks({ ...base, type: '6' }));
+        if (verbose) vout(verbose > 1 ? verboseLine({ ...base, type: '6' }, verbose) : name + '\n');
+        return;
+      }
       if ((st.nlink ?? 1) > 1 && st.ino) {
         const first = linkedNames.get(st.ino);
         if (first !== undefined) {
@@ -676,6 +682,9 @@ async function runTar(ctx: CommandContext): Promise<number> {
         const sst = await fs.lstat(src).catch(() => null);
         if (!sst) { warn(`${name}: Cannot hard link to '${h.linkname}': No such file or directory`); status = 2; continue; }
         await fs.link(src, target);
+      } else if (h.type === '6') {
+        await fs.mkfifo(target, h.mode & 0o7777);
+        if (!noMtime) await fs.utimes(target, h.mtime * 1000, h.mtime * 1000).catch(() => {});
       } else if (h.type === '0' || h.type === '7') {
         await fs.writeFile(target, body.slice(), { mode: h.mode & 0o7777 });
         await fs.chmod(target, h.mode & 0o7777).catch(() => {});

@@ -237,7 +237,8 @@ export function makeStat(node: FSNode): StatResult {
     rdev: 0,
     blksize: 4096,
     blocks: Math.ceil(node.size / 512),
-    isFile() { return node.type === 'file'; },
+    // (a named pipe is stored as a file node, but it isn't a regular file: Linux's S_ISREG)
+    isFile() { return node.type === 'file' && !node.special; },
     isDirectory() { return node.type === 'dir'; },
     isSymbolicLink() { return node.type === 'symlink'; },
     isBlockDevice() { return false; },

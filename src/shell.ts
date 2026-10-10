@@ -7816,7 +7816,7 @@ export class Shell {
         case '-e': case '-r': case '-w': case '-x':
           try { await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return 0; } catch { return 1; }
         case '-f':
-          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'file' ? 0 : 1; } catch { return 1; }
+          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.isFile() ? 0 : 1; } catch { return 1; }
         case '-d':
           try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'dir' ? 0 : 1; } catch { return 1; }
         case '-s':

@@ -4,6 +4,7 @@
 //  3. a tall window (Apps) opens above the dock, not past it
 //  4. the menu bar follows the focused window's app (Code, opened by the `code` command)
 //  5. Code: a File ▸ Open… / Open Folder… in the menu bar, a first-open hint, the editor not clipped
+//  6. the other commands' windows (mdview, html, img, finder, spawn) are desktop windows the menu bar follows
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/desktop-feedback.mjs [URL]
@@ -164,8 +165,42 @@ try {
     const [a2, b2] = [(await sh(page, 'cat ~/proj/a.txt')).out, (await sh(page, 'cat ~/b.txt')).out];
     check(a2.trim() === 'hello' && b2.trim() === 'saved', `a save from a Code window's editor writes its own file only (${JSON.stringify([a2, b2])})`);
   }
+  // ── the other windows commands open (mdview, html, img, finder, spawn): desktop windows the menu bar follows ──
+  {
+    await page.evaluate(() => { for (const w of window.__shiroDesktop.windows()) if (w.appId !== 'terminal') w.close(true); });
+    await sh(page, 'printf "# Title\\n\\nSome *markdown*.\\n" > ~/n.md && printf "<h1>hi</h1>" > ~/p.html && printf "%s" "<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'20\' height=\'20\'/>" > ~/i.svg');
+    const want = { mdview: 'Markdown Viewer', html: 'HTML Viewer', img: 'Image Viewer', finder: 'Finder', spawn: 'Spawn' };
+    for (const cmd of ['mdview ~/n.md', 'html ~/p.html', 'img ~/i.svg', 'finder', 'spawn echo hello']) void sh(page, cmd);
+    await page.waitForFunction((ids) => ids.every((id) => window.__shiroDesktop.windows().some((w) => w.appId === id)), Object.keys(want), { timeout: 30_000 }).catch(() => {});
+    const found = await page.evaluate((ids) => ids.filter((id) => window.__shiroDesktop.windows().some((w) => w.appId === id)), Object.keys(want));
+    check(found.length === 5, `mdview, html, img, finder and spawn open desktop windows (${found.join(', ')})`);
+    check(await page.evaluate(() => !document.querySelector('body > [data-server-window]')), 'none of them is a floating server window any more');
+    const names = [];
+    for (const id of [...found, ...found.slice(0, 2)]) {
+      await page.evaluate((id) => window.__shiroDesktop.windows().find((w) => w.appId === id).focus(), id);
+      await page.waitForTimeout(150);
+      names.push([id, await appName(page)]);
+    }
+    check(names.every(([id, n]) => n === want[id]), `the menu bar follows focus across them (${names.map(([id, n]) => `${id}→${n}`).join(', ')})`);
+    // closing through the server-window API (servers' own close) goes through the window manager
+    await page.evaluate(() => document.querySelector('[data-server-window]')?._close?.());
+    await page.waitForTimeout(300);
+    check(await page.evaluate(() => window.__shiroDesktop.windows().filter((w) => ['mdview', 'html', 'img', 'finder', 'spawn'].includes(w.appId)).length) === 4, 'closing one through the server-window API removes its desktop window');
+  }
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`);
   await context.close();
+  // the classic terminal UI keeps the floating server window
+  {
+    const classic = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const page = await classic.newPage();
+    await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=terminal');
+    await page.waitForFunction(() => window.__tabcomputer?.shell && window.__tabcomputer.kernel, null, { timeout: 120_000 });
+    await sh(page, 'printf "<h1>hi</h1>" > ~/p.html');
+    void sh(page, 'html ~/p.html');
+    const floating = await page.waitForFunction(() => !!document.querySelector('body > [data-server-window]'), null, { timeout: 15_000 }).then(() => true, () => false);
+    check(floating, 'the classic terminal UI keeps its floating server window');
+    await classic.close();
+  }
 } catch (e) {
   failed++;
   console.log(`FAIL ${String(e.message).split('\n')[0]}`);

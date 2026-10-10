@@ -23,6 +23,7 @@ export const finderCmd: Command = {
     const win = createServerWindow({
       mode: 'terminal',
       title: 'Finder',
+      appId: 'finder', appName: 'Finder',
       width: '36em',
       height: '26em',
       onClose: () => {},

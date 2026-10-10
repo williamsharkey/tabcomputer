@@ -511,35 +511,45 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
           }));
       };
       // An import still evaluating (its own top-level await, or one of its imports'):
-      // ES module importers wait for it. The body runs synchronously first (its hoisted
-      // exports are there for a cyclic import) noting such imports; then this module is
-      // evaluating until they are, and if the body threw it runs again, waiting for them
-      // (SvelteKit's vite plugin called into core/sync/utils.js before its `await import_peer(…)`)
+      // ES module importers wait for it. The body runs synchronously first, so its
+      // hoisted exports are there for a cyclic import; at the first static import still
+      // evaluating it stops, and runs again as an async module awaiting its imports
+      // (they are cached by then, and the hoisted exports come first). SvelteKit's
+      // config called kit's sveltekit() before core/sync/utils.js's `await import_peer(…)`
       const waiting = new Set<string>();
+      let waited: ((...a: any[]) => Promise<any>) | null | undefined;
+      let inBody = false;
       const noteWaiting = (spec: string) => {
         lastResolved = '';
         const exp = nestedRequire(spec);
-        if (lastResolved && pendingEval.has(lastResolved)) waiting.add(spec);
+        if (lastResolved && pendingEval.has(lastResolved)) {
+          waiting.add(spec);
+          if (inBody) {
+            if (waited === undefined) waited = compileWaiting();
+            if (waited) { inBody = false; throw NEEDS_WAIT; }
+          }
+        }
         return exp;
+      };
+      const compileWaiting = () => {
+        try {
+          return new AsyncFn(...fnParams, wrapModuleBody(transformedContent.replace(IMPORT_CALL,
+            (_: string, q: string, spec: string) => `(await __shiro_require_ready(${q}${spec}${q}))`), true));
+        } catch (e) {
+          if (!(e instanceof SyntaxError)) throw e;
+          return null; // (an import inside a function: it runs as it is)
+        }
       };
       const syncArgs = fnArgs.slice();
       syncArgs[11] = Object.assign(noteWaiting, nestedRequire);
-      const rerunWaiting = (): boolean => {
-        try {
-          runAsync(new AsyncFn(...fnParams, wrapModuleBody(transformedContent.replace(IMPORT_CALL,
-            (all: string, q: string, spec: string) => waiting.has(spec) ? `(await __shiro_require_ready(${q}${spec}${q}))` : all), true)));
-          return true;
-        } catch (e) {
-          if (!(e instanceof SyntaxError)) throw e; // (an import inside a function)
-          return false;
-        }
-      };
       try {
         // Synchronous first: most packages have no top-level await, and module.exports
         // is then filled before require() returns (chalk 5's `export default`)
         const syncFn = new Function(...fnParams, wrapModuleBody(transformedContent, false));
-        syncFn.apply(mod.exports, syncArgs);
+        inBody = true;
+        try { syncFn.apply(mod.exports, syncArgs); } finally { inBody = false; }
         loaded();
+        // (an import still evaluating that it could not wait for)
         if (waiting.size) {
           // (one at a time: waitsOn holds one import per importer, for the cycle check)
           const settled = (async () => { for (const spec of waiting) await requireReady(spec, modDir, resolved); })().catch(() => {});
@@ -547,8 +557,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
           settled.then(() => { if (pendingEval.get(resolved) === settled) pendingEval.delete(resolved); });
         }
       } catch (syncErr: any) {
-        if (waiting.size && !(syncErr instanceof SyntaxError) && !(syncErr instanceof ProcessExitError) && rerunWaiting()) {
-          // (ran again as an async module)
+        if (syncErr === NEEDS_WAIT && waited) {
+          runAsync(waited);
         } else if (syncErr instanceof SyntaxError && /\bawait\b/.test(transformedContent)) {
           // SyntaxError from top-level `await` -> fall back to AsyncFunction
           runAsync(compileAsyncModule(AsyncFn, fnParams, transformedContent));
@@ -654,6 +664,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
  * doesn't compile (a generated call inside a non-async function).
  */
 /** A static import as transformESModules writes it */
+/** Thrown out of a module body that has to wait for an import (see requireModule) */
+const NEEDS_WAIT = new Error('(waits for an import)');
 const IMPORT_CALL = /__shiro_require\((['"])([^'"\n]+)\1\)/g;
 
 export function compileAsyncModule(AsyncFn: any, params: string[], body: string): (...a: any[]) => Promise<any> {

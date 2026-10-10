@@ -2143,6 +2143,11 @@ describe('top-level await reaches importers', () => {
     const r = await sh(shell, 'node /home/user/tla/entry.mjs');
     // (node 22's output)
     expect(r.out).toBe('major 42\ndone\n');
+    // An async function of the import's, called from the body: the body waits for it
+    // too, not only one that would throw (SvelteKit's vite.config calls sveltekit())
+    await fs.writeFile('/home/user/tla/cfg.mjs', "import { plugin } from './mid.mjs';\nasync function make() { return plugin(); }\nexport default make();\n");
+    await fs.writeFile('/home/user/tla/entry2.mjs', "const m = await import('./cfg.mjs');\nconsole.log('cfg', await m.default);\n");
+    expect((await sh(shell, 'node /home/user/tla/entry2.mjs')).out).toBe('cfg 42\n');
   }, 60_000);
 });
 

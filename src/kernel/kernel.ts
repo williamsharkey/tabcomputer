@@ -36,6 +36,7 @@ import { PosixTimers } from './posixtimers';
 import { splice, tee, vmsplice, copyFileRange, type Moved } from './splice';
 import { CONTROL_BYTES, SharedObjects, isShareablePath, type ShmObjMessage } from './shmobj';
 import { EpollFile, waitReady } from './epoll';
+import { Inotify, InotifyFile, IN_DONT_FOLLOW, IN_ONLYDIR, IN_MASK_ADD, IN_MASK_CREATE, MAX_USER_INSTANCES } from './inotify';
 import { SignalFile, notifySignalPending, pendingSignalListeners } from './signalfd';
 import { EventFile, MemFile, TimerFile, writeInodeBytes, SymlinkPathFile, anonymousInode, linkAnonymousInode } from './fd';
 import { activeProfile, unameRelease, UNAME_VERSION } from '../profile';
@@ -241,6 +242,8 @@ export class Kernel {
   }
   /** fcntl record locks (F_SETLK, F_OFD_SETLK) */
   readonly locks = new LockTable();
+  /** inotify's watches (on the FileSystem's change events: inotify.ts) */
+  readonly inotify = new Inotify(() => this.fs!);
   /** flock(2) locks: whole-file, an open file description's, apart from fcntl's (as on Linux) */
   readonly flocks = new LockTable();
   private detachTable?: () => void;
@@ -252,6 +255,7 @@ export class Kernel {
   constructor(opts: { fs?: FileSystem; shell?: Shell; allocPid?: () => number; registerWithProcessTable?: boolean } = {}) {
     this.fs = opts.fs ?? opts.shell?.fs;
     this.shell = opts.shell;
+    if (this.fs) this.attachFs(this.fs);
     // Open files' buffered writes reach storage when the page goes away
     const wfs = this.fs;
     if (wfs?.addWriteBackHook) this.detachWriteBack = wfs.addWriteBackHook(() => writeBackAll(wfs));
@@ -301,9 +305,28 @@ export class Kernel {
     }
   }
 
+  private fsAttached = new WeakSet<FileSystem>();
+  /**
+   * What the kernel follows of `fs`'s changes: inotify's watches, and a
+   * renamed directory a process is in (a cwd is the directory, not its old
+   * path, as on Linux: LTP inotify02 renames its own cwd)
+   */
+  private attachFs(fs: FileSystem): void {
+    this.inotify.attach(fs);
+    if (this.fsAttached.has(fs)) return;
+    this.fsAttached.add(fs);
+    fs.onChange((ev, from, to, detail) => {
+      if (ev !== 'rename' || !to || detail?.dir === false) return;
+      for (const p of this.procs.values()) {
+        if (p.cwd === from || p.cwd.startsWith(from + '/')) p.cwd = to + p.cwd.slice(from.length);
+      }
+    });
+  }
+
   /** Bind the page's filesystem and shell (main.ts does this at boot). */
   attach(fs: FileSystem, shell?: Shell): void {
     this.fs = fs;
+    this.attachFs(fs);
     if (shell) {
       this.shell = shell;
       this.init.env = { ...shell.env };
@@ -1178,7 +1201,7 @@ export class Kernel {
           if (flags & A.O_EXCL) return -A.EEXIST;
           target = await fs.realpath(p);
         }
-        await fs.writeFile(target, new Uint8Array(0), { mode: mode & ~proc.umask & 0o7777 });
+        await fs.writeFile(target, new Uint8Array(0), { mode: mode & ~proc.umask & 0o7777, fd: true });
       } else {
         if ((flags & A.O_CREAT) && (flags & A.O_EXCL)) return -A.EEXIST;
         if (st.isDirectory()) {
@@ -2011,6 +2034,41 @@ export class Kernel {
         case A.SYS_select:
         case A.SYS_pselect6:
           return await this.select(proc, nr, args, data);
+        case A.SYS_inotify_init:
+        case A.SYS_inotify_init1: {
+          const flags = nr === A.SYS_inotify_init1 ? args[0] : 0;
+          if (flags & ~(A.O_NONBLOCK | A.O_CLOEXEC)) return -A.EINVAL;
+          const uid = proc.uid ?? 0, n = this.inotify.instances.get(uid) ?? 0;
+          if (n >= MAX_USER_INSTANCES) return -A.EMFILE;
+          const fd = fds.alloc(new InotifyFile(this.inotify, A.O_RDONLY | (flags & A.O_NONBLOCK), uid), 0, !!(flags & A.O_CLOEXEC));
+          if (fd >= 0) this.inotify.instances.set(uid, n + 1);
+          return fd;
+        }
+        case A.SYS_inotify_add_watch: { // fd, pathLen, mask; data = path → wd
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          if (!(f instanceof InotifyFile)) return -A.EINVAL;
+          const mask = args[2] >>> 0;
+          if (!(mask & 0xfff) || ((mask & IN_MASK_ADD) && (mask & IN_MASK_CREATE))) return -A.EINVAL;
+          const p = at(A.AT_FDCWD, 0, args[1]);
+          if (typeof p !== 'string') return p ?? -A.EFAULT;
+          const follow = !(mask & IN_DONT_FOLLOW);
+          const st = await this.statPath(proc, p, follow);
+          if (typeof st === 'number') return st;
+          if ((mask & IN_ONLYDIR) && (st.mode & A.S_IFMT) !== A.S_IFDIR) return -A.ENOTDIR;
+          // (watching needs read permission)
+          if (proc.uid !== 0 && !(st.mode & 0o444)) return -A.EACCES;
+          const slash = p.lastIndexOf('/');
+          const real = follow ? await fs().realpath(p)
+            : (await fs().realpath(p.slice(0, slash) || '/')).replace(/\/$/, '') + p.slice(slash);
+          return this.inotify.add(f, real, mask, (st.mode & A.S_IFMT) === A.S_IFDIR);
+        }
+        case A.SYS_inotify_rm_watch: {
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          if (!(f instanceof InotifyFile)) return -A.EINVAL;
+          return f.removeWatch(args[1] | 0);
+        }
         case A.SYS_epoll_create:
         case A.SYS_epoll_create1: {
           if (nr === A.SYS_epoll_create && args[0] <= 0) return -A.EINVAL;

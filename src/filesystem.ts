@@ -264,13 +264,16 @@ function fsError(code: string, message: string): Error {
   return err;
 }
 
-/** 'attrib': mode or times changed (chmod, utimes), not the data (inotify's IN_ATTRIB). */
-export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename' | 'attrib';
 /**
- * `created`: a 'write' that made the path (inotify's IN_CREATE, not
- * IN_MODIFY). `dir`: a 'delete' or 'rename' of a directory (IN_ISDIR).
+ * A change to the filesystem. 'attrib': its mode, owner or times changed.
+ * The detail says, for 'write', whether the path is new (created) and
+ * whether it was made through an open file (fd: the kernel's descriptors,
+ * which report their own close; otherwise a write is a whole file, written
+ * and closed), and for 'delete', 'rename' and 'attrib', whether it is a
+ * directory (dir), when known.
  */
-export interface FSChangeDetail { created?: boolean; dir?: boolean }
+export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename' | 'attrib';
+export interface FSChangeDetail { created?: boolean; dir?: boolean; fd?: boolean }
 export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail) => void;
 
 /**
@@ -503,10 +506,14 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/sys/fs/pipe-user-pages-hard': () => '0\n',
     '/proc/sys/kernel/tainted': () => '0\n',
     '/proc/sys/kernel/core_pattern': () => 'core\n',
+    // inotify's limits (src/kernel/inotify.ts: MAX_QUEUED_EVENTS and the like)
+    '/proc/sys/fs/inotify/max_queued_events': () => '16384\n',
+    '/proc/sys/fs/inotify/max_user_instances': () => '128\n',
+    '/proc/sys/fs/inotify/max_user_watches': () => '65536\n',
     '/proc/mounts': () => 'rootfs / rootfs rw 0 0\n',
   };
 
-  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs'];
+  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs', '/proc/sys/fs/inotify'];
 
   handles(path: string): boolean {
     return path === '/proc' || path.startsWith('/proc/')
@@ -1887,6 +1894,7 @@ export class FileSystem {
     this._saveLinkMap();
     this._linksChanged();
     this._emitChange('write', newPath, undefined, { created: true });
+    this._emitChange('attrib', src); // (its link count)
   }
 
   private _linkListeners = new Set<() => void>();
@@ -2445,6 +2453,8 @@ export class FileSystem {
     mode?: number;
     /** Modification (and access) time to record instead of now (the kernel writing back an open file). */
     times?: { mtime: number; mtimeNs?: number; atime?: number; atimeNs?: number };
+    /** Made through an open file (the kernel's O_CREAT): its change event says so (FSChangeDetail.fd) */
+    fd?: boolean;
   }): Promise<void> {
     for (const vp of this.virtualProviders) {
       if (vp.writeFile(path, data)) return;
@@ -2486,7 +2496,7 @@ export class FileSystem {
       size: content.length,
       ...(options?.times ? { mtimeNs: options.times.mtimeNs || undefined, atime: options.times.atime, atimeNs: options.times.atimeNs || undefined } : {}),
     });
-    this._emitChange('write', path, undefined, created ? { created } : undefined);
+    this._emitChange('write', path, undefined, created || options?.fd ? { ...(created ? { created } : {}), ...(options?.fd ? { fd: true } : {}) } : undefined);
   }
 
   /**
@@ -2503,7 +2513,7 @@ export class FileSystem {
     const now = Date.now();
     const node: FSNode = { path, type: 'file', content: new Uint8Array(0), mode, mtime: now, ctime: now, size: 0 };
     try { this._putNow(node); } catch { return undefined; } // ENOSPC: writeFile reports it
-    this._emitChange('write', path, undefined, { created: true });
+    this._emitChange('write', path, undefined, { created: true, fd: true });
     return node;
   }
 
@@ -2880,7 +2890,7 @@ export class FileSystem {
     const node = await this._get(path);
     if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, chmod '${path}'`);
     await this._put({ ...node, mode, ctime: Date.now() });
-    this._emitChange('attrib', path);
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   /**
@@ -2896,7 +2906,7 @@ export class FileSystem {
     const atimeNs = ns?.atime || undefined;
     const sameA = atimeMs === mtimeMs && atimeNs === mtimeNs;
     await this._put({ ...node, mtime: mtimeMs, mtimeNs, atime: sameA ? undefined : atimeMs, atimeNs: sameA ? undefined : atimeNs });
-    this._emitChange('attrib', path);
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   // isomorphic-git compatibility: symlink support

@@ -43,16 +43,36 @@ if (typeof window !== 'undefined') pageOwn();
  */
 const PROCESS_LOCAL = new Set<PropertyKey>(['fs', 'require']);
 
-export function createProcessGlobal(own: Record<string, unknown>): any {
+/**
+ * In a Worker (node as a kernel guest), globals a script sets that are written
+ * through although the Worker has them: emnapi's thread workers (napi-rs WASI
+ * bindings: rolldown's) replace postMessage and onmessage as on node, where
+ * the global has neither, and its code calls `postMessage(...)` as a bare
+ * identifier. The guest took the Worker's own ones at startup (guest-entry.ts).
+ */
+const WORKER_THROUGH = new Set<PropertyKey>(['postMessage', 'onmessage', 'importScripts']);
+const inWorker = typeof window === 'undefined' && typeof (globalThis as any).WorkerGlobalScope !== 'undefined';
+
+/**
+ * A Web Worker's own globals, which node doesn't have: hidden from node code run
+ * as a kernel guest (in a Worker), as module parameters and on its global. Prism
+ * (in Astro) took the guest for a Web Worker and JSON-parsed the messages of its
+ * syscall channel ("[object Object]" is not valid JSON): node ended at startup.
+ * (postMessage and the like stay: a script may set its own, WORKER_THROUGH)
+ */
+export const WORKER_ONLY_GLOBALS = ['self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'] as const;
+
+/** `hide`: globals the process doesn't have (WORKER_ONLY_GLOBALS for a guest) */
+export function createProcessGlobal(own: Record<string, unknown>, hide: readonly string[] = []): any {
   const page = globalThis as any;
   const target: Record<PropertyKey, any> = Object.create(null);
-  const deleted = new Set<PropertyKey>();
+  const deleted = new Set<PropertyKey>(hide);
   const bound = new WeakMap<Function, Function>();
   let self: any;
 
   for (const [k, v] of Object.entries(own)) target[k] = v;
   /** Not one of the page's own globals (nor the process's): written through, as scripts' globals always were */
-  const isNew = (k: PropertyKey) => !Object.prototype.hasOwnProperty.call(target, k) && !pageOwn().has(k) && !PROCESS_LOCAL.has(k);
+  const isNew = (k: PropertyKey) => !Object.prototype.hasOwnProperty.call(target, k) && !PROCESS_LOCAL.has(k) && (!pageOwn().has(k) || (inWorker && WORKER_THROUGH.has(k)));
   const through = new Set<PropertyKey>();
 
   const fromPage = (k: PropertyKey) => {

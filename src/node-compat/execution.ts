@@ -31,10 +31,11 @@ import { createEventsModule } from './modules/events';
 import { createUrlModule } from './modules/url';
 import { createUtilModule } from './modules/util';
 import { createFsModule, createFsPromisesModule } from './modules/fs';
-import { createChildProcessModule } from './modules/child-process';
+import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
+import { createWasiModule } from './modules/wasi';
 import { createStreamModule } from './modules/stream';
 import { createCryptoModule } from './modules/crypto';
-import { createProcessGlobal, createProcessFunction } from './process-global';
+import { createProcessGlobal, WORKER_ONLY_GLOBALS, createProcessFunction } from './process-global';
 import { loadBrowserPackages } from './browser-packages';
 import { patchPackageSource } from './source-patches';
 import { createHttpModule, createHttpsModule, createHttp2Module } from './modules/http';
@@ -137,6 +138,7 @@ export async function executeNodeScript(
     exitCode: 0,
     exitCalled: false,
     stdoutToTerminal: !!ctx.terminal && ctx.stdoutIsTTY !== false,
+    stderrToTerminal: !!ctx.terminal && ctx.stderrIsTTY !== false,
     streamedToTerminal: false,
     streamedStderr: false,
     isInteractiveMode: false,
@@ -169,12 +171,13 @@ export async function executeNodeScript(
     // Deferred exit: resolves when process.exit is called from async code
     const deferredExitPromise = new Promise<number>((resolve) => { _st.deferredExitResolve = resolve; });
 
-    // Without a terminal, output goes on as it is produced where something takes it
-    // (a pipe's reader, like an agent running an npm script, sees it now, not at exit):
-    // a spawned child's pipes (ctx.stdoutBytes), the shell's fds as a kernel process
-    // (ctx.streamStdout), or a kernel guest's fds 1 and 2
+    // Output that isn't the terminal's goes on as it is produced where something takes it
+    // (a pipe's reader, like an agent running an npm script, sees it now, not at exit;
+    // a server's `> log` gets its lines): a spawned child's pipes (ctx.stdoutBytes), the
+    // shell's fds as a kernel process or a redirect's file (ctx.streamStdout), or a kernel
+    // guest's fds 1 and 2. Stderr on the terminal goes there as it comes (console.error too).
     const writeOut = nodeGuestOf(ctx)?.writeOut;
-    if (!ctx.terminal) {
+    {
       const enc = new TextEncoder();
       const writerFor = (bytes: ((b: Uint8Array) => void) | undefined, text: ((s: string) => void) | undefined, fd: 1 | 2) =>
         bytes ? (s: string) => bytes(enc.encode(s)) : text ?? (writeOut ? (s: string) => writeOut(fd, s) : undefined);
@@ -187,8 +190,11 @@ export async function executeNodeScript(
           return keep ? Array.prototype.push.apply(buf, items) : buf.length;
         };
       };
-      stream(stdoutBuf, writerFor(ctx.stdoutBytes, ctx.streamStdout, 1), !ctx.stdoutBytes, () => { _st.streamedToTerminal = true; });
-      stream(stderrBuf, writerFor(ctx.stderrBytes, ctx.streamStderr, 2), !ctx.stderrBytes, () => { _st.streamedStderr = true; });
+      // \n is \r\n on a terminal (libuv keeps ONLCR even in raw mode)
+      const toTerminal = (s: string) => ctx.terminal!.writeOutput(s.replace(/\r?\n/g, '\r\n'));
+      if (!_st.stdoutToTerminal) stream(stdoutBuf, writerFor(ctx.stdoutBytes, ctx.streamStdout, 1), !ctx.stdoutBytes, () => { _st.streamedToTerminal = true; });
+      stream(stderrBuf, _st.stderrToTerminal ? toTerminal : writerFor(ctx.stderrBytes, ctx.streamStderr, 2),
+        !ctx.stderrBytes, () => { _st.streamedStderr = true; });
     }
 
     // Console and process
@@ -201,10 +207,11 @@ export async function executeNodeScript(
     const guest = nodeGuestOf(ctx);
     // A forked guest: its channel to the parent (process.send / 'message')
     const ipcAlive = guest?.ipc ? attachProcessIpc(fakeProcess, guest.ipc, processEvents) : () => false;
-    const { fileCache, fileMtimes, moduleCache, tickSyncOps } = createFileCache(guest?.readText, guest ? (p) => !!(ctx.fs as any).isDirCached?.(p) : undefined);
+    const { fileCache, fileMtimes, moduleCache, tickSyncOps } = createFileCache(guest?.readText, guest ? (p) => !!(ctx.fs as any).isDirCached?.(p) : undefined, guest ? undefined : ctx.fs);
 
     // Pre-load environment (the page's: files into the cache, Claude's bootstrap)
-    if (!guest) await preloadEnvironment(ctx, fileCache, fileMtimes, scriptPath);
+    // In the page, readFileSync reads the FileSystem's cache: small files stay in it from now on
+    if (!guest) { await (ctx.fs as { holdSmallContent?: () => Promise<void> }).holdSmallContent?.(); await preloadEnvironment(ctx, fileCache, fileMtimes, scriptPath); }
     else await claudeBootstrap(ctx, ctx.env['HOME'] || '/home/user', scriptPath);
     const homeDir = ctx.env['HOME'] || '/home/user';
 
@@ -225,7 +232,9 @@ export async function executeNodeScript(
       clearImmediate: (id: any) => scriptTimers.clearTimeout(id),
     };
     // The process's own globalThis (its writes stay its own; globalThis.process is its process)
-    const processGlobal = createProcessGlobal({ process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers });
+    // (a guest runs in a Worker: node code doesn't see its worker globals)
+    const workerOnly = nodeGuestOf(ctx) ? WORKER_ONLY_GLOBALS : [];
+    const processGlobal = createProcessGlobal({ process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers }, workerOnly);
     const processFunction = createProcessFunction(processGlobal, fakeProcess, FakeBuffer);
     /** Packages this script reaches that run as their browser builds (rolldown): filled before it starts */
     const browserModules = new Map<string, any>();
@@ -289,6 +298,8 @@ export async function executeNodeScript(
         }
         case 'fs/promises':
         case 'node:fs/promises': return trackModule(createFsPromisesModule({ ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir, trackAsync, atExit }));
+        case 'wasi':
+        case 'node:wasi': return createWasiModule({ guest, exit: (code) => fakeProcess.exit(code) as never });
         case 'child_process':
         case 'node:child_process': return createChildProcessModule({ ctx, fileCache, fileMtimes, pendingPromises, FakeBuffer, getProcess: () => fakeProcess, guest });
         case 'os':
@@ -408,10 +419,15 @@ export async function executeNodeScript(
       worker._toWorker = (v: any) => { const c = clone(v); deliver(() => { if (alive) parentPort.emit('message', c); }); };
       worker._terminate = () => { alive = false; parentPort.removeAllListeners(); };
       const workerWT = { ...mainWT, isMainThread: false, parentPort, workerData: clone(options.workerData), threadId: worker.threadId };
-      const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT : getBuiltinModule(name);
+      // `new Worker(f, { env })`: the worker's process.env (SvelteKit's build tells its forked steps so)
+      const workerEnv = options?.env && typeof options.env === 'object'
+        ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : null;
+      const workerProcess = workerEnv ? new Proxy(fakeProcess, { get: (t, k) => k === 'env' ? workerEnv : Reflect.get(t, k) }) : fakeProcess;
+      const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT
+        : workerEnv && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
       const workerRequire = createRequireFunction({
         ctx, fileCache, fileMtimes, moduleCache: new Map(), pendingPromises, processEvents,
-        getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess, FakeBuffer,
+        getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess: workerProcess, FakeBuffer,
         createExpressShim: expressFactory,
         createSqliteShim: () => createSqliteShim({ ctx }),
         createAutoStub,
@@ -443,11 +459,16 @@ export async function executeNodeScript(
     if (scriptPath && (scriptPath.endsWith('.tsx') || scriptPath.endsWith('.jsx'))) {
       transformedCode = transformJSX(transformedCode);
     }
-    transformedCode = transformESModules(transformedCode);
+    // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts):
+    // with the transform's code mask, unless awaits are added after it
+    const carry = asyncContext.active || code.includes('AsyncLocalStorage');
+    const syncAwaits = !isClaudeCodeScript(scriptPath);
+    transformedCode = transformESModules(transformedCode, carry && !syncAwaits ? carryAsyncContext : undefined);
     // spawnSync/execSync results are read right away: await them where the script can
-    if (!isClaudeCodeScript(scriptPath)) transformedCode = awaitSyncCalls(transformedCode);
-    // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
-    if (asyncContext.active || code.includes('AsyncLocalStorage')) transformedCode = carryAsyncContext(transformedCode);
+    if (syncAwaits) {
+      transformedCode = awaitSyncCalls(transformedCode);
+      if (carry) transformedCode = carryAsyncContext(transformedCode);
+    }
 
     // Stash real browser console on globalThis so injected code can use it
     if (code.length > 500000) {
@@ -458,7 +479,7 @@ export async function executeNodeScript(
     const fn = compileAsyncModule(AsyncFunction, [
       'console', 'process', 'require', 'Buffer', '__filename', '__dirname', 'shiro', '__import_meta', 'module', 'exports', '__dynamic_import',
       '__shiro_module', '__shiro_require', 'global', '__shiro_require_ready', 'globalThis', 'Function',
-      ...SCRIPT_TIMER_NAMES,
+      ...SCRIPT_TIMER_NAMES, ...workerOnly,
     ], wrappedCode);
 
     // Fake import.meta for ES modules
@@ -468,6 +489,8 @@ export async function executeNodeScript(
     try {
       for (const [spec, ns] of await loadBrowserPackages(ctx.fs, entryDirname, getBuiltinModule, fakeProcess, trackAsync, atExit)) browserModules.set(spec, ns);
     } catch (e: any) {
+      // (the packages that loaded, and the failed one's marker: requiring it says why)
+      for (const [spec, ns] of (e?.partial as Map<string, any> | undefined) ?? []) browserModules.set(spec, ns);
       console.warn('[node] browser build:', e);
       const err = e?.errors?.[0];
       const at = err?.location ? ` (${err.location.file}:${err.location.line}: ${String(err.location.lineText).trim().slice(0, 160)})` : '';
@@ -848,7 +871,7 @@ export async function executeNodeScript(
           cwd: ctx.cwd,
         }, fakeImportMeta, fakeModule, fakeExports, dynamicImport, fakeModule, entryRequire, processGlobal,
         (p: string) => requireModule.ready(p, entryDirname, entryFilename), processGlobal, processFunction,
-        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k])),
+        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...workerOnly.map(() => undefined)),
         timeoutPromise,
       ]);
     } catch (e: any) {
@@ -871,12 +894,18 @@ export async function executeNodeScript(
     // Clean up script timeout
     if (_st.scriptTimeoutId) { clearTimeout(_st.scriptTimeoutId); _st.scriptTimeoutId = null; }
 
-    // Wait for pending async operations
-    while (pendingPromises.length > 0) {
-      const current = [...pendingPromises];
-      pendingPromises.length = 0;
-      await Promise.all(current);
-    }
+    // Wait for pending async operations (after process.exit(), not for running children:
+    // node exits and they live on)
+    const drainPending = async () => {
+      while (pendingPromises.length > 0) {
+        const current = pendingPromises.splice(0).filter((p) => !(_st.exitCalled && CHILD_HOLD in p));
+        const all = Promise.all(current);
+        // (an exit while it waits for a child ends that wait; what else was in flight is waited for)
+        if (_st.exitCalled || !current.some((p) => CHILD_HOLD in p)) await all;
+        else if (await Promise.race([all.then(() => false), deferredExitPromise.then(() => true)])) pendingPromises.unshift(...current);
+      }
+    };
+    await drainPending();
 
     // Wait for pending timers (max 5s)
     // Timers still pending after this cap (a 60s timeout) don't keep the script alive
@@ -971,11 +1000,7 @@ export async function executeNodeScript(
         exitedExplicitly = _st.exitCalled;
         _baseCT(deferredTimer);
       }
-      while (pendingPromises.length > 0) {
-        const current = [...pendingPromises];
-        pendingPromises.length = 0;
-        await Promise.all(current);
-      }
+      await drainPending();
     }
     // The script ended on its own: 'exit' listeners run, and may set
     // process.exitCode (mocha reports failures that way)

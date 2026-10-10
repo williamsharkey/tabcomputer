@@ -1,5 +1,5 @@
 /**
- * node as a kernel guest (TABCOMPUTER_NODE_WORKER=1): this runs in a
+ * node as a kernel guest (by default; TABCOMPUTER_NODE_WORKER=0 opts out): this runs in a
  * Worker. It turns the kernel's start message into the CommandContext
  * node-compat expects (files through SyscallFs, children through real
  * processes, fds 0/1/2 for stdio and the terminal), runs the `node`
@@ -85,7 +85,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     const fs = new SyscallFs(sys);
     // fs.watch: the page sends its filesystem's changes once asked (host.ts)
     fs.requestChanges = () => post({ type: 'node-guest-watch' });
-    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath);
+    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.detail);
     const stdinTTY = isatty(sys, 0);
     const stdoutTTY = isatty(sys, 1);
     // Networking over socket syscalls; servers listen on kernel ports (the page previews them)
@@ -95,7 +95,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     rejection = null;
     installWorkerHandlers();
     // A worker_threads thread of a node process (host.ts started it with attachThread)
-    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; threadId: number } | undefined;
+    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number } | undefined;
     const hooks: NodeGuestHooks = {
       readText(path) {
         const b = fs.readRaw(path);
@@ -110,6 +110,14 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       busy: () => net.busy,
       ids: { pid: sys.getpid(), ppid: sys.getppid() },
       kill: (pid, sig) => sys.kill(pid, sig),
+      wasi: {
+        call: (req) => {
+          if (req.data) sys.ch.data.set(req.data);
+          return { ret: sys.ch.result64(sys.ch.call(req.nr, ...req.args)), data: sys.ch.data };
+        },
+        dataSize: sys.ch.data.length,
+        openDir: (path) => sys.open(path, A.O_RDONLY | A.O_DIRECTORY),
+      },
       ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)) } : {}),
       onUnhandledRejection: (fn) => { rejection = fn; },
       page: {
@@ -139,7 +147,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         },
       } : {}),
     };
-    const env = { ...start.env };
+    // (a thread's own `new Worker(f, { env })`: SvelteKit's build tells its forked steps so)
+    const env = { ...(nodeThread?.env ?? start.env) };
     // (node takes its channel's variables out of process.env: its own children aren't forked)
     if (hooks.ipc) { delete env.NODE_CHANNEL_FD; delete env.NODE_CHANNEL_SERIALIZATION_MODE; }
     const shell: any = { cwd: start.cwd, env, abortController: null, fork() { throw new Error('no shell in a node guest'); } };
@@ -153,6 +162,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       stderr: '',
       shell,
       stdoutIsTTY: stdoutTTY,
+      // (fd 2 a file or pipe while fd 1 is the tty: `node x.js 2> err` wrote on the screen)
+      stderrIsTTY: isatty(sys, 2),
       stdinIsTTY: stdinTTY,
       terminal: stdoutTTY ? terminalFacade(sys, stdinTTY) : undefined,
       // Not a terminal: fds 1 and 2 take what's written as written (bytes stay bytes: esbuild's protocol)
@@ -165,8 +176,9 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         const r = sys.readAll(0);
         return typeof r === 'number' ? '' : dec.decode(r);
       };
-      // `node < script.js` / `cat x.js | node`: the program comes from stdin
-      const code = start.argv.slice(1).some((a) => !a.startsWith('-') || a === '-e' || a === '--eval' || a === '-p' || a === '--print');
+      // `node < script.js` / `cat x.js | node`: the program comes from stdin (`node -v` and
+      // `node --help` answer without reading it)
+      const code = start.argv.slice(1).some((a) => !a.startsWith('-') || /^(-e|--eval|-p|--print|-v|--version|-h|--help)$/.test(a));
       if (!code) ctx.stdin = await ctx.readStdin();
       // else bytes as they arrive (a parent that talks to this node while it runs: esbuild's service)
       else ctx.stdinStream = pipeStdin(sys);
@@ -332,7 +344,7 @@ function installWorkerHandlers(): void {
 }
 
 /** Where the page's filesystem changes go (the running guest's SyscallFs) */
-let fsEvents: ((m: { event: string; path: string; newPath?: string }) => void) | null = null;
+let fsEvents: ((m: { event: string; path: string; newPath?: string; detail?: { created?: boolean; dir?: boolean; fd?: boolean; at?: number } }) => void) | null = null;
 /** worker_threads: this guest's threads' events by id, and (in a thread) its parent's messages */
 let lastThread = 0;
 const threadEvents = new Map<number, ThreadEvents>();

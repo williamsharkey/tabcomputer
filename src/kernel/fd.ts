@@ -10,7 +10,7 @@
 import type { FileSystem } from '../filesystem';
 import {
   type KStat, EBADF, EMFILE, EINVAL, EISDIR, ESPIPE, ENOTTY, EAGAIN, EINTR,
-  O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, O_NONBLOCK, O_DSYNC, OPEN_MAX, NR_OPEN,
+  O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, O_NONBLOCK, O_DSYNC, O_PATH, OPEN_MAX, NR_OPEN,
   POLLIN, POLLOUT, SEEK_SET, SEEK_CUR, SEEK_END,
   S_IFCHR, S_IFREG, S_IFDIR, S_IFIFO, FIONREAD, errnoFromError,
   EPERM, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW, F_SEAL_WRITE, F_SEAL_FUTURE_WRITE,
@@ -250,6 +250,7 @@ export class ReadyListeners {
    * the edge-triggered entries watching them. 0 = anything may have changed.
    */
   fire(mask = 0): void {
+    if (!this.cbs.size) return; // (every pipe read and write fires: no copy when nobody listens)
     for (const cb of [...this.cbs]) {
       try { cb(mask); } catch { /* listener errors must not break I/O */ }
     }
@@ -463,29 +464,327 @@ const FLUSH_MAX_DELAY_MS = 1000;
 /** Uncommitted bytes in the FileSystem beyond which a close waits for the commit (Inode.flush). */
 const WRITE_BACKLOG_BYTES = 16 << 20;
 
+/**
+ * A big file (FileSystem.blobMin or more) is held in pages of the
+ * FileSystem's block size, loaded when read and written back a block at a
+ * time (FileSystem.writeBlocks), so writing or reading one never needs all
+ * of it in memory: at most DIRTY_PAGES written pages (a writer waits for
+ * them to be stored past that) and KEEP_PAGES clean ones.
+ */
+const DIRTY_PAGES = 8;
+const KEEP_PAGES = 4;
+
+/**
+ * What a FileSystem's inotify (inotify.ts) hears from the kernel's open
+ * files: IN_OPEN, IN_ACCESS, IN_CLOSE_*. Only when something watches the
+ * path; then a write() is reported through FileSystem.notify too, and the
+ * inode's later write-back of it is an echo (writeBackEcho).
+ */
+export interface FileWatcher {
+  watched(path: string): boolean;
+  fileEvent(path: string, mask: number, dir?: boolean): void;
+  /** `ino`'s last name went while it is open: its watches stay with it until its last close */
+  orphaned(ino: object, path: string): void;
+  /** what an open, unlinked inode's descriptions did */
+  orphanEvent(ino: object, mask: number): void;
+  /** its last close */
+  inodeGone(ino: object): void;
+}
+export const fileWatchers = new WeakMap<FileSystem, FileWatcher>();
+const echoes = new WeakMap<FileSystem, Map<string, number>>();
+/** Whether `path`'s change events now come from the kernel writing back what it already reported */
+export function writeBackEcho(fs: FileSystem, path: string): boolean { return !!echoes.get(fs)?.get(path); }
+function echo(fs: FileSystem, path: string, d: 1 | -1): void {
+  let m = echoes.get(fs);
+  if (!m) echoes.set(fs, m = new Map());
+  const n = (m.get(path) ?? 0) + d;
+  if (n > 0) m.set(path, n); else m.delete(path);
+}
+
 class Inode {
+  /** Small files: the bytes (capacity may exceed size). Empty for a paged file. */
   data: Uint8Array;
+  /** Its own array while `data` is a shared object's buffer (attachInodeShared) */
+  privateData?: Uint8Array;
   size: number;
   opens = 0;
   dirty = false;
+  /** A paged (big) file: its FileSystem blob, and its loaded pages, least recently used first. */
+  blob: string | null = null;
+  private pages = new Map<number, Uint8Array>();
+  private dirtyPages = new Set<number>();
+  /** Pages from this byte on are zeros whatever the store holds (a truncate cut them off; a new blob has none). */
+  private zeroFrom = Infinity;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushing: Promise<void> | null = null;
   /** The path was unlinked while open: the data lives on for the open fds only. */
   unlinked = false;
+  /** Its key in the inode table (inodeKey): the path, or the inode number of a file with hard links. */
+  key = '';
+  /** Blocks of an unlinked big file this inode still reads (FileSystem.holdBlob), released at the last close. */
+  heldBlob: string | null = null;
+  /** An O_TMPFILE file without O_EXCL: linkat may give it a name (linkAnonymousInode). */
+  tmpfile = false;
   /** Nanoseconds past mtimeMs; atime when set apart from mtime (null: follows it). See FSNode. */
   mtimeNs = 0;
   atimeMs: number | null = null;
   atimeNs = 0;
 
   constructor(public fs: FileSystem, public path: string, initial: Uint8Array, public mode: number, public mtimeMs: number, public ctimeMs: number,
-    times?: { mtimeNs?: number; atime?: number; atimeNs?: number }) {
+    times?: { mtimeNs?: number; atime?: number; atimeNs?: number }, blob?: { id: string; size: number }) {
     this.data = initial;
     this.size = initial.length;
+    if (blob) { this.blob = blob.id; this.size = blob.size; }
     this.mtimeNs = times?.mtimeNs ?? 0;
     if (times?.atime !== undefined) { this.atimeMs = times.atime; this.atimeNs = times.atimeNs ?? 0; }
   }
 
-  ensure(cap: number) {
+  private get B(): number { return this.fs.blockSize; }
+
+  // ── Reading and writing (sync: false/undefined when pages must load first) ──
+
+  /** Copy bytes at `off` into `buf`: the count, or undefined when a page isn't loaded (readAt). */
+  readSync(buf: Uint8Array, off: number): number | undefined {
+    const n = Math.max(0, Math.min(buf.length, this.size - off));
+    if (!this.blob) {
+      if (n > 0) buf.set(this.data.subarray(off, off + n));
+      return n;
+    }
+    const B = this.B;
+    for (let p = off; p < off + n; p = (Math.floor(p / B) + 1) * B) if (!this.pages.has(Math.floor(p / B))) return undefined;
+    for (let done = 0; done < n;) {
+      const p = off + done;
+      const page = this.page(Math.floor(p / B))!;
+      const k = Math.min(n - done, B - (p % B));
+      buf.set(page.subarray(p % B, p % B + k), done);
+      done += k;
+    }
+    return n;
+  }
+
+  async readAt(buf: Uint8Array, off: number): Promise<number> {
+    for (;;) {
+      const n = this.readSync(buf, off);
+      if (n !== undefined) { this.trimPages(); return n; }
+      await this.loadPages(off, Math.min(off + buf.length, this.size));
+    }
+  }
+
+  /** Write `buf` at `off`: false when pages must load or written pages be stored first (writeAt). */
+  writeSync(buf: Uint8Array, off: number): boolean {
+    const end = off + buf.length;
+    if (!this.blob && !this.shared && end >= (this.fs.blobMin ?? Infinity)) this.toPages();
+    if (!this.blob) {
+      this.ensure(end);
+      if (off > this.size) this.data.fill(0, this.size, off);
+      this.data.set(buf, off);
+      if (end > this.size) this.size = end;
+      this.touch();
+      return true;
+    }
+    if (!this.writable(off, end)) return false;
+    this.extendTo(off);
+    const B = this.B;
+    for (let done = 0; done < buf.length;) {
+      const p = off + done;
+      const i = Math.floor(p / B);
+      const page = this.page(i) ?? this.freshPage(i);
+      const k = Math.min(buf.length - done, B - (p % B));
+      page.set(buf.subarray(done, done + k), p % B);
+      this.dirtyPages.add(i);
+      done += k;
+    }
+    if (end > this.size) this.size = end;
+    this.touch();
+    this.trimPages();
+    return true;
+  }
+
+  async writeAt(buf: Uint8Array, off: number): Promise<void> {
+    while (!this.writeSync(buf, off)) {
+      if (this.dirtyPages.size >= DIRTY_PAGES && !this.unlinked) await this.flush(true);
+      else await this.loadPages(off, off + buf.length, true);
+    }
+  }
+
+  /** Set the size: false when a page must load first (truncate). */
+  truncateSync(len: number): boolean {
+    if (!this.blob) {
+      if (len >= (this.fs.blobMin ?? Infinity) && !this.shared) this.toPages();
+      else {
+        this.ensure(len);
+        if (len > this.size) this.data.fill(0, this.size, len);
+        this.size = len;
+        this.touch();
+        return true;
+      }
+    }
+    if (len === 0) {
+      // Empty again: a small file (the blob goes at the next write-back)
+      this.blob = null;
+      this.pages.clear();
+      this.dirtyPages.clear();
+      this.zeroFrom = Infinity;
+      this.data = new Uint8Array(0);
+      this.size = 0;
+      this.touch();
+      return true;
+    }
+    const B = this.B;
+    if (len > this.size) {
+      if (!this.writable(this.size, this.size)) return false;
+      this.extendTo(len);
+      this.size = len;
+      this.touch();
+      return true;
+    }
+    // Shrinking: the page holding the new end keeps zeros after it, later pages go
+    const last = Math.floor(len / B);
+    if (len % B && !this.pages.has(last) && last * B < this.zeroFrom) return false;
+    for (const i of [...this.pages.keys()]) if (i * B >= len) { this.pages.delete(i); this.dirtyPages.delete(i); }
+    if (len % B) {
+      const page = this.page(last) ?? this.freshPage(last);
+      page.fill(0, len % B);
+      this.dirtyPages.add(last);
+    }
+    this.zeroFrom = Math.min(this.zeroFrom, Math.ceil(len / B) * B);
+    this.size = len;
+    this.touch();
+    return true;
+  }
+
+  async truncate(len: number): Promise<void> {
+    while (!this.truncateSync(len)) {
+      if (this.dirtyPages.size >= DIRTY_PAGES && !this.unlinked) await this.flush(true);
+      else await this.loadPages(Math.min(len, this.size), Math.min(len, this.size) + 1, true);
+    }
+  }
+
+  /** `data` is a mapped shared object's buffer (attachInodeShared): never paged meanwhile. */
+  get shared(): boolean { return this.data.buffer instanceof SharedArrayBuffer; }
+
+  /**
+   * The file's bytes are in `view` from now (a shared object's buffer, seeded
+   * from this inode through pread): a paged file becomes a small one over it.
+   * Pages not yet written back are in it, so the inode writes it all back.
+   */
+  usePagesAsBuffer(view: Uint8Array): void {
+    const unwritten = this.dirtyPages.size > 0 || this.dirty;
+    this.blob = null;
+    this.pages.clear();
+    this.dirtyPages.clear();
+    this.zeroFrom = Infinity;
+    this.data = view;
+    if (unwritten) this.markDirty();
+  }
+
+  /** A big file no longer shared (its last mapping went): back to pages, all to be written back. */
+  pageIfBig(): void {
+    if (this.blob || this.shared || this.size < (this.fs.blobMin ?? Infinity)) return;
+    this.toPages();
+    this.markDirty();
+  }
+
+  /** To be written back, with the times it has (no new mtime). */
+  markDirty(): void {
+    if (!this.dirty) this.dirtySince = Date.now();
+    this.dirty = true;
+    if (!this.flushTimer) this.armFlush(FLUSH_DELAY_MS);
+  }
+
+  // ── Pages ──
+
+  /** Switch a small file to pages (it grew past blobMin): every page is new, to be written. */
+  private toPages(): void {
+    const B = this.B;
+    this.blob = this.fs.newBlobId();
+    for (let off = 0; off < this.size; off += B) {
+      const page = new Uint8Array(B);
+      page.set(this.data.subarray(off, Math.min(off + B, this.size)));
+      this.pages.set(off / B, page);
+      this.dirtyPages.add(off / B);
+    }
+    this.zeroFrom = 0;
+    this.data = new Uint8Array(0);
+  }
+
+  /** A loaded page, now the most recently used. */
+  private page(i: number): Uint8Array | undefined {
+    const page = this.pages.get(i);
+    if (page) { this.pages.delete(i); this.pages.set(i, page); }
+    return page;
+  }
+
+  /** A page that is zeros in the store: no load needed. */
+  private freshPage(i: number): Uint8Array {
+    const page = new Uint8Array(this.B);
+    this.pages.set(i, page);
+    return page;
+  }
+
+  /** Whether writing [off, end) needs no load: each page touched partially is loaded or zeros in the store. */
+  private writable(off: number, end: number): boolean {
+    if (this.dirtyPages.size >= DIRTY_PAGES && !this.unlinked) return false;
+    const B = this.B;
+    const ok = (p: number) => this.pages.has(Math.floor(p / B)) || Math.floor(p / B) * B >= Math.min(this.zeroFrom, this.size);
+    // Pages wholly overwritten need nothing; the partial ones at each end, and
+    // the one holding the old end when the write leaves a gap (it gets zeros after the end)
+    if (off % B && !ok(off)) return false;
+    if (end % B && end > off && !ok(end - 1)) return false;
+    if (off > this.size && this.size % B && !ok(this.size)) return false;
+    return true;
+  }
+
+  /** Growing to `to` (≥ size): the bytes between the old end and it read as zeros. */
+  private extendTo(to: number): void {
+    if (to <= this.size) return;
+    const B = this.B;
+    const i = Math.floor(this.size / B);
+    if (this.size % B && this.pages.has(i)) {
+      this.page(i)!.fill(0, this.size % B, Math.min(B, to - i * B));
+      this.dirtyPages.add(i);
+    }
+    // Pages past the old end that the store may still hold (cut off before)
+    this.zeroFrom = Math.min(this.zeroFrom, Math.ceil(this.size / B) * B);
+  }
+
+  /** Load the pages holding [from, to) (`partial`: only the first and last, for a write). The caller trims after using them. */
+  async loadPages(from: number, to: number, partial = false): Promise<void> {
+    const B = this.B;
+    const blob = this.blob;
+    if (!blob) return;
+    const want = new Set<number>();
+    if (partial) {
+      want.add(Math.floor(from / B));
+      if (to > from) want.add(Math.floor((to - 1) / B));
+      if (from > this.size) want.add(Math.floor(this.size / B));
+    } else {
+      for (let i = Math.floor(from / B); i * B < to; i++) want.add(i);
+    }
+    for (const i of want) {
+      if (this.pages.has(i)) continue;
+      const page = new Uint8Array(B);
+      if (i * B < Math.min(this.zeroFrom, this.size)) {
+        const stored = await this.fs.readBlock(blob, i);
+        if (this.blob !== blob || this.pages.has(i) || i * B >= this.zeroFrom) continue; // changed meanwhile
+        page.set(stored.subarray(0, Math.min(stored.length, B, this.size - i * B)));
+      }
+      this.pages.set(i, page);
+    }
+  }
+
+  /** Forget clean pages beyond KEEP_PAGES (least recently used first). */
+  private trimPages(): void {
+    let clean = this.pages.size - this.dirtyPages.size;
+    for (const i of this.pages.keys()) {
+      if (clean <= KEEP_PAGES) break;
+      if (this.dirtyPages.has(i)) continue;
+      this.pages.delete(i);
+      clean--;
+    }
+  }
+
+  private ensure(cap: number) {
     if (cap <= this.data.length) return;
     const next = new Uint8Array(Math.max(cap, this.data.length * 2, 256));
     next.set(this.data.subarray(0, this.size));
@@ -512,18 +811,39 @@ class Inode {
       this.flushTimer = null;
       const now = Date.now();
       const quiet = now - this.lastWrite;
-      // Each write-back copies the whole file: a big file being written (apt
-      // unpacking a 56 MB index) waits longer, or the copies grow quadratically
-      const mb = this.size / (1 << 20);
+      // Each write-back copies what it writes: a big small file (apt's 56 MB
+      // index before pages) waits longer, or the copies grow quadratically.
+      // A paged file writes only the pages written since.
+      const mb = (this.blob ? this.dirtyPages.size * this.B : this.size) / (1 << 20);
       const pause = Math.max(FLUSH_DELAY_MS, mb * 20);
       const most = Math.max(FLUSH_MAX_DELAY_MS, mb * 500);
       if (this.dirty && quiet < pause && now - this.dirtySince < most) this.armFlush(pause - quiet);
-      else void this.flush(true);
+      else void this.flush(true).catch(() => {});
     }, ms);
   }
 
   /** A write-back is in progress. */
   get busy(): boolean { return !!this.flushing; }
+
+  /**
+   * flush() without waiting, when the FileSystem has the node in memory and
+   * no backlog: the data goes into its cache now (stored by the next commit).
+   * False when that needs flush().
+   */
+  flushSync(): boolean {
+    if (this.flushing) return false;
+    if (!this.dirty || this.unlinked) return true;
+    if (this.blob) return false;
+    if (this.fs.pendingBytes > WRITE_BACKLOG_BYTES) return false;
+    const times = { mtime: this.mtimeMs, mtimeNs: this.mtimeNs, ...(this.atimeMs === null ? {} : { atime: this.atimeMs, atimeNs: this.atimeNs }) };
+    echo(this.fs, this.path, 1);
+    try {
+      if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
+    } finally { echo(this.fs, this.path, -1); }
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    this.dirty = false;
+    return true;
+  }
 
   /**
    * Write the data back to the FileSystem. `paced` (the write-back timer, a
@@ -533,36 +853,52 @@ class Inode {
    * wait for the disk (dpkg closed ~1700 files per python3 install, ~4 ms each);
    * fsync does (RegularFile.sync).
    */
-  /**
-   * flush() without waiting, when the FileSystem has the node in memory and
-   * no backlog: the data goes into its cache now (stored by the next commit).
-   * False when that needs flush().
-   */
-  flushSync(): boolean {
-    if (this.flushing) return false;
-    if (!this.dirty || this.unlinked) return true;
-    if (this.fs.pendingBytes > WRITE_BACKLOG_BYTES) return false;
-    const times = { mtime: this.mtimeMs, mtimeNs: this.mtimeNs, ...(this.atimeMs === null ? {} : { atime: this.atimeMs, atimeNs: this.atimeNs }) };
-    if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
-    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    this.dirty = false;
-    return true;
-  }
-
   async flush(paced = false): Promise<void> {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     while (this.flushing) await this.flushing;
     if (!this.dirty || this.unlinked) return;
     this.dirty = false;
-    const snapshot = this.data.slice(0, this.size);
     // With the times this inode reports (the last write's, or utimensat's), not the write-back's
     const times = { mtime: this.mtimeMs, mtimeNs: this.mtimeNs, ...(this.atimeMs === null ? {} : { atime: this.atimeMs, atimeNs: this.atimeNs }) };
-    // Refused (storage full: ENOSPC): the data stays here for a retry by fsync or close
-    const written = this.fs.writeFile(this.path, snapshot, { times }).catch((e) => { this.dirty = true; throw e; });
+    let written: Promise<void>;
+    if (this.blob) {
+      // The pages written since the last write-back, as copies of their bytes
+      // in the file (the pages stay, clean); pages cut off then grown back are zeros
+      const B = this.B;
+      const blocks: [number, Uint8Array | null][] = [];
+      const sent = [...this.dirtyPages].sort((a, b) => a - b);
+      for (const i of sent) {
+        const page = this.pages.get(i);
+        if (page && i * B < this.size) blocks.push([i, page.slice(0, Math.min(B, this.size - i * B))]);
+      }
+      for (let i = Math.ceil(this.zeroFrom / B); i * B < this.size; i++) if (!this.dirtyPages.has(i)) blocks.push([i, null]);
+      const zeroFrom = this.zeroFrom;
+      this.dirtyPages.clear();
+      this.zeroFrom = Infinity;
+      this.trimPages();
+      written = this.fs.writeBlocks(this.path, this.blob, this.size, blocks, { times }).catch((e) => {
+        // Refused (storage full: ENOSPC): written again by a retry (fsync, close).
+        // Pages dropped meanwhile come back from the blocks sent
+        this.dirty = true;
+        for (const [i, b] of blocks) {
+          if (!this.pages.has(i)) { const page = new Uint8Array(B); if (b) page.set(b); this.pages.set(i, page); }
+          this.dirtyPages.add(i);
+        }
+        this.zeroFrom = Math.min(this.zeroFrom, zeroFrom);
+        throw e;
+      });
+    } else {
+      const snapshot = this.data.slice(0, this.size);
+      // Refused (storage full: ENOSPC): the data stays here for a retry by fsync or close
+      written = this.fs.writeFile(this.path, snapshot, { times }).catch((e) => { this.dirty = true; throw e; });
+    }
     // Paced: writes made meanwhile go into one later snapshot. Past a backlog of
     // uncommitted data a close waits too, or a fast writer (dpkg unpacking)
     // holds it all in memory (python3's install peaked 150 MiB higher)
     const wait = paced || this.fs.pendingBytes > WRITE_BACKLOG_BYTES;
+    const path = this.path;
+    echo(this.fs, path, 1);
+    written = written.finally(() => echo(this.fs, path, -1));
     this.flushing = (wait ? written.then(() => this.fs.flushed()) : written).finally(() => { this.flushing = null; });
     await this.flushing;
   }
@@ -570,18 +906,214 @@ class Inode {
 
 const inodeTables = new WeakMap<FileSystem, Map<string, Inode>>();
 
+/**
+ * The inode table's key for canonical `path`: the path, or for a file with
+ * hard links its inode number, so every name's fds share one Inode.
+ */
+function inodeKey(fs: FileSystem, path: string): string {
+  const link = fs.linkOf?.(path);
+  return link === undefined ? path : `i:${link}`;
+}
+
+function tableOf(fs: FileSystem): Map<string, Inode> {
+  let table = inodeTables.get(fs);
+  if (!table) {
+    table = new Map();
+    inodeTables.set(fs, table);
+    // A link() or unlink() changes which names share a file: re-key the open ones
+    fs.onLinkChange?.(() => rekeyInodes(fs));
+  }
+  return table;
+}
+
+/** The open inode for canonical `path`, if any. */
+function findInode(fs: FileSystem, path: string): Inode | undefined {
+  const table = inodeTables.get(fs);
+  if (!table) return undefined;
+  return table.get(inodeKey(fs, path)) ?? [...table.values()].find((i) => i.path === path && !i.unlinked);
+}
+
+let anonymousSeq = 0;
+
+/**
+ * open(dir, O_TMPFILE): a file with no name in `dir`, kept for its fds only
+ * (never written back) until linkAnonymousInode names it. `linkable`: opened
+ * without O_EXCL.
+ */
+export function anonymousInode(fs: FileSystem, dir: string, mode: number, linkable: boolean): Inode {
+  const now = Date.now();
+  const ino = new Inode(fs, `${dir === '/' ? '' : dir}/#tmpfile-${++anonymousSeq}`, new Uint8Array(0), mode & 0o7777, now, now);
+  ino.unlinked = true;
+  ino.tmpfile = linkable;
+  ino.opens = 1;
+  return ino;
+}
+
+/**
+ * linkat(fd, "", AT_EMPTY_PATH) (or "/proc/self/fd/N" with AT_SYMLINK_FOLLOW)
+ * of an O_TMPFILE fd: the file gets the name `to` (canonical, free) and is
+ * that file from now on (its bytes written there, its fds writing back there).
+ */
+export async function linkAnonymousInode(fs: FileSystem, ino: Inode, to: string): Promise<void> {
+  if (!ino.tmpfile || !ino.unlinked) throw Object.assign(new Error('ENOENT: not a linkable O_TMPFILE file'), { code: 'ENOENT' });
+  ino.tmpfile = false;
+  ino.unlinked = false;
+  ino.path = to;
+  ino.markDirty();
+  try {
+    await ino.flush();
+    await fs.chmod(to, ino.mode & 0o7777);
+  } catch (e) {
+    ino.unlinked = true;
+    ino.tmpfile = true;
+    throw e;
+  }
+  ino.key = inodeKey(fs, to);
+  tableOf(fs).set(ino.key, ino);
+}
+
+/** Recompute the keys of open inodes (their files gained or lost names). */
+export function rekeyInodes(fs: FileSystem): void {
+  const table = inodeTables.get(fs);
+  if (!table) return;
+  for (const ino of [...table.values()]) {
+    const k = inodeKey(fs, ino.path);
+    if (k === ino.key) continue;
+    if (table.get(ino.key) === ino) table.delete(ino.key);
+    ino.key = k;
+    if (!table.has(k)) table.set(k, ino);
+  }
+}
+
+/** An open inode whose last name went: its data stays for its fds (a big file's blocks held), never written back. */
+function orphanInode(ino: Inode): void {
+  if (!ino.unlinked) fileWatchers.get(ino.fs)?.orphaned(ino, ino.path);
+  ino.unlinked = true;
+  const table = inodeTables.get(ino.fs);
+  if (table?.get(ino.key) === ino) table.delete(ino.key);
+  if (ino.blob && !ino.heldBlob) { ino.heldBlob = ino.blob; ino.fs.holdBlob?.(ino.blob); }
+}
+
+function inodeClosed(ino: Inode): void {
+  if (ino.opens !== 0) return;
+  if (ino.unlinked && !ino.tmpfile) fileWatchers.get(ino.fs)?.inodeGone(ino);
+  const table = inodeTables.get(ino.fs);
+  if (table?.get(ino.key) === ino) table.delete(ino.key);
+  if (ino.heldBlob) { ino.fs.releaseBlob?.(ino.heldBlob); ino.heldBlob = null; }
+}
+
+/**
+ * /dev/shm files mapped remote (shmobj.ts): while mapped, the object's
+ * SharedArrayBuffer holds the file's bytes, so the inode reads and writes
+ * there (pread sees the mapping, the mapping sees pwrite), as a memfd does.
+ * Kept by inode key (the path, or the inode of a file with hard links) so
+ * an inode opened while it is mapped (shm_open after a close, or through
+ * another name) uses the buffer too.
+ */
+const sharedFiles = new WeakMap<FileSystem, Map<string, Uint8Array>>();
+
+/**
+ * The buffer holds the file's bytes (seeded from the fd when the object
+ * turned remote): the inode uses it in place of its own array, which it
+ * keeps for the detach (it may be the FileSystem node's own content).
+ */
+function useShared(ino: Inode, view: Uint8Array): void {
+  if (view.length < ino.size || ino.data.buffer === view.buffer) return; // (grown past the mapping: stays private)
+  // A big file's pages: the buffer holds its bytes; the detach copies them out
+  if (ino.blob) { ino.privateData = new Uint8Array(0); ino.usePagesAsBuffer(view); return; }
+  ino.privateData = ino.data;
+  ino.data = view;
+}
+
+/** The shared object for the file at `path` turned remote: its fds use `sab`'s first `length` bytes. */
+export function attachInodeShared(fs: FileSystem, path: string, sab: SharedArrayBuffer, length: number, file?: OpenFile): void {
+  const view = new Uint8Array(sab, 0, length);
+  // the mapped fd's own inode: once unlinked (shm_open then shm_unlink, Open
+  // POSIX mmap_7-4) it's no longer the path's, and the path (a new file of
+  // that name, maybe) has nothing to do with this object
+  const own = file instanceof RegularFile ? file.inode : undefined;
+  if (own?.unlinked) { useShared(own, view); return; }
+  let m = sharedFiles.get(fs);
+  if (!m) { m = new Map(); sharedFiles.set(fs, m); }
+  m.set(inodeKey(fs, path), view);
+  const ino = findInode(fs, path);
+  if (ino) useShared(ino, view);
+  if (own && own !== ino) useShared(own, view);
+}
+
+/** Back to its own array, with the bytes it has now. */
+function detachInode(ino: Inode): void {
+  if (!(ino.data.buffer instanceof SharedArrayBuffer)) return;
+  const own = ino.privateData;
+  ino.privateData = undefined;
+  if (own && own.length >= ino.size) { own.set(ino.data.subarray(0, ino.size)); ino.data = own; }
+  else ino.data = ino.data.slice(0, ino.size);
+  ino.pageIfBig();
+}
+
+/** Its last mapping went: the inode keeps a private copy of the bytes it has now. */
+function detachInodeShared(fs: FileSystem, path: string): void {
+  sharedFiles.get(fs)?.delete(inodeKey(fs, path));
+  const ino = findInode(fs, path);
+  if (ino) detachInode(ino);
+}
+
+/**
+ * The last mapping of the object `file` mapped went: its own inode leaves the
+ * buffer too (an unlinked one isn't the path's; it would keep the buffer alive).
+ */
+export function detachOpenFileShared(file: OpenFile): void {
+  if (!(file instanceof RegularFile)) return;
+  const ino = file.inode;
+  // A closed one (no fd has it, nothing to write back) just lets go of the buffer
+  if (ino.opens === 0) {
+    if (ino.data.buffer instanceof SharedArrayBuffer) { ino.data = new Uint8Array(0); ino.privateData = undefined; }
+    return;
+  }
+  detachInode(ino);
+}
+
+/** The shared object's buffer `file`'s inode reads and writes, if it is attached to one. */
+export function sharedBufferOf(file: OpenFile): ArrayBufferLike | undefined {
+  return file instanceof RegularFile && file.inode.shared ? file.inode.data.buffer : undefined;
+}
+
+const inodeIds = new WeakMap<Inode, number>();
+let nextInodeId = 1;
+/**
+ * A shared-object key for `file` when it is an unlinked file (its own inode,
+ * not its old name's number: a new file of that name is another object), else
+ * undefined.
+ */
+export function unlinkedFileKey(file: OpenFile): string | undefined {
+  if (!(file instanceof RegularFile) || !file.inode.unlinked) return undefined;
+  let id = inodeIds.get(file.inode);
+  if (!id) { id = nextInodeId++; inodeIds.set(file.inode, id); }
+  return `unlinked:${id}`;
+}
+
+function newInode(fs: FileSystem, path: string, ino: Inode): Inode {
+  const shared = sharedFiles.get(fs)?.get(inodeKey(fs, path));
+  if (shared) useShared(ino, shared);
+  return ino;
+}
+
 /** Open (or share) the inode for `path`; `path` must already be resolved and exist or be created by the caller. */
 export async function openInode(fs: FileSystem, path: string): Promise<Inode> {
-  let table = inodeTables.get(fs);
-  if (!table) { table = new Map(); inodeTables.set(fs, table); }
-  let ino = table.get(path);
+  const table = tableOf(fs);
+  let ino = findInode(fs, path);
   if (!ino) {
     const st = await fs.stat(path);
-    const raw = await fs.readFile(path);
+    // A big file is read a page at a time, not loaded here
+    let blob = fs.blobOf?.(path);
+    let raw = blob ? new Uint8Array(0) : await fs.readFile(path);
+    // A lazy file the read just fetched may be stored as blocks now
+    if (!blob && (blob = fs.blobOf?.(path))) raw = new Uint8Array(0);
     const bytes = typeof raw === 'string' ? new TextEncoder().encode(raw) : raw;
-    ino = table.get(path) ?? new Inode(fs, path, bytes, st.mode, st.mtime.getTime(), st.ctime.getTime(),
-      { mtimeNs: st.mtimeNs, atime: st.atimeMs === st.mtime.getTime() && st.atimeNs === st.mtimeNs ? undefined : st.atimeMs, atimeNs: st.atimeNs });
-    table.set(path, ino);
+    ino = findInode(fs, path) ?? newInode(fs, path, new Inode(fs, path, bytes, st.mode, st.mtime.getTime(), st.ctime.getTime(),
+      { mtimeNs: st.mtimeNs, atime: st.atimeMs === st.mtime.getTime() && st.atimeNs === st.mtimeNs ? undefined : st.atimeMs, atimeNs: st.atimeNs },
+      blob ? { id: blob, size: st.size } : undefined));
+    if (!ino.key) { ino.key = inodeKey(fs, path); table.set(ino.key, ino); }
   }
   ino.opens++;
   return ino;
@@ -590,14 +1122,16 @@ export async function openInode(fs: FileSystem, path: string): Promise<Inode> {
 /** openInode for a file whose node the FileSystem has in memory (FileSystem.lookupCached). */
 export function openInodeSync(fs: FileSystem, path: string, node: {
   content: Uint8Array | null; mode: number; mtime: number; ctime: number; mtimeNs?: number; atime?: number; atimeNs?: number;
+  size?: number; blob?: string;
 }): Inode {
-  let table = inodeTables.get(fs);
-  if (!table) { table = new Map(); inodeTables.set(fs, table); }
-  let ino = table.get(path);
+  const table = tableOf(fs);
+  let ino = findInode(fs, path);
   if (!ino) {
-    // Like readFile: the cached node's bytes, null meaning empty
-    ino = new Inode(fs, path, node.content ?? new Uint8Array(0), node.mode, node.mtime, node.ctime, node);
-    table.set(path, ino);
+    // Like readFile: the cached node's bytes, null meaning empty (a big file's are read a page at a time)
+    ino = newInode(fs, path, new Inode(fs, path, node.blob ? new Uint8Array(0) : node.content ?? new Uint8Array(0), node.mode, node.mtime, node.ctime, node,
+      node.blob ? { id: node.blob, size: node.size ?? 0 } : undefined));
+    ino.key = inodeKey(fs, path);
+    table.set(ino.key, ino);
   }
   ino.opens++;
   return ino;
@@ -612,10 +1146,9 @@ export async function writeBackAll(fs: FileSystem): Promise<void> {
 /** closeInode when nothing needs to be written back; false = use closeInode. */
 function closeInodeSync(ino: Inode): boolean {
   // Written data goes back now when the FileSystem can take it synchronously (node in a Worker closes after each write)
-  if (ino.busy || (ino.dirty && !ino.flushSync())) return false;
+  if (ino.busy || (ino.dirty && !ino.unlinked && !ino.flushSync())) return false;
   ino.opens--;
-  const table = inodeTables.get(ino.fs);
-  if (ino.opens === 0 && table?.get(ino.path) === ino) table.delete(ino.path);
+  inodeClosed(ino);
   return true;
 }
 
@@ -624,8 +1157,7 @@ async function closeInode(ino: Inode): Promise<void> {
   try {
     await ino.flush();
   } finally {
-    const table = inodeTables.get(ino.fs);
-    if (ino.opens === 0 && table?.get(ino.path) === ino) table.delete(ino.path);
+    inodeClosed(ino);
   }
 }
 
@@ -639,35 +1171,71 @@ async function closeInode(ino: Inode): Promise<void> {
 export async function renameInodes(fs: FileSystem, from: string, to: string): Promise<() => void> {
   const table = inodeTables.get(fs);
   if (!table) return () => {};
-  const moved = [...table.values()].filter(ino => ino.path === from || ino.path.startsWith(from + '/'));
+  // Two names of one file: rename does nothing
+  const fromLink = fs.linkOf?.(from);
+  if (fromLink !== undefined && fs.linkOf?.(to) === fromLink) return () => {};
+  const moved = [...table.values()].filter(ino => !ino.unlinked && (ino.path === from || ino.path.startsWith(from + '/')));
   for (const ino of moved) await ino.flush();
+  const old = findInode(fs, to);
+  const oldNames = old ? fs.namesOf?.(to) ?? [to] : [];
   return () => {
-    const old = table.get(to);
-    if (old && !moved.includes(old)) { old.unlinked = true; table.delete(to); }
-    for (const ino of moved) {
-      table.delete(ino.path);
-      ino.path = to + ino.path.slice(from.length);
-      table.set(ino.path, ino);
+    if (old && !moved.includes(old)) {
+      // The name `to` goes from the file open there: its other names keep it
+      const others = oldNames.filter((n) => n !== to);
+      if (!others.length) orphanInode(old);
+      else if (old.path === to) old.path = others[0];
     }
+    for (const ino of moved) ino.path = to + ino.path.slice(from.length);
+    rekeyInodes(fs);
   };
 }
 
 /**
+ * Call before FileSystem.exchange(a, b): writes back what open files under
+ * either hold, and afterwards (the returned function) swaps their paths.
+ */
+export async function exchangeInodes(fs: FileSystem, a: string, b: string): Promise<() => void> {
+  const table = inodeTables.get(fs);
+  if (!table) return () => {};
+  const under = (p: string) => [...table.values()].filter((ino) => !ino.unlinked && (ino.path === p || ino.path.startsWith(p + '/')));
+  const ia = under(a), ib = under(b);
+  for (const ino of [...ia, ...ib]) await ino.flush();
+  return () => {
+    for (const ino of ia) ino.path = b + ino.path.slice(a.length);
+    for (const ino of ib) ino.path = a + ino.path.slice(b.length);
+    rekeyInodes(fs);
+  };
+}
+
+/** link() gave the file at `path` another name: an open one's st_ctime moves (its fstat answers from the inode). */
+export function touchInodeCtime(fs: FileSystem, path: string): void {
+  const ino = findInode(fs, path);
+  if (ino) ino.ctimeMs = Date.now();
+}
+
+/**
  * Call before unlinking `path`: open descriptions keep its data but never
- * write it back (this waits out a write-back already under way).
+ * write it back (this waits out a write-back already under way). A file
+ * with other names stays theirs.
  */
 export async function unlinkInode(fs: FileSystem, path: string): Promise<void> {
-  const table = inodeTables.get(fs);
-  const ino = table?.get(path);
-  if (!ino || !table) return;
-  ino.unlinked = true;
-  table.delete(path);
+  const others = (fs.namesOf?.(path) ?? [path]).filter((n) => n !== path);
+  // The last name of a mapped object goes: a new file of that name is another object
+  if (!others.length) sharedFiles.get(fs)?.delete(inodeKey(fs, path));
+  const ino = findInode(fs, path);
+  if (!ino) return;
+  if (others.length) {
+    if (ino.path === path) { await ino.flush(); ino.path = others[0]; }
+    ino.ctimeMs = Date.now(); // (st_nlink changed)
+    return;
+  }
+  orphanInode(ino);
   await ino.flush();
 }
 
 /** Whether `path` (resolved) is open: unlink must then hand its data to the open fds. */
 export function isInodeOpen(fs: FileSystem, path: string): boolean {
-  return !!inodeTables.get(fs)?.has(path);
+  return !!findInode(fs, path);
 }
 
 /** Whether any file of `fs` is open (inodeStat can only answer then). */
@@ -680,13 +1248,13 @@ export function hasOpenInodes(fs: FileSystem): boolean {
  * FileSystem: its size and times are the newer ones until written back.
  */
 export function inodeStat(fs: FileSystem, path: string): KStat | undefined {
-  const ino = inodeTables.get(fs)?.get(path);
+  const ino = findInode(fs, path);
   return ino && (ino.dirty || ino.busy) ? inodeKStat(ino) : undefined;
 }
 
 function inodeKStat(ino: Inode): KStat {
   return {
-    dev: 1, ino: inodeNumber(ino.fs, ino.path), mode: S_IFREG | (ino.mode & 0o7777), nlink: linkCount(ino.fs, ino.path), uid: 1000, gid: 1000, rdev: 0,
+    dev: 1, ino: inodeNumber(ino.fs, ino.path), mode: S_IFREG | (ino.mode & 0o7777), nlink: ino.unlinked ? 0 : linkCount(ino.fs, ino.path), uid: 1000, gid: 1000, rdev: 0,
     size: ino.size, blksize: 4096, blocks: Math.ceil(ino.size / 512),
     atimeMs: ino.atimeMs ?? ino.mtimeMs, mtimeMs: ino.mtimeMs, ctimeMs: ino.ctimeMs,
     atimeNs: ino.atimeMs === null ? ino.mtimeNs : ino.atimeNs, mtimeNs: ino.mtimeNs,
@@ -695,12 +1263,30 @@ function inodeKStat(ino: Inode): KStat {
 
 /** Write back what an open inode for `path` holds (before reading the path's times from the FileSystem). */
 export async function flushInode(fs: FileSystem, path: string): Promise<void> {
-  await inodeTables.get(fs)?.get(path)?.flush();
+  await findInode(fs, path)?.flush();
+}
+
+/**
+ * A shared object's final bytes (shmobj.ts) go to `path`: into its open
+ * inode, if any, which fds read and which writes them back (writing the
+ * FileSystem behind it would be overwritten by its next write-back); only
+ * the bytes within the file's size. False when no inode is open.
+ */
+export async function writeInodeBytes(fs: FileSystem, path: string, bytes: Uint8Array): Promise<boolean> {
+  detachInodeShared(fs, path);
+  const ino = findInode(fs, path);
+  if (!ino || ino.unlinked) return false;
+  const n = Math.min(bytes.length, ino.size);
+  // A big file not switched to the buffer (it had grown past the mapping) is pages
+  if (ino.blob) { await ino.writeAt(bytes.subarray(0, n), 0); return true; }
+  ino.data.set(bytes.subarray(0, n));
+  ino.touch();
+  return true;
 }
 
 /** chmod of `path`: an open inode reports (inodeStat) the new mode. */
 export function setInodeMode(fs: FileSystem, path: string, mode: number): void {
-  const ino = inodeTables.get(fs)?.get(path);
+  const ino = findInode(fs, path);
   if (ino) ino.mode = (ino.mode & ~0o7777) | (mode & 0o7777);
 }
 
@@ -710,7 +1296,7 @@ export function setInodeMode(fs: FileSystem, path: string, mode: number): void {
  * then reports the new times. Call before FileSystem.utimes.
  */
 export async function setInodeTimes(fs: FileSystem, path: string, t: { atimeMs: number; atimeNs: number; mtimeMs: number; mtimeNs: number }): Promise<void> {
-  const ino = inodeTables.get(fs)?.get(path);
+  const ino = findInode(fs, path);
   if (!ino) return;
   await ino.flush();
   ino.mtimeMs = t.mtimeMs;
@@ -735,40 +1321,11 @@ export function inodeNumber(fs: FileSystem | null | undefined, path: string): nu
 }
 
 /**
- * link() copies (no hard links), but the copy gets its source's inode number,
- * as a hard link would (git's local clone checks that), and both names count
- * in st_nlink.
- */
-export function shareInodeNumber(fs: FileSystem, from: string, to: string): void {
-  const n = inodeNumber(fs, from);
-  forgetInodeNumber(fs, to);
-  fs.setIno(to, n);
-  let names = linkNames.get(n);
-  if (!names) { names = new Set([from]); linkNames.set(n, names); }
-  names.add(to);
-}
-
-/** `path` is unlinked (or renamed away): it no longer counts as a link. */
-export function forgetInodeNumber(fs: FileSystem, path: string): void {
-  for (const [n, names] of linkNames) {
-    if (names.delete(path)) { if (names.size < 2) linkNames.delete(n); break; }
-  }
-}
-
-/** A rename moves a link name (the number moves with the node). */
-export function renameLinkName(from: string, to: string): void {
-  for (const names of linkNames.values()) if (names.delete(from)) { names.add(to); break; }
-}
-
-/** The names link() gave one inode number (only numbers with two or more). */
-const linkNames = new Map<number, Set<string>>();
-
-/**
- * st_nlink of a regular file: how many names link() gave it (shadow's
- * lock, link(group.PID, group.lock), checks that the count went to 2).
+ * st_nlink of a regular file: how many names it has (FileSystem.link;
+ * shadow's lock, link(group.PID, group.lock), checks that the count went to 2).
  */
 export function linkCount(fs: FileSystem | null | undefined, path: string): number {
-  return linkNames.get(inodeNumber(fs, path))?.size ?? 1;
+  return fs?.nlinkOf?.(path) ?? 1;
 }
 
 export class RegularFile implements OpenFile {
@@ -777,60 +1334,93 @@ export class RegularFile implements OpenFile {
   private listeners = new ReadyListeners();
   private closed = false;
 
-  constructor(private ino: Inode, public flags: number) {}
+  constructor(private ino: Inode, public flags: number) { this.note(0x20); } // IN_OPEN
+
+  /** inotify: what this description did to its file, when something watches it */
+  private note(mask: number): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, mask);
+    else if (w.watched(this.ino.path)) w.fileEvent(this.ino.path, mask);
+  }
+  /** a write or truncate: IN_MODIFY, through the FileSystem's change events (fs.watch hears it too) */
+  private modified(): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, 0x2); // IN_MODIFY
+    else if (w.watched(this.ino.path)) this.ino.fs.notify('write', this.ino.path, undefined, { fd: true });
+  }
 
   get path(): string { return this.ino.path; }
+  /** (attachInodeShared) */
+  get inode(): Inode { return this.ino; }
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same file, unlinked or not */
+  reopen(flags: number): RegularFile {
+    this.ino.opens++;
+    return new RegularFile(this.ino, flags);
+  }
 
-  async read(buf: Uint8Array): Promise<number> { return this.tryRead(buf); }
-
-  tryRead(buf: Uint8Array): number {
+  async read(buf: Uint8Array): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
-    const n = Math.max(0, Math.min(buf.length, this.ino.size - this.pos));
-    if (n > 0) buf.set(this.ino.data.subarray(this.pos, this.pos + n));
+    const n = await this.ino.readAt(buf, this.pos);
     this.pos += n;
+    if (n > 0) this.note(0x1); // IN_ACCESS
     return n;
   }
 
-  async write(buf: Uint8Array): Promise<number> { return this.tryWrite(buf); }
+  /** undefined: a page of a big file must load first (read). */
+  tryRead(buf: Uint8Array): number | undefined {
+    if (!canRead(this.flags)) return -EBADF;
+    const n = this.ino.readSync(buf, this.pos);
+    if (n !== undefined) this.pos += n;
+    if (n) this.note(0x1);
+    return n;
+  }
 
-  tryWrite(buf: Uint8Array): number {
+  async write(buf: Uint8Array): Promise<number> {
     if (!canWrite(this.flags)) return -EBADF;
     const ino = this.ino;
-    if (this.flags & O_APPEND) this.pos = ino.size;
-    const end = this.pos + buf.length;
-    ino.ensure(end);
-    if (this.pos > ino.size) ino.data.fill(0, ino.size, this.pos);
-    ino.data.set(buf, this.pos);
-    if (end > ino.size) ino.size = end;
-    this.pos = end;
-    ino.touch();
+    const at = this.flags & O_APPEND ? ino.size : this.pos;
+    if (!ino.writeSync(buf, at)) await ino.writeAt(buf, at);
+    this.pos = at;
+    return this.wrote(buf.length);
+  }
+
+  /** undefined: a big file must load a page or store written ones first (write). */
+  tryWrite(buf: Uint8Array): number | undefined {
+    if (!canWrite(this.flags)) return -EBADF;
+    const ino = this.ino;
+    const pos = this.flags & O_APPEND ? ino.size : this.pos;
+    if (!ino.writeSync(buf, pos)) return undefined;
+    this.pos = pos;
+    return this.wrote(buf.length);
+  }
+
+  private wrote(n: number): number {
+    this.pos += n;
+    this.modified();
     // O_SYNC/O_DSYNC: start the write-back now rather than after the usual delay
-    if (this.flags & O_DSYNC) void ino.flush();
-    return buf.length;
+    if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
+    return n;
   }
 
   async pread(buf: Uint8Array, off: number): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
     if (off < 0) return -EINVAL;
-    const n = Math.max(0, Math.min(buf.length, this.ino.size - off));
-    if (n > 0) buf.set(this.ino.data.subarray(off, off + n));
+    const n = await this.ino.readAt(buf, off);
+    if (n > 0) this.note(0x1);
     return n;
   }
 
   async pwrite(buf: Uint8Array, off: number): Promise<number> {
     if (!canWrite(this.flags)) return -EBADF;
     if (off < 0) return -EINVAL;
-    const save = this.pos;
-    const append = this.flags & O_APPEND; // Linux: pwrite on O_APPEND appends
-    this.pos = off;
-    if (append) this.flags &= ~O_APPEND;
-    try {
-      if (append) this.pos = this.ino.size;
-      return this.tryWrite(buf);
-    } finally {
-      if (append) this.flags |= O_APPEND;
-      this.pos = save;
-    }
+    // Linux: pwrite on O_APPEND appends
+    const at = this.flags & O_APPEND ? this.ino.size : off;
+    if (!this.ino.writeSync(buf, at)) await this.ino.writeAt(buf, at);
+    if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
+    this.modified();
+    return buf.length;
   }
 
   seek(off: number, whence: number): number {
@@ -845,16 +1435,20 @@ export class RegularFile implements OpenFile {
     return next;
   }
 
-  async truncate(len: number): Promise<number> { return this.truncateSync(len); }
-
-  truncateSync(len: number): number {
+  async truncate(len: number): Promise<number> {
     if (!canWrite(this.flags)) return -EINVAL;
     if (len < 0) return -EINVAL;
-    const ino = this.ino;
-    ino.ensure(len);
-    if (len > ino.size) ino.data.fill(0, ino.size, len);
-    ino.size = len;
-    ino.touch();
+    await this.ino.truncate(len);
+    this.modified();
+    return 0;
+  }
+
+  /** undefined: a page of a big file must load first (truncate). Truncating to 0 never needs one. */
+  truncateSync(len: number): number | undefined {
+    if (!canWrite(this.flags)) return -EINVAL;
+    if (len < 0) return -EINVAL;
+    if (!this.ino.truncateSync(len)) return undefined;
+    this.modified();
     return 0;
   }
 
@@ -885,6 +1479,7 @@ export class RegularFile implements OpenFile {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10); // IN_CLOSE_WRITE, IN_CLOSE_NOWRITE
     await closeInode(this.ino);
   }
 
@@ -892,8 +1487,31 @@ export class RegularFile implements OpenFile {
     if (this.closed) return true;
     if (!closeInodeSync(this.ino)) return false;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10);
     return true;
   }
+}
+
+/**
+ * open(symlink, O_PATH|O_NOFOLLOW): a descriptor naming the symlink itself.
+ * fstat (and fstatat AT_EMPTY_PATH) is the link's lstat, readlinkat(fd, "")
+ * its target, linkat(fd, "", AT_EMPTY_PATH) gives it another name; no I/O.
+ */
+export class SymlinkPathFile implements OpenFile {
+  kind: OpenFileKind = 'file';
+  flags = O_PATH;
+  constructor(public path: string, private lstat: () => Promise<KStat | number>) {}
+  async read(): Promise<number> { return -EBADF; }
+  async write(): Promise<number> { return -EBADF; }
+  poll(): number { return 0; }
+  onReady(): () => void { return () => {}; }
+  async stat(): Promise<KStat> {
+    const st = await this.lstat();
+    if (typeof st === 'number') throw Object.assign(new Error('stat'), { errno: -st });
+    return st;
+  }
+  async close(): Promise<void> {}
+  closeSync(): boolean { return true; }
 }
 
 /** A directory stream (open(dir, O_RDONLY|O_DIRECTORY)); getdents reads it. */
@@ -901,7 +1519,11 @@ export class DirFile implements OpenFile {
   kind: OpenFileKind = 'dir';
   private entries: string[] | null = null;
   private listeners = new ReadyListeners();
-  constructor(private fs: FileSystem, public path: string, public flags: number) {}
+  /** The directory's last known stat: fstat still answers once it's removed (nlink 0), as on Linux */
+  private last: KStat | undefined;
+  constructor(private fs: FileSystem, public path: string, public flags: number) {
+    this.last = this.statSync();
+  }
   async read(): Promise<number> { return -EISDIR; }
   async write(): Promise<number> { return -EBADF; }
   seek(off: number, whence: number): number {
@@ -920,8 +1542,15 @@ export class DirFile implements OpenFile {
   poll(events: number): number { return events & POLLIN; }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> {
-    const st = await this.fs.stat(this.path);
-    return {
+    let st;
+    try { st = await this.fs.stat(this.path); } catch { st = null; }
+    if (!st || !st.isDirectory()) {
+      // removed (LTP readahead01's directory fd)
+      const now = Date.now();
+      return { ...(this.last ?? { dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | 0o700, uid: 1000, gid: 1000, rdev: 0,
+        size: 4096, blksize: 4096, blocks: 8, atimeMs: now, mtimeMs: now, ctimeMs: now }), nlink: 0 };
+    }
+    return this.last = {
       dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | (st.mode & 0o7777), nlink: 2, uid: 1000, gid: 1000, rdev: 0,
       size: 4096, blksize: 4096, blocks: 8,
       atimeMs: st.atimeMs ?? st.mtime.getTime(), mtimeMs: st.mtime.getTime(), ctimeMs: st.ctime.getTime(),
@@ -1052,17 +1681,21 @@ export class EventFile implements OpenFile {
     this.wake();
     return 8;
   }
-  async write(buf: Uint8Array): Promise<number> {
+  /** A write that would take the counter past its maximum waits for a read (EAGAIN nonblocking), as on Linux (LTP eventfd02) */
+  async write(buf: Uint8Array, signal?: AbortSignal): Promise<number> {
     if (buf.length < 8) return -EINVAL;
     const v = new DataView(buf.buffer, buf.byteOffset, 8).getBigUint64(0, true);
     if (v === 0xffffffffffffffffn) return -EINVAL;
+    while (this.count + v > 0xfffffffffffffffen) {
+      if (this.flags & O_NONBLOCK) return -EAGAIN;
+      if (!(await abortableWait(this.waiters, signal))) return -EINTR;
+    }
     this.count += v;
-    if (this.count > 0xfffffffffffffffen) this.count = 0xfffffffffffffffen;
     this.wake();
     return 8;
   }
   poll(events: number): number {
-    return ((this.count > 0n ? POLLIN : 0) | POLLOUT) & events;
+    return ((this.count > 0n ? POLLIN : 0) | (this.count < 0xfffffffffffffffen ? POLLOUT : 0)) & events;
   }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> { return charDevStat(0); }
@@ -1077,21 +1710,44 @@ let nextMemIno = 1;
  * refuses it, as it does regular files). Blink backs the /proc files it
  * generates (/proc/self/maps) with one, so they seek and poll as Linux's do.
  */
+/** A memfd's contents, shared by its open descriptions (a reopen through /proc/self/fd makes another). */
+interface MemStore {
+  data: Uint8Array<ArrayBufferLike>;
+  len: number;
+  ino: number;
+  mtimeMs: number;
+  seals: number;
+  listeners: ReadyListeners;
+  /** Open descriptions */
+  refs: number;
+}
+
 export class MemFile implements OpenFile {
   kind: OpenFileKind = 'file';
-  private data: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-  private len = 0;
   private pos = 0;
-  private ino = nextMemIno++;
-  private mtimeMs = Date.now();
-  private listeners = new ReadyListeners();
+  private store: MemStore;
+  private get data(): Uint8Array<ArrayBufferLike> { return this.store.data; }
+  private set data(d: Uint8Array<ArrayBufferLike>) { this.store.data = d; }
+  private get len(): number { return this.store.len; }
+  private set len(n: number) { this.store.len = n; }
+  private get ino(): number { return this.store.ino; }
+  private get mtimeMs(): number { return this.store.mtimeMs; }
+  private set mtimeMs(t: number) { this.store.mtimeMs = t; }
+  private get listeners(): ReadyListeners { return this.store.listeners; }
   /**
    * fcntl F_ADD_SEALS/F_GET_SEALS bits (F_SEAL_*). Without MFD_ALLOW_SEALING
    * a memfd starts sealed against more seals, as Linux's does.
    */
-  seals = F_SEAL_SEAL;
+  get seals(): number { return this.store.seals; }
+  set seals(v: number) { this.store.seals = v; }
 
-  constructor(public path: string, public flags = O_RDWR) {}
+  constructor(public path: string, public flags = O_RDWR, store?: MemStore) {
+    this.store = store ?? { data: new Uint8Array(0), len: 0, ino: nextMemIno++, mtimeMs: Date.now(), seals: F_SEAL_SEAL, listeners: new ReadyListeners(), refs: 0 };
+    this.store.refs++;
+  }
+
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same memfd */
+  reopen(flags: number): MemFile { return new MemFile(this.path, flags, this.store); }
 
   /** Shared-object key (shmobj.ts): unique per memfd */
   get shareKey(): string { return `memfd:${this.ino}`; }
@@ -1184,5 +1840,10 @@ export class MemFile implements OpenFile {
     };
   }
   async stat(): Promise<KStat> { return this.statSync(); }
-  async close(): Promise<void> { this.data = new Uint8Array(0); this.len = 0; }
+  async close(): Promise<void> {
+    // (the last description frees the contents)
+    if (--this.store.refs > 0) return;
+    this.data = new Uint8Array(0);
+    this.len = 0;
+  }
 }

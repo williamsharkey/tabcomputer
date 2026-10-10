@@ -67,10 +67,6 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     workaround: 'Run the install again.',
   },
   {
-    issue: 'The shell sets `FORCE_COLOR=3`, so Node tools print color codes even into pipes and files.',
-    workaround: 'Prefix commands whose output you parse with `NO_COLOR=1 FORCE_COLOR=0`.',
-  },
-  {
     issue: '`gh issue view --comments` is not implemented (an unknown-flag error).',
     workaround: 'Use `gh api repos/OWNER/REPO/issues/N/comments --jq ".[].body"`.',
   },
@@ -131,6 +127,13 @@ ${bootSection(ctx, name)}
   correct, but big programs take seconds to start. WASM programs run directly.
 - \`node\`, \`npm\` and \`npx\` are a Node.js-compatible runtime built into the page,
   not real Node. Most pure-JS npm packages work; native addons (\`.node\`) don't.
+  Each \`node\` is a real process in a background worker: \`*Sync\` child_process
+  calls block, \`ps\` and \`kill\` see it, and a server (\`node server.js\`, \`npm run
+  dev\`) stays in the foreground while it listens, as on Linux. Start one with
+  \`&\` (\`node server.js > server.log 2>&1 &\`) to keep using the shell, and stop it
+  with \`kill %1\`. That needs a cross-origin isolated page (\`doctor\` says;
+  ${site} is one): elsewhere, or with \`TABCOMPUTER_NODE_WORKER=0\`, node runs in
+  the page instead.
 - Network: outbound HTTP(S) works. Linux programs get TCP through the site's
   relay when it is on (ports 22, 80, 443, 9418); UDP is DNS only. Nothing on the
   internet can connect in.
@@ -198,11 +201,13 @@ ${bootSection(ctx, name)}
   only say "Could not connect".
 - A command that hangs: press Ctrl-C at the terminal. Linux and WASM programs are
   kernel processes: \`ps\` lists them, \`kill PID\` (or \`kill -9 PID\`) stops
-  them. Builtins (including \`node\` and the Pyodide
-  \`python3\`) run inside the page, not as kernel processes: their \`$!\` has no
-  \`/proc\` entry and \`ps\` doesn't list them. In the shell that started one in
-  the background, \`jobs -l\` shows its PID and \`kill PID\` stops it; from
-  anywhere else, a reload is the only way.
+  them; \`node\` is one too. Builtins (the Pyodide \`python3\`, and \`node\` with
+  \`TABCOMPUTER_NODE_WORKER=0\`) run inside the page, not as kernel processes.
+  Started in the background, one still has a PID (\`$!\`, \`jobs -l\`): \`ps\`
+  lists it, it has a \`/proc/PID\`, and \`kill PID\` stops it from any shell. A
+  builtin in the foreground has none: Ctrl-C it, or reload.
+- If a boot freezes, \`?safe=1\` in the address skips ~/.profile and the saved
+  layout; \`safe-mode\` lists what failed.
 - \`console -g PATTERN\` searches the page's console log (\`--prev\` includes the
   load before the last reload).
 - Report bugs at ${source}/issues (\`gh issue create\` works here): the command,

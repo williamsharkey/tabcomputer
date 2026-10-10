@@ -30,6 +30,16 @@ export const SYS_exit = 60;
 export const SYS_wait4 = 61;
 export const SYS_kill = 62;
 export const SYS_fcntl = 72;
+export const SYS_flock = 73;
+export const SYS_splice = 275;
+export const SYS_tee = 276;
+export const SYS_vmsplice = 278;
+export const SYS_copy_file_range = 326;
+/** flock(2) operations */
+export const LOCK_SH = 1;
+export const LOCK_EX = 2;
+export const LOCK_NB = 4;
+export const LOCK_UN = 8;
 export const SYS_fsync = 74;
 export const SYS_ftruncate = 77;
 export const SYS_getcwd = 79;
@@ -88,6 +98,7 @@ export const SYS_epoll_create = 213;
 export const SYS_epoll_wait = 232;
 export const SYS_epoll_ctl = 233;
 export const SYS_tgkill = 234;
+export const SYS_prctl = 157;
 export const SYS_mkdirat = 258;
 export const SYS_mknod = 133;
 export const SYS_mknodat = 259;
@@ -120,6 +131,10 @@ export const SYS_setfsuid = 122;
 export const SYS_setfsgid = 123;
 export const SYS_eventfd = 284;
 export const SYS_eventfd2 = 290;
+export const SYS_inotify_init = 253;
+export const SYS_inotify_add_watch = 254;
+export const SYS_inotify_rm_watch = 255;
+export const SYS_inotify_init1 = 294;
 /**
  * timerfd_create(clockid, flags). Engines that keep their own clocks pass
  * times as milliseconds (f64) in the data area instead of struct itimerspec:
@@ -326,6 +341,9 @@ export const O_DSYNC = 0o10000;
 /** O_SYNC is __O_SYNC | O_DSYNC on Linux. */
 export const O_SYNC = 0o4010000;
 export const O_DIRECTORY = 0o200000;
+/** O_TMPFILE's own bit (O_TMPFILE = it | O_DIRECTORY): an unnamed file in the directory. */
+export const __O_TMPFILE = 0o20000000;
+export const O_TMPFILE = 0o20200000;
 export const O_NOFOLLOW = 0o400000;
 export const O_PATH = 0o10000000;
 export const O_CLOEXEC = 0o2000000;
@@ -336,6 +354,8 @@ export const AT_REMOVEDIR = 0x200;
 export const AT_SYMLINK_FOLLOW = 0x400;
 export const AT_EMPTY_PATH = 0x1000;
 export const RENAME_NOREPLACE = 1;
+export const RENAME_EXCHANGE = 2;
+export const RENAME_WHITEOUT = 4;
 
 /** access(2) modes */
 export const F_OK = 0;
@@ -369,6 +389,9 @@ export const F_OFD_SETLKW = 38;
 export const FLOCK_SIZE = 32;
 export const F_SETPIPE_SZ = 1031;
 export const F_GETPIPE_SZ = 1032;
+/** fcntl leases (F_RDLCK/F_WRLCK/F_UNLCK as the argument) */
+export const F_SETLEASE = 1024;
+export const F_GETLEASE = 1025;
 export const F_ADD_SEALS = 1033;
 export const F_GET_SEALS = 1034;
 export const F_SEAL_SEAL = 1;
@@ -438,6 +461,7 @@ export const SIGPIPE = 13;
 export const SIGALRM = 14;
 export const SIGVTALRM = 26;
 export const SIGPROF = 27;
+export const SIGXCPU = 24;
 export const SIGTERM = 15;
 export const SIGCHLD = 17;
 export const SIGCONT = 18;
@@ -468,6 +492,8 @@ export interface SigInfo {
   timerid?: number;
   overrun?: number;
   status?: number;
+  /** The thread a SIGEV_THREAD_ID timer's signal is for (struct siginfo's last word, which Linux leaves zero: Blink 0510 routes it) */
+  tid?: number;
 }
 /** `info` into `out` as the x86-64 Linux struct siginfo (128 bytes) */
 export function encodeSiginfo(info: SigInfo, out: Uint8Array): void {
@@ -485,6 +511,7 @@ export function encodeSiginfo(info: SigInfo, out: Uint8Array): void {
     if (info.status !== undefined) dv.setInt32(24, info.status, true); // si_status (SIGCHLD)
     else dv.setBigInt64(24, info.value ?? 0n, true); // si_value
   }
+  if (info.tid) dv.setInt32(SIGINFO_SIZE - 4, info.tid, true);
 }
 /** The fields of a struct siginfo in `data` */
 export function decodeSiginfo(data: Uint8Array): SigInfo {
@@ -496,6 +523,8 @@ export function decodeSiginfo(data: Uint8Array): SigInfo {
 }
 /** The siginfo of the signal a guest handler was last given (SYS_shiro_siginfo 1030: signo → struct siginfo) */
 export const SYS_shiro_siginfo = 1030;
+/** The caller's CPU time and its reaped children's (data: two i64 µs) */
+export const SYS_shiro_cputimes = 1031;
 export const SYS_rt_sigqueueinfo = 129;
 export const SYS_rt_tgsigqueueinfo = 297;
 /** Real-time signals (and how many of one may be queued) */
@@ -671,6 +700,7 @@ export const OPEN_MAX = 1024;
 /** fs.nr_open: the most fds RLIMIT_NOFILE can allow (Linux's default) */
 export const NR_OPEN = 1048576;
 export const RLIMIT_NOFILE = 7;
+export const RLIMIT_CPU = 0;
 export const SYS_prlimit64 = 302;
 export const SYS_memfd_create = 319;
 /** POSIX message queues (src/kernel/mqueue.ts) */

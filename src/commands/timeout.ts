@@ -1,5 +1,5 @@
 import type { Command } from './index';
-import { quoteArgsForShell, capturingStdout } from '../shell';
+import { quoteArgsForShell, terminalForCommand } from '../shell';
 import { signalNumber, signalName } from '../kernel/signals';
 
 /** Seconds after the signal before SIGKILL when there is no -k (GNU timeout waits forever) */
@@ -26,7 +26,7 @@ export const timeout: Command = {
       if (!a.startsWith('-') || a === '-') break;
       if (a === '--preserve-status') preserveStatus = true;
       else if (a === '-v' || a === '--verbose') verbose = true;
-      else if (a === '--foreground') { /* no process groups here */ }
+      else if (a === '--foreground') { /* (COMMAND keeps the tty; the signal still goes to its group) */ }
       else if (a === '-s' || a === '--signal' || a === '-k' || a === '--kill-after') {
         if (a === '-s' || a === '--signal') signal = ctx.args[i + 1] ?? signal;
         else killAfter = ctx.args[i + 1];
@@ -69,13 +69,15 @@ export const timeout: Command = {
     const child = ctx.shell.fork();
     // The child's own abort (the timeout's), chained to the shell's (Ctrl-C):
     // aborting it must not abort the shell that runs timeout
-    const own = new AbortController();
+    // COMMAND's kernel programs get a process group of their own (shell-kernel.ts), as GNU
+    // timeout's do: its signal goes to that group, not to a group shared with whoever runs timeout
+    const own = Object.assign(new AbortController(), { ownProcessGroup: true });
     const outer = ctx.shell.abortController ?? child.inheritedAbort;
     if (outer?.signal.aborted) own.abort();
     else outer?.signal.addEventListener('abort', () => own.abort(), { once: true });
     child.inheritedAbort = own;
     // Piped or redirected: programs keep the tty for input, their stdout comes back here
-    if (ctx.terminal) child.setTerminal((ctx.stdoutIsTTY === false ? capturingStdout(ctx.terminal) : ctx.terminal) as any);
+    if (ctx.terminal) child.setTerminal(terminalForCommand(ctx.terminal, ctx) as any);
     child.cwd = ctx.cwd;
     let out = '';
     let err = '';

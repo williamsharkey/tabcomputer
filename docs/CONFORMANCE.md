@@ -6,13 +6,13 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2034/2417 (84.2%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2105/2417 (87.1%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
-| [Syscalls: LTP under Blink (x86-64)](#syscalls-ltp-under-blink-x86-64) | — | **283/322 (87.9%)** |
+| [Syscalls: LTP under Blink (x86-64)](#syscalls-ltp-under-blink-x86-64) | — | **431/534 (80.7%)** |
 | [Syscalls: wasi-testsuite (wasm32-wasip1)](#syscalls-wasi-testsuite-wasm32-wasip1) | — | **71/72 (98.6%)** |
-| [POSIX: Open POSIX Test Suite under Blink (x86-64)](#posix-open-posix-test-suite-under-blink-x86-64) | — | **1375/1448 (95.0%)** |
+| [POSIX: Open POSIX Test Suite under Blink (x86-64)](#posix-open-posix-test-suite-under-blink-x86-64) | — | **1428/1448 (98.6%)** |
 
 How each suite runs, and what is and isn't scored, is described in
 [tests/conformance/README.md](../tests/conformance/README.md).
@@ -29,7 +29,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | word-split | 1/53 | 51/53 | 2 |
 | word-eval | 0/8 | 8/8 | 0 |
 | var-sub | 0/6 | 3/6 | 3 |
-| var-sub-quote | 0/41 | 39/41 | 2 |
+| var-sub-quote | 0/41 | 40/41 | 1 |
 | var-op-test | 1/35 | 30/37 | 7 |
 | var-op-strip | 0/28 | 25/28 | 3 |
 | var-op-len | 0/7 | 8/8 | 0 |
@@ -38,31 +38,31 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | var-num | 0/7 | 7/7 | 0 |
 | vars-special | 0/37 | 31/37 | 6 |
 | arith | 2/71 | 74/74 | 0 |
-| command-sub | 0/28 | 26/28 | 2 |
-| here-doc | 0/32 | 29/32 | 3 |
-| redirect | 3/39 | 36/39 | 3 |
+| command-sub | 0/28 | 27/28 | 1 |
+| here-doc | 0/32 | 30/32 | 2 |
+| redirect | 3/39 | 37/39 | 2 |
 | if_ | 0/5 | 5/5 | 0 |
 | loop | 1/28 | 27/29 | 2 |
-| case_ | 0/13 | 12/13 | 1 |
+| case_ | 0/13 | 13/13 | 0 |
 | sh-func | 0/11 | 12/12 | 0 |
-| func-parsing | 1/12 | 9/12 | 3 |
-| builtin-echo | 0/27 | 25/27 | 2 |
+| func-parsing | 1/12 | 10/12 | 2 |
+| builtin-echo | 0/27 | 27/27 | 0 |
 | builtin-printf | 0/55 | 51/55 | 4 |
 | builtin-read | 0/64 | 64/64 | 0 |
-| builtin-eval-source | 0/23 | 20/23 | 3 |
+| builtin-eval-source | 0/23 | 21/23 | 2 |
 | builtin-getopts | 0/30 | 28/31 | 3 |
 | builtin-trap | 0/33 | 31/33 | 2 |
 | builtin-bracket | 0/50 | 47/50 | 3 |
-| builtin-cd | 3/28 | 26/28 | 2 |
+| builtin-cd | 3/28 | 27/28 | 1 |
 | builtin-special | 1/12 | 12/12 | 0 |
-| builtin-type | 0/6 | 4/6 | 2 |
+| builtin-type | 0/6 | 5/6 | 1 |
 | builtin-vars | 0/38 | 38/39 | 1 |
-| dbracket | 1/49 | 45/49 | 4 |
+| dbracket | 1/49 | 46/49 | 3 |
 | dparen | 0/14 | 13/14 | 1 |
 | assign | 2/43 | 41/45 | 4 |
 | append | 1/20 | 20/20 | 0 |
 | array-basic | 0/5 | 5/5 | 0 |
-| array | 2/78 | 76/78 | 2 |
+| array | 2/78 | 77/78 | 1 |
 | array-assoc | 0/38 | 36/38 | 2 |
 | brace-expansion | 0/55 | 51/55 | 4 |
 | tilde | 0/14 | 9/14 | 5 |
@@ -71,13 +71,13 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | exit-status | 0/11 | 8/11 | 3 |
 | errexit | 0/35 | 34/35 | 1 |
 | subshell | 0/2 | 2/2 | 0 |
-| command_ | 2/16 | 10/16 | 6 |
-| posix | 2/15 | 11/15 | 4 |
-| alias | 1/48 | 35/48 | 13 |
+| command_ | 2/16 | 14/16 | 2 |
+| posix | 2/15 | 13/15 | 2 |
+| alias | 1/48 | 36/48 | 12 |
 | let | 0/2 | 1/2 | 1 |
 | empty-bodies | 0/3 | 3/3 | 0 |
 | whitespace | 0/0 | 0/0 | 0 |
-| shell-grammar | 29/33 | 32/33 | 1 |
+| shell-grammar | 29/33 | 33/33 | 0 |
 | process-sub | 0/8 | 7/8 | 1 |
 | regex | 1/37 | 35/37 | 2 |
 | temp-binding | 0/4 | 4/4 | 0 |
@@ -86,7 +86,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | command-parsing | 0/2 | 2/2 | 0 |
 | var-op-bash | — | 25/26 | 1 |
 | nameref | — | 28/32 | 4 |
-| assign-extended | — | 28/34 | 6 |
+| assign-extended | — | 29/34 | 5 |
 | array-literal | — | 7/19 | 12 |
 | array-sparse | — | 37/39 | 2 |
 | array-assign | — | 4/11 | 7 |
@@ -95,10 +95,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | builtin-trap-err | — | 8/12 | 4 |
 | builtin-set | — | 18/24 | 6 |
 | builtin-bash | — | 12/13 | 1 |
-| builtin-type-bash | — | 20/24 | 4 |
+| builtin-type-bash | — | 23/24 | 1 |
 | builtin-process | — | 10/23 | 13 |
 | builtin-kill | — | 17/20 | 3 |
-| builtin-meta | — | 10/18 | 8 |
+| builtin-meta | — | 16/18 | 2 |
 | builtin-meta-assign | — | 10/11 | 1 |
 | builtin-misc | — | 5/7 | 2 |
 | builtin-umask | — | 24/24 | 0 |
@@ -112,14 +112,14 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | var-ref | — | 23/30 | 7 |
 | xtrace | — | 18/19 | 1 |
 | sh-options-bash | — | 6/9 | 3 |
-| redirect-command | — | 17/23 | 6 |
-| redirect-multi | — | 5/13 | 8 |
-| redir-order | — | 1/5 | 4 |
+| redirect-command | — | 23/23 | 0 |
+| redirect-multi | — | 13/13 | 0 |
+| redir-order | — | 5/5 | 0 |
 | arith-context | — | 12/16 | 4 |
 | arith-dynamic | — | 2/4 | 2 |
 | for-expr | — | 7/8 | 1 |
-| bugs | — | 21/29 | 8 |
-| toysh-posix | — | 15/23 | 8 |
+| bugs | — | 23/29 | 6 |
+| toysh-posix | — | 17/23 | 6 |
 | toysh | — | 4/8 | 4 |
 | blog1 | — | 4/9 | 5 |
 | blog2 | — | 4/8 | 4 |
@@ -131,8 +131,8 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | nocasematch-match | — | 3/6 | 3 |
 | command-sub-ksh | — | 0/0 | 0 |
 | paren-ambiguity | — | 7/9 | 2 |
-| parse-errors | — | 8/25 | 17 |
-| unicode | — | 0/2 | 2 |
+| parse-errors | — | 25/25 | 0 |
+| unicode | — | 1/2 | 1 |
 | nul-bytes | — | 2/16 | 14 |
 | assign-deferred | — | 6/9 | 3 |
 | vars-bash | — | 0/1 | 1 |
@@ -146,31 +146,29 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **quote**: $'' octal escapes don't have leading 0; $'' octal escapes with fewer than 3 chars; $'' supports \cA escape for Ctrl-A - mask with 0x1f; \c' is an escape, unlike bash
 - **word-split**: IFS and joining arrays by assignments; IFS=x and '' and $@ (#2)
 - **var-sub**: Braced block inside ${}; Descriptor redirect to bad "$@"; Here doc with bad "$@" delimiter
-- **var-sub-quote**: part_value tree on RHS; Syntax error for single quote in double quote
+- **var-sub-quote**: part_value tree on RHS
 - **var-op-test**: Lazy Evaluation of Alternative; Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
 - **var-op-strip**: Remove const suffix is vectorized on $@ array; strip none; Strip Right Brace (#702)
 - **var-op-patsub**: Confusing unquoted slash matches bash (and ash); Synthesized ${x///} bug (similar to above); Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character; Chromium from http://www.oilshell.org/blog/2016/11/07.html
 - **var-op-slice**: ${@:offset} and ${*:offset}; ${@:offset:length} and ${*:offset:length}; ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
 - **vars-special**: $PATH is set if unset at startup; Vars set interactively only: $HISTFILE; Some vars are set, even without startup file, or env: PATH, PWD; $LINENO is the current line, not line of function call; $LINENO in other for loops; $_ with assignments, arrays, etc.
-- **command-sub**: Making keyword out of command sub should NOT work; Syntax errors with double quotes within backticks
-- **here-doc**: Here doc with bad comsub delimiter; Here doc with line continuation, then pipe.  Syntax error.; Function def and execution with here doc
-- **redirect**: 1\>&2- (Bash bug: fail to restore closed fd); \<\> for read/write; \<\> for read/write named pipes (hang/timeout)
+- **command-sub**: Syntax errors with double quotes within backticks
+- **here-doc**: Here doc with bad comsub delimiter; Function def and execution with here doc
+- **redirect**: 1\>&2- (Bash bug: fail to restore closed fd); \<\> for read/write named pipes (hang/timeout)
 - **loop**: bad arg to break; too many args to continue
-- **case_**: case \n bug regression
-- **func-parsing**: = in function name; Function name with $; Function name with command sub
-- **builtin-echo**: echo builtin should disallow typed args - literal; echo builtin should disallow typed args - variable
+- **func-parsing**: Function name with $; Function name with command sub
 - **builtin-printf**: printf %c unicode - prints the first BYTE of a string - it does not respect UTF-8; bash truncates long strftime string at 128; printf positive integer overflow; printf negative integer overflow
-- **builtin-eval-source**: eval usage; Source with syntax error; Eval with syntax error
+- **builtin-eval-source**: eval usage; Source with syntax error
 - **builtin-getopts**: getopts with invalid variable name; OPTIND after multiple getopts with same spec; OPTIND after multiple getopts with different spec
-- **builtin-trap**: exit 1 when trap code string is invalid; trap USR1, sleep, SIGINT: non-interactively
+- **builtin-trap**: exit 1 when trap code string is invalid; trap INT, sleep, SIGINT: non-interactively
 - **builtin-bracket**: -k for sticky bit; -ef; test -c
-- **builtin-cd**: pwd in symlinked dir on shell initialization; Survey of getcwd() syscall
-- **builtin-type**: type -\> alias external; type of relative path
+- **builtin-cd**: pwd in symlinked dir on shell initialization
+- **builtin-type**: type -\> alias external
 - **builtin-vars**: local after readonly
-- **dbracket**: [[ regex syntax error; [[ at runtime doesn't work; [[ with env prefix doesn't work; [[ ]] with redirect
+- **dbracket**: [[ regex syntax error; [[ at runtime doesn't work; [[ with env prefix doesn't work
 - **dparen**: (( )) with redirect
 - **assign**: Trying to run keyword 'for'; Test above without 'local' (which is not POSIX); aliased assignment doesn't split; "declare -a arr" and "readonly -a a" creates an empty array (OSH)
-- **array**: space before ( in array initialization; array with invalid token
+- **array**: array with invalid token
 - **array-assoc**: unset -v and assoc array; bash bug: (( A["$key"] = 1 )) doesn't work
 - **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Two kinds of tilde expansion; Mixed case char expansion is invalid
 - **tilde**: ${undef:-~}; ${x//~/~root}; a[x]=foo:~ has tilde expansion; x=${undef-~:~}; temp assignment x=~ env
@@ -178,18 +176,17 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **pipeline**: \|&; ! is not a command; Evaluation of argv[0] in pipeline occurs in child; SIGPIPE causes pipeline to die (regression for issue #295)
 - **exit-status**: If subshell false -- exit code is propagated in a weird way (strict_argv prevents); Exit code when command sub evaluates to empty str, e.g. `false` (#2416); More test cases with empty argv
 - **errexit**: pipeline process respects errexit
-- **command_**: Command block; Permission denied; filling $PATH cache, then insert the same command earlier in cache; filling $PATH cache, then deleting command; Non-executable on $PATH; hash without args prints the cache
-- **posix**: Empty for loop without in.  Do can be on the same line I guess.; Empty action for case is syntax error; Bare semi-colon not allowed; Command substitution in default
-- **alias**: define and use alias on a single line; Alias must be an unquoted word, no expansions allowed; first and second word are the same alias, with trailing space; Syntax error after expansion; Loop split across alias in another way; Loop split across both iterative and recursive aliases; Alias with a quote in the middle is a syntax error; Alias can be defined and used on a single line; alias with line continuation in the middle; alias for left brace; alias for left paren; here doc inside alias; Corner case: alias inside LHS array arithmetic expression
+- **command_**: Permission denied; Non-executable on $PATH
+- **posix**: Empty for loop without in.  Do can be on the same line I guess.; Command substitution in default
+- **alias**: define and use alias on a single line; first and second word are the same alias, with trailing space; Syntax error after expansion; Loop split across alias in another way; Loop split across both iterative and recursive aliases; Alias with a quote in the middle is a syntax error; Alias can be defined and used on a single line; alias with line continuation in the middle; alias for left brace; alias for left paren; here doc inside alias; Corner case: alias inside LHS array arithmetic expression
 - **let**: let with ()
-- **shell-grammar**: If with then on same line missing semicolon
 - **process-sub**: Non-linear pipeline with \>()
 - **regex**: Unquoted { is a regex parse error; make a lisp example
 - **background**: wait -n with arguments - arguments are respected; wait with invalid arg; Signal message for killed background job
 - **sh-options**: noclobber on \<\>; set without args lists variables; set without args and array variables; set without args and assoc array variables (not in OSH)
 - **var-op-bash**: Array expansion with nullary var op @Q
 - **nameref**: exported nameref; a[expr] in nameref; a[@] in nameref; bad mutation through nameref: ref[0]= where ref is array[0]
-- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; declare -g (bash-specific; bash-completion uses it); dynamic array parsing is not allowed; invalid var name
+- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; declare -g (bash-specific; bash-completion uses it); dynamic array parsing is not allowed
 - **array-literal**: Tilde expansions in RHS of [k]=v (BashArray); Tilde expansions in RHS of [k]=v (BashAssoc); append to element (BashArray); append to element (BashAssoc); non-index forms of element (BashAssoc); Evaluation order (2); Evaluation order (3); [k1]=v1 (BashArray); [k1]=v1 looking like brace expansions (BashArray); BashArray cannot be changed to BashAssoc and vice versa; (strict_array) declare -A s+=(); (strict_array) assoc=(key value ...) is not allowed
 - **array-sparse**: a[i]=v with BigInt; compgen -F _set_COMPREPLY
 - **array-assign**: Multiple LHS array words; LHS array is protected with shopt -s eval_unsafe_arith, e.g. 'a[$(echo 2)]'; file named a[ is  not executed; Are quotes allowed?; Tricky parsing - a[ a[0]=1 ]=X  a[ a[0]+=1 ]+=X; argv.py a[1 + 2]=; declare builtin doesn't allow spaces
@@ -198,10 +195,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **builtin-trap-err**: trap ERR pipelines without simple commands; Pipeline group quirk; set -o errtrace: trap ERR runs in subprograms; set -o errtrace: trap ERR with &
 - **builtin-set**: set -u with undefined var in interactive shell does NOT exit the interpreter; 'set' and 'eval' round trip; set - leading single dash is ignored, turns off xtrace verbose (#2364); set - stops option processing like set --; A single + is an ignored flag; not an argument; set - + and + -
 - **builtin-bash**: bad help topic
-- **builtin-type-bash**: type -p and -P builtin -\> file; type -f builtin -\> function and file exists; type -a -\> keyword; type -P does not find directories (regression)
+- **builtin-type-bash**: type -f builtin -\> function and file exists
 - **builtin-process**: exec -- 2\>&1; exec -a sets argv[0]; Exit builtin with too many args; ulimit negative flag; ulimit negative arg; ulimit accepts 'unlimited'; ulimit of 2**32, 2**31 (int overflow); ulimit that is 64 bits; arg that would overflow 64 bits is detected; ulimit -f 1 prevents files larger 512 bytes; ulimit -S for soft limit (default), -H for hard limit; Changing resource limit is denied; ulimit -n limits file descriptors
 - **builtin-kill**: kill -L checks for invalid input; kill -l 0 returns EXIT; kill -l 0 INT lists both signals
-- **builtin-meta**: command -v executable, builtin; command -v doesn't find non-executable file; command -v doesn't find executable dir; command -V; command -p (override existing program); command -p (hide tool in custom path); builtin ls not found; builtin usage
+- **builtin-meta**: command -p (override existing program); builtin ls not found
 - **builtin-meta-assign**: builtin declare a=(x y) is allowed
 - **builtin-misc**: history builtin usage; Print shell strings with weird chars: set and printf %q and ${x@Q}
 - **extglob-match**: extglob in variable; nested @(); Turning extglob on changes the meaning of [[ !(str) ]] in bash
@@ -212,14 +209,11 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **var-ref**: ${!a[@]-'default'} is legal but fails with more than one element; var ref TO array with arbitrary subscripts; Var Ref Code Injection $(tee PWNED); ${!array_ref:-set} and ${!array_ref:=assign}; Array indirect expansion with suffix operators; Array indirect expansion with replacements; Array indirect expansion with @? conversion
 - **xtrace**: xtrace with unprintable chars
 - **sh-options-bash**: export SHELLOPTS does cross-process tracing; export SHELLOPTS does cross-process tracing with bash; OSH calling bash with SHELLOPTS does not change braceexpand
-- **redirect-command**: `\< $file` behaves like $(\< file); Redirect in the middle of two assignments; Redirect in function body; Redirect in function body is evaluated multiple times; redirect subshell; Prefix redirect for loop -- not allowed
-- **redirect-multi**: File redirects with glob args (bash and zsh only); File redirect without matching any file, with failglob; File redirect to $var with glob char; File redirect that globs to more than one file (bash and zsh only); File redirect with extended glob; Extended glob that doesn't match anything; Redirect with brace expansion isn't allowed; File redirects have word splitting too!
-- **redir-order**: subshell + redirect order; for word + redirect order; case word + redirect order; [[ + redirect order
 - **arith-context**: $[ is a synonym for $((; $[$var is a synonym for $(($var (#2426); $[$undefined] is a synonym for $(($undefined (#2566); Empty expression a[]
 - **arith-dynamic**: Double quotes; Substitutions
 - **for-expr**: Accepts { } syntax too
-- **bugs**: assign readonly -- one line; First word like foo$x() and foo$[1+2] (regression); Function names; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution; Crash after changing $[] to be alias of $(( ))
-- **toysh-posix**: Function def in pipeline; IFS; IFS - http://landley.net/notes.html#05-03-2020; IFS=x and '' and unquoted $@ - reduction of case above - copied into spec/word-split; for loop parsing - http://landley.net/notes.html#04-03-2020; IFS 4; Can't parse extra }; Command Sub Syntax Error
+- **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution; Crash after changing $[] to be alias of $(( ))
+- **toysh-posix**: IFS; IFS - http://landley.net/notes.html#05-03-2020; IFS=x and '' and unquoted $@ - reduction of case above - copied into spec/word-split; for loop parsing - http://landley.net/notes.html#04-03-2020; IFS 4; Command Sub Syntax Error
 - **toysh**: char class / extglob; patsub of $* - http://landley.net/notes.html#23-04-2020; Brace Expansion; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
 - **blog1**: ${##}; ${###}; ${####}; ${##2}; ${###2}
 - **blog2**: -a -a -a -a; -a -a -a -a -a; -a -a -a -a -a -a -a; -a -a -a -a -a -a -a -a
@@ -229,8 +223,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **ble-unset**: [bash_unset] dynamic-unset for nested tempenvs; [bash_unset] local-unset for nested tempenvs
 - **nocasematch-match**: [[ equality matching; [[ regex matching; case matching
 - **paren-ambiguity**: (( closed with ) ) after multiple lines is command - #2337; $(( closed with ) ) after multiple lines is command - #2337
-- **parse-errors**: Incomplete while; Incomplete for; Incomplete if; } is a parse error; { is its own word, needs a space; bad var name globally isn't parsed like an assignment; bad var name in export; bad var name in local; misplaced parentheses are not a subshell; incomplete command sub; incomplete backticks; misplaced ;;; interactive parse error (regression); array literal inside array is a parse error; array literal inside loop is a parse error; array literal in case; %foo=() is parse error (regression)
-- **unicode**: OSH source code doesn't have to be valid Unicode (like other shells); Unicode escapes \u03bc \U000003bc in $'', echo -e, printf
+- **unicode**: OSH source code doesn't have to be valid Unicode (like other shells)
 - **nul-bytes**: printf - literal NUL in format string; printf - NUL byte in value (OSH and zsh agree); NUL bytes with echo $'\0' (OSH and zsh agree); NUL bytes and IFS splitting; NUL bytes with test -n; NUL bytes with test -f; NUL bytes with ${#s} (OSH and zsh agree); Compare \x00 byte versus \x01 byte - command sub; Compare \x00 byte versus \x01 byte - read builtin; Compare \x00 byte versus \x01 byte - read -n; Compare \x00 byte versus \x01 byte - mapfile builtin; Strip ops # ## % %% with NUL bytes; Issue 2269 Reduction; Issue 2269 - Do NUL bytes match ? in ${a#?}
 - **assign-deferred**: export a[7]=8; is 'builtin' prefix and array allowed?  OSH is smarter; is 'command' prefix and array allowed?  OSH is smarter
 - **vars-bash**: $SHELL is set to what is in /etc/passwd
@@ -581,20 +574,23 @@ busybox `testsuite/` (pinned, fetched by scripts/conformance/fetch.sh) run in ta
 
 ## Syscalls: LTP under Blink (x86-64)
 
-Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel processes in the Blink engine; only tests that pass natively on the build host as an unprivileged user (uid 1000, like tabcomputer) are scored. Blink forks within one instance by default (patch 0048), so the child shares MAP_SHARED pages, where LTP keeps its result counts and checkpoints; with BLINK_SAME_INSTANCE_FORK=0 (snapshot fork) they are not shared, so when the Summary reads all zeros the TPASS/TFAIL/TBROK lines are counted instead (tests/conformance/lib/ltp.mjs). Trend: 146 (first run) → 172 → 148 (TBROK/TFAIL lines counted, snapshot fork) → 197 (same-instance fork opt-in, A/B against 155 without it) → 222 (same-instance fork the default, Blink 0034–0048, kernel O_PATH/locks/pipe sizes/epoll/errno fixes) → 229 (AF_UNIX DGRAM/SEQPACKET sockets, timeouts that never end early, unlinkat/wait4 errnos; bind04 now reaches its abstract-name cases, which Blink truncates) → 237 (Blink 0050–0054: same-instance children no longer stall each other, sleeps show S and end on signals, abstract AF_UNIX names keep their length) → 240/322 (Blink 0058–0070 and signalfd01/02 added to the scored set: nanosleep04 and signalfd pass; UDP over loopback, AF_UNIX datagram backpressure and socket errnos fix bind05, sendfile07, connect03, accept03 and epoll_wait05; ppoll01 and waitpid08/10 newly fail, both Blink regressions reported to perf-blink) → 272/322 (Blink 0080/0081, built locally until perf-blink folds them into its build: record locks, pipe sizes and RLIMIT_NOFILE are the kernel's, read-only output buffers are EFAULT, LTP errnos for clocks, rlimits, iovs, waitid, sendfile, O_PATH fds, personality; waitpid13 fails like waitpid08/10) → 280/322 (measured on integration a8bf453, perf-blink's build with 0080–0082 and its 0075–0077: ppoll takes its sigmask, a futex wake is no longer counted twice (waitpid08/10/13), /proc/self/maps is a memfd, pipes are writable by the page, nanosleep writes rem before the signal frame; futex_cmp_requeue01 now crashes the test worker). → 282/322 measured on integration bab5481 (perf-blink's engine through 0110: futex requeue, copy-on-write fork): futex_cmp_requeue02/03 and waitpid01 pass; clock_gettime04 failed once on CLOCK_BOOTTIME jitter under load (8 ms > 6 ms). → 283/322 on integration dff2c0d (perf-blink's engine through 0114 with this branch's 0500–0504): execve06 passes.
+Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel processes in the Blink engine; only tests that pass natively on the build host as an unprivileged user (uid 1000, like tabcomputer) are scored. Blink forks within one instance by default (patch 0048), so the child shares MAP_SHARED pages, where LTP keeps its result counts and checkpoints; with BLINK_SAME_INSTANCE_FORK=0 (snapshot fork) they are not shared, so when the Summary reads all zeros the TPASS/TFAIL/TBROK lines are counted instead (tests/conformance/lib/ltp.mjs). Trend: 146 (first run) → 172 → 148 (TBROK/TFAIL lines counted, snapshot fork) → 197 (same-instance fork opt-in, A/B against 155 without it) → 222 (same-instance fork the default, Blink 0034–0048, kernel O_PATH/locks/pipe sizes/epoll/errno fixes) → 229 (AF_UNIX DGRAM/SEQPACKET sockets, timeouts that never end early, unlinkat/wait4 errnos; bind04 now reaches its abstract-name cases, which Blink truncates) → 237 (Blink 0050–0054: same-instance children no longer stall each other, sleeps show S and end on signals, abstract AF_UNIX names keep their length) → 240/322 (Blink 0058–0070 and signalfd01/02 added to the scored set: nanosleep04 and signalfd pass; UDP over loopback, AF_UNIX datagram backpressure and socket errnos fix bind05, sendfile07, connect03, accept03 and epoll_wait05; ppoll01 and waitpid08/10 newly fail, both Blink regressions reported to perf-blink) → 272/322 (Blink 0080/0081, built locally until perf-blink folds them into its build: record locks, pipe sizes and RLIMIT_NOFILE are the kernel's, read-only output buffers are EFAULT, LTP errnos for clocks, rlimits, iovs, waitid, sendfile, O_PATH fds, personality; waitpid13 fails like waitpid08/10) → 280/322 (measured on integration a8bf453, perf-blink's build with 0080–0082 and its 0075–0077: ppoll takes its sigmask, a futex wake is no longer counted twice (waitpid08/10/13), /proc/self/maps is a memfd, pipes are writable by the page, nanosleep writes rem before the signal frame; futex_cmp_requeue01 now crashes the test worker). → 282/322 measured on integration bab5481 (perf-blink's engine through 0110: futex requeue, copy-on-write fork): futex_cmp_requeue02/03 and waitpid01 pass; clock_gettime04 failed once on CLOCK_BOOTTIME jitter under load (8 ms > 6 ms). → 283/322 on integration dff2c0d (perf-blink's engine through 0114 with this branch's 0500–0504): execve06 passes. → 283/322 again on unix/conformance 55e936d (perf-blink's engine through 0119 with this branch's 0505–0509, as for Open POSIX): no change; clock_gettime04 (CLOCK_BOOTTIME jitter) and futex_wake02 still fail. → 431/534 on unix/conformance d3049611 with the scored set widened to the calls real tools use (212 more: memory maps and locks, file metadata and sync, splice/tee/copy_file_range, eventfd/timerfd/inotify, socket messages and options, queued and per-thread signals, POSIX timers and itimers, prctl, ids, rusage, affinity; perf-blink's engine through 0121 with this branch's 0514 built locally: Linux's argument checks before the call, mincore, mlock; and host.mjs's chunk fix, without which writes over 1 MiB came back short): the first 322 at 285 (clock_gettime04 and futex_wake02 pass this time), the new 212 at 146. Left among the new: inotify (not implemented), ioctl_pidfd/ioctl_ns, mmap/mremap edge cases, prctl options, fallocate modes, multicast/packet socket options, readlinkat of an O_PATH symlink, splice07 (/proc/self/fd reopen), splice08/09 (Linux 6.7).
 
 | Area | Before | Now | Failing |
 |---|---|---|---|
 | accept | — | 2/3 | 1 |
 | alarm | — | 5/5 | 0 |
 | bind | — | 4/4 | 0 |
+| brk | — | 1/2 | 1 |
 | chdir | — | 2/2 | 0 |
 | chmod | — | 2/2 | 0 |
-| clock_gettime | — | 0/1 | 1 |
+| clock_gettime | — | 1/1 | 0 |
 | clock_nanosleep | — | 3/3 | 0 |
 | clone | — | 7/8 | 1 |
 | close | — | 2/2 | 0 |
+| close_range | — | 0/1 | 1 |
 | connect | — | 2/2 | 0 |
+| copy_file_range | — | 1/1 | 0 |
 | creat | — | 3/3 | 0 |
 | dup | — | 7/7 | 0 |
 | dup2 | — | 7/7 | 0 |
@@ -602,25 +598,58 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | epoll_create | — | 3/3 | 0 |
 | epoll_create1 | — | 2/2 | 0 |
 | epoll_ctl | — | 7/7 | 0 |
+| epoll_pwait | — | 5/6 | 1 |
 | epoll_wait | — | 14/15 | 1 |
-| execve | — | 1/2 | 1 |
+| eventfd | — | 5/5 | 0 |
+| eventfd2 | — | 3/3 | 0 |
+| execve | — | 2/2 | 0 |
+| exit | — | 1/1 | 0 |
+| exit_group | — | 1/1 | 0 |
 | faccessat | — | 2/2 | 0 |
+| fallocate | — | 0/2 | 2 |
 | fchdir | — | 2/2 | 0 |
 | fchmod | — | 1/1 | 0 |
+| fchmodat | — | 2/2 | 0 |
 | fcntl | — | 26/36 | 10 |
+| flock | — | 5/5 | 0 |
 | fork | — | 8/9 | 1 |
 | fstat | — | 4/4 | 0 |
+| fstatfs | — | 2/2 | 0 |
+| fsync | — | 2/2 | 0 |
 | ftruncate | — | 4/4 | 0 |
 | futex | — | 10/18 | 8 |
+| getcpu | — | 2/2 | 0 |
 | getcwd | — | 4/4 | 0 |
+| geteuid | — | 2/2 | 0 |
+| getgid | — | 1/1 | 0 |
+| getitimer | — | 2/2 | 0 |
+| getpeername | — | 1/1 | 0 |
+| getpgid | — | 2/2 | 0 |
 | getpid | — | 1/1 | 0 |
 | getppid | — | 2/2 | 0 |
+| getrandom | — | 5/5 | 0 |
 | getrlimit | — | 3/3 | 0 |
+| getrusage | — | 2/2 | 0 |
+| getsockname | — | 1/1 | 0 |
+| getsockopt | — | 2/2 | 0 |
+| gettid | — | 2/2 | 0 |
 | gettimeofday | — | 2/2 | 0 |
+| getuid | — | 2/2 | 0 |
+| inotify | — | 0/8 | 8 |
+| ioctl | — | 1/13 | 12 |
 | kill | — | 4/4 | 0 |
 | link | — | 2/2 | 0 |
 | lseek | — | 3/4 | 1 |
 | lstat | — | 2/4 | 2 |
+| madvise | — | 2/3 | 1 |
+| memfd_create | — | 1/3 | 2 |
+| mincore | — | 3/3 | 0 |
+| mknod | — | 1/1 | 0 |
+| mlock | — | 2/3 | 1 |
+| mmap | — | 8/18 | 10 |
+| mprotect | — | 1/1 | 0 |
+| mremap | — | 6/9 | 3 |
+| munmap | — | 2/2 | 0 |
 | nanosleep | — | 3/3 | 0 |
 | open | — | 8/8 | 0 |
 | openat | — | 1/1 | 0 |
@@ -629,28 +658,65 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | pipe2 | — | 2/2 | 0 |
 | poll | — | 3/4 | 1 |
 | ppoll | — | 1/1 | 0 |
+| prctl | — | 2/7 | 5 |
 | pread | — | 4/4 | 0 |
+| preadv | — | 4/4 | 0 |
+| preadv2 | — | 4/4 | 0 |
 | pselect | — | 4/6 | 2 |
 | pwrite | — | 7/8 | 1 |
+| pwritev | — | 4/4 | 0 |
+| pwritev2 | — | 4/4 | 0 |
 | read | — | 4/4 | 0 |
+| readahead | — | 1/1 | 0 |
+| readlinkat | — | 0/2 | 2 |
 | readv | — | 2/2 | 0 |
+| recvmsg | — | 1/1 | 0 |
 | rmdir | — | 1/1 | 0 |
+| rt_sigqueueinfo | — | 1/2 | 1 |
+| rt_sigtimedwait | — | 1/1 | 0 |
+| sbrk | — | 2/2 | 0 |
+| sched_getaffinity | — | 0/1 | 1 |
 | select | — | 3/4 | 1 |
 | sendfile | — | 13/16 | 3 |
+| sendmsg | — | 0/1 | 1 |
+| sendto | — | 0/1 | 1 |
+| set_tid_address | — | 1/1 | 0 |
+| setitimer | — | 2/2 | 0 |
+| setpgid | — | 2/3 | 1 |
 | setrlimit | — | 1/2 | 1 |
+| setsockopt | — | 1/5 | 4 |
+| shutdown | — | 2/2 | 0 |
+| sigaltstack | — | 1/1 | 0 |
 | signal | — | 5/5 | 0 |
 | signalfd | — | 2/2 | 0 |
+| sigpending | — | 1/1 | 0 |
+| sigsuspend | — | 2/2 | 0 |
+| sigwait | — | 1/1 | 0 |
 | socket | — | 2/2 | 0 |
 | socketpair | — | 2/2 | 0 |
+| splice | — | 5/8 | 3 |
 | stat | — | 2/2 | 0 |
+| statfs | — | 2/2 | 0 |
+| statx | — | 2/2 | 0 |
 | symlink | — | 2/2 | 0 |
+| sync_file_range | — | 1/1 | 0 |
+| sysinfo | — | 2/2 | 0 |
+| tee | — | 2/2 | 0 |
+| tgkill | — | 1/3 | 2 |
 | time | — | 1/1 | 0 |
+| timer_create | — | 2/2 | 0 |
+| timer_settime | — | 0/1 | 1 |
+| timerfd | — | 5/6 | 1 |
+| times | — | 1/2 | 1 |
+| tkill | — | 2/2 | 0 |
 | truncate | — | 2/2 | 0 |
 | umask | — | 1/1 | 0 |
 | uname | — | 3/3 | 0 |
 | unlink | — | 2/2 | 0 |
 | unlinkat | — | 1/1 | 0 |
+| utime | — | 1/1 | 0 |
 | vfork | — | 2/2 | 0 |
+| vmsplice | — | 4/4 | 0 |
 | wait4 | — | 3/3 | 0 |
 | waitid | — | 11/11 | 0 |
 | waitpid | — | 9/11 | 2 |
@@ -660,22 +726,44 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 <details><summary>Failing cases</summary>
 
 - **accept**: accept02 — accept02.c:116: TBROK: ioctl(3,SIOCGIFINDEX,...) failed: ENOTTY (25)
-- **clock_gettime**: clock_gettime04 — clock_gettime04.c:169: TFAIL: CLOCK_BOOTTIME(vDSO or syscall with libc spec): Difference between successive readings greater than 6 ms (0): 11
+- **brk**: brk01 — brk01.c:59: TFAIL: brk() failed to set address have 0x88024000 expected 0x88023fff
 - **clone**: clone08 — clone08.c:85: TBROK: CLONE_PARENT_SETTID clone() failed: EINVAL (22)
+- **close_range**: close_range02 — close_range02.c:84: TBROK: clone failed: EINVAL (22)
+- **epoll_pwait**: epoll_pwait03 — tst_timer_test.c:314: TFAIL: do_epoll_pwait() slept for too long
 - **epoll_wait**: epoll_wait02 — tst_timer_test.c:314: TFAIL: epoll_wait() slept for too long
-- **execve**: execve01 — execve01_child.c:32: TFAIL: PATH is in environment
-- **fcntl**: fcntl14 (hang/timeout) — no summary; fcntl14_64 (hang/timeout) — no summary; fcntl27 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl27_64 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl38 — tst_kconfig.c:289: TBROK: Cannot parse kernel .config; fcntl38_64 — tst_kconfig.c:289: TBROK: Cannot parse kernel .config; fcntl39 — tst_kconfig.c:289: TBROK: Cannot parse kernel .config; fcntl39_64 — tst_kconfig.c:289: TBROK: Cannot parse kernel .config; fcntl40 (hang/timeout) — skipped: hangs tabcomputer; fcntl40_64 — passed 0 failed 0 broken 0
+- **fallocate**: fallocate02 — passed 0 failed 0 broken 0; fallocate03 — fallocate03.c:81: TFAIL: fallocate(fd, DEFAULT_MODE, 8192, 4096) failed: EOPNOTSUPP (95)
+- **fcntl**: fcntl14 — no summary; fcntl14_64 — no summary; fcntl27 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl27_64 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl38 — passed 0 failed 0 broken 0; fcntl38_64 — passed 0 failed 0 broken 0; fcntl39 — passed 0 failed 0 broken 0; fcntl39_64 — passed 0 failed 0 broken 0; fcntl40 (hang/timeout) — skipped: hangs tabcomputer; fcntl40_64 — passed 0 failed 0 broken 0
 - **fork**: fork14 (hang/timeout) — no summary
-- **futex**: futex_cmp_requeue01 (hang/timeout) — skipped: hangs tabcomputer; futex_wait05 (hang/timeout) — skipped: hangs tabcomputer; futex_waitv01 — passed 0 failed 0 broken 0; futex_waitv02 — passed 0 failed 0 broken 0; futex_waitv03 — passed 0 failed 0 broken 0; futex_wake02 — futex_wake02.c:79: TFAIL: futex_wake() woken up 8 threads, expected 10: SUCCESS (0); futex_wake03 (hang/timeout) — skipped: hangs tabcomputer; futex_wake05 — futex_wake05.c:67: TFAIL: uaddr file truncated succeeded
+- **futex**: futex_cmp_requeue01 (hang/timeout) — skipped: hangs tabcomputer; futex_wait05 (hang/timeout) — skipped: hangs tabcomputer; futex_waitv01 — passed 0 failed 0 broken 0; futex_waitv02 — passed 0 failed 0 broken 0; futex_waitv03 — passed 0 failed 0 broken 0; futex_wake02 — futex_wake02.c:79: TFAIL: futex_wake() woken up 7 threads, expected 10: SUCCESS (0); futex_wake03 (hang/timeout) — skipped: hangs tabcomputer; futex_wake05 — futex_wake05.c:67: TFAIL: uaddr file truncated succeeded
+- **inotify**: inotify01 — passed 0 failed 0 broken 0; inotify02 — passed 0 failed 0 broken 0; inotify04 — passed 0 failed 0 broken 0; inotify05 — passed 0 failed 0 broken 0; inotify09 — passed 0 failed 0 broken 0; inotify10 — passed 0 failed 0 broken 0; inotify11 — passed 0 failed 0 broken 0; inotify12 — passed 0 failed 0 broken 0
+- **ioctl**: ioctl01 — ioctl01.c:62: TFAIL: Termio address is invalid expected EFAULT: ENOTTY (25); ioctl07 — ioctl07.c:27: TBROK: ioctl(3,((((2U) << (((0+8)+8)+14)) | ((('R')) << (0+8)) | (((0x00)) << 0) | ((((sizeof(int)))) << ((0+8)+8)))),...) failed: ENOTTY (25); ioctl10 — passed 0 failed 0 broken 0; ioctl_ns02 — ioctl_ns02.c:33: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns03 — ioctl_ns03.c:32: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns04 — ioctl_ns04.c:32: TBROK: open(/proc/self/ns/user,0,0000) failed: ENOENT (2); ioctl_pidfd01 — ioctl_pidfd.h:58: TBROK: pidfd_open(6489, 0) failed: ENOSYS (38); ioctl_pidfd02 — passed 0 failed 0 broken 0; ioctl_pidfd03 — passed 0 failed 0 broken 0; ioctl_pidfd04 — passed 0 failed 0 broken 0; ioctl_pidfd05 — passed 0 failed 0 broken 0; ioctl_pidfd06 — passed 0 failed 0 broken 0
 - **lseek**: lseek11 — passed 0 failed 0 broken 0
-- **lstat**: lstat02 — lstat02.c:66: TFAIL: lstat() returned 0, expected -1: SUCCESS (0); lstat02_64 — lstat02.c:66: TFAIL: lstat() returned 0, expected -1: SUCCESS (0)
+- **lstat**: lstat02 — lstat02.c:74: TFAIL: lstat() failed unexpectedly; expected: EFAULT - got: EBADF (9); lstat02_64 — lstat02.c:74: TFAIL: lstat() failed unexpectedly; expected: EFAULT - got: EBADF (9)
+- **madvise**: madvise10 — madvise10.c:81: TFAIL: In PID 6512, addr[1] = 0x01, expected[1] = 0x00
+- **memfd_create**: memfd_create01 — memfd_create01.c:65: TFAIL: mmap((nil), 8192, 3, 1, 3, 0) succeeded unexpectedly; memfd_create04 — passed 0 failed 0 broken 0
+- **mlock**: mlock05 — mlock05.c:30: TBROK: fopen(/proc/self/smaps,r) failed: ENOENT (2)
+- **mmap**: mmap01 — mmap01.c:43: TFAIL: Read 16 expected 12; mmap04 — mmap04.c:63: TBROK: Expected 1 conversions got 0 FILE '/proc/self/maps'; mmap06 — mmap06.c:57: TFAIL: mmap(NULL, tc->length, tc->prot, tc->flags, fd, 0) expected EINVAL: EACCES (13); mmap12 — mmap12.c:47: TFAIL: pen dev pagemap failed: ENOENT (2); mmap15 — mmap15.c:34: TFAIL: mmap() into high mem region succeeded unexpectedly; mmap18 — mmap18.c:92: TBROK: mmap(0x8011d000,16384,PROT_READ | PROT_WRITE(3),306,-1,0) failed: EOPNOTSUPP (95); mmap20 — mmap20.c:46: TFAIL: mmap() is successful, but it should have failed: ENOENT (2); mmap21 — mmap21.c:58: TFAIL: Mapped file has not been updated at byte 1048577; mmap23 — mmap23.c:21: TFAIL: mmap(2GB) with MAP_32BIT succeeded; mmap24 — mmap24.c:71: TFAIL: mapping at 0x80001000 + 33554432 exceeds 2GB limit
+- **mremap**: mremap01 — mremap01.c:67: TFAIL: mremap()'d region did not sync to the file. file[8191999] == 0x00, expected 0xff; mremap06 — mremap06.c:110: TBROK: fallocate() failed; mremap07 — passed 0 failed 0 broken 0
 - **pipe**: pipe13 — tst_test.c:1969: TBROK: Test killed! (timeout?)
 - **poll**: poll02 — tst_timer_test.c:314: TFAIL: poll() slept for too long
+- **prctl**: prctl02 — prctl02.c:155: TFAIL: prctl() succeeded unexpectedly; prctl03 — prctl03.c:101: TBROK: waitpid(6682,(nil),0) failed: EINTR (4); prctl05 — prctl05.c:67: TFAIL: /proc/self/task/6686/comm != 'prctl05_test' got 'prctl05'; prctl08 — prctl08.c:105: TFAIL: prctl(PR_SET_TIMERSLACK, 0) failed: EINVAL (22); prctl09 — prctl09.c:38: TBROK: prctl set timerslack 200us failed: EINVAL (22)
 - **pselect**: pselect01 — tst_timer_test.c:314: TFAIL: pselect() slept for too long; pselect01_64 — tst_timer_test.c:314: TFAIL: pselect() slept for too long
 - **pwrite**: pwrite04 (hang/timeout) — skipped: hangs tabcomputer
+- **readlinkat**: readlinkat01 — readlinkat01.c:72: TBROK: open(readlink_symlink,2228224,0000) failed: ELOOP (40); readlinkat02 — readlinkat02.c:54: TFAIL: readlinkat(3, test_file/test_file, NULL, 256) expected ENOTDIR: ENOENT (2)
+- **rt_sigqueueinfo**: rt_sigqueueinfo01 — rt_sigqueueinfo01.c:70: TFAIL: rt_sigqueueinfo() failed: ESRCH (3)
+- **sched_getaffinity**: sched_getaffinity01 — sched_getaffinity01.c:33: TFAIL: sched_getaffinity() should fail with ESRCH: EPERM (1)
 - **select**: select02 — tst_timer_test.c:314: TFAIL: select() slept for too long
 - **sendfile**: sendfile02_64 (hang/timeout) — skipped: hangs tabcomputer; sendfile09 — passed 0 failed 0 broken 0; sendfile09_64 — passed 0 failed 0 broken 0
+- **sendmsg**: sendmsg03 — passed 0 failed 0 broken 0
+- **sendto**: sendto03 — passed 0 failed 0 broken 0
+- **setpgid**: setpgid03 — setpgid03.c:56: TFAIL: setpgid(child_pid, getppid()) succeeded
 - **setrlimit**: setrlimit06 — setrlimit06.c:117: TFAIL: Got no signal after reaching both limit
+- **setsockopt**: setsockopt05 — passed 0 failed 0 broken 0; setsockopt07 — passed 0 failed 0 broken 0; setsockopt08 — passed 0 failed 0 broken 0; setsockopt09 — passed 0 failed 0 broken 0
+- **splice**: splice07 — tst_test.c:1969: TBROK: Test killed! (timeout?); splice08 — passed 0 failed 0 broken 0; splice09 — passed 0 failed 0 broken 0
+- **tgkill**: tgkill02 — tgkill02.c:57: TFAIL: tgkill() should have failed with EAGAIN: SUCCESS (0); tgkill03 — tgkill03.c:103: TFAIL: Defunct tid should have failed with ESRCH: EPERM (1)
+- **timer_settime**: timer_settime03 — timer_settime03.c:114: TFAIL: Timer overrun counter is wrong: 0; expected 2147483647 or negative number
+- **timerfd**: timerfd_settime02 (hang/timeout) — no summary
+- **times**: times03 — times03.c:116: TFAIL: buf2.tms_stime = 0
 - **waitpid**: waitpid06 (hang/timeout) — skipped: hangs tabcomputer; waitpid07 (hang/timeout) — skipped: hangs tabcomputer
 
 </details>
@@ -698,7 +786,7 @@ WebAssembly/wasi-testsuite prebuilt wasip1 modules (C, Rust, AssemblyScript) run
 
 ## POSIX: Open POSIX Test Suite under Blink (x86-64)
 
-The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scripts/conformance/build-openposix.sh) run as static x86-64 kernel processes in the Blink engine: signals, pthreads, semaphores, message queues, timers, clocks, mmap, scheduling. A test passes when it exits 0; only tests that pass natively on the build host as uid 1000 are scored (openposix/native-baseline.json). First run: 1173/1448, with Blink 0080–0084 built locally (raise(SIGKILL) and sigqueue/AIO fixed from this suite); the gaps are POSIX message queues (mq_*), POSIX timers (timer_*), sigwait/sigtimedwait, sched_* policies and shm_open. → 1326/1448 (kernel POSIX message queues and timers, Blink 0086–0089 and 0093 built locally: mq_*, timer_*, sigtimedwait/sigwait, sched_*; sigqueue waits on siginfo in Blink's handler frames; fork_21-1 and pthread_attr_destroy_1-1 hit a Blink page-lock assertion, fixed in perf-blink's 0092). → 1353/1448 with perf-blink's Blink 0092 (fork keeps page lock counts) and 0095 (siginfo in SA_SIGINFO frames, real-time signals queue): sigqueue, sigwait/sigwaitinfo, fork_21-1, pthread_attr_destroy_1-1, lio_listio and aio_* now pass. Left: shm_open and mmap of shared objects, mlock*, pthread_cancel and cancellation points, process-shared pthread objects, pthread_kill interrupting another thread's call (mq_timedsend_12-1). → 1379/1448 (kernel: kill/sigqueue permissions, SIGCHLD's CLD_* siginfo and SA_NOCLDSTOP/SA_NOCLDWAIT, sigtimedwait taking unblocked waited signals, timer overruns, open() owner bits; Blink 0096–0099 built locally: raise of a blocked real-time signal queues, sigprocmask/sigaltstack modes, write-only pages readable, shared kernel-file maps written back before a new map and at exit, mlock/mmap errors). Left: mmap of shared objects across instances and SIGBUS past EOF, pthread_cancel and cancellation points, process-shared pthread objects, fork cases, pthread_kill interrupting another thread's call (mq_timedsend_12-1); sigqueue_1-1 is fixed by perf-blink's 0110. Measured on integration bab5481 (perf-blink's engine through 0110, which has 0096–0098 but not this branch's 0500/0501): 1370/1448, rerun on a quiet machine; 0500 (mlock/mmap errors) and 0501 (pthread_cancel) add 15 more when built (1379 + pthread_cancel's 9 locally). → 1375/1448 on integration dff2c0d (perf-blink's engine through 0114 with 0500–0504, quiet rerun of the failures): pthread_cancel and cancellation points, CPU clock ids, mlock/mmap errors, fsync, st_ctime and the process-shared mutexes/condition variables of perf-blink's 0112 pass; 26 named-semaphore and /dev/shm tests (sem_*, shm_open_5-1/28-1/28-3, mmap_11-5) abort in 0112's munmap (memorymalloc.c:834), and clock_getcpuclockid_1-2 (another process's CPU clock) is fixed by 0506.
+The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scripts/conformance/build-openposix.sh) run as static x86-64 kernel processes in the Blink engine: signals, pthreads, semaphores, message queues, timers, clocks, mmap, scheduling. A test passes when it exits 0; only tests that pass natively on the build host as uid 1000 are scored (openposix/native-baseline.json). First run: 1173/1448, with Blink 0080–0084 built locally (raise(SIGKILL) and sigqueue/AIO fixed from this suite); the gaps are POSIX message queues (mq_*), POSIX timers (timer_*), sigwait/sigtimedwait, sched_* policies and shm_open. → 1326/1448 (kernel POSIX message queues and timers, Blink 0086–0089 and 0093 built locally: mq_*, timer_*, sigtimedwait/sigwait, sched_*; sigqueue waits on siginfo in Blink's handler frames; fork_21-1 and pthread_attr_destroy_1-1 hit a Blink page-lock assertion, fixed in perf-blink's 0092). → 1353/1448 with perf-blink's Blink 0092 (fork keeps page lock counts) and 0095 (siginfo in SA_SIGINFO frames, real-time signals queue): sigqueue, sigwait/sigwaitinfo, fork_21-1, pthread_attr_destroy_1-1, lio_listio and aio_* now pass. Left: shm_open and mmap of shared objects, mlock*, pthread_cancel and cancellation points, process-shared pthread objects, pthread_kill interrupting another thread's call (mq_timedsend_12-1). → 1379/1448 (kernel: kill/sigqueue permissions, SIGCHLD's CLD_* siginfo and SA_NOCLDSTOP/SA_NOCLDWAIT, sigtimedwait taking unblocked waited signals, timer overruns, open() owner bits; Blink 0096–0099 built locally: raise of a blocked real-time signal queues, sigprocmask/sigaltstack modes, write-only pages readable, shared kernel-file maps written back before a new map and at exit, mlock/mmap errors). Left: mmap of shared objects across instances and SIGBUS past EOF, pthread_cancel and cancellation points, process-shared pthread objects, fork cases, pthread_kill interrupting another thread's call (mq_timedsend_12-1); sigqueue_1-1 is fixed by perf-blink's 0110. Measured on integration bab5481 (perf-blink's engine through 0110, which has 0096–0098 but not this branch's 0500/0501): 1370/1448, rerun on a quiet machine; 0500 (mlock/mmap errors) and 0501 (pthread_cancel) add 15 more when built (1379 + pthread_cancel's 9 locally). → 1375/1448 on integration dff2c0d (perf-blink's engine through 0114 with 0500–0504, quiet rerun of the failures): pthread_cancel and cancellation points, CPU clock ids, mlock/mmap errors, fsync, st_ctime and the process-shared mutexes/condition variables of perf-blink's 0112 pass; 26 named-semaphore and /dev/shm tests (sem_*, shm_open_5-1/28-1/28-3, mmap_11-5) abort in 0112's munmap (memorymalloc.c:834), and clock_getcpuclockid_1-2 (another process's CPU clock) is fixed by 0506. → 1428/1448 on unix/conformance 55e936d (integration 38397fa: perf-blink's engine through 0119, with this branch's 0507–0509 built locally on emsdk 6.0.11; quiet rerun of the failures): perf-blink's 0117 fixes the 26 aborts in munmap and the process-shared barrier/rwlock/spinlock tests; 0507: pthread_kill interrupts another thread's blocking call, and a process signal reaches a thread that doesn't block it (mq_timedsend_12-1, pthread_kill_8-1); 0508: SIGBUS past a mapped file's end (mmap_11-2, mmap_11-3); 0509: a fork child's CPU clocks and times() start at 0, and a parent counts its children's CPU time (fork_8-1, fork_22-1); 0505/0506 in the build: fork_13-1, clock_getcpuclockid_1-2; and a dozen timing-sensitive pthread_* tests pass. Six of these come from 0507–0509, which integration's engine doesn't have yet. Left: SIGEV_THREAD timers (fork_18-1), message catalogs (fork_7-1), shared maps across a fork (mmap_3-1, mmap_7-4), aio_cancel waits, mlockall_3-6/3-7, sem_close_3-2, shm_open_23-1.
 
 | Area | Before | Now | Failing |
 |---|---|---|---|
@@ -711,14 +799,14 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | aio_write | — | 10/10 | 0 |
 | asctime | — | 1/1 | 0 |
 | clock | — | 2/2 | 0 |
-| clock_getcpuclockid | — | 3/4 | 1 |
+| clock_getcpuclockid | — | 4/4 | 0 |
 | clock_getres | — | 7/7 | 0 |
 | clock_gettime | — | 8/8 | 0 |
 | clock_nanosleep | — | 12/12 | 0 |
 | clock_settime | — | 1/1 | 0 |
 | ctime | — | 1/1 | 0 |
 | difftime | — | 1/1 | 0 |
-| fork | — | 11/16 | 5 |
+| fork | — | 14/16 | 2 |
 | fsync | — | 3/3 | 0 |
 | getpid | — | 1/1 | 0 |
 | gmtime | — | 2/2 | 0 |
@@ -729,7 +817,7 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | mktime | — | 1/1 | 0 |
 | mlock | — | 3/3 | 0 |
 | mlockall | — | 3/5 | 2 |
-| mmap | — | 24/32 | 8 |
+| mmap | — | 27/32 | 5 |
 | mq_close | — | 6/6 | 0 |
 | mq_getattr | — | 2/2 | 0 |
 | mq_notify | — | 6/6 | 0 |
@@ -737,13 +825,13 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | mq_send | — | 17/17 | 0 |
 | mq_setattr | — | 4/4 | 0 |
 | mq_timedreceive | — | 1/1 | 0 |
-| mq_timedsend | — | 20/21 | 1 |
+| mq_timedsend | — | 21/21 | 0 |
 | mq_unlink | — | 4/4 | 0 |
 | munlock | — | 3/3 | 0 |
 | munlockall | — | 1/1 | 0 |
 | munmap | — | 7/7 | 0 |
 | nanosleep | — | 11/11 | 0 |
-| pthread_atfork | — | 6/7 | 1 |
+| pthread_atfork | — | 7/7 | 0 |
 | pthread_attr_destroy | — | 3/3 | 0 |
 | pthread_attr_getdetachstate | — | 2/2 | 0 |
 | pthread_attr_getinheritsched | — | 1/1 | 0 |
@@ -764,42 +852,42 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | pthread_barrier_init | — | 3/3 | 0 |
 | pthread_barrier_wait | — | 4/4 | 0 |
 | pthread_barrierattr_destroy | — | 1/1 | 0 |
-| pthread_barrierattr_getpshared | — | 1/2 | 1 |
+| pthread_barrierattr_getpshared | — | 2/2 | 0 |
 | pthread_barrierattr_init | — | 2/2 | 0 |
 | pthread_barrierattr_setpshared | — | 2/2 | 0 |
 | pthread_cancel | — | 9/9 | 0 |
 | pthread_cleanup_pop | — | 3/3 | 0 |
 | pthread_cleanup_push | — | 3/3 | 0 |
-| pthread_cond_broadcast | — | 5/7 | 2 |
+| pthread_cond_broadcast | — | 6/7 | 1 |
 | pthread_cond_destroy | — | 3/3 | 0 |
 | pthread_cond_init | — | 5/5 | 0 |
-| pthread_cond_signal | — | 5/6 | 1 |
-| pthread_cond_timedwait | — | 9/12 | 3 |
-| pthread_cond_wait | — | 5/6 | 1 |
+| pthread_cond_signal | — | 6/6 | 0 |
+| pthread_cond_timedwait | — | 10/12 | 2 |
+| pthread_cond_wait | — | 6/6 | 0 |
 | pthread_condattr_destroy | — | 4/4 | 0 |
 | pthread_condattr_getclock | — | 2/2 | 0 |
 | pthread_condattr_getpshared | — | 3/3 | 0 |
 | pthread_condattr_init | — | 2/2 | 0 |
 | pthread_condattr_setclock | — | 4/4 | 0 |
 | pthread_condattr_setpshared | — | 3/3 | 0 |
-| pthread_create | — | 13/14 | 1 |
+| pthread_create | — | 14/14 | 0 |
 | pthread_detach | — | 7/7 | 0 |
-| pthread_equal | — | 2/3 | 1 |
+| pthread_equal | — | 3/3 | 0 |
 | pthread_exit | — | 10/10 | 0 |
 | pthread_getcpuclockid | — | 1/1 | 0 |
 | pthread_getschedparam | — | 1/1 | 0 |
 | pthread_getspecific | — | 2/2 | 0 |
-| pthread_join | — | 7/8 | 1 |
+| pthread_join | — | 8/8 | 0 |
 | pthread_key_create | — | 4/4 | 0 |
 | pthread_key_delete | — | 3/3 | 0 |
-| pthread_kill | — | 3/6 | 3 |
+| pthread_kill | — | 6/6 | 0 |
 | pthread_mutex_destroy | — | 6/6 | 0 |
 | pthread_mutex_getprioceiling | — | 4/4 | 0 |
 | pthread_mutex_init | — | 7/7 | 0 |
 | pthread_mutex_lock | — | 5/5 | 0 |
 | pthread_mutex_setprioceiling | — | 1/1 | 0 |
 | pthread_mutex_timedlock | — | 6/6 | 0 |
-| pthread_mutex_trylock | — | 6/7 | 1 |
+| pthread_mutex_trylock | — | 7/7 | 0 |
 | pthread_mutex_unlock | — | 5/5 | 0 |
 | pthread_mutexattr_destroy | — | 4/4 | 0 |
 | pthread_mutexattr_getprioceiling | — | 3/3 | 0 |
@@ -811,7 +899,7 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | pthread_mutexattr_setprotocol | — | 3/3 | 0 |
 | pthread_mutexattr_setpshared | — | 6/6 | 0 |
 | pthread_mutexattr_settype | — | 7/7 | 0 |
-| pthread_once | — | 5/6 | 1 |
+| pthread_once | — | 6/6 | 0 |
 | pthread_rwlock_destroy | — | 2/2 | 0 |
 | pthread_rwlock_init | — | 4/4 | 0 |
 | pthread_rwlock_rdlock | — | 6/6 | 0 |
@@ -822,18 +910,18 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | pthread_rwlock_unlock | — | 2/2 | 0 |
 | pthread_rwlock_wrlock | — | 3/3 | 0 |
 | pthread_rwlockattr_destroy | — | 2/2 | 0 |
-| pthread_rwlockattr_getpshared | — | 2/3 | 1 |
+| pthread_rwlockattr_getpshared | — | 3/3 | 0 |
 | pthread_rwlockattr_init | — | 2/2 | 0 |
 | pthread_rwlockattr_setpshared | — | 1/1 | 0 |
 | pthread_self | — | 1/1 | 0 |
 | pthread_setcancelstate | — | 4/4 | 0 |
 | pthread_setcanceltype | — | 3/3 | 0 |
-| pthread_setschedparam | — | 0/1 | 1 |
+| pthread_setschedparam | — | 1/1 | 0 |
 | pthread_setspecific | — | 2/2 | 0 |
 | pthread_sigmask | — | 14/14 | 0 |
 | pthread_spin_destroy | — | 2/2 | 0 |
-| pthread_spin_init | — | 2/4 | 2 |
-| pthread_spin_lock | — | 3/4 | 1 |
+| pthread_spin_init | — | 4/4 | 0 |
+| pthread_spin_lock | — | 4/4 | 0 |
 | pthread_spin_trylock | — | 2/2 | 0 |
 | pthread_spin_unlock | — | 3/3 | 0 |
 | pthread_testcancel | — | 2/2 | 0 |
@@ -842,19 +930,19 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | sched_get_priority_min | — | 4/4 | 0 |
 | sched_getparam | — | 4/4 | 0 |
 | sched_getscheduler | — | 4/4 | 0 |
-| sched_setparam | — | 7/8 | 1 |
+| sched_setparam | — | 8/8 | 0 |
 | sched_setscheduler | — | 8/8 | 0 |
 | sched_yield | — | 1/1 | 0 |
 | sem_close | — | 3/4 | 1 |
 | sem_destroy | — | 2/2 | 0 |
-| sem_getvalue | — | 1/5 | 4 |
+| sem_getvalue | — | 5/5 | 0 |
 | sem_init | — | 9/9 | 0 |
-| sem_open | — | 10/12 | 2 |
-| sem_post | — | 0/6 | 6 |
+| sem_open | — | 12/12 | 0 |
+| sem_post | — | 6/6 | 0 |
 | sem_timedwait | — | 11/11 | 0 |
-| sem_unlink | — | 5/9 | 4 |
-| sem_wait | — | 2/8 | 6 |
-| shm_open | — | 22/27 | 5 |
+| sem_unlink | — | 9/9 | 0 |
+| sem_wait | — | 8/8 | 0 |
+| shm_open | — | 25/27 | 2 |
 | shm_unlink | — | 7/7 | 0 |
 | sigaction | — | 499/500 | 1 |
 | sigaddset | — | 5/5 | 0 |
@@ -893,35 +981,13 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 
 - **aio_cancel**: aio_cancel_5-1 (hang/timeout) — timeout: ; aio_cancel_6-1 (hang/timeout) — timeout: ; aio_cancel_7-1 (hang/timeout) — timeout: 
 - **aio_suspend**: aio_suspend_1-1 — UNRESOLVED: aio_suspend/1-1.c Error at write(): No such file or directory
-- **clock_getcpuclockid**: clock_getcpuclockid_1-2 — UNRESOLVED: clock_getcpuclockid() failed: No such process
-- **fork**: fork_13-1 — FAIL: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/13-1.c FAILED: Child exited abnormally; fork_18-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/18-1.c unresolved: got 22 (Invalid argument) on line 87 (Failed to create a ti; fork_22-1 — FAIL: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/22-1.c FAILED: Child exited abnormally; fork_7-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/7-1.c unresolved: got 2 (No such file or directory) on line 121 (Could not ope; fork_8-1 (hang/timeout) — timeout: 
+- **fork**: fork_18-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/18-1.c unresolved: got 22 (Invalid argument) on line 87 (Failed to create a ti; fork_7-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/7-1.c unresolved: got 2 (No such file or directory) on line 121 (Could not ope
 - **mlockall**: mlockall_3-6 — FAIL: The shared memory pages of the process are not locked.; mlockall_3-7 — FAIL: The mapped files pages of the process are not locked.
-- **mmap**: mmap_10-1 (hang/timeout) — timeout: ; mmap_11-2 — FAIL: Test FAILED: SIGBUS not triggered, while Memory Protection is enabled; mmap_11-3 — FAIL: Test FAILED: SIGBUS not triggered, while Memory Protection is enabled; mmap_11-4 — UNTESTED: From mmap(2) manpage, skip known bug on tmpfs; mmap_11-5 — exit 134: 	<blink backtrace unavailable>; mmap_24-1 (hang/timeout) — timeout: ; mmap_3-1 — FAIL: Test Fail: The file is not mapped correctly; mmap_7-4 — FAIL: mmap with MAP_SHARED failed to propagate change into the child
-- **mq_timedsend**: mq_timedsend_12-1 (hang/timeout) — timeout: 
-- **pthread_atfork**: pthread_atfork_3-3 (hang/timeout) — timeout: 
-- **pthread_barrierattr_getpshared**: pthread_barrierattr_getpshared_2-1 — exit 134: 	<blink backtrace unavailable>
-- **pthread_cond_broadcast**: pthread_cond_broadcast_1-2 (hang/timeout) — timeout:  MF  : 200809; pthread_cond_broadcast_4-2 (hang/timeout) — timeout: 
-- **pthread_cond_signal**: pthread_cond_signal_4-2 (hang/timeout) — timeout: 
-- **pthread_cond_timedwait**: pthread_cond_timedwait_2-5 (hang/timeout) — timeout: ; pthread_cond_timedwait_4-2 (hang/timeout) — timeout:  MF  : 200809; pthread_cond_timedwait_4-3 (hang/timeout) — timeout: 
-- **pthread_cond_wait**: pthread_cond_wait_4-1 (hang/timeout) — timeout: 
-- **pthread_create**: pthread_create_11-1 (hang/timeout) — timeout: 
-- **pthread_equal**: pthread_equal_2-1 (hang/timeout) — timeout: 
-- **pthread_join**: pthread_join_6-3 (hang/timeout) — timeout: 
-- **pthread_kill**: pthread_kill_2-1 — exit 139: ; pthread_kill_3-1 — exit 139: ; pthread_kill_8-1 — exit 139: 
-- **pthread_mutex_trylock**: pthread_mutex_trylock_4-3 (hang/timeout) — timeout: 
-- **pthread_once**: pthread_once_6-1 (hang/timeout) — timeout: 
-- **pthread_rwlockattr_getpshared**: pthread_rwlockattr_getpshared_2-1 — exit 134: 	<blink backtrace unavailable>
-- **pthread_setschedparam**: pthread_setschedparam_5-1 (hang/timeout) — timeout: 
-- **pthread_spin_init**: pthread_spin_init_2-1 — exit 134: 	<blink backtrace unavailable>; pthread_spin_init_2-2 — exit 134: 	<blink backtrace unavailable>
-- **pthread_spin_lock**: pthread_spin_lock_1-1 (hang/timeout) — timeout: 
-- **sched_setparam**: sched_setparam_26-1 — FAIL: errno is not EPERM: Success
-- **sem_close**: sem_close_3-2 — exit 134: 	<blink backtrace unavailable>
-- **sem_getvalue**: sem_getvalue_1-1 — exit 134: 	<blink backtrace unavailable>; sem_getvalue_2-1 — exit 134: 	<blink backtrace unavailable>; sem_getvalue_4-1 — exit 134: 	<blink backtrace unavailable>; sem_getvalue_5-1 — exit 134: 	<blink backtrace unavailable>
-- **sem_open**: sem_open_1-3 — exit 134: 	<blink backtrace unavailable>; sem_open_1-4 — exit 134: 	<blink backtrace unavailable>
-- **sem_post**: sem_post_1-1 — exit 134: 	<blink backtrace unavailable>; sem_post_1-2 — exit 134: 	<blink backtrace unavailable>; sem_post_2-1 — exit 134: 	<blink backtrace unavailable>; sem_post_4-1 — exit 134: 	<blink backtrace unavailable>; sem_post_5-1 — exit 134: 	<blink backtrace unavailable>; sem_post_6-1 — exit 134: 	<blink backtrace unavailable>
-- **sem_unlink**: sem_unlink_2-1 — exit 134: 	<blink backtrace unavailable>; sem_unlink_6-1 — exit 134: 	<blink backtrace unavailable>; sem_unlink_7-1 — exit 134: blink: aborted:; sem_unlink_9-1 — exit 134: blink: aborted:
-- **sem_wait**: sem_wait_1-1 — exit 134: 	<blink backtrace unavailable>; sem_wait_1-2 — exit 134: 	<blink backtrace unavailable>; sem_wait_11-1 — exit 134: 	<blink backtrace unavailable>; sem_wait_12-1 — exit 134: 	<blink backtrace unavailable>; sem_wait_3-1 — exit 134: 	<blink backtrace unavailable>; sem_wait_5-1 — exit 134: 	<blink backtrace unavailable>
-- **shm_open**: shm_open_15-1 (hang/timeout) — skipped: hangs tabcomputer; shm_open_23-1 (hang/timeout) — timeout: ; shm_open_28-1 — exit 134: 	<blink backtrace unavailable>; shm_open_28-3 — exit 134: 	<blink backtrace unavailable>; shm_open_5-1 — exit 134: 	<blink backtrace unavailable>
+- **mmap**: mmap_10-1 (hang/timeout) — timeout: ; mmap_11-4 — UNTESTED: From mmap(2) manpage, skip known bug on tmpfs; mmap_24-1 (hang/timeout) — timeout: ; mmap_3-1 — FAIL: Test Fail: The file is not mapped correctly; mmap_7-4 — FAIL: mmap with MAP_SHARED failed to propagate change into the child
+- **pthread_cond_broadcast**: pthread_cond_broadcast_1-2 (hang/timeout) — timeout:  MF  : 200809
+- **pthread_cond_timedwait**: pthread_cond_timedwait_2-5 (hang/timeout) — timeout: ; pthread_cond_timedwait_4-2 (hang/timeout) — timeout:  MF  : 200809
+- **sem_close**: sem_close_3-2 — FAIL: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/sem_close/3-2.c FAILED: The semaphore count has changed after sem_close
+- **shm_open**: shm_open_15-1 (hang/timeout) — skipped: hangs tabcomputer; shm_open_23-1 (hang/timeout) — timeout: 
 - **sigaction**: sigaction_17-15 (hang/timeout) — skipped: hangs tabcomputer
 
 </details>

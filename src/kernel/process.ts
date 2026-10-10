@@ -68,9 +68,13 @@ export class Process {
   readonly startTime = Date.now();
   /** When it became a zombie. */
   exitTime = 0;
-  /** Syscalls made through kernel.syscall, the time spent in them, and how many are in progress (/proc CPU estimate). */
+  /** Syscalls made through kernel.syscall, the time spent blocked in them, and how many are in progress (/proc CPU estimate). */
   syscalls = 0;
   kernelMs = 0;
+  /** Since when the engine has reported itself sleeping (SYS_shiro_sleeping): that time isn't CPU either. */
+  engineSleepSince = 0;
+  /** CPU ms of the children (and theirs) it has reaped: times() tms_cutime, getrusage(RUSAGE_CHILDREN). */
+  childCpuMs = 0;
   /** Pending signals not yet seen by the guest (also mirrored in the channel's signal word). */
   pendingSignals = new Set<number>();
   /** Blocked signals (sigprocmask); signals.ts maintains it. */
@@ -177,6 +181,8 @@ export class Process {
 
   /** Short command name, like /proc/PID/comm. */
   get comm(): string {
+    // (prctl(PR_SET_NAME) of its main thread, until it execs)
+    if (typeof this.data.comm === 'string') return this.data.comm;
     const a0 = this.argv[0] ?? this.path;
     return a0.slice(a0.lastIndexOf('/') + 1);
   }
@@ -191,7 +197,7 @@ export class Process {
     const old = this.interrupt;
     this.interrupt = new AbortController();
     Process.bySignal.set(this.interrupt.signal, this);
-    old.abort();
+    old.abort(abortReason());
   }
 
   /** Resolves with the wait status when the process exits. Does not reap it. */
@@ -276,4 +282,16 @@ export class Process {
       });
     });
   }
+}
+
+let sharedAbortReason: unknown;
+/**
+ * The reason the kernel's aborts carry: one AbortError made once. abort()
+ * without a reason builds a DOMException (with a stack) every time, ~15% of
+ * a builtin's spawn-to-exit.
+ */
+export function abortReason(): unknown {
+  return sharedAbortReason ??= (typeof DOMException === 'function'
+    ? new DOMException('The operation was aborted.', 'AbortError')
+    : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
 }

@@ -17,10 +17,11 @@ Blink engine.
 | --- | --- | --- |
 | python3, venv | `pkg install python3` (CPython 3.13.7 WASI) | works |
 | pip | builtin (PyPI over fetch) / Debian `python3-pip` | works for pure-Python wheels / works with the TCP relay |
-| node, npm, npx | builtin | works (commander, mocha, tsc 5, prettier); `node` alone is the REPL on a terminal (`let`/`const` persist, `...` continuation lines, `await`, .help/.exit, ^C/^D as node) and reads its program from a pipe; on a terminal process.stdin reads the pty as the foreground job (cooked lines with echo and ^D, `setRawMode` sets its termios, ^C is SIGINT) |
+| node, npm, npx | builtin | works (commander, mocha, tsc 5, prettier); runs as a kernel process in a Worker where the page is cross-origin isolated (real pid, blocking `*Sync` child_process, fork() IPC, a server stays in the foreground: background it with `&`; `TABCOMPUTER_NODE_WORKER=0` runs it in the page); `node` alone is the REPL on a terminal (`let`/`const` persist, `...` continuation lines, `await`, .help/.exit, ^C/^D as node) and reads its program from a pipe; on a terminal process.stdin reads the pty as the foreground job (cooked lines with echo and ^D, `setRawMode` sets its termios, ^C is SIGINT) |
 | pnpm 9 | `npm install pnpm` | works (add, store, symlinks, run, exec, bins) |
 | yarn 1 | `npm install yarn` | works (add, lockfile, run, bins, offline) |
-| Next.js 16 (App Router, webpack) | `npx create-next-app`, then `next build` / `next start` with `TABCOMPUTER_NODE_WORKER=1` | builds (static pages prerendered) and serves; see "Next.js 16" below |
+| Next.js 16 (App Router, webpack) | `npx create-next-app`, then `next dev --webpack` / `next build` / `next start` (node in a Worker, the default) | dev server with HMR, builds (static pages prerendered) and serves; see "Next.js 16" below |
+| SvelteKit 2 (Svelte 5, Vite 7) | `npm i @sveltejs/kit svelte vite …`, then `vite dev` / `vite build` (adapter-static) | dev server with HMR, builds and prerenders; see "SvelteKit 2" below |
 | ruby, gem, rake | `pkg install ruby` (ruby.wasm 3.4.1) | works (no sockets) |
 | perl | `pkg install perl` (x86-64 in Blink) | works |
 | lua | `pkg install lua` | works |
@@ -226,7 +227,12 @@ Shell and platform fixes these needed (all with tests in the same file):
   and connections, as node does, and drops its module and file caches; one
   that goes idle while serving keeps them (its servers still run its code).
   The page's esbuild (bundling browser packages, `build`, `reload`) stops
-  after 60 s without a build and starts again on the next. What it took:
+  after 60 s without a build and starts again on the next. Its esbuild.wasm
+  is the bundled esbuild-wasm's, served from tabcomputer's own origin (it
+  came from unpkg.com, so a blocked or slow CDN broke vite). If a browser
+  build fails to load, importing the package says so and why
+  (`ERR_BROWSER_BUILD`) instead of failing on what its node files need. What
+  it took:
   - Rolldown runs as its browser build. `npm install` puts `@rolldown/browser`
     where `rolldown` goes (same API and versions); a process that imports it
     gets it bundled from the VFS with the page's esbuild
@@ -325,12 +331,67 @@ Shell and platform fixes these needed (all with tests in the same file):
     fs.write and panicked esbuild).
   - Requests to in-tab servers carry `Host: localhost:PORT` when the browser
     gave none (vite 6+ refuses an unknown host).
-  Not yet: node output into a pipe or file comes when the process exits
-  (only the terminal streams), so `npm run dev > log &` shows nothing while
-  it runs.
-- Next.js 16 (`create-next-app`, App Router, webpack): `next build` and
-  `next start` work in worker mode (`TABCOMPUTER_NODE_WORKER=1`).
-  - The build takes 54 s: compile 14 s, then page data and the static pages
+  - Redirected output of `node`, `npm` and `npx` goes into its file as it is
+    written: `npm run dev > log 2>&1 &` shows the server's startup lines
+    while it runs. As a guest (the default) the job stays Running while it
+    serves and keeps writing; `$!` is node's pid. In the page
+    (`TABCOMPUTER_NODE_WORKER=0`), a script that only serves returns once idle
+    and its server stays up; what its request handlers print after that is
+    lost. Started in the background there, timers its handlers set after the
+    script has gone idle don't run, so a server-sent events stream never
+    starts; in the foreground it does.
+  Not yet, in the page: node output into a pipe, with a terminal attached,
+  comes when the process exits (a guest's streams).
+- `node:wasi` (preview1) works when node runs as a guest: node's `WASI` class
+  (`getImportObject`/`wasiImport`, `start`, `initialize`, `finalizeBindings`,
+  `returnOnExit`, `args`, `env`, `preopens`) on the preview1 code WASM
+  processes run, so a module's files, pipes and terminal are the process's own
+  fds and a preopen is a directory fd. napi-rs WebAssembly bindings load and
+  run their emnapi threads on worker_threads: `@rolldown/binding-wasm32-wasi`
+  (sync and async APIs) and rolldown's node build bundling on it
+  (`tests/browser/node-wasi.mjs`). In the page there is no blocking channel:
+  `new WASI()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `stdin`/`stdout`/
+  `stderr` other than 0, 1 and 2 aren't supported.
+- SvelteKit 2 (Svelte 5, Vite 7, adapter-static; `APP=sveltekit` in
+  tests/browser/vite-react.mjs, a minimal site written there): `npm i` 2.6 s,
+  `vite dev` ready 3.8 s, the preview 3.1 s, an edit to `+page.svelte` by HMR
+  0.1 s, `vite build` with prerendering 10 s. Node in a Worker, the default.
+  What it took, all general:
+  - Top-level await reaches importers, as in ES modules: a module whose imports
+    are still evaluating (their own top-level await, or their imports') runs
+    once they are done. Kit's `core/sync/utils.js` awaits `svelte/compiler`;
+    its importers called into it first ("Cannot access 'MAJOR' before
+    initialization").
+  - `export { default as x } from 'y'` re-exports y's default as `import x
+    from 'y'` reads it (esm-env's `DEV` read `.default` of undefined).
+  - A `worker_threads` Worker's `env` option is the worker's `process.env`
+    (kit's post-build steps run in Workers told so by `SVELTEKIT_FORK`: the
+    build ended without them).
+  - Vite reloads the preview once when it optimizes more dependencies on the
+    first load; the check edits once the preview has settled.
+  Also from these checks, for every framework in worker mode:
+  - Packages load as their node builds, not their browser ones, in a guest:
+    a Worker has no DOM (decode-named-character-reference's `index.dom.js`
+    wants `document`: `astro dev` failed at startup). In the page, browser
+    builds still come first.
+  - A Worker's own `self` and `WorkerGlobalScope` are hidden from node code:
+    Prism (in Astro) took the guest for a Web Worker and parsed its syscall
+    channel's messages.
+  - fs.watch drops a change older than the watch: changes reach a guest later
+    than its own reads see them, and chokidar reported the creation of
+    `.astro/settings.json`, which it had found by reading the directory, as
+    an edit (Astro restarted at once).
+- Next.js 16 (`create-next-app`, App Router, webpack): `next dev --webpack`,
+  `next build` and `next start` work in worker mode (the default on a
+  cross-origin isolated page). `APP=next node tests/browser/vite-react.mjs`
+  checks all three on a minimal site.
+  - `next dev`: ready in 1.6 s, the first page in 14 s (compiling it), then
+    about 0.1 s a request; an edit reaches the preview by HMR in 2 to 6 s,
+    without a reload. A restart reuses webpack's persistent cache (stored 5 s
+    after the server goes idle, 128 MiB for this site): the first page in 10
+    to 12 s instead of 14 to 16 s. Most of that is the guest reading the
+    cache and the 8 MB chunks through the kernel, and inflating the cache.
+  - The build takes 30 to 54 s: compile, then page data and the static pages
     in a worker thread. It writes `/` and `/_not-found` as static HTML and
     RSC.
   - `next start` serves the page, its CSS and JS chunks, the favicon, and
@@ -338,14 +399,31 @@ Shell and platform fixes these needed (all with tests in the same file):
   - In the page, `next build` stops where it compiles SWC's wasm (Chromium
     refuses a synchronous `WebAssembly.Module` over 8 MB on the main thread).
   - Set `NEXT_TEST_WASM_DIR` to an installed `@next/swc-wasm-nodejs`: the
-    test container's relay can't fetch Next's own download.
+    test container's relay can't fetch Next's own download. Its native SWC
+    isn't installed (a .node addon can't load), so Next downloads that first;
+    where the download fails, Next's loader never settles and the first
+    page never compiles. The browser check gives it an empty
+    `node_modules/next/next-swc-fallback/@next/swc-linux-x64-gnu` there.
   - next.config needs `experimental: { webpackBuildWorker: false,
     workerThreads: true, cpus: 1 }`: jest-worker's child processes would
     need fork IPC (`child.send`) in a guest.
-  - Node output into a file comes when the process exits, so `next start >
-    log &` shows its log only then.
 
   What it took, all general:
+  - `next dev`: the module transform's patterns that start with an
+    identifier start only at one; webpack's dev chunks carry inline source
+    maps (runs of 100 000+ identifier characters), and the 8 MB vendor chunk
+    took 171 s to load (now 0.3 s). A direct `eval(X)` in code that carries
+    async context becomes `eval(__shiroAls.e(X))`, so the code it runs
+    carries it too (webpack's dev builds wrap every module in `eval`);
+    methods, accessors and functions named `await` or `eval` stay as they
+    are (rollup 4's `get await()` became a syntax error, and `astro build`
+    failed once an AsyncLocalStorage existed).
+    `require.cache` entries are modules with `children`, JSON ones too, and
+    `Module._cache` is the same object (Next's dev server clears its
+    manifests from it). `fs.ReadStream`/`fs.WriteStream` are constructors a
+    subclass can run on itself (graceful-fs), and an open write stream
+    follows a rename of its file (webpack's cache renames `X_` to `X` before
+    the stream behind its gzip has written).
   - AsyncLocalStorage carries its store across `await`, timers, `then`,
     `nextTick` and `queueMicrotask` (src/node-compat/async-context.ts). The
     page has no async hooks, so once a process makes an AsyncLocalStorage:
@@ -683,10 +761,12 @@ tabcomputer changes these programs needed (tests in `x86-engine.test.ts`,
   the program's working directory.
 - `rename` keeps a file's modification time (it set it to now): `rsync -a`
   sets times on a temp file and renames it. `filesystem.test.ts`.
-- `link(2)` still copies (the filesystem has no hard links) but the copy
-  reports the source's inode number, which git's local clone checks, and
-  both names report a link count of 2 (shadow's lock files: `groupadd`,
-  `useradd` in openssh-client's and other postinsts). `kernel-core.test.ts`.
+- `link(2)` makes a real hard link (053330da): both names are one file with
+  one inode number, which git's local clone checks, and a link count that
+  follows links and unlinks (shadow's lock files: `groupadd`, `useradd` in
+  openssh-client's and other postinsts). Node's `fs.link` does the same, and so do
+  the built-in `ln`, `cp -l` and tar's hard-link members. `kernel-core.test.ts`,
+  `builtins-hardlinks.test.ts`.
 - Files keep no owner, so `stat` reports them as the caller's (root's in a
   root shell): git refused root's own repositories ("dubious ownership").
 - tabcomputer's commands look like files only where exec runs them (`/bin`,
@@ -941,12 +1021,12 @@ real account takes over (the sign-in page opens and the CLI waits for the code).
 
 | Tool | Version | Install | `--version` | First screen | API with a dummy key | Sign-in | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code, native (default) | 2.1.296 | `claude install` 140 s | 3 s | 52 s | `-p`: "Invalid API key", ~100 s | `claude login` → `claude auth login`: the sign-in page opens in a tab (or an Open card), then "Paste code here" | Startup is ~48–52 s offline, mostly compiled guest code (perf-blink's profiles). With `TABCOMPUTER_NODE_WORKER=1`: same. |
-| Claude Code, `--npm` | 2.1.112 (reports 2.1.280) | installed at boot | 5–7 s | 14 s | `-p`: "Invalid API key", 4 s | `claude --npm login` → the in-session `/login` (URL, paste prompt) | 2.1.112's `auth login` has no paste prompt and could never finish here; fixed (ad91c0e). With `TABCOMPUTER_NODE_WORKER=1` it works but shows the first-run screens. |
-| OpenAI Codex | 0.162.1 | GitHub release tarball with the real curl (`pkg install curl`): 65 s; `npm i -g @openai/codex` 8–11 s (the `linux-x64` package installs since f86aded) | 4.7 s (tarball), 12 s (npm launcher) | — | `exec`: 401 on `wss://` then `https://api.openai.com`, ~40–50 s (tarball and, on ed8a01c, the npm launcher) | not tried (ChatGPT sign-in) | After the 401s, `exec` can hang in the HTTPS fallback until Ctrl-C (the npm launcher on ed8a01c; one of three tarball runs). Through npm, the terminal used to freeze after `codex --version` (fixed in 102fc13), and `exec` used to wait on stdin (compat-tools' stdio-inherit fix). |
-| Grok Build (xAI) | 1.0.50 | `x.ai/cli/install.sh` after `pkg install curl`: 118 s | 2.4 s | — | `-p`: 400 "Incorrect API key", 25 s (148 s on 2026-10-09) | not tried | The builtin `curl` can't fetch the binary (browser fetch); the real curl goes through the relay. |
+| Claude Code, native (default) | 2.1.296 | `claude install` 140 s | 3 s | 52 s | `-p`: "Invalid API key", ~100 s | `claude login` → `claude auth login`: the sign-in page opens in a tab (or an Open card), then "Paste code here" | Startup is ~48–52 s offline, mostly compiled guest code (perf-blink's profiles). In worker mode: same. |
+| Claude Code, `--npm` | 2.1.112 (reports 2.1.280) | installed at boot | 5–7 s | 14 s | `-p`: "Invalid API key", 4 s | `claude --npm login` → the in-session `/login` (URL, paste prompt) | 2.1.112's `auth login` has no paste prompt and could never finish here; fixed (ad91c0e). In worker mode (the default) it starts onboarded too (8e78beb8). |
+| OpenAI Codex | 0.162.1 | GitHub release tarball with the real curl (`pkg install curl`): 65 s; `npm i -g @openai/codex` 8–11 s (the `linux-x64` package installs since f86aded) | 4.7 s (tarball), 12 s (npm launcher) | — | `exec`: 401 on `wss://` then `https://api.openai.com`, ~40–50 s (tarball and, on ed8a01c, the npm launcher) | not tried (ChatGPT sign-in) | After the 401s, `exec` could hang until Ctrl-C (the npm launcher on ed8a01c; one of three tarball runs). That was codex retrying failed HTTPS without limit (`codex-rs/core/src/responses_retry.rs`), not a kernel deadlock; the likely cause of the failures was the missing CA bundle: its TLS (OpenSSL through native-tls/openssl-probe, and rustls with rustls-native-certs) needs `/etc/ssl/certs/ca-certificates.crt`, `/etc/ssl/cert.pem` or `SSL_CERT_FILE`, and plain mode had none unless `pkg install curl` or `ca-certificates` had run (the tarball route did, the npm route didn't). Both profiles now preinstall `ca-certificates` at boot (81be3dc6). Fixed since, also not re-run with codex: a "turn interrupted" SIGINT after codex's 30 s timeout killed a `git fetch` child (killing a program's `sh -c` child signalled the page shell's foreground group; 6e50918c), and, after `debian install`, a hang in its startup plugin sync (`git fetch --depth 1 --no-tags` of github.com/openai/plugins: the built-in git took Debian mode's `/usr/bin/git` shim for the full git and ran itself without end; 48e4e8c0 installs the full git over the shim). Through npm, the terminal used to freeze after `codex --version` (fixed in 102fc13), and `exec` used to wait on stdin (compat-tools' stdio-inherit fix). |
+| Grok Build (xAI) | 1.0.50 | `x.ai/cli/install.sh` after `pkg install curl`: 118 s | 2.4 s | — | `-p`: 400 "Incorrect API key", 25 s (148 s on 2026-10-09) | not tried | The builtin `curl` can't fetch the binary (browser fetch); the real curl goes through the relay. The dock's Grok entry installs the real curl first, and finds the program under `~` when the installer's directory isn't on PATH. |
 | Gemini CLI | 0.63.0 | `npm i -g` 2–6 s | 12 s, plus a harmless proper-lockfile "Lock is already released" trace | — | `-p` reaches `/api/gemini/` (400) and exits 1 in 41 s, but on a terminal it prints "An unexpected critical error occurred:[object Object]" rather than the API's message | not tried | On b2571fb `-p` froze the terminal: it printed, then called `process.exit()` from a timer, which cancelled xterm's pending write (fixed in 102fc13). `--version` also prints a bogus "critical error: process.exit(0)" after the prompt (Gemini catches the throw our `process.exit` uses to stop the script). |
-| Antigravity (`agy`) | 1.3.3 | `antigravity.google/cli/install.sh` 22 s (`set -euo pipefail` fixed in d505335) | 19 s after `debian install` | — | — | not tried (Google sign-in) | A glibc binary: without `debian install` (no `ld-linux-x86-64.so.2`) it exits 127 with no message. After `debian install`, `curl … \| bash` runs Debian's bash, which can't find tabcomputer's `grep` and `curl` (the overlay leaves `/usr/bin/grep` absent), so install agy first. |
+| Antigravity (`agy`) | 1.3.3 | `antigravity.google/cli/install.sh` 22 s (`set -euo pipefail` fixed in d505335) | 19 s after `debian install` | — | — | not tried (Google sign-in) | A glibc binary: without `debian install` (no `ld-linux-x86-64.so.2`) it exits 127 with no message. After `debian install`, `curl … \| bash` runs Debian's bash, which can't find tabcomputer's `grep` and `curl` (the overlay leaves `/usr/bin/grep` absent), so install agy first. The dock's entry does that: the installer, then `debian install`. |
 | opencode | 1.18.35 | `opencode.ai/install` (real curl): 40.5 s on ed8a01c; `npm i -g` 25 s | 160 s after `debian install` (a glibc build, `opencode-linux-x64-baseline`); without it: "cannot execute: required file not found (this program needs glibc: run `debian install`)" | — | — | — | The install script needed two shell fixes: `local` in a piped `{ }` group of a function (fa6b68a), and a `{ }` group after `cmd \| \<newline>` (f17cef32). |
 | aider | 0.86.2 | `debian install`, `pkg install curl`, `aider.chat/install.sh` (uv, Python 3.12): 609 s | 362 s | — | `--message`: litellm `AuthenticationError` "Incorrect API key", 776 s | not tried | Works end to end since the v4-mapped UDP fix (0a5e7e5); very slow (CPython under Blink). |
 

@@ -132,9 +132,11 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   ([docs/research/OPPORTUNITIES.md](docs/research/OPPORTUNITIES.md)).
 - **Prebuilt packages.** 72 programs built for the page, WebAssembly or static x86-64, that
   install in about a second ([above](#tabcomputers-prebuilt-packages), [docs/PACKAGES.md](docs/PACKAGES.md)).
-- **Conformance.** Under Blink, LTP's syscall tests pass 283/322 and the Open POSIX Test Suite
-  1375/1448 (only tests that pass natively as uid 1000 are scored); the busybox testsuite
-  625/635; the oils shell spec tests 2034/2417; smoosh's POSIX shell tests 159/162; the
+- **Conformance.** Under Blink, LTP's syscall tests pass 431/534 and the Open POSIX Test Suite
+  1428/1448 (only tests that pass natively as uid 1000 are scored; the LTP set grew from 322
+  tests, of which 285 pass, to 534 with harder ones, so its percentage fell from 87.9% to 80.7%
+  without a regression); the busybox testsuite
+  625/635; the oils shell spec tests 2105/2417; smoosh's POSIX shell tests 159/162; the
   wasi-testsuite 71/72 ([docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **GUI apps.** `gui` lists Debian X11 apps (xterm, GTK and Qt editors and viewers, GIMP,
   Inkscape, Krita, VLC, NetSurf). They open as desktop windows. Of the 29 in the scoreboard,
@@ -143,8 +145,9 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   [docs/DOM-RENDERING.md](docs/DOM-RENDERING.md)).
 - **Browser app (research spike).** Tabs showing real sites on per-site origins, with TLS done
   in the page over the relay ([docs/BROWSER.md](docs/BROWSER.md), [docs/WEB_SCORE.md](docs/WEB_SCORE.md)).
-- **Languages.** Node.js (tabcomputer's runtime with real npm tarballs; `node` alone is a
-  REPL), Python, Ruby (`irb` works), Go, clang, and whatever Debian packages
+- **Languages.** Node.js (tabcomputer's runtime with real npm tarballs; each `node` is a
+  real process in a background Worker, so a server stays in the foreground until you stop it
+  or start it with `&`; on a page that isn't cross-origin isolated it runs in the page; `node` alone is a REPL), Python, Ruby (`irb` works), Go, clang, and whatever Debian packages
   ([docs/COMPAT.md](docs/COMPAT.md)).
 - **Web development.** `npm create vite@latest app -- --template react`, `npm i`,
   `npm run dev`, then `serve open 5173`: the app renders in a preview window and an edit to
@@ -228,6 +231,27 @@ It runs them twice, as a static x86-64 binary under Blink
 and through the Node runtime (what the npm build uses), so you can see which layer
 breaks. It also runs the native `claude --version` if that is installed. Plain
 `doctor` shows a one-line summary.
+
+### If tabcomputer won't load
+
+If the page freezes or stays blank on every reload, open it in safe mode: add `?safe=1` to the
+address (`https://tabcomputer.com/?safe=1`; `?safe` and `#safe` work too). A tab whose last two
+loads never reached the prompt starts in safe mode by itself on the next reload (counted in this
+tab only, and reset once a load reaches the prompt).
+
+Safe mode starts a plain terminal and skips what your saved setup starts at boot: `~/.profile`
+(and anything it launches), your saved windows and panes, app mode, the background Claude Code
+install and the X11 display. Your files are all still there. In safe mode:
+
+- `safe-mode` shows why it's on, and any boot step that failed or hung.
+- `console --prev` shows the log of the session before this one.
+- `safe-mode disable-profile` renames `~/.profile` to `~/.profile.disabled` (or `.disabled.2`, …;
+  it never overwrites a file), so it no longer runs at boot. Rename it back to restore it.
+- `safe-mode reset-layout` forgets the saved windows, panes, app mode and console log. Files
+  aren't touched.
+- `safe-mode exit` reloads normally.
+
+Nothing in safe mode deletes files.
 
 ## Development
 

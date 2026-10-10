@@ -15,6 +15,7 @@ import type { Shell } from '@shiro/shell';
 import type { FileSystem } from '@shiro/filesystem';
 import type { GuestWorker } from '@shiro/kernel/worker-host';
 import { setGuestWorkerFactory, forceWasmProcessMode } from '@shiro/wasi/host';
+import { nodeWorkerFactory, nodeWorkerMode } from '@shiro/node-worker/boot';
 import { readTarball } from '@shiro/utils/tar';
 import { createPathShims } from '@shiro/path-shims';
 import { simpleCommandWords } from '@shiro/kernel/kernel';
@@ -24,6 +25,7 @@ const REPO = path.resolve(here, '../../..');
 const srcWasi = path.join(REPO, 'src/wasi');
 const CACHE = `${REPO}/tests/.pkg-cache`;
 let tmp: string;
+let guestFactory: (() => GuestWorker) | null = null;
 const realFetch = globalThis.fetch;
 
 beforeAll(async () => {
@@ -38,7 +40,7 @@ beforeAll(async () => {
   `);
   const workerFile = path.join(tmp, 'guest-worker.mjs');
   await build({ entryPoints: [entry], bundle: true, platform: 'node', format: 'esm', outfile: workerFile, logLevel: 'error' });
-  setGuestWorkerFactory((): GuestWorker => {
+  setGuestWorkerFactory(guestFactory = (): GuestWorker => {
     const w = new Worker(workerFile);
     return {
       postMessage: (m) => w.postMessage(m),
@@ -1065,17 +1067,18 @@ ws.write(bin.subarray(0, 3)); ws.end(bin.subarray(3), () => {
 });`)).toBe('open\nfinish 6 true\npiped null 1,0,129,11,201,2\nappended 7\nerror ENOENT\n');
   }, 60_000);
 
-  it('package exports: require picks require over import (browser first), import() a namespace', async () => {
+  // (browser first in the page; a guest in a Worker has no DOM and takes node builds, as Astro's needed)
+  it('package exports: require picks require over import (browser first in the page), import() a namespace', async () => {
     await fs.mkdir('/home/user/m/node_modules/dual/esm', { recursive: true });
     await fs.writeFile('/home/user/m/node_modules/dual/package.json', JSON.stringify({ name: 'dual', exports: { '.': { import: './esm/index.mjs', require: './index.cjs' }, './feature': { browser: './b.js', node: './n.js' } } }));
     await fs.writeFile('/home/user/m/node_modules/dual/index.cjs', 'module.exports = { kind: "cjs" };');
     await fs.writeFile('/home/user/m/node_modules/dual/esm/index.mjs', 'export const kind = "esm";');
     await fs.writeFile('/home/user/m/node_modules/dual/n.js', 'module.exports = "node";');
     await fs.writeFile('/home/user/m/node_modules/dual/b.js', 'module.exports = "browser";');
-    expect(await node(`console.log(require('dual').kind, require('dual/feature'));
+    expect(await node(`console.log(require('dual').kind, require('dual/feature') === (typeof document === 'undefined' ? 'node' : 'browser'));
 import('dual').then(ns => console.log(ns.default.kind, ns.kind));
 const dyn = new Function('m', 'return import(m)'); dyn('./node_modules/dual/n.js').then(ns => console.log(ns.default));`))
-      .toBe('cjs browser\ncjs cjs\nnode\n');
+      .toBe('cjs true\ncjs cjs\nnode\n');
   }, 60_000);
 
   // Expected values are real node 22's (cases ported from node's
@@ -1305,8 +1308,13 @@ w.on('all', (e, p) => { ev.push(e + ' ' + p); if (p.endsWith('stop')) setTimeout
 w.on('ready', () => console.log('ready'));`);
     const watcher = sh(shell, 'cd /home/user/ck && node w.js');
     await new Promise((res) => setTimeout(res, 2000));
-    await sh((shell as any).fork(), 'cd /home/user/ck/src && echo b > b.js && echo aa >> a.js && mkdir lib/deep && echo c > lib/c.js && rm b.js && sleep 0.5 && touch stop');
+    // (b.js lives long enough for chokidar's stat of it: one created and removed at once may be
+    // reported as neither, on Linux too)
+    await sh((shell as any).fork(), 'cd /home/user/ck/src && echo b > b.js && echo aa >> a.js && mkdir lib/deep && echo c > lib/c.js && sleep 0.5 && rm b.js && sleep 0.5 && touch stop');
     r = await watcher;
+    // (`echo c > c.js` creates the file, then writes it: chokidar may report the write as a change
+    // when its stat for the add came first, as it may on Linux; a guest's stat comes later than the page's)
+    r.out = r.out.replace('change src/lib/c.js\n', '');
     expect(r.out).toBe('ready\nadd src/b.js\nadd src/lib/c.js\naddDir src/lib/deep\nchange src/a.js\nunlink src/b.js\n');
   }, 180_000);
 
@@ -1565,6 +1573,9 @@ describe('git (upstream, x86-64 in Blink)', () => {
 import { iframeServer } from '@shiro/iframe-server';
 import { WsClient } from '@shiro/browser/websocket';
 
+/** A whole body as text: the page's node gives what it was written (a string), a guest's comes over the kernel's bridge as bytes */
+const text = (body: unknown) => (body instanceof Uint8Array ? new TextDecoder().decode(body) : String(body));
+
 describe('in-tab servers: streamed responses and WebSocket upgrades (what a preview window reaches)', () => {
   let shell: Shell;
   let fs: FileSystem;
@@ -1573,6 +1584,25 @@ describe('in-tab servers: streamed responses and WebSocket upgrades (what a prev
     const r = await sh(shell, 'mkdir -p /home/user/live && cd /home/user/live && npm init -y > /dev/null && npm install ws@8.18.0 socket.io@4.8.1 > /dev/null; echo $?');
     expect(r.out).toBe('0\n');
   }, 300_000);
+
+  /**
+   * Start a server script and wait for its port; its output goes to a file. A
+   * guest keeps running while it listens, as node does on Linux, so it starts in
+   * the background. The page's node returns once idle and its server lives on in
+   * the page; started in the background, timers its handlers set don't run (an
+   * SSE stream never starts), so there it starts in the foreground.
+   */
+  const serve = async (script: string, port: number) => {
+    const out = `/tmp/live-${port}.out`;
+    await sh(shell, `cd /home/user/live && node ${script} > ${out} 2>&1${nodeWorkerMode(shell.env) ? ' &' : ''}`);
+    const t0 = Date.now();
+    while (!iframeServer.isPortInUse(port)) {
+      if (Date.now() - t0 > 30_000) throw new Error(`nothing listens on ${port}: ${await fs.readFile(out, 'utf8').catch(() => '')}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  // (the background servers end with the tests)
+  afterAll(async () => { await sh(shell, 'kill -9 $(jobs -p) 2>/dev/null; true'); });
 
   /** Talk RFC 6455 to `port` the way the preview's WebSocket does; resolve after `want` messages */
   const wsTalk = (port: number, path: string, onMessage: (m: string, send: (s: string) => void) => void, want: number) =>
@@ -1603,10 +1633,14 @@ srv.on('request', (req, res) => {
     res.end(body + ' at ' + req.url + ' ' + res.headersSent);
   });
 });
-srv.listen(4801, () => console.log('up', srv.address().port, srv.listening));`);
-    expect((await sh(shell, 'cd /home/user/live && node plain.js')).out).toContain('up 4801 true');
+srv.listen(4801, () => require('fs').writeFileSync('/tmp/live-4801.up', ['up', srv.address().port, srv.listening].join(' ')));`);
+    await serve('plain.js', 4801);
+    // (a file: a backgrounded node in the page writes its stdout only when it ends)
+    let up = '';
+    for (let i = 0; i < 250 && !up; i++) { up = String(await fs.readFile('/tmp/live-4801.up', 'utf8').catch(() => '')); if (!up) await new Promise((r) => setTimeout(r, 20)); }
+    expect(up).toBe('up 4801 true');
     const r = await iframeServer.fetch(4801, '/p?q=1', { method: 'POST', headers: { 'x-in': 'hi' }, body: 'payload' });
-    expect([r.status, r.headers?.['x-seen'], r.body]).toEqual([201, 'POST hi', 'got payload at /p?q=1 false']);
+    expect([r.status, r.headers?.['x-seen'], text(r.body)]).toEqual([201, 'POST hi', 'got payload at /p?q=1 false']);
     const b = await iframeServer.fetch(4801, '/bytes');
     expect(Array.from(b.body as Uint8Array)).toEqual([0, 255, 1]);
   }, 60_000);
@@ -1617,7 +1651,7 @@ srv.listen(4801, () => console.log('up', srv.address().port, srv.listening));`);
   let n = 0;
   const t = setInterval(() => { res.write('event: tick\\ndata: ' + (++n) + '\\n\\n'); if (n === 3) { clearInterval(t); res.end(); } }, 100);
 }).listen(4802);`);
-    await sh(shell, 'cd /home/user/live && node sse.js');
+    await serve('sse.js', 4802);
     const t0 = Date.now();
     const r = await iframeServer.fetch(4802, '/events');
     expect(r.status).toBe(200);
@@ -1642,18 +1676,18 @@ srv.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => ws.on('message', (m, isBinary) => ws.send(isBinary ? 'bin:' + [...m].join(',') : 'echo:' + m)));
 });
 srv.listen(4803);`);
-    await sh(shell, 'cd /home/user/live && node ws.js');
+    await serve('ws.js', 4803);
     const got = await wsTalk(4803, '/echo', (m, send) => { if (m === '') { send('a'); send('b'); } }, 2);
     expect(got).toEqual(['echo:a', 'echo:b']);
     // the same port still answers plain requests
-    expect((await iframeServer.fetch(4803, '/')).body).toBe('not a socket');
+    expect(text((await iframeServer.fetch(4803, '/')).body)).toBe('not a socket');
   }, 60_000);
 
   it('Socket.IO: a WebSocket connection and the polling handshake reach the server; events echo', async () => {
     await fs.writeFile('/home/user/live/sio.js', `const { Server } = require('socket.io');
 const io = new Server(4804);
 io.on('connection', (s) => s.on('echo', (m) => s.emit('echo', m + '!')));`);
-    await sh(shell, 'cd /home/user/live && node sio.js');
+    await serve('sio.js', 4804);
     const got = await wsTalk(4804, '/socket.io/?EIO=4&transport=websocket', (m, send) => {
       if (m.startsWith('0{')) send('40');
       else if (m.startsWith('40{')) send('42["echo","hi"]');
@@ -1663,7 +1697,7 @@ io.on('connection', (s) => s.on('echo', (m) => s.emit('echo', m + '!')));`);
     expect(got[2]).toBe('42["echo","hi!"]');
     const poll = await iframeServer.fetch(4804, '/socket.io/?EIO=4&transport=polling');
     expect(poll.status).toBe(200);
-    expect(String(poll.body)).toMatch(/^0\{"sid":.*"upgrades":\["websocket"\]/);
+    expect(text(poll.body)).toMatch(/^0\{"sid":.*"upgrades":\["websocket"\]/);
   }, 60_000);
 
   it('a kernel listener (net.createServer) takes a raw connection: its own WebSocket handshake and frames', async () => {
@@ -1687,7 +1721,7 @@ net.createServer((sock) => {
     sock.write(Buffer.concat([Buffer.from([0x81, out.length]), out]));
   });
 }).listen(4805, () => console.log('raw up'));`);
-    await sh(shell, 'cd /home/user/live && node raw.js');
+    await serve('raw.js', 4805);
     expect(await wsTalk(4805, '/', (m, send) => { if (m === '') send('ping'); }, 1)).toEqual(['kernel:ping']);
   }, 60_000);
 });
@@ -1959,6 +1993,9 @@ describe('npm install: install scripts and platform packages', () => {
 describe("the page's esbuild is let go when idle", () => {
   it('stops after the idle time and starts again for the next build', async () => {
     // The page's esbuild is esbuild-wasm's browser build (here in this thread, from esbuild.wasm)
+    // (after resetModules, modules a later test imports are new copies: they get this file's and
+    // the setup's guest factories again in `finally`, or node and WASM there would run without them)
+    const nodeFactory = nodeWorkerFactory();
     vi.resetModules();
     vi.doMock('esbuild-wasm', () => import(`${REPO}/node_modules/esbuild-wasm/esm/browser.js`));
     const saved = globalThis.fetch;
@@ -1984,6 +2021,10 @@ describe("the page's esbuild is let go when idle", () => {
       setEsbuildIdleMs(60_000);
       globalThis.fetch = saved;
       vi.doUnmock('esbuild-wasm');
+      (await import('@shiro/node-worker/boot')).setNodeWorkerFactory(nodeFactory);
+      const wasi = await import('@shiro/wasi/host');
+      wasi.setGuestWorkerFactory(guestFactory);
+      wasi.forceWasmProcessMode('sab');
     }
   }, 120_000);
 });
@@ -1995,7 +2036,9 @@ describe('node: a process that exits closes its servers', () => {
     let r = await sh(shell, `node -e "require('http').createServer((q, s) => s.end('up')).listen(4811, () => setTimeout(() => process.exit(0), 50))"; echo "e=$?"`);
     expect(r.out).toBe('e=0\n');
     expect(iframeServer.isPortInUse(4811)).toBe(false);
-    r = await sh(shell, `node -e "require('http').createServer((q, s) => s.end('up')).listen(4812)"; echo "e=$?"`);
+    // (the page's node: its script returns and the server lives on in the page; a guest stays
+    // running while it listens, as node does)
+    r = await sh(shell, `TABCOMPUTER_NODE_WORKER=0 node -e "require('http').createServer((q, s) => s.end('up')).listen(4812)"; echo "e=$?"`);
     expect(r.out).toBe('e=0\n');
     expect(iframeServer.isPortInUse(4812)).toBe(true);
     expect((await iframeServer.fetch(4812, '/')).body).toBe('up');
@@ -2046,6 +2089,122 @@ describe('require.resolve finds any existing file', () => {
     await fs.writeFile('/home/user/rr/app/favicon.ico', new Uint8Array([0, 0, 1, 0, 0xff, 0xfe]));
     const r = await sh(shell, `cd /home/user/rr && node -e "console.log(require.resolve('/home/user/rr/app/favicon.ico'), require.resolve('./app/favicon.ico')); try { require.resolve('./app/nope.ico') } catch (e) { console.log(e.code) }"`);
     expect(r.out).toBe('/home/user/rr/app/favicon.ico /home/user/rr/app/favicon.ico\nMODULE_NOT_FOUND\n');
+  }, 60_000);
+});
+
+describe('worker_threads Worker env', () => {
+  it("is the worker's process.env, and the parent's stays as it was (SvelteKit's forked build steps)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/wte', { recursive: true });
+    await fs.writeFile('/home/user/wte/w.mjs', `import { Worker, parentPort } from 'node:worker_threads';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+if (process.env.FORKED && parentPort) {
+  parentPort.on('message', (d) => parentPort.postMessage({ type: 'result', v: d.v * 2, forked: process.env.FORKED }));
+  parentPort.postMessage({ type: 'ready' });
+} else if (!parentPort) {
+  const w = new Worker(fileURLToPath(import.meta.url), { env: { ...process.env, FORKED: 'yes' } });
+  w.on('message', (d) => {
+    if (d.type === 'ready') w.postMessage({ v: 21 });
+    if (d.type === 'result') { console.log(d.v, d.forked, process.env.FORKED); w.terminate(); }
+  });
+} else console.log('no env in the worker');
+`);
+    const r = await sh(shell, 'node /home/user/wte/w.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('42 yes undefined\n');
+  }, 60_000);
+});
+
+describe('export { default as x } from', () => {
+  it("re-exports the module's default as `import x from` reads it, undefined included (esm-env, SvelteKit's build)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/edf', { recursive: true });
+    await fs.writeFile('/home/user/edf/t.mjs', 'export default true;\n');
+    await fs.writeFile('/home/user/edf/u.mjs', 'export default undefined;\n');
+    await fs.writeFile('/home/user/edf/o.mjs', 'export default { a: 1 };\nexport const b = 2;\n');
+    await fs.writeFile('/home/user/edf/i.mjs', "export { default as T } from './t.mjs';\nexport { default as U } from './u.mjs';\nexport { default as O, b } from './o.mjs';\n");
+    await fs.writeFile('/home/user/edf/m.mjs', "import { T, U, O, b } from './i.mjs';\nconsole.log(T, U, O.a, b);\n");
+    const r = await sh(shell, 'node /home/user/edf/m.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('true undefined 1 2\n');
+  }, 60_000);
+});
+
+describe('top-level await reaches importers', () => {
+  it("a module importing one that is still evaluating waits for it, and so do its importers (SvelteKit's core/sync/utils.js)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/tla', { recursive: true });
+    await fs.writeFile('/home/user/tla/v.mjs', 'await new Promise((r) => setTimeout(r, 20));\nexport const v = 21;\n');
+    await fs.writeFile('/home/user/tla/u.mjs', "const { v } = await import('./v.mjs');\nconst MAJOR = v * 2;\nexport function major() { return MAJOR; }\n");
+    await fs.writeFile('/home/user/tla/mid.mjs', "import { major } from './u.mjs';\nexport const plugin = () => major();\n");
+    await fs.writeFile('/home/user/tla/top.mjs', "import { plugin } from './mid.mjs';\nconsole.log('major', plugin());\n");
+    await fs.writeFile('/home/user/tla/entry.mjs', "const m = await import('./top.mjs');\nconsole.log('done');\n");
+    const r = await sh(shell, 'node /home/user/tla/entry.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('major 42\ndone\n');
+    // An async function of the import's, called from the body: the body waits for it
+    // too, not only one that would throw (SvelteKit's vite.config calls sveltekit())
+    await fs.writeFile('/home/user/tla/cfg.mjs', "import { plugin } from './mid.mjs';\nasync function make() { return plugin(); }\nexport default make();\n");
+    await fs.writeFile('/home/user/tla/entry2.mjs', "const m = await import('./cfg.mjs');\nconsole.log('cfg', await m.default);\n");
+    expect((await sh(shell, 'node /home/user/tla/entry2.mjs')).out).toBe('cfg 42\n');
+  }, 60_000);
+});
+
+describe('fs.ReadStream and fs.WriteStream', () => {
+  it("are constructors a subclass can apply to its own instance (graceful-fs, Next's webpack cache)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/gfs', { recursive: true });
+    await fs.writeFile('/home/user/gfs/t.js', `const fs = require('fs');
+function WS(p, o) { if (this instanceof WS) return fs.WriteStream.apply(this, arguments), this; return WS.apply(Object.create(WS.prototype), arguments); }
+WS.prototype = Object.create(fs.WriteStream.prototype);
+function RS(p, o) { if (this instanceof RS) return fs.ReadStream.apply(this, arguments), this; return RS.apply(Object.create(RS.prototype), arguments); }
+RS.prototype = Object.create(fs.ReadStream.prototype);
+const w = new WS(__dirname + '/out.txt');
+w.write('a');
+w.end('b', () => {
+  console.log(fs.readFileSync(__dirname + '/out.txt', 'utf8'), w instanceof fs.WriteStream, w instanceof require('stream').Writable, fs.createWriteStream(__dirname + '/x') instanceof fs.WriteStream);
+  let got = '';
+  new RS(__dirname + '/out.txt').on('data', (d) => { got += d; }).on('end', () => console.log(got, typeof fs.ReadStream));
+});`);
+    const r = await sh(shell, 'node /home/user/gfs/t.js');
+    // (node 22's output)
+    expect(r.out).toBe('ab true true true\nab function\n');
+  }, 60_000);
+
+  it("a write stream's file renamed while it is open gets what it writes after (webpack's cache: X_ renamed to X before the gzip stream's file stream ends)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/wsr', { recursive: true });
+    await fs.writeFile('/home/user/wsr/t.js', `const fs = require('fs');
+const zlib = require('zlib');
+const gz = zlib.createGzip();
+const file = fs.createWriteStream(__dirname + '/p.gz_');
+gz.pipe(file);
+gz.on('finish', () => fs.rename(__dirname + '/p.gz_', __dirname + '/p.gz', (e) => {
+  file.on('close', () => console.log(e, fs.existsSync(__dirname + '/p.gz_'), zlib.gunzipSync(fs.readFileSync(__dirname + '/p.gz')).toString()));
+}));
+gz.end(Buffer.from('packed'));`);
+    const r = await sh(shell, 'node /home/user/wsr/t.js');
+    // (node 22's output)
+    expect(r.out).toBe('null false packed\n');
+  }, 60_000);
+});
+
+describe('require.cache as node has it', () => {
+  it("entries are modules with children, JSON ones too; Module._cache and createRequire's cache are the same object (Next's dev server clears its manifests)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/rc', { recursive: true });
+    await fs.writeFile('/home/user/rc/m.json', '{"a":1}');
+    await fs.writeFile('/home/user/rc/c.js', 'module.exports = 2;');
+    await fs.writeFile('/home/user/rc/t.js', `const Module = require('module');
+require('./m.json'); require('./c.js');
+const j = require.cache[__dirname + '/m.json'], c = require.cache[__dirname + '/c.js'];
+console.log(Array.isArray(j.children), j.filename === __dirname + '/m.json', j.loaded, Array.isArray(c.children), j.exports.a);
+console.log(Module._cache === require.cache, Module.createRequire(__filename).cache === require.cache, typeof Module._cache.get);
+delete require.cache[__dirname + '/m.json'];
+console.log(__dirname + '/m.json' in require.cache, Object.keys(Module._cache).includes(__dirname + '/c.js'));`);
+    const r = await sh(shell, 'cd /home/user/rc && node t.js');
+    expect(r.out).toBe('true true true true 1\ntrue true undefined\nfalse true\n');
   }, 60_000);
 });
 
@@ -2137,6 +2296,23 @@ async function job(id, ms) {
   }, 60_000);
 });
 
+describe('AsyncLocalStorage in eval\'d code', () => {
+  it("keeps its store across awaits in code run by eval, as webpack's dev builds wrap each module (Next's dev server)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/alse', { recursive: true });
+    await fs.writeFile('/home/user/alse/m.js', `const { AsyncLocalStorage } = require('async_hooks');
+const als = new AsyncLocalStorage();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mod = {};
+eval("mod.f = async function (id) { await sleep(10); const a = als.getStore(); await sleep(5); return id + ':' + a + ':' + eval('als.getStore()'); };");
+const other = () => sleep(1).then(() => als.run('x', () => sleep(20)));
+Promise.all(['A', 'B'].map((id) => als.run(id, () => { other(); return mod.f(id); }))).then((r) => console.log(r.join(' '), als.getStore()));`);
+    const r = await sh(shell, 'node /home/user/alse/m.js');
+    // (node 22: 'A:A:A B:B:B undefined')
+    expect(r.out).toBe('A:A:A B:B:B undefined\n');
+  }, 60_000);
+});
+
 describe('stream: web streams to node streams and back', () => {
   it('Readable.fromWeb/toWeb, Writable.fromWeb/toWeb, Duplex (Next\'s prerender)', async () => {
     const { fs, shell } = await createTestShell();
@@ -2181,11 +2357,14 @@ describe('http: ServerResponse internals middleware uses', () => {
         gz.end('compressed hello');
       }).listen(4813);
     `);
-    await sh(shell, 'cd /home/user/gz && node s.js');
+    // (in the background: node as a guest stays running while it listens, as node does)
+    await sh(shell, 'cd /home/user/gz && node s.js &');
+    for (let t = 0; t < 200 && !iframeServer.isPortInUse(4813); t++) await new Promise((res) => setTimeout(res, 100));
     const r = await iframeServer.fetch(4813, '/');
     const body = typeof r.body === 'string' ? new TextEncoder().encode(r.body) : new Uint8Array(r.body as Uint8Array);
     const text = await new Response(new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
     expect([r.status, r.headers?.['x-before'], r.headers?.['content-encoding'], text]).toEqual([200, 'null', 'gzip', 'compressed hello']);
+    await sh(shell, 'kill %1');
     iframeServer.close(4813);
   }, 60_000);
 });

@@ -87,9 +87,12 @@ let blinkModule = null;
 // (sender, si_code, sigqueue's value); Blink puts it in the handler's frame.
 const SYS_shiro_siginfo = 1030;
 let siginfoCall = true;
-function queueSignal(sig, info, pid) {
+function queueSignal(sig, info, pid, tid = 0) {
   const m = blinkModule;
-  if (info && info[0] === sig && !pid && m?._blink_shiro_signal_info) {
+  if (info && info[0] === sig && !pid && tid && m?._blink_shiro_signal_tid_info) {
+    // a SIGEV_THREAD_ID timer's: for that thread (Blink 0510)
+    m._blink_shiro_signal_tid_info(tid, sig, ...info);
+  } else if (info && info[0] === sig && !pid && m?._blink_shiro_signal_info) {
     m._blink_shiro_signal_info(sig, ...info);
   } else if (info && info[0] === sig && pid && m?._blink_shiro_signal_pid_info) {
     m._blink_shiro_signal_pid_info(pid, sig, ...info);
@@ -101,16 +104,17 @@ function queueSignal(sig, info, pid) {
 }
 function takeSignal(sig) {
   if (debug) console.error('[blink] signal', sig);
-  let info = null;
+  let info = null, tid = 0;
   if (siginfoCall && blinkModule?._blink_shiro_signal_info) {
     // (the reply being taken is in `data`: 1030 writes there too)
     const saved = data.slice();
     const r = sys(SYS_shiro_siginfo, sig);
     if (r === 0) info = Array.from(new Int32Array(data.buffer, data.byteOffset, 8));
     else if (r === -38) siginfoCall = false;
+    tid = r === 0 ? new Int32Array(data.buffer, data.byteOffset, 32)[31] : 0;
     data.set(saved);
   }
-  queueSignal(sig, info, 0);
+  queueSignal(sig, info, 0, tid);
   sys(SYS.rt_sigreturn);
 }
 
@@ -587,8 +591,12 @@ async function run(msg) {
   let M = null;
 
   // ── The channel pool for the guest's own syscalls (shiro-kernel.js) ──
+  // (a pool channel's last poolAsBytes are the page's word, not data: Blink's
+  // chunk must be the data area exactly, or a full chunk is answered short)
+  const asBytes = msg.poolAsBytes | 0;
+  const poolData = (sab) => new Uint8Array(sab, CH_DATA, sab.byteLength - CH_DATA - asBytes);
   const pool = (msg.pool || []).map((sab) => ({
-    i32: new Int32Array(sab, 0, CH_DATA / 4), data: new Uint8Array(sab, CH_DATA), busy: false, done: null,
+    i32: new Int32Array(sab, 0, CH_DATA / 4), data: poolData(sab), busy: false, done: null,
   }));
   const chunk = pool.length ? pool[0].data.length : 0;
   const waiting = [];
@@ -605,7 +613,7 @@ async function run(msg) {
   const addChannel = (sab) => {
     growing = false;
     if (!sab) return; // at the cap: the waiters queue for a free channel
-    const ch = { i32: new Int32Array(sab, 0, CH_DATA / 4), data: new Uint8Array(sab, CH_DATA), busy: true, done: null };
+    const ch = { i32: new Int32Array(sab, 0, CH_DATA / 4), data: poolData(sab), busy: true, done: null };
     pool.push(ch);
     release(ch);
     if (waiting.length && !growing) { growing = true; post({ type: 'blink-grow' }); }
@@ -661,7 +669,8 @@ async function run(msg) {
             const ri = await issue(ch, SYS_shiro_siginfo, [sig], as);
             if (ri.r === 0) info = Array.from(new Int32Array(ch.data.buffer, ch.data.byteOffset, 8));
             else if (ri.r === -38) siginfoCall = false;
-            queueSignal(sig, info, pid);
+            // (its last word: the thread a SIGEV_THREAD_ID timer's signal is for)
+            queueSignal(sig, info, pid, ri.r === 0 ? new Int32Array(ch.data.buffer, ch.data.byteOffset, 32)[31] : 0);
             await drain(ri.sig); // (one that rode on that reply)
           } else {
             queueSignal(sig, info, pid);
@@ -734,9 +743,11 @@ async function run(msg) {
       port.postMessage({ type: 'blink-fork', pid, snapshot: bytes.buffer }, [bytes.buffer]);
       return 0;
     },
-    // a thread waiting on a direct channel has a signal to take (Blink
-    // patch 0065): the page interrupts the process's blocking calls
+    // a thread in a kernel call has a signal to take (Blink patches 0065,
+    // 0507): the page interrupts the process's blocking calls
     kick() { post({ type: 'blink-kick' }); },
+    // a compiled-code module (wjit.c) for the page's cache (src/x86-engine/blink.ts)
+    keepWasm(d) { post({ type: 'blink-wjmod', module: d.shiroWjModule, key: d.key, size: d.size }); },
     get data() { return data; },
     poll: (kfd, events, timeoutMs = 0) => pollFd(kfd, events, timeoutMs),
     watch(kfd, node) { watched.set(kfd, node); post({ type: 'blink-watch', fd: kfd }); },
@@ -792,6 +803,11 @@ async function run(msg) {
         }
         for (const k of Object.keys(M.ENV)) delete M.ENV[k];
         Object.assign(M.ENV, msg.env || {});
+        // The guest's environment is the kernel's, nothing more: emscripten
+        // adds its defaults (PATH=/, USER=web_user, HOME, LANG, PWD, LOGNAME,
+        // _) unless ENV holds the key as undefined (LTP execve01: env -i, or
+        // execve from a fork child, got PATH=/)
+        for (const k of ['USER', 'LOGNAME', 'PATH', 'PWD', 'HOME', 'LANG', '_']) if (!(k in M.ENV)) M.ENV[k] = undefined;
         try { FS.chdir(msg.cwd || '/'); } catch { /* cwd missing: stay at / */ }
       }],
     });

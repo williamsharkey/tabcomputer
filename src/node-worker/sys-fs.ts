@@ -1,7 +1,7 @@
 /**
  * The FileSystem methods node-compat uses, over blocking syscalls: what
  * `ctx.fs` is when node runs as a kernel guest in a Worker
- * (TABCOMPUTER_NODE_WORKER=1). Every call goes to the kernel through the
+ * (by default; TABCOMPUTER_NODE_WORKER=0 opts out). Every call goes to the kernel through the
  * guest's channel and returns its answer at once, so the *Cached methods
  * (node's readFileSync, existsSync, readdirSync) are never "not cached".
  * The async ones are the same calls behind a resolved promise.
@@ -17,6 +17,7 @@
  */
 import * as A from '../kernel/abi';
 import type { GuestSys } from '../kernel/channel';
+import type { FSChangeDetail as ChangeDetail } from '../filesystem';
 
 const enc = new TextEncoder();
 
@@ -329,29 +330,29 @@ export class SyscallFs {
     return { path: real, node: { path: real, type: st.type, mode: s.mode, size: s.size, mtime: s.mtimeMs, ctime: s.ctimeMs, ino: s.ino, special: st.isFIFO() ? 'fifo' : undefined } };
   }
 
-  private listeners = new Set<(event: string, path: string, newPath?: string) => void>();
+  private listeners = new Set<(event: string, path: string, newPath?: string, detail?: ChangeDetail) => void>();
   /** Set by the guest: ask the page for its filesystem's change feed (once) */
   requestChanges: (() => void) | null = null;
 
   /** The page's filesystem changes (any process's writes), for fs.watch and chokidar */
-  onChange(listener: (event: string, path: string, newPath?: string) => void): () => void {
+  onChange(listener: (event: string, path: string, newPath?: string, detail?: ChangeDetail) => void): () => void {
     this.listeners.add(listener);
     if (this.requestChanges) { this.requestChanges(); this.requestChanges = null; }
     return () => { this.listeners.delete(listener); };
   }
 
   /** Hear changes while something else has the feed on (a watcher), without asking for it */
-  onChangePassive(listener: (event: string, path: string, newPath?: string) => void): () => void {
+  onChangePassive(listener: (event: string, path: string, newPath?: string, detail?: ChangeDetail) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
 
-  /** A change the page reported: what we cached about those paths goes, then the listeners hear it */
-  changed(event: string, path: string, newPath?: string): void {
+  /** A change the page reported (detail.at: its Date.now() then): what we cached about those paths goes, then the listeners hear it */
+  changed(event: string, path: string, newPath?: string, detail?: ChangeDetail): void {
     this.forget(path);
     if (newPath) this.forget(newPath);
     this.last = null;
-    for (const fn of this.listeners) { try { fn(event, path, newPath); } catch { /* a listener's problem */ } }
+    for (const fn of this.listeners) { try { fn(event, path, newPath, detail); } catch { /* a listener's problem */ } }
   }
 
   // ── FileSystem's async surface: the same calls ──
@@ -373,6 +374,8 @@ export class SyscallFs {
   async rmdir(path: string): Promise<void> { this.forget(path); const r = this.sys.rmdir(path); if (r < 0) throw sysError(-r, 'rmdir', path); }
   renameSync(from: string, to: string): void { this.forget(from); this.forget(to); const r = this.sys.rename(from, to); if (r < 0) throw sysError(-r, 'rename', from); }
   async rename(from: string, to: string): Promise<void> { this.renameSync(from, to); }
+  linkSync(from: string, to: string): void { this.forget(to); const r = this.sys.linkat(A.AT_FDCWD, from, A.AT_FDCWD, to, 0); if (r < 0) throw sysError(-r, 'link', from); }
+  async link(from: string, to: string): Promise<void> { this.linkSync(from, to); }
   async symlink(target: string, path: string): Promise<void> { this.forget(path); const r = this.sys.symlink(target, path); if (r < 0) throw sysError(-r, 'symlink', path); }
   symlinkNow(target: string, path: string): Promise<void> { return this.symlink(target, path); }
   async readlink(path: string): Promise<string> { return this.readlinkSync(path); }

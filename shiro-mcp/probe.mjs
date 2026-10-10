@@ -188,6 +188,12 @@ http.createServer(async (req, res) => {
       else res.end(r.entries.map((e) => `${new Date(e.t).toISOString().slice(11, 23)} ${e.level.padEnd(5)} ${e.text}${e.count > 1 ? ` (x${e.count})` : ''}`).join('\n')
         + `\n[${r.entries.length} shown, ${r.matched} matched, ${r.total} in log${r.truncated ? ', truncated' : ''}]\n`);
     }
+    else if (req.url.startsWith('/diag')) {
+      // /diag?limit=200&kind=stall,lag&since=-600000&previous=1 → the watchdog's JSON
+      const q = new URL(req.url, 'http://x').searchParams;
+      const num = (k) => (q.has(k) ? Number(q.get(k)) : undefined);
+      res.end(JSON.stringify(await request({ type: 'diag', limit: num('limit'), since: num('since'), kind: q.get('kind') || undefined, previous: q.get('previous') === '1' }, 60000)));
+    }
     else if (req.url === '/exec') res.end(JSON.stringify(await request({ type: 'exec', command: body }, 300000)));
     else res.end(connected ? 'connected' : 'disconnected');
   } catch (e) { res.statusCode = 500; res.end('ERR ' + e.message); }

@@ -1,6 +1,8 @@
 import type { CommandContext } from '../index';
 import { executeNodeScript } from '../../node-compat/execution';
 import { NODE_REPL } from './node-repl';
+import { CLAUDE_CODE_CLI_JS } from '../../claude-code-version';
+import { readClaudeTransform, saveClaudeTransform } from '../../claude-transform-cache';
 
 /**
  * node (node-cmd.ts runs it here, or in a Worker as a kernel guest): executes JS files from the virtual filesystem.
@@ -52,6 +54,18 @@ export async function runNode(ctx: CommandContext): Promise<number> {
   let scriptPath = '';
   if (!code && fileArgs.length > 0) {
     scriptPath = ctx.fs.resolvePath(fileArgs[0], ctx.cwd);
+    // Claude Code's npm build: its transformed text, when the page has written it
+    if (scriptPath === CLAUDE_CODE_CLI_JS) {
+      const cache = await readClaudeTransform(ctx.fs as any);
+      if (cache.text) return executeNodeScript(ctx, cache.text, scriptPath, fileArgs, printResult, { pretransformed: true });
+      // none: this run transforms it, and saves the text once its program has ended
+      if (cache.path) {
+        let text: string | undefined;
+        const code = await executeNodeScript(ctx, await ctx.fs.readFile(scriptPath, 'utf8') as string, scriptPath, fileArgs, printResult, { onTransformed: (t) => { text = t; } });
+        if (text) await saveClaudeTransform(ctx.fs as any, cache.path, text).catch(() => {});
+        return code;
+      }
+    }
     // If no extension given, probe .js, .ts, .tsx, .jsx
     let found = false;
     try {

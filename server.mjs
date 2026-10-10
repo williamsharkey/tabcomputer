@@ -584,6 +584,110 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
+// --- Remote relay: `remote start` over HTTPS when WebRTC can't connect ---
+// A peer that can't do UDP (a cloud container behind an HTTPS proxy) answers an
+// offer with {type: 'relay'} instead of SDP; then the tab and the peer exchange
+// the same JSON messages through a mailbox here, by long-polling. The tab names
+// the mailbox (a random id) in its offer, so only someone holding the remote
+// code can find it; message bodies are AES-GCM sealed with a key derived from
+// the code (src/remote-relay.ts), so this server only queues opaque strings.
+//
+//   POST /relay/:id/send?as=tab|peer   {msgs: [string]}  → queued for the other side
+//   GET  /relay/:id/recv?as=tab|peer&wait=MS            → {msgs, peerSeenMs}
+export const RELAY_LIMITS = {
+  mailboxes: 500, idleMs: 5 * 60 * 1000, maxWaitMs: 25_000,
+  queueMsgs: 4000, queueBytes: 16 * 1024 * 1024, bodyBytes: 4 * 1024 * 1024,
+};
+
+export function createRemoteRelay(limits = RELAY_LIMITS) {
+  const boxes = new Map(); // id -> { tab: Side, peer: Side, touched }
+  const side = () => ({ queue: [], bytes: 0, waiter: null, seen: 0 });
+  const prune = () => {
+    const now = Date.now();
+    for (const [id, box] of boxes) if (now - box.touched > limits.idleMs) { close(box); boxes.delete(id); }
+  };
+  const close = (box) => { for (const s of [box.tab, box.peer]) if (s.waiter) s.waiter(true); };
+  const timer = setInterval(prune, 60_000);
+  timer.unref?.();
+
+  /** The tab's offer names its mailbox; unknown ids are refused. */
+  function open(id) {
+    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) return false;
+    if (!boxes.has(id)) {
+      if (boxes.size >= limits.mailboxes) prune();
+      if (boxes.size >= limits.mailboxes) return false;
+      boxes.set(id, { tab: side(), peer: side(), touched: Date.now() });
+    }
+    boxes.get(id).touched = Date.now();
+    return true;
+  }
+
+  function deliver(to, msgs) {
+    for (const m of msgs) {
+      if (to.queue.length >= limits.queueMsgs || to.bytes + m.length > limits.queueBytes) return false;
+      to.queue.push(m);
+      to.bytes += m.length;
+    }
+    if (to.waiter) to.waiter(false);
+    return true;
+  }
+
+  async function handle(req, res, pathname, cors = {}) {
+    const json = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
+    const m = pathname.match(/^\/relay\/([a-f0-9]{32})\/(send|recv)$/);
+    const url = new URL(req.url, 'http://localhost');
+    const as = url.searchParams.get('as');
+    if (!m || (as !== 'tab' && as !== 'peer')) return json(404, { error: 'Unknown relay endpoint' });
+    const box = boxes.get(m[1]);
+    if (!box) return json(404, { error: 'No such mailbox' });
+    box.touched = Date.now();
+    const me = box[as], other = box[as === 'tab' ? 'peer' : 'tab'];
+    me.seen = Date.now();
+    // A side waiting in a long-poll is present now
+    const peerSeenMs = () => (other.waiter ? 0 : other.seen ? Date.now() - other.seen : null);
+
+    if (m[2] === 'send' && req.method === 'POST') {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > limits.bodyBytes) return json(413, { error: 'Too large' });
+        chunks.push(chunk);
+      }
+      let msgs;
+      try { msgs = JSON.parse(Buffer.concat(chunks).toString()).msgs; } catch { return json(400, { error: 'Bad JSON' }); }
+      if (!Array.isArray(msgs) || !msgs.every((x) => typeof x === 'string')) return json(400, { error: 'msgs must be strings' });
+      if (!deliver(other, msgs)) return json(429, { error: 'Mailbox full' });
+      return json(200, { ok: true, peerSeenMs: peerSeenMs() });
+    }
+
+    if (m[2] === 'recv' && req.method === 'GET') {
+      const wait = Math.max(0, Math.min(Number(url.searchParams.get('wait')) || 0, limits.maxWaitMs));
+      if (!me.queue.length && wait > 0) {
+        // One long-poll per side: a newer one replaces the older (it gets [])
+        if (me.waiter) me.waiter(false);
+        let closed = false;
+        await new Promise((resolve) => {
+          const t = setTimeout(done, wait);
+          function done(gone = false) { clearTimeout(t); closed = gone; if (me.waiter === done) me.waiter = null; resolve(); }
+          me.waiter = done;
+          res.on('close', () => done());
+        });
+        if (closed) return json(410, { error: 'Mailbox closed' });
+        if (res.destroyed) return;
+      }
+      const msgs = me.queue.splice(0);
+      me.bytes = 0;
+      me.seen = Date.now();
+      return json(200, { msgs, peerSeenMs: peerSeenMs() });
+    }
+    return json(405, { error: 'Method not allowed' });
+  }
+
+  return { open, handle, boxes, stop: () => { clearInterval(timer); for (const b of boxes.values()) close(b); boxes.clear(); } };
+}
+const remoteRelay = createRemoteRelay();
+
 async function handleSignaling(req, res, pathname) {
   const origin = req.headers['origin'];
   const cors = corsHeaders(origin, req.headers['access-control-request-headers']);
@@ -605,9 +709,12 @@ async function handleSignaling(req, res, pathname) {
     }
 
     console.log(`[signal] offer registered: ${data.code} (${offers.has(data.code) ? 'refresh' : 'new'})`);
+    // A tab that can relay names its mailbox; open it now so the peer can use it
+    const relay = data.relay && remoteRelay.open(data.relay.id) ? { v: 1, id: data.relay.id, salt: String(data.relay.salt || '') } : null;
     offers.set(data.code, {
       offer: data.offer,
       candidates: data.candidates || [],
+      relay,
       answer: null,
       answerCandidates: null,
       created: Date.now(),
@@ -627,7 +734,7 @@ async function handleSignaling(req, res, pathname) {
       return res.end(JSON.stringify({ error: 'Not found' }));
     }
     res.writeHead(200, { 'content-type': 'application/json', ...cors });
-    return res.end(JSON.stringify({ offer: entry.offer, candidates: entry.candidates }));
+    return res.end(JSON.stringify({ offer: entry.offer, candidates: entry.candidates, ...(entry.relay ? { relay: entry.relay } : {}) }));
   }
 
   // /answer/:code
@@ -1540,6 +1647,11 @@ const server = createServer(async (req, res) => {
   }
   if (pathname === '/offer' || pathname.startsWith('/offer/') || pathname.startsWith('/answer/')) {
     return handleSignaling(req, res, pathname);
+  }
+  if (pathname.startsWith('/relay/')) {
+    const cors = corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']);
+    if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+    return remoteRelay.handle(req, res, pathname, cors);
   }
   // Seed sharing: POST /api/seed (upload), GET /api/seed/:id (download raw data)
   if (pathname === '/api/seed' && req.method === 'POST') {

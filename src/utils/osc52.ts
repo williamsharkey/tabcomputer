@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm';
+import { writeClipboard } from './clipboard';
 
 /** Decode base64 to a UTF-8 string. */
 function decodeBase64Utf8(b64: string): string {
@@ -8,33 +9,9 @@ function decodeBase64Utf8(b64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-/** Legacy copy via a hidden textarea; works where the async API is refused. */
-function execCommandCopy(text: string): boolean {
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.setAttribute('readonly', '');
-  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
-  const prevFocus = document.activeElement as HTMLElement | null;
-  document.body.appendChild(ta);
-  ta.select();
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch { ok = false; }
-  ta.remove();
-  prevFocus?.focus?.();
-  return ok;
-}
-
-/** Copy to the clipboard, falling back when the async API is refused (e.g. document not focused). */
+/** Copy to the clipboard (kept and retried on focus when the browser refuses: utils/clipboard.ts). */
 export function copyText(text: string): void {
-  const fallback = (why: string) => {
-    const ok = execCommandCopy(text);
-    console.log(`[osc52] ${ok ? 'copied' : 'FAILED to copy'} ${text.length} chars via execCommand (${why})`);
-  };
-  if (!navigator.clipboard?.writeText) { fallback('no async clipboard API'); return; }
-  navigator.clipboard.writeText(text).then(
-    () => console.log(`[osc52] copied ${text.length} chars`),
-    (e) => fallback(e?.message || String(e)),
-  );
+  void writeClipboard(text).then((ok) => console.log(`[osc52] ${ok ? 'copied' : 'FAILED to copy (kept, retried on focus)'} ${text.length} chars`));
 }
 
 /**

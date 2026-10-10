@@ -34,6 +34,10 @@ export function createFakeProcess(
       ANTHROPIC_BASE_URL: `${getShiroOrigin()}/api/anthropic`,
     } : {}),
   };
+  // The shell's piped input being read is the shell's, not node's nor its children's: a
+  // `sh -c` that vite's esbuild started (as a guest, with vite's output redirected) took
+  // it for its stdin and gave esbuild's service none ("The service was stopped")
+  delete processEnv.__PIPE_STDIN;
 
   if (scriptPath?.includes('claude-code')) {
     // Background tasks stay off (long-lived background processes are still the

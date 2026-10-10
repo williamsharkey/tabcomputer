@@ -237,7 +237,7 @@ export function makeStat(node: FSNode): StatResult {
     rdev: 0,
     blksize: 4096,
     blocks: Math.ceil(node.size / 512),
-    isFile() { return node.type === 'file'; },
+    isFile() { return node.type === 'file' && !node.special; }, // (a named pipe isn't a regular file)
     isDirectory() { return node.type === 'dir'; },
     isSymbolicLink() { return node.type === 'symlink'; },
     isBlockDevice() { return false; },
@@ -2550,6 +2550,7 @@ export class FileSystem {
 
   /** Create a named pipe (mkfifo(3)). EEXIST if `path` exists; the parent must exist. */
   async mkfifo(path: string, mode = 0o644): Promise<void> {
+    path = await this._canon(path, false); // (its directory through symlinks, as every other create)
     if (await this._get(path)) throw fsError('EEXIST', `EEXIST: file already exists, mkfifo '${path}'`);
     const parent = path.substring(0, path.lastIndexOf('/')) || '/';
     const dir = await this._get(parent);

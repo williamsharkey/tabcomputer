@@ -2,6 +2,8 @@
 // Console capture - must be first before any other code runs (bounded ring buffer)
 import { toolkitScaleEnv } from './gui/display-scale';
 import { queryConsole, clearConsoleLog } from './console-log';
+// Freeze watchdog (event-loop lag, long tasks, commands in flight), from boot too
+import './watchdog';
 
 // Old capture API, kept as a view over the bounded log (console command, clip-report)
 Object.defineProperty(window, '__shiroCapturedMessages', {
@@ -37,6 +39,7 @@ import { hudCmd } from './commands/hud';
 import { faviconCmd } from './commands/favicon';
 import { historyCmd } from './commands/history';
 import { consoleCmd } from './commands/console';
+import { watchdogCmd } from './commands/watchdog';
 import { rgCmd } from './commands/rg';
 import { spawnCmd } from './commands/spawn';
 import { scCmd, claudeWindowCmd } from './commands/sc';
@@ -327,6 +330,7 @@ async function main() {
   registerCommand(commands, faviconCmd, 'src/commands/favicon.ts');
   registerCommand(commands, historyCmd, 'src/commands/history.ts');
   registerCommand(commands, consoleCmd, 'src/commands/console.ts');
+  registerCommand(commands, watchdogCmd, 'src/commands/watchdog.ts');
   registerCommand(commands, rgCmd, 'src/commands/rg.ts');
   registerCommand(commands, lazyCommand('mcp', 'MCP Streamable HTTP client',
     () => import('./commands/mcp-client').then(m => m.mcpCmd)), 'src/commands/mcp-client.ts');

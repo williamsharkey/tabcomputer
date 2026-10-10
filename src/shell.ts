@@ -23,6 +23,7 @@ import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
 import { redirectWordSpans } from './shell-redirect-words';
+import { commandStarted, commandEnded } from './watchdog';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -1799,13 +1800,21 @@ export class Shell {
     const outerInCommand = this.inCommand;
     this.activeTerminal = terminalOverride;
     this.inCommand = 0;
+    // In flight for the watchdog: a freeze report names the innermost line
+    const watch = commandStarted(line, this.watchDepth++);
+    let status: number | undefined;
     try {
-      return await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
+      return status = await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
     } finally {
+      this.watchDepth--;
+      commandEnded(watch, status);
       this.activeTerminal = outerTerminal;
       this.inCommand = outerInCommand;
     }
   }
+
+  /** execute() calls in progress on this shell, for the watchdog (0: a top-level line) */
+  private watchDepth = 0;
 
   /** `exec -a NAME prog`: argv[0] for the next kernel program named `name` */
   execArgv0?: { name: string; argv0: string };

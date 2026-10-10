@@ -237,6 +237,21 @@ Returns newest-last entries { seq, t, level, text, count } plus matched/truncate
     }
   },
   {
+    name: "diag",
+    description: `Why is the tabcomputer page slow or frozen? Returns the main-thread watchdog's view, recorded from page load: event-loop lag (last, max and average over 1 min), long tasks (count and ms over 1 min and since load), JS heap and a 20-minute heap series, shell commands in flight (innermost first, with run time), the process table, unsaved filesystem writes, and recent events: lag/stall (with the commands running then), longtask/loaf (with the script when known), cmd/cmd-end, wedge (the previous load froze and was closed or reloaded; previousWedge has the snapshot a worker saved during the freeze).
+
+A frozen page can't answer until it recovers; if this times out, retry after a reload with previous: true to read what the last load recorded.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Newest events returned. Default 200, max 1500" },
+        since: { type: "number", description: "Only events at/after this ms epoch; negative = that many ms ago" },
+        kind: { type: "string", description: "Comma list of kinds: lag,stall,longtask,loaf,cmd,cmd-end,wedge,note" },
+        previous: { type: "boolean", description: "Events saved by the previous page load instead" }
+      }
+    }
+  },
+  {
     name: "errors",
     description: "Get and clear pending console errors from Shiro browser. Errors accumulate passively and show as pendingErrors count in exec results.",
     inputSchema: {
@@ -601,6 +616,12 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 
     case "console": {
       const result: any = await sendCommand({ type: "console", grep: args.grep, level: args.level, since: args.since, limit: args.limit, maxBytes: args.maxBytes, previous: args.previous });
+      attachUserMessages(result);
+      return result;
+    }
+
+    case "diag": {
+      const result: any = await sendCommand({ type: "diag", limit: args.limit, since: args.since, kind: args.kind, previous: args.previous });
       attachUserMessages(result);
       return result;
     }

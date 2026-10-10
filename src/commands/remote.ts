@@ -288,6 +288,20 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         return JSON.stringify({ type: 'console_result', ...result, requestId });
       }
 
+      case 'diag': {
+        // Why is the page slow or frozen: event-loop lag, long tasks, heap,
+        // commands in flight, the watchdog's events (or the previous load's
+        // with previous: true), processes, unsaved filesystem writes. Cheap and
+        // synchronous, so it answers as soon as the page does.
+        const { diagnostics } = await import('../watchdog');
+        const d = diagnostics({ limit: Math.min(cmd.limit ?? 200, 1500), since: cmd.since, kind: cmd.kind, previous: !!cmd.previous });
+        const tc = window.__tabcomputer as any;
+        let procs: string[] = [];
+        try { procs = tc?.processTable?.list().slice(0, 200).map((p: any) => `${p.pid} ${p.status} ${String(p.command).slice(0, 80)}`) ?? []; } catch { /* source threw */ }
+        const pendingWrites = tc?.fs?.pendingWrites;
+        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, requestId });
+      }
+
       case 'eval': {
         logActivity(session, 'eval', cmd.code);
         const result = await eval(cmd.code);

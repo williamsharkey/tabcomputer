@@ -274,6 +274,19 @@ describe('kernel sockets over the TCP relay', () => {
     await s.close();
   });
 
+  it('logs a [tcp] line when the relay window fills because the program stopped reading', async () => {
+    const { klog } = await import('@shiro/kernel/klog');
+    const s = stream(stackFor(P.relayA, P.origin, { relayWindow: 64 * 1024 }));
+    expect(await s.connect(v4('127.0.0.1', P.firehosePort))).toBe(0);
+    const line = () => klog.all().map((r) => r.text).find((t) => t.startsWith(`[tcp] socket:[${s.ino}] `));
+    for (let i = 0; i < 100 && !line(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(line()).toMatch(/^\[tcp\] socket:\[\d+\] 127\.0\.0\.1:\d+: relay window full \(\d+ bytes in flight, \d+ unread by pid \d+\); the server's data waits$/);
+    await readAll(s);
+    // (once: not again for the same stall)
+    expect(klog.all().filter((r) => r.text.startsWith(`[tcp] socket:[${s.ino}] `))).toHaveLength(1);
+    await s.close();
+  });
+
   it('caps concurrent connections per client IP', async () => {
     const stack = stackFor(P.relayA);
     const open: KSocket[] = [];
@@ -845,7 +858,7 @@ describe('relay failures reach the kernel log (dmesg)', () => {
     let out = '';
     await shell.execute('dmesg', (t) => { out += t; });
     expect(out).toMatch(/\] net: relay refused connect to 127\.0\.0\.1:\d+: this page's origin is not allowed \(token 403\)/);
-  });
+  }, 30_000); // (the test's own import of the whole shell takes several seconds cold)
 });
 
 describe('kernel channel syscalls (netSyscall)', () => {
@@ -895,6 +908,60 @@ describe('kernel channel syscalls (netSyscall)', () => {
 });
 
 describe('sockets in the kernel: registerSyscalls, epoll, SIGPIPE', () => {
+  it('/proc/net/tcp and tcp6 list listening and connected sockets as Linux does, by inode', async () => {
+    const A = await import('@shiro/kernel/abi');
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { installNet } = await import('@shiro/kernel/net');
+    const kernel = new Kernel({ registerWithProcessTable: false });
+    const stack = new NetStack();
+    stack.configure({ relayUrl: null, tokenUrl: null, dohUrl: null, portHost: null });
+    const off = installNet(kernel, stack);
+    const proc = kernel.spawn({ path: 'net', fds: {}, run: () => new Promise<number>(() => {}) });
+    const data = new Uint8Array(4096);
+    const sys = (nr: number, args: number[]) => kernel.syscall(proc, nr, args, data);
+    const l = await sys(A.SYS_socket, [A.AF_INET, A.SOCK_STREAM, 0]);
+    data.set(encodeSockaddr(v4('0.0.0.0', 8080)));
+    expect(await sys(A.SYS_bind, [l, 16])).toBe(0);
+    expect(await sys(A.SYS_listen, [l, 8])).toBe(0);
+    const c = await sys(A.SYS_socket, [A.AF_INET, A.SOCK_STREAM, 0]);
+    data.set(encodeSockaddr(v4('127.0.0.1', 8080)));
+    expect(await sys(A.SYS_connect, [c, 16])).toBe(0);
+    const a = await sys(A.SYS_accept4, [l, 0]);
+    expect(a).toBeGreaterThanOrEqual(0);
+    const unbound = await sys(A.SYS_socket, [A.AF_INET, A.SOCK_STREAM, 0]);
+    expect(unbound).toBeGreaterThanOrEqual(0);
+    const inode = (fd: number) => Number(/socket:\[(\d+)\]/.exec((kernel.procfs.fsNode(`/proc/${proc.pid}/fd/${fd}`) as { link: string }).link)?.[1]);
+
+    const text = (kernel.procfs.fsNode('/proc/net/tcp') as { text: string }).text;
+    const lines = text.trimEnd().split('\n');
+    expect(lines[0]).toMatch(/^\s+sl\s+local_address rem_address\s+st tx_queue rx_queue tr tm->when retrnsmt\s+uid\s+timeout inode/);
+    const rows = lines.slice(1).map((r) => r.trim().split(/\s+/));
+    const byIno = new Map(rows.map((r) => [Number(r[9]), r]));
+    expect(rows).toHaveLength(3); // the unbound socket isn't listed
+    // listener: 0.0.0.0:8080 (1F90), LISTEN (0A)
+    expect(byIno.get(inode(l))?.slice(1, 4)).toEqual(['00000000:1F90', '00000000:0000', '0A']);
+    // client and accepted ends: 127.0.0.1 is 0100007F in host order, ESTABLISHED (01)
+    const cl = byIno.get(inode(c))!;
+    expect(cl[2]).toBe('0100007F:1F90');
+    expect(cl[3]).toBe('01');
+    expect(byIno.get(inode(a))?.[1]).toBe('0100007F:1F90');
+    expect(rows[0][7]).toBe(String(proc.uid));
+    // tcp6: none here, just the header
+    expect((kernel.procfs.fsNode('/proc/net/tcp6') as { text: string }).text.trimEnd().split('\n')).toHaveLength(1);
+    expect((kernel.procfs.fsNode('/proc/net') as { dir: string[] }).dir).toEqual(['tcp', 'tcp6']);
+    off();
+    kernel.kill(proc.pid, A.SIGKILL);
+  });
+
+  it('/proc/net/tcp6 addresses: four 32-bit words, each in host order', async () => {
+    const { hexAddr } = await import('@shiro/kernel/procfs');
+    expect(hexAddr('::1', true)).toBe('00000000000000000000000001000000');
+    expect(hexAddr('::', true)).toBe('0'.repeat(32));
+    expect(hexAddr('::ffff:127.0.0.1', true)).toBe('0000000000000000FFFF00000100007F');
+    expect(hexAddr('2001:db8::1', true)).toBe('B80D0120000000000000000001000000');
+    expect(hexAddr('10.0.0.2', false)).toBe('0200000A');
+  });
+
   it('kernel.syscall reaches net.ts through installNet, and epoll sees socket readiness', async () => {
     const A = await import('@shiro/kernel/abi');
     const { Kernel } = await import('@shiro/kernel/kernel');

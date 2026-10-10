@@ -167,7 +167,7 @@ export class ProcFs {
     if (path === '/proc') {
       return {
         type: 'dir', list: () => {
-          const names = new Set([...this.fsNames(), 'self', 'thread-self', 'sysvipc', ...this.live().map((p) => String(p.pid))]);
+          const names = new Set([...this.fsNames(), 'self', 'thread-self', 'sysvipc', 'net', ...this.live().map((p) => String(p.pid))]);
           // the names, then the pids in order (procps lists them as readdir returns them)
           const pids = [...names].filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(a) - Number(b));
           return [...[...names].filter((n) => !/^\d+$/.test(n)), ...pids];
@@ -194,6 +194,14 @@ export class ProcFs {
       }
       return undefined;
     }
+    if (head === 'net') {
+      if (parts.length === 1) return { type: 'dir', list: () => ['tcp', 'tcp6'] };
+      if (parts.length === 2 && (parts[1] === 'tcp' || parts[1] === 'tcp6')) {
+        const v6 = parts[1] === 'tcp6';
+        return { type: 'file', text: () => this.netTcpText(v6) };
+      }
+      return undefined;
+    }
     if (parts.length !== 1) return undefined;
     switch (head) {
       case 'stat': return { type: 'file', text: () => this.statText() };
@@ -207,6 +215,37 @@ export class ProcFs {
       } };
     }
     return undefined;
+  }
+
+  /**
+   * /proc/net/tcp and tcp6 as Linux prints them: every TCP socket some
+   * process holds that is bound, listening or connected, its addresses in
+   * hex (each 32-bit word in host order), state, queues, owner uid and inode
+   * (the N of socket:[N] in /proc/PID/fd), so ss/netstat-style readers can
+   * map inodes to endpoints.
+   */
+  private netTcpText(v6: boolean): string {
+    const family = v6 ? A.AF_INET6 : A.AF_INET;
+    const seen = new Set<number>();
+    const rows: string[] = [];
+    for (const p of this.live()) {
+      for (const [, f] of p.fds.entries()) {
+        const s = f as OpenFile & { ino?: number; domain?: number; type?: number; netInfo?: () => NetInfo };
+        if (f.kind !== 'socket' || !s.netInfo || s.domain !== family || (s.type ?? A.SOCK_STREAM) !== A.SOCK_STREAM) continue;
+        if (seen.has(s.ino ?? 0)) continue;
+        seen.add(s.ino ?? 0);
+        const n = s.netInfo();
+        const st = TCP_STATES[n.state];
+        if (!st) continue;
+        const sl = String(rows.length).padStart(4) + ':';
+        const addr = (a: SockAddrLike | null) => `${hexAddr(a?.address ?? '', v6)}:${hex(a?.port ?? 0, 4)}`;
+        rows.push(`${sl} ${addr(n.local)} ${addr(n.remote)} ${st} ${hex(n.txQueue, 8)}:${hex(n.rxQueue, 8)} 00:00000000 00000000 ${String(p.uid ?? 0).padStart(5)} ${'0'.padStart(8)} ${s.ino ?? 0} 1 0000000000000000 100 0 0 10 0`);
+      }
+    }
+    const head = v6
+      ? '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+      : '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+    return [head, ...rows].join('\n') + '\n';
   }
 
   private pidNode(caller: Process, p: Process, rest: string[]): Node | undefined {
@@ -515,6 +554,38 @@ function fdInfo(f: OpenFile, cloexec: boolean): string {
   return t;
 }
 const fnv = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x1000193); return h; };
+
+interface SockAddrLike { address: string; port: number }
+interface NetInfo { state: string; local: SockAddrLike | null; remote: SockAddrLike | null; rxQueue: number; txQueue: number }
+/** Linux's TCP states (include/net/tcp_states.h); unbound sockets aren't listed */
+const TCP_STATES: Record<string, string> = { connected: '01', connecting: '02', closed: '07', bound: '07', listening: '0A' };
+const hex = (n: number, w: number) => (n >>> 0).toString(16).toUpperCase().padStart(w, '0');
+/** An address as /proc/net prints it: its bytes as 32-bit words, each in host (little-endian) order */
+export function hexAddr(address: string, v6: boolean): string {
+  const bytes = v6 ? ipv6Bytes(address) : ipv4Bytes(address);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 4) for (let j = 3; j >= 0; j--) out += bytes[i + j].toString(16).toUpperCase().padStart(2, '0');
+  return out;
+}
+function ipv4Bytes(a: string): number[] {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  return m ? [1, 2, 3, 4].map((i) => Number(m[i]) & 255) : [0, 0, 0, 0];
+}
+function ipv6Bytes(a: string): number[] {
+  const out = new Array<number>(16).fill(0);
+  if (!a || a === '::') return out;
+  let s = a.replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  // a dotted IPv4 tail (::ffff:1.2.3.4) is two groups
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (v4) { const b = ipv4Bytes(v4[1]); s = s.slice(0, v4.index) + ((b[0] << 8) | b[1]).toString(16) + ':' + ((b[2] << 8) | b[3]).toString(16); }
+  if (!s.includes(':')) return out;
+  const [hd, tl] = s.includes('::') ? s.split('::') : [s, undefined];
+  const h = hd ? hd.split(':') : [];
+  const t = tl !== undefined && tl ? tl.split(':') : [];
+  const groups = tl === undefined ? h : [...h, ...new Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+  groups.slice(0, 8).forEach((g, i) => { const v = parseInt(g || '0', 16) || 0; out[i * 2] = (v >> 8) & 255; out[i * 2 + 1] = v & 255; });
+  return out;
+}
 
 /** What /proc/PID/fd/N points at. */
 export function fdTarget(f: OpenFile): string {

@@ -541,8 +541,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
         syncFn.apply(mod.exports, syncArgs);
         loaded();
         if (waiting.size) {
-          const imports = [...waiting].map((spec) => requireReady(spec, modDir, resolved));
-          const settled = Promise.all(imports).then(() => {}, () => {});
+          // (one at a time: waitsOn holds one import per importer, for the cycle check)
+          const settled = (async () => { for (const spec of waiting) await requireReady(spec, modDir, resolved); })().catch(() => {});
           pendingEval.set(resolved, settled);
           settled.then(() => { if (pendingEval.get(resolved) === settled) pendingEval.delete(resolved); });
         }

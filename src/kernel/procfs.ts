@@ -186,7 +186,7 @@ export class ProcFs {
       if (!p) {
         // A thread's tid names it too, as on Linux (not listed in /proc)
         const tid = Number(head);
-        const owner = [...this.kernel.procs.values()].find((q) => q.tids.has(tid) || q.threads.has(tid));
+        const owner = this.kernel.processOfTid(tid);
         if (!owner) return undefined;
         return parts.length === 1 ? { type: 'dir', list: () => PID_ENTRIES } : this.threadNode(proc, owner, tid, parts.slice(1));
       }
@@ -269,12 +269,18 @@ export class ProcFs {
   }
 
   /** Each thread's state (kernel.threadStates): what /proc/PID/task/TID shows */
-  threadStates(p: Process): { tid: number; state: string; nr: number; args: number[]; sinceMs: number; syscalls: number }[] {
+  threadStates(p: Process): ThreadState[] {
     const now = Date.now();
     return threadIds(p).map((tid) => {
-      const t = p.threads.get(tid);
-      const busy = !!t && t.nr >= 0;
-      return { tid, state: this.threadLetter(p, tid), nr: busy ? t!.nr : -1, args: busy ? Array.from(t!.args).slice(0, 6) : [], sinceMs: busy ? now - t!.since : 0, syscalls: t?.syscalls ?? 0 };
+      const c = threadCall(p, tid);
+      const lock = c ? null : engineLock(p);
+      const waitsLock = !!lock && lock.holder !== 0 && lock.holder !== tid;
+      const w = c ? waitOf(p, c.nr, c.args) : { kind: waitsLock ? 'engine' : '' };
+      return {
+        tid, state: this.threadLetter(p, tid), nr: c ? c.nr : -1, args: c ? Array.from(c.args).slice(0, 6) : [],
+        sinceMs: c ? now - c.since : 0, syscalls: p.threads.get(tid)?.syscalls ?? 0,
+        waitKind: w.kind, ...(w.fd !== undefined ? { fd: w.fd } : {}), ...(w.fds ? { fds: w.fds } : {}),
+      };
     });
   }
 
@@ -286,11 +292,11 @@ export class ProcFs {
   private threadLetter(p: Process, tid: number): string {
     if (p.state === 'zombie') return 'Z';
     if (p.state === 'stopped') return 'T';
-    const t = p.threads.get(tid);
-    if (t && t.nr >= 0) return Date.now() - t.since >= 2 ? 'S' : 'R';
+    const c = threadCall(p, tid);
+    if (c) return Date.now() - c.since >= 2 ? 'S' : 'R';
     const lock = engineLock(p);
     if (lock && lock.holder !== 0 && lock.holder !== tid) return 'S';
-    if (tid === p.pid && (!t || !t.syscalls)) return this.stateLetter(p);
+    if (tid === p.pid && !p.threads.get(tid)?.syscalls) return this.stateLetter(p);
     return 'R';
   }
 
@@ -606,29 +612,31 @@ function wchanName(p: Process, nr: number, args: ArrayLike<number>): string {
 
 /** The ids of a process's threads: the main thread (the pid), then the others in order */
 export function threadIds(p: Process): number[] {
-  const ids = new Set<number>([p.pid, ...p.tids, ...p.threads.keys()]);
+  // (Blink's threads: the engine's own list, data.engineThreads)
+  const engine = p.data.engineThreads as Set<number> | undefined;
+  const ids = new Set<number>([p.pid, ...p.tids, ...p.threads.keys(), ...(engine ?? [])]);
   return [p.pid, ...[...ids].filter((t) => t !== p.pid).sort((a, b) => a - b)];
 }
 
 /** /proc/PID/task/TID/syscall: the call that thread is in, or "running" */
 export function threadSyscallText(p: Process, tid: number): string {
   if (p.state === 'zombie') return 'running\n';
-  const t = p.threads.get(tid);
-  if (t && t.nr >= 0) {
-    const a = Array.from({ length: 6 }, (_, i) => '0x' + ((t.args[i] ?? 0) >>> 0).toString(16));
-    return `${t.nr} ${a.join(' ')} 0x0 0x0\n`;
+  const c = threadCall(p, tid);
+  if (c) {
+    const a = Array.from({ length: 6 }, (_, i) => '0x' + ((c.args[i] ?? 0) >>> 0).toString(16));
+    return `${c.nr} ${a.join(' ')} 0x0 0x0\n`;
   }
-  return tid === p.pid && !t?.syscalls ? syscallText(p) : 'running\n';
+  return tid === p.pid && !p.threads.get(tid)?.syscalls ? syscallText(p) : 'running\n';
 }
 
 /** /proc/PID/task/TID/wchan */
 export function threadWchanText(p: Process, tid: number): string {
   if (p.state === 'zombie') return '0';
-  const t = p.threads.get(tid);
-  if (t && t.nr >= 0) return wchanName(p, t.nr, t.args);
+  const c = threadCall(p, tid);
+  if (c) return wchanName(p, c.nr, c.args);
   const lock = engineLock(p);
   if (lock && lock.holder !== 0 && lock.holder !== tid) return 'futex_wait_queue';
-  return tid === p.pid && !t?.syscalls ? wchanText(p) : '0';
+  return tid === p.pid && !p.threads.get(tid)?.syscalls ? wchanText(p) : '0';
 }
 
 /**
@@ -636,14 +644,71 @@ export function threadWchanText(p: Process, tid: number): string {
  * hands the kernel `proc.data.engine = { memory, gilAddr }` and the lock's
  * state is four i32 at gilAddr: holder tid (0: nobody), waiters, acquires.
  */
-export function engineLock(p: Process): { holder: number; waiters: number; acquires: number } | null {
+export function engineLock(p: Process): { holder: number; waiters: number; acquires: number; heldMs: number } | null {
   const e = p.data.engine as { memory?: { buffer: ArrayBufferLike }; gilAddr?: number } | undefined;
   if (!e?.memory || !e.gilAddr) return null;
+  let l: { holder: number; waiters: number; acquires: number };
   try {
     // (the buffer changes when the memory grows: take it each time)
     const w = new Int32Array(e.memory.buffer, e.gilAddr, 4);
-    return { holder: Atomics.load(w, 0), waiters: Atomics.load(w, 1), acquires: Atomics.load(w, 2) >>> 0 };
+    l = { holder: Atomics.load(w, 0), waiters: Atomics.load(w, 1), acquires: Atomics.load(w, 2) >>> 0 };
   } catch { return null; }
+  // How long the holder has had it: since a read first saw this acquire (the
+  // engine doesn't time it; a holder that is stuck shows the same acquire for good)
+  const now = Date.now();
+  const seen = lockSeen.get(p);
+  const same = seen && seen.holder === l.holder && seen.acquires === l.acquires;
+  if (!same) lockSeen.set(p, { holder: l.holder, acquires: l.acquires, at: now });
+  return { ...l, heldMs: l.holder && same ? now - seen!.at : 0 };
+}
+const lockSeen = new WeakMap<Process, { holder: number; acquires: number; at: number }>();
+
+export interface ThreadState {
+  tid: number;
+  /** R, S, T or Z, as /proc/PID/task/TID/stat */
+  state: string;
+  /** The syscall it is in (-1: none) and its arguments */
+  nr: number;
+  args: number[];
+  /** How long it has been in it */
+  sinceMs: number;
+  syscalls: number;
+  /** What it waits on: read, write, poll, epoll, futex, sleep, wait, accept, connect, ipc, signal, engine (another thread's engine lock), other; '' running */
+  waitKind: string;
+  /** The fd a blocked read/write/accept/connect/epoll_wait is on */
+  fd?: number;
+  /** An epoll_wait's interest list (the fds it waits for) */
+  fds?: number[];
+}
+
+/** The call thread `tid` is in: its channel's record, or the engine's (Blink: data.engineCalls, no args) */
+function threadCall(p: Process, tid: number): { nr: number; args: ArrayLike<number>; since: number } | null {
+  const t = p.threads.get(tid);
+  if (t && t.nr >= 0) return t;
+  const e = (p.data.engineCalls as Map<number, { nr: number; since: number; args?: ArrayLike<number> }> | undefined)?.get(tid);
+  return e ? { nr: e.nr, args: e.args ?? [], since: e.since } : null;
+}
+
+/** What a call in progress waits on, for diag: its kind and fd (an epoll's interest list) */
+function waitOf(p: Process, nr: number, args: ArrayLike<number>): { kind: string; fd?: number; fds?: number[] } {
+  const fdArg = args.length ? args[0] : undefined;
+  switch (nr) {
+    case 0: case 17: case 19: case 45: case 47: case 295: return { kind: 'read', fd: fdArg };
+    case 1: case 18: case 20: case 44: case 46: case 296: return { kind: 'write', fd: fdArg };
+    case 7: case 271: case 23: case 270: return { kind: 'poll' };
+    case 232: case 281: case 441: {
+      const ep = fdArg !== undefined ? p.fds.get(fdArg) as (OpenFile & { watchedFds?: () => number[] }) | undefined : undefined;
+      return { kind: 'epoll', fd: fdArg, ...(ep?.watchedFds ? { fds: ep.watchedFds() } : {}) };
+    }
+    case 202: return { kind: 'futex' };
+    case 35: case 230: case 34: return { kind: 'sleep' };
+    case 61: case 247: return { kind: 'wait' };
+    case 43: case 288: return { kind: 'accept', fd: fdArg };
+    case 42: return { kind: 'connect', fd: fdArg };
+    case 65: case 220: case 69: case 70: return { kind: 'ipc' };
+    case 130: case 128: return { kind: 'signal' };
+  }
+  return { kind: 'other' };
 }
 
 function engineLockText(p: Process): string {

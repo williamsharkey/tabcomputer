@@ -1320,6 +1320,7 @@ describe('worker guests over the SAB channel', () => {
     const states = kernel.threadStates(p.pid);
     expect(states.map((s) => [s.tid, s.state, s.nr, s.args[0]])).toEqual([[p.pid, 'S', A.SYS_read, 0], [t.tid, 'S', A.SYS_read, 3]]);
     expect(states[1].sinceMs).toBeGreaterThan(0);
+    expect(states.map((s) => [s.waitKind, s.fd])).toEqual([['read', 0], ['read', 3]]);
     expect(states[1].syscalls).toBeGreaterThan(1);
     expect(kernel.engineLock(p.pid)).toBeNull();
     // the thread's read returns, it exits, and it is gone from task/
@@ -1346,9 +1347,45 @@ describe('worker guests over the SAB channel', () => {
     Atomics.store(w, 0, tid); Atomics.store(w, 1, 1); Atomics.store(w, 2, 41);
     memory.grow(1); // (the lock is read through the memory's current buffer)
     expect(text(`/proc/${p.pid}/status`)).toContain(`\nEngineLock:\theld by ${tid} (waiters 1, acquires 41)\n`);
-    expect(kernel.engineLock(p.pid)).toEqual({ holder: tid, waiters: 1, acquires: 41 });
+    expect(kernel.engineLock(p.pid)).toMatchObject({ holder: tid, waiters: 1, acquires: 41 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(kernel.engineLock(p.pid)!.heldMs).toBeGreaterThanOrEqual(15); // the same acquire, still held
+    Atomics.store(w, 2, 42);
+    expect(kernel.engineLock(p.pid)!.heldMs).toBe(0); // a new acquire
     expect(text(`/proc/${p.pid}/task/${p.pid}/wchan`)).toBe('futex_wait_queue');
-    expect(kernel.threadStates(p.pid).map((s) => [s.tid, s.state])).toEqual([[p.pid, 'S'], [tid, 'R']]);
+    expect(kernel.threadStates(p.pid).map((s) => [s.tid, s.state, s.waitKind])).toEqual([[p.pid, 'S', 'engine'], [tid, 'R', '']]);
+    kernel.kill(p.pid, A.SIGKILL);
+    await p.wait();
+  });
+
+  it("Blink's threads and calls (data.engineThreads, data.engineCalls) show in task/ and threadStates", async () => {
+    const p = kernel.spawn({ path: '/bin/blinkish', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+    const text = (path: string) => (kernel.procfs.fsNode(path) as { text: string }).text;
+    const blinkTid = 70001; // Blink numbers its threads itself
+    p.data.engineThreads = new Set([p.pid, blinkTid]);
+    p.data.engineCalls = new Map([[blinkTid, { nr: A.SYS_epoll_wait, since: Date.now() - 50 }]]);
+    expect((kernel.procfs.fsNode(`/proc/${p.pid}/task`) as { dir: string[] }).dir).toEqual([String(p.pid), String(blinkTid)]);
+    expect(text(`/proc/${p.pid}/task/${blinkTid}/syscall`)).toMatch(new RegExp(`^${A.SYS_epoll_wait} 0x0 `));
+    expect(text(`/proc/${p.pid}/task/${blinkTid}/wchan`)).toBe('ep_poll');
+    expect(text(`/proc/${blinkTid}/status`)).toContain(`\nState:\tS (sleeping)\nTgid:\t${p.pid}\nNgid:\t0\nPid:\t${blinkTid}\n`);
+    const s = kernel.threadStates(p.pid)[1];
+    expect([s.tid, s.state, s.nr, s.waitKind]).toEqual([blinkTid, 'S', A.SYS_epoll_wait, 'epoll']);
+    expect(s.sinceMs).toBeGreaterThanOrEqual(50);
+    kernel.kill(p.pid, A.SIGKILL);
+    await p.wait();
+  });
+
+  it("threadStates: an epoll_wait reports its epoll fd and the fds it watches", async () => {
+    const p = kernel.spawn({ path: '/bin/ep', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+    const data = new Uint8Array(64);
+    expect(await kernel.syscall(p, A.SYS_pipe2, [0], data)).toBe(0);
+    const prd = new DataView(data.buffer).getInt32(0, true);
+    const ep = await kernel.syscall(p, A.SYS_epoll_create1, [0], data);
+    expect(await kernel.syscall(p, A.SYS_epoll_ctl, [ep, A.EPOLL_CTL_ADD, prd, A.EPOLLIN, 0, 0], data)).toBe(0);
+    // (as a channel records it)
+    Object.assign(p.thread(p.pid), { nr: A.SYS_epoll_wait, args: [ep, 8, -1, 0, 0, 0], since: Date.now() });
+    const s = kernel.threadStates(p.pid)[0];
+    expect([s.waitKind, s.fd, s.fds]).toEqual(['epoll', ep, [prd]]);
     kernel.kill(p.pid, A.SIGKILL);
     await p.wait();
   });

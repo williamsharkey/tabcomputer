@@ -321,6 +321,10 @@ const haveInotify = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const mapfileBin = join(out, 'mapfile');
 const haveMapfile = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapfile') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapfileBin, 'mapfile.c']);
+// Blink 0519: mmap's argument checks, MAP_32BIT below 2 GiB
+const mmapargsBin = join(out, 'mmapargs');
+const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmapargs') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmapargsBin, 'mmapargs.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1042,6 +1046,12 @@ it.skipIf(!haveMapfile)('a 6 MiB read of a file is whole; a shared mapping grown
   const { shell } = await setup(readFileSync(mapfileBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('read 6291456 of 6291456, first wrong -1\nsize 12\n');
+}, 60_000);
+
+it.skipIf(!haveMmapargs)('mmap checks in Linux\'s order: a bad fd, no length, access, a fixed address past user space, MAP_SHARED_VALIDATE\'s unknown flags; MAP_32BIT below 2 GiB (LTP mmap06, 08, 15, 20, 23, 24)', async () => {
+  const { shell } = await setup(readFileSync(mmapargsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('bad fd no length 9\nno length 22\nread-only shared write 13\nhigh fixed 12\nvalidate 95\n32bit below 2G 1\n32bit 2G 12\n');
 }, 60_000);
 
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {

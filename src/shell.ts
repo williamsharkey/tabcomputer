@@ -713,21 +713,66 @@ function withoutTty<T extends object>(term: T): T {
 
 /** Runaway-loop guard for while/until/for((;;)); high enough for `while read` over big files */
 const LOOP_ITERATION_LIMIT = 10_000_000;
-/** Let the page paint and handle input during long shell loops */
-const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-/** When the shell last let the page run (timers, input, rendering) */
-let lastYield = 0;
 /**
- * Yield to the event loop if the shell has held it for a while: function
- * calls and `source` (deep recursion, a ~/.profile and ~/.bashrc sourcing
- * each other) otherwise never give the page a turn. Cheap when not due.
+ * Let the page paint and handle input during long shell work: one turn of the
+ * event loop. A message task, not setTimeout(0), which browsers clamp to 4 ms
+ * when nested (+28% on a 1000-iteration loop, bench/ab.mjs). (Not
+ * setImmediate: node-compat defines the page's as setTimeout(0).) Under Node
+ * the ports are unref'd so they don't keep the process alive.
+ */
+const yieldResolvers: (() => void)[] = [];
+let yieldPort: MessagePort | null = null;
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => {
+  if (typeof MessageChannel !== 'function') { setTimeout(resolve, 0); return; }
+  if (!yieldPort) {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => yieldResolvers.shift()?.();
+    (ch.port1 as any).unref?.();
+    (ch.port2 as any).unref?.();
+    yieldPort = ch.port2;
+  }
+  yieldResolvers.push(resolve);
+  yieldPort.postMessage(null);
+});
+/**
+ * Since when the shell has held the event loop without the page getting a
+ * turn. A marker timer says a turn happened (and that timers ran). Measuring
+ * from the last yield instead made the first command after any idle moment
+ * wait a timer turn (+50% on `true`, bench/ab.mjs).
+ */
+let busySince = 0;
+let hadTurn = true;
+let markerPending = false;
+let lastTimerTurn = 0;
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+function markTurn(): void {
+  if (markerPending) return;
+  markerPending = true;
+  setTimeout(() => { markerPending = false; hadTurn = true; lastTimerTurn = clockMs(); }, 0);
+}
+/** Timers must run at least this often while the shell is busy (`timeout`, the watchdog's heartbeat) */
+const TIMER_TURN_MS = 50;
+/**
+ * Yield to the event loop if the shell has held it for 30 ms: function calls,
+ * `source`, loop iterations and pipeline segments otherwise never give the
+ * page a turn. Cheap when not due (no await of a timer). The yield is a
+ * message task (paint, input), or a timer turn when timers haven't run for
+ * TIMER_TURN_MS (message tasks can starve them).
  */
 async function maybeYield(): Promise<void> {
   watchdogCheckpoint(); // the watchdog's kill switch (an outside agent, or `watchdog abort-after`)
-  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  if (now - lastYield < 30) return;
-  await yieldToEventLoop();
-  lastYield = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (hadTurn) {
+    hadTurn = false;
+    busySince = clockMs();
+    markTurn();
+    return;
+  }
+  const t = clockMs();
+  if (t - busySince < 30) return;
+  if (t - lastTimerTurn >= TIMER_TURN_MS) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  else await yieldToEventLoop();
+  busySince = clockMs();
+  markTurn();
 }
 
 /**
@@ -2752,6 +2797,7 @@ export class Shell {
         segCount = i + 1;
         // A builtin that captured its output `continue`d here: pipe/redirect it now
         await flushCapture();
+        if (i > 0) await maybeYield(); // a long line of builtins lets the page run (and the watchdog's abort in)
 
         // Check for SIGINT (abort)
         if (this.abortController?.signal.aborted) {
@@ -8105,6 +8151,11 @@ export class Shell {
     return results;
   }
 
+  /** Ctrl-C (or the watchdog's abort) reached the command this loop belongs to */
+  private loopAborted(): boolean {
+    return !!(this.abortController ?? this.inheritedAbort)?.signal.aborted;
+  }
+
   private async execWhile(
     input: string, writeStdout: (s: string) => void, writeStderr: (s: string) => void,
     pipeStdin?: string,
@@ -8139,7 +8190,9 @@ export class Shell {
     let status = 0;
     let iter = 0;
     while (iter++ < LOOP_ITERATION_LIMIT) {
-      if (iter % 1000 === 0) await yieldToEventLoop(); // keep the page responsive in long loops
+      // Give the page a turn every 30 ms, whatever an iteration costs; Ctrl-C ends the loop
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       try {
         // Expand vars in condition each iteration (loop vars like $X change)
         const expandedCond = await this.conditionText(parsed.condition, writeStderr);
@@ -8182,7 +8235,8 @@ export class Shell {
       let status = 0;
       let iter = 0;
       while (iter++ < LOOP_ITERATION_LIMIT) {
-        if (iter % 1000 === 0) await yieldToEventLoop();
+        await maybeYield();
+        if (this.loopAborted()) return 130;
         // Evaluate test — 0 means false (stop)
         if (test && this.evalArithmetic(test) === 0) break;
         // Execute body
@@ -8210,6 +8264,8 @@ export class Shell {
       : this.getPositionalArgs();
     let status = 0;
     for (const item of items) {
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       const err = this.setVar(varName, item);
       if (err) {
         writeStderr(`tabcomputer: ${err}\r\n`);

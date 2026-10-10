@@ -42,6 +42,18 @@ describe('kernel diagnostics', () => {
     const pipe = p.fds.find((f: any) => f.fd === 4);
     expect(pipe).toMatchObject({ kind: 'pipe', end: 'r', readers: 1, writers: 0 });
     expect(d.fifos[0]).toMatchObject({ path: '/tmp/fifo1', writers: 0 });
+    expect(p.threads).toBeUndefined(); // (a kernel without per-thread state)
+  });
+
+  it('includes per-thread state and the engine lock when the kernel has them', () => {
+    g.__tabcomputerKernel = {
+      procs: new Map([[5, { pid: 5, argv: ['claude'], calls: [], startTime: Date.now(), fds: { entries: () => [] } }]]),
+      threadStates: (pid: number) => [{ tid: pid, state: 'S', nr: 232, args: [13, 1024, 4000], sinceMs: 9000, syscalls: 7 }],
+      engineLock: () => ({ holder: 6, waiters: 1, acquires: 40 }),
+    };
+    const p: any = (kernelDiagnostics() as any).procs[0];
+    expect(p.threads).toEqual([{ tid: 5, state: 'S', nr: 232, args: [13, 1024, 4000], sinceMs: 9000, syscalls: 7 }]);
+    expect(p.engineLock).toEqual({ holder: 6, waiters: 1, acquires: 40 });
   });
 
   it('is null without a kernel', () => {

@@ -21,6 +21,7 @@ Blink engine.
 | pnpm 9 | `npm install pnpm` | works (add, store, symlinks, run, exec, bins) |
 | yarn 1 | `npm install yarn` | works (add, lockfile, run, bins, offline) |
 | Next.js 16 (App Router, webpack) | `npx create-next-app`, then `next dev --webpack` / `next build` / `next start` (node in a Worker, the default) | dev server with HMR, builds (static pages prerendered) and serves; see "Next.js 16" below |
+| SvelteKit 2 (Svelte 5, Vite 7) | `npm i @sveltejs/kit svelte vite …`, then `vite dev` / `vite build` (adapter-static) | dev server with HMR, builds and prerenders; see "SvelteKit 2" below |
 | ruby, gem, rake | `pkg install ruby` (ruby.wasm 3.4.1) | works (no sockets) |
 | perl | `pkg install perl` (x86-64 in Blink) | works |
 | lua | `pkg install lua` | works |
@@ -351,6 +352,35 @@ Shell and platform fixes these needed (all with tests in the same file):
   (`tests/browser/node-wasi.mjs`). In the page there is no blocking channel:
   `new WASI()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `stdin`/`stdout`/
   `stderr` other than 0, 1 and 2 aren't supported.
+- SvelteKit 2 (Svelte 5, Vite 7, adapter-static; `APP=sveltekit` in
+  tests/browser/vite-react.mjs, a minimal site written there): `npm i` 2.6 s,
+  `vite dev` ready 3.8 s, the preview 3.1 s, an edit to `+page.svelte` by HMR
+  0.1 s, `vite build` with prerendering 10 s. Node in a Worker, the default.
+  What it took, all general:
+  - Top-level await reaches importers, as in ES modules: a module whose imports
+    are still evaluating (their own top-level await, or their imports') runs
+    once they are done. Kit's `core/sync/utils.js` awaits `svelte/compiler`;
+    its importers called into it first ("Cannot access 'MAJOR' before
+    initialization").
+  - `export { default as x } from 'y'` re-exports y's default as `import x
+    from 'y'` reads it (esm-env's `DEV` read `.default` of undefined).
+  - A `worker_threads` Worker's `env` option is the worker's `process.env`
+    (kit's post-build steps run in Workers told so by `SVELTEKIT_FORK`: the
+    build ended without them).
+  - Vite reloads the preview once when it optimizes more dependencies on the
+    first load; the check edits once the preview has settled.
+  Also from these checks, for every framework in worker mode:
+  - Packages load as their node builds, not their browser ones, in a guest:
+    a Worker has no DOM (decode-named-character-reference's `index.dom.js`
+    wants `document`: `astro dev` failed at startup). In the page, browser
+    builds still come first.
+  - A Worker's own `self` and `WorkerGlobalScope` are hidden from node code:
+    Prism (in Astro) took the guest for a Web Worker and parsed its syscall
+    channel's messages.
+  - fs.watch drops a change older than the watch: changes reach a guest later
+    than its own reads see them, and chokidar reported the creation of
+    `.astro/settings.json`, which it had found by reading the directory, as
+    an edit (Astro restarted at once).
 - Next.js 16 (`create-next-app`, App Router, webpack): `next dev --webpack`,
   `next build` and `next start` work in worker mode (the default on a
   cross-origin isolated page). `APP=next node tests/browser/vite-react.mjs`

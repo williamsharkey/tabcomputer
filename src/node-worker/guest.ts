@@ -85,7 +85,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     const fs = new SyscallFs(sys);
     // fs.watch: the page sends its filesystem's changes once asked (host.ts)
     fs.requestChanges = () => post({ type: 'node-guest-watch' });
-    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath);
+    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.detail);
     const stdinTTY = isatty(sys, 0);
     const stdoutTTY = isatty(sys, 1);
     // Networking over socket syscalls; servers listen on kernel ports (the page previews them)
@@ -95,7 +95,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     rejection = null;
     installWorkerHandlers();
     // A worker_threads thread of a node process (host.ts started it with attachThread)
-    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; threadId: number } | undefined;
+    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number } | undefined;
     const hooks: NodeGuestHooks = {
       readText(path) {
         const b = fs.readRaw(path);
@@ -147,7 +147,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         },
       } : {}),
     };
-    const env = { ...start.env };
+    // (a thread's own `new Worker(f, { env })`: SvelteKit's build tells its forked steps so)
+    const env = { ...(nodeThread?.env ?? start.env) };
     // (node takes its channel's variables out of process.env: its own children aren't forked)
     if (hooks.ipc) { delete env.NODE_CHANNEL_FD; delete env.NODE_CHANNEL_SERIALIZATION_MODE; }
     const shell: any = { cwd: start.cwd, env, abortController: null, fork() { throw new Error('no shell in a node guest'); } };
@@ -343,7 +344,7 @@ function installWorkerHandlers(): void {
 }
 
 /** Where the page's filesystem changes go (the running guest's SyscallFs) */
-let fsEvents: ((m: { event: string; path: string; newPath?: string }) => void) | null = null;
+let fsEvents: ((m: { event: string; path: string; newPath?: string; detail?: { created?: boolean; dir?: boolean; fd?: boolean; at?: number } }) => void) | null = null;
 /** worker_threads: this guest's threads' events by id, and (in a thread) its parent's messages */
 let lastThread = 0;
 const threadEvents = new Map<number, ThreadEvents>();

@@ -2,9 +2,14 @@ import { Command, CommandContext } from './index';
 import { Shell } from '../shell';
 import { createRemotePanel, type RemotePanel, type LogType } from '../remote-panel';
 import { getShiroOrigin } from '../utils/shiro-origin';
+import { RelayChannel, newRelayInfo, type RelayInfo } from '../remote-relay';
 
 // LocalStorage key for persisting remote session code across page reloads
 const REMOTE_CODE_KEY = 'tabcomputer-remote-code';
+/** '0': don't offer the HTTPS relay (`remote start --no-relay`) */
+const REMOTE_RELAY_KEY = 'tabcomputer-remote-relay';
+
+const relayAllowed = () => { try { return localStorage.getItem(REMOTE_RELAY_KEY) !== '0'; } catch { return true; } };
 
 // Word lists for generating memorable codes
 // ~200 adjectives × ~200 nouns × 64^4 syllables = ~46 bits of entropy
@@ -91,11 +96,24 @@ function generateCode(): { full: string; display: string } {
 // Signaling server URL — same origin, server.mjs handles /offer and /answer routes
 const SIGNALING_URL = getShiroOrigin();
 
+/** What the session talks over: a WebRTC data channel or the HTTPS relay */
+interface RemoteChannel {
+  readyState: string;
+  send(data: string): void;
+  close(): void;
+  onopen: ((ev?: any) => any) | null;
+  onclose: ((ev?: any) => any) | null;
+  onmessage: ((ev: any) => any) | null;
+}
+
 interface RemoteSession {
   code: string;
   displayCode: string;
   pc: RTCPeerConnection;
-  dc: RTCDataChannel | null;
+  dc: RemoteChannel | null;
+  /** The relay mailbox this session's offer names (null: not offered) */
+  relay: RelayInfo | null;
+  transport?: 'webrtc' | 'relay';
   status: 'connecting' | 'waiting' | 'connected' | 'error';
   shadowShell: Shell | null;
   panel: RemotePanel | null;
@@ -288,6 +306,20 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         return JSON.stringify({ type: 'console_result', ...result, requestId });
       }
 
+      case 'diag': {
+        // Why is the page slow or frozen: event-loop lag, long tasks, heap,
+        // commands in flight, the watchdog's events (or the previous load's
+        // with previous: true), processes, unsaved filesystem writes. Cheap and
+        // synchronous, so it answers as soon as the page does.
+        const { diagnostics } = await import('../watchdog');
+        const d = diagnostics({ limit: Math.min(cmd.limit ?? 200, 1500), since: cmd.since, kind: cmd.kind, previous: !!cmd.previous });
+        const tc = window.__tabcomputer as any;
+        let procs: string[] = [];
+        try { procs = tc?.processTable?.list().slice(0, 200).map((p: any) => `${p.pid} ${p.status} ${String(p.command).slice(0, 80)}`) ?? []; } catch { /* source threw */ }
+        const pendingWrites = tc?.fs?.pendingWrites;
+        return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, requestId });
+      }
+
       case 'eval': {
         logActivity(session, 'eval', cmd.code);
         const result = await eval(cmd.code);
@@ -439,7 +471,7 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
 /**
  * Wire up a session with shadow shell, panel, and data channel handlers.
  */
-function wireSession(session: RemoteSession, dc: RTCDataChannel) {
+function wireSession(session: RemoteSession, dc: RemoteChannel) {
   session.dc = dc;
   let closeFired = false;
 
@@ -547,6 +579,7 @@ async function startRemote(ctx: CommandContext): Promise<number> {
     displayCode,
     pc,
     dc: null,
+    relay: relayAllowed() ? newRelayInfo() : null,
     status: 'connecting',
     shadowShell,
     panel: null,
@@ -616,6 +649,7 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
       code: session.code,
       offer: pc.localDescription,
       candidates: iceCandidates,
+      ...(session.relay ? { relay: session.relay } : {}),
     }),
   });
 
@@ -627,6 +661,25 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
 
   // Start polling for answer
   pollForAnswer(session);
+}
+
+/**
+ * The peer answered with {type: 'relay'}: it can't do WebRTC (no UDP), so the
+ * session talks over the server's HTTPS mailbox instead (src/remote-relay.ts).
+ * The data channel is dropped quietly (its onclose would re-register the code).
+ */
+function switchToRelay(session: RemoteSession) {
+  const old = session.dc;
+  if (old) { old.onopen = old.onclose = old.onmessage = null; old.close(); }
+  session.pc.close();
+  console.log('[remote] Peer asked for the HTTPS relay');
+  logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
+  session.transport = 'relay';
+  const relay = new RelayChannel({
+    base: SIGNALING_URL, info: session.relay!, code: session.code, as: 'tab',
+    log: (m) => console.warn(`[remote] ${m}`),
+  });
+  wireSession(session, relay);
 }
 
 /**
@@ -668,6 +721,12 @@ async function pollForAnswer(session: RemoteSession) {
           return;
         } else if (data.waiting) {
           // No answer yet, continue polling
+        } else if (data.answer?.type === 'relay') {
+          if (session.relay) {
+            switchToRelay(session);
+            return;
+          }
+          // A peer asked for the relay this session didn't offer: keep waiting
         } else if (data.answer) {
           await session.pc.setRemoteDescription(data.answer);
 
@@ -679,6 +738,11 @@ async function pollForAnswer(session: RemoteSession) {
           }
 
           console.log('[remote] Received answer, establishing connection...');
+          // ICE failed (a peer without UDP, or NATs that won't meet): take
+          // answers again, so the peer can retry or ask for the relay
+          session.pc.onconnectionstatechange = () => {
+            if (session.pc.connectionState === 'failed' && session.status !== 'connected') renew('WebRTC connection failed');
+          };
           return;
         }
       } else if (res.status === 404) {
@@ -758,8 +822,13 @@ function statusRemote(ctx: CommandContext): number {
     ctx.stdout += `Data channel: \x1b[93m${session.dc.readyState}\x1b[0m\n`;
   }
 
-  const pcState = session.pc.connectionState;
-  ctx.stdout += `Connection: \x1b[93m${pcState}\x1b[0m\n`;
+  if (session.transport === 'relay') {
+    ctx.stdout += `Connection: \x1b[93mHTTPS relay\x1b[0m\n`;
+  } else {
+    const pcState = session.pc.connectionState;
+    ctx.stdout += `Connection: \x1b[93m${pcState}\x1b[0m\n`;
+  }
+  ctx.stdout += `HTTPS relay: ${session.relay ? 'offered' : 'off (remote start --relay to offer it)'}\n`;
 
   return 0;
 }
@@ -772,6 +841,9 @@ export const remoteCmd: Command = {
 
     switch (subcommand) {
       case 'start':
+        // The relay is offered unless turned off; the choice is remembered
+        if (ctx.args.includes('--no-relay')) localStorage.setItem(REMOTE_RELAY_KEY, '0');
+        else if (ctx.args.includes('--relay')) localStorage.removeItem(REMOTE_RELAY_KEY);
         return startRemote(ctx);
       case 'stop':
         return stopRemote(ctx);
@@ -779,7 +851,7 @@ export const remoteCmd: Command = {
         return statusRemote(ctx);
       default:
         ctx.stderr += `Unknown subcommand: ${subcommand}\n`;
-        ctx.stdout += 'Usage: remote [start|stop|status]\n';
+        ctx.stdout += 'Usage: remote [start [--relay|--no-relay]|stop|status]\n';
         return 1;
     }
   },
@@ -842,6 +914,7 @@ export async function startRemoteWithCode(
     displayCode,
     pc,
     dc: null,
+    relay: relayAllowed() ? newRelayInfo() : null,
     status: 'connecting',
     shadowShell,
     panel,
@@ -895,6 +968,7 @@ export async function startRemoteWithCode(
         code,
         offer: pc.localDescription,
         candidates: iceCandidates,
+        ...(session.relay ? { relay: session.relay } : {}),
       }),
     });
 

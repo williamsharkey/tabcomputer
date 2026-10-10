@@ -10,6 +10,7 @@
  *   kbench fwrite PATH MB      create PATH and write MB MiB (64 KiB writes)
  *   kbench fread PATH          read PATH to EOF (64 KiB reads)
  *   kbench cpu N               N rounds of an integer hash loop
+ *   kbench memcpy MB N         N copies of an MB MiB buffer (memory.copy: bulk memory)
  */
 typedef unsigned int u32;
 typedef unsigned long long u64;
@@ -135,6 +136,20 @@ void _start(void) {
     kv("hash", h); kv("ns", dt);
     proc_exit(0);
   }
-  puts1("usage: kbench nop|sys N|write MB|read|fwrite PATH MB|fread PATH|cpu N\n");
+  if (streq(mode, "memcpy")) {
+    u64 mb = argc > 2 ? atou(argvv[2]) : 64, n = argc > 3 ? atou(argvv[3]) : 10, sz = mb << 20;
+    long base = __builtin_wasm_memory_grow(0, (unsigned long)(2 * sz >> 16));
+    if (base < 0) { puts1("error=grow\n"); proc_exit(1); }
+    u8 *src = (u8 *)(base << 16), *dst = src + sz;
+    __builtin_memset(src, 1, sz);
+    __builtin_memcpy(dst, src, sz);
+    u64 t0 = now();
+    for (u64 i = 0; i < n; i++) { src[i % sz] = (u8)i; __builtin_memcpy(dst, src, sz); }
+    u64 dt = now() - t0;
+    if (dst[0] != src[0]) proc_exit(1);
+    kv("bytes", sz * n); kv("ns", dt);
+    proc_exit(0);
+  }
+  puts1("usage: kbench nop|sys N|write MB|read|fwrite PATH MB|fread PATH|cpu N|memcpy MB N\n");
   proc_exit(2);
 }

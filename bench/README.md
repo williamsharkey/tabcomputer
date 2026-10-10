@@ -79,7 +79,7 @@ Isolated only, each from a fresh profile, time and RSS peak:
   of an edit to `src/App.jsx` (checked to be a hot update, not a reload).
   npm and the template come from the net cache. Also `npm run build` (vite
   build) after `npm i`.
-- `go run hello.go`, first and warm, then `go build -a hello.go` (the
+- `go run hello.go`, first and warm, then (full runs only: ~20 min in Blink) `go build -a hello.go` (the
   runtime, fmt and their dependencies recompiled), after `debian install` + `toolchain
   install go`. The layer is served from `TABCOMPUTER_DEBIAN_LAYERS` (default
   `.toolchain-build/layers`); `sudo bash scripts/debian/build-layers.sh go`

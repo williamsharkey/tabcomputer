@@ -209,8 +209,9 @@ export async function run(h) {
           const warm = await timed(h, 'cd /tmp && go run hello.go', 1200, /^hello$/m);
           add('go_install', inst.ms); add('go_first', first.ms); add('go_first_peak', first.peak); if (first.net != null) add('go_first_net', first.net); add('go_warm', warm.ms); add('go_warm_peak', warm.peak);
           addCpu(add, 'go_first_cpu', first); addCpu(add, 'go_warm_cpu', warm);
-          // `go build -a`: every package hello.go needs (runtime, fmt, ...) compiled again
-          if (h.wants('workflow.go.build_a')) {
+          // `go build -a`: every package hello.go needs (runtime, fmt, ...) compiled again.
+          // Full runs only: ~20 min in Blink (the quick run's go build user/sys is run_first's)
+          if (!h.quick && h.wants('workflow.go.build_a')) {
             const all = await timed(h, `cd /tmp && go build -a -o /tmp/hello-a hello.go && /tmp/hello-a`, 1800, /^hello$/m);
             addCpu(add, 'go_build_a', all);
           }

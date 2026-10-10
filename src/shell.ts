@@ -564,6 +564,8 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** Expansions that change shell state: `${x=v}`, `${x:=v}`, `$((…))` (an assignment or ++ in it) */
+const SIDE_EFFECT_EXPANSION_RE = /\$\{[^}]*?:?=|\$\(\(/;
 /** Kernel fd kinds a command reads as data when given no file (ripgrep's is_readable_stdin) */
 const READABLE_STDIN_KINDS = new Set(['file', 'pipe', 'socket']);
 /** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
@@ -2688,15 +2690,27 @@ export class Shell {
         // checking that first keeps a tokenizer pass and an await off every other command
         const ordered = rawSegments.length === 1 && ORDERED_PREFIX_RE.test(cmdText) && /[$`]/.test(cmdText)
           ? await this.expandPrefixAssignments(cmdText, stderrWriter) : null;
-        pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        if (rawSegments.length > 1 && !ordered && SIDE_EFFECT_EXPANSION_RE.test(cmdText)) {
+          // Each element of a pipeline is a subshell: what its words assign (`${x=v}`,
+          // `$((i++))`) stays there (the last one's here with shopt -s lastpipe)
+          pipeline = [];
+          for (const [k, seg] of rawSegments.entries()) {
+            const here = k === rawSegments.length - 1 && this.shoptopts.has('lastpipe');
+            pipeline.push(await (here ? this : this.fork()).expandWords(quoteAssignmentValues(seg), stderrWriter));
+          }
+        } else {
+          pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        }
       }
 
       // Check for ! negation prefix
       let negateExit = false;
-      if (pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
+      // (a `!` that came from an expansion, `v='!'; $v cmd`, is a command word, not negation)
+      const rawBang = /^\s*!(\s|$)/.test(cmdText);
+      if (rawBang && pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
         negateExit = true;
         pipeline[0] = pipeline[0].trim().slice(2);
-      } else if (pipeline.length > 0 && pipeline[0].trim() === '!') {
+      } else if (rawBang && pipeline.length > 0 && pipeline[0].trim() === '!') {
         // Bare ! with pipeline after
         negateExit = true;
         pipeline.shift();
@@ -2818,6 +2832,12 @@ export class Shell {
               // ...as plain assignments: a new or unexported variable stays unexported
               for (const [k, v] of prefixEnvSaved) if (v === undefined || prefixWasLocal.has(k)) this.localVars.add(k);
             }
+            this.lastExitCode = exitCode;
+            this.env['?'] = String(exitCode);
+          } else {
+            // Words that expanded to nothing (`$(false)`, `` `false` ``, `$empty`): the status
+            // is the last command substitution's, else 0
+            exitCode = this.substStatus ?? 0;
             this.lastExitCode = exitCode;
             this.env['?'] = String(exitCode);
           }
@@ -7454,6 +7474,10 @@ export class Shell {
 
   private async inSubshell(fn: (sub: Shell) => Promise<number>): Promise<number> {
     const child = this.fork();
+    // (what fn runs is nested: an `exit` or set -e failure in a loop body unwinds to
+    // here, ending the subshell, instead of being taken as the end of a script
+    // by the body's own execute() and the loop going on)
+    child.executeDepth = 1;
     try {
       return await fn(child);
     } catch (e) {
@@ -7826,7 +7850,7 @@ export class Shell {
         case '-e': case '-r': case '-w': case '-x':
           try { await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return 0; } catch { return 1; }
         case '-f':
-          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'file' ? 0 : 1; } catch { return 1; }
+          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.isFile() ? 0 : 1; } catch { return 1; }
         case '-d':
           try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'dir' ? 0 : 1; } catch { return 1; }
         case '-s':

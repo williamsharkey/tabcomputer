@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2107/2417 (87.2%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2113/2417 (87.4%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -67,9 +67,9 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | brace-expansion | 0/55 | 51/55 | 4 |
 | tilde | 0/14 | 9/14 | 5 |
 | glob | 0/23 | 21/23 | 2 |
-| pipeline | 0/25 | 22/26 | 4 |
-| exit-status | 0/11 | 8/11 | 3 |
-| errexit | 0/35 | 34/35 | 1 |
+| pipeline | 0/25 | 24/26 | 2 |
+| exit-status | 0/11 | 11/11 | 0 |
+| errexit | 0/35 | 35/35 | 0 |
 | subshell | 0/2 | 2/2 | 0 |
 | command_ | 2/16 | 14/16 | 2 |
 | posix | 2/15 | 13/15 | 2 |
@@ -173,9 +173,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Two kinds of tilde expansion; Mixed case char expansion is invalid
 - **tilde**: ${undef:-~}; ${x//~/~root}; a[x]=foo:~ has tilde expansion; x=${undef-~:~}; temp assignment x=~ env
 - **glob**: \ in unquoted substitutions does not match a backslash; \ in unquoted substitutions escapes globchars
-- **pipeline**: \|&; ! is not a command; Evaluation of argv[0] in pipeline occurs in child; SIGPIPE causes pipeline to die (regression for issue #295)
-- **exit-status**: If subshell false -- exit code is propagated in a weird way (strict_argv prevents); Exit code when command sub evaluates to empty str, e.g. `false` (#2416); More test cases with empty argv
-- **errexit**: pipeline process respects errexit
+- **pipeline**: \|&; SIGPIPE causes pipeline to die (regression for issue #295)
 - **command_**: Permission denied; Non-executable on $PATH
 - **posix**: Empty for loop without in.  Do can be on the same line I guess.; Command substitution in default
 - **alias**: define and use alias on a single line; first and second word are the same alias, with trailing space; Syntax error after expansion; Loop split across alias in another way; Loop split across both iterative and recursive aliases; Alias with a quote in the middle is a syntax error; Alias can be defined and used on a single line; alias with line continuation in the middle; alias for left brace; alias for left paren; Corner case: alias inside LHS array arithmetic expression

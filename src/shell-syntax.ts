@@ -20,6 +20,8 @@ const DECLARE = new Set(['declare', 'typeset', 'local', 'export', 'readonly', 'l
 class Lexer {
   i = 0;
   /** Here-doc delimiters to skip at the next newline */
+  /** Input ended inside a here-document body */
+  heredocOpen = false;
   pending: { delim: string; strip: boolean }[] = [];
   /** Set by the parser: a NAME=( here is an array literal, not an error */
   allowArray = false;
@@ -105,7 +107,7 @@ class Lexer {
           const line = s.slice(this.i, nl < 0 ? s.length : nl);
           this.i = nl < 0 ? s.length : nl + 1;
           if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) break;
-          if (nl < 0) throw new Unsure(); // (bash warns and goes on)
+          if (nl < 0) { this.heredocOpen = true; throw new Unsure(); } // (bash warns and goes on)
         }
       }
       this.pending = [];
@@ -435,6 +437,23 @@ class Parser {
 }
 
 /** The syntax error in a complete command, as bash words it; null if none (or unsure) */
+/**
+ * An interactive line that isn't a whole command yet: an open if/while/case/
+ * {/( or quote, a trailing | && || or \\, a here-document without its end.
+ * The terminal reads more lines (PS2) before running it, as bash does.
+ */
+export function needsMoreInput(text: string): boolean {
+  if (/(^|[^\\])(\\\\)*\\$/.test(text)) return true;
+  const lx = new Lexer(text + '\n');
+  try {
+    new Parser(lx).parse();
+    return false;
+  } catch (e) {
+    if (lx.heredocOpen) return true;
+    return e instanceof Syntax && /unexpected end of file|unexpected EOF while looking for matching/.test(e.message);
+  }
+}
+
 export function syntaxError(text: string): string | null {
   try {
     new Parser(new Lexer(text)).parse();

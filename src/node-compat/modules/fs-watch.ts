@@ -91,13 +91,16 @@ export function createWatchApi(deps: WatchDeps) {
     // took it for a settings edit and restarted)
     const since = Date.now();
     if (!dirWatch) fileWatchSince.set(target, Math.max(fileWatchSince.get(target) ?? 0, since));
-    const off = ctx.fs.onChange((event, path, newPath, at) => {
+    const off = ctx.fs.onChange((event, path, newPath, detail) => {
+      const at = detail?.at;
       if (at !== undefined && at < since) return;
       for (const [p, gone] of [[path, event === 'delete' || event === 'rename'], [newPath, false]] as [string | undefined, boolean][]) {
         if (!p) continue;
         const name = nameFor(p);
         if (name === null) continue;
         if (at !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) { if (gone) known.delete(p); else known.add(p); continue; }
+        // (a mode or times change: Node reports 'change', as Linux's IN_ATTRIB)
+        if (event === 'attrib') { queue('change', name); continue; }
         if (event === 'write' && known.has(p)) { queue('change', name); continue; }
         if (event === 'write') { known.add(p); queue('rename', name); queue('change', name); continue; }
         if (gone) known.delete(p); else known.add(p);

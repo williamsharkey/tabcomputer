@@ -85,7 +85,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     const fs = new SyscallFs(sys);
     // fs.watch: the page sends its filesystem's changes once asked (host.ts)
     fs.requestChanges = () => post({ type: 'node-guest-watch' });
-    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.at);
+    fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.detail);
     const stdinTTY = isatty(sys, 0);
     const stdoutTTY = isatty(sys, 1);
     // Networking over socket syscalls; servers listen on kernel ports (the page previews them)
@@ -344,7 +344,7 @@ function installWorkerHandlers(): void {
 }
 
 /** Where the page's filesystem changes go (the running guest's SyscallFs) */
-let fsEvents: ((m: { event: string; path: string; newPath?: string; at?: number }) => void) | null = null;
+let fsEvents: ((m: { event: string; path: string; newPath?: string; detail?: { created?: boolean; dir?: boolean; fd?: boolean; at?: number } }) => void) | null = null;
 /** worker_threads: this guest's threads' events by id, and (in a thread) its parent's messages */
 let lastThread = 0;
 const threadEvents = new Map<number, ThreadEvents>();

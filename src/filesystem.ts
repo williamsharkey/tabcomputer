@@ -119,6 +119,12 @@ export interface FSNode {
    * record under this name, with `nlink` set.
    */
   link?: number;
+  /**
+   * In memory only, never stored: a file whose bytes left the content cache
+   * (`content` is null, `size` is the real size). Synchronous lookups
+   * (lookupCached) may return it for its metadata; its bytes need readFile.
+   */
+  evicted?: true;
   /** Names of a linked file (its views; absent: 1). */
   nlink?: number;
   /** An inode record's names (FileSystem.link). */
@@ -168,6 +174,11 @@ export interface FileWriter {
 /** Bytes a queued record adds to IndexedDB (a blob node's are in its block records). */
 function storedBytes(node: FSNode | null | undefined): number {
   return node && !node.blob ? node.content?.byteLength ?? 0 : 0;
+}
+
+/** A cached file whose bytes the content cache tracks (sweepContent may drop them). */
+function tracked(node: FSNode | null | undefined): boolean {
+  return !!node && node.type === 'file' && !!node.content && node.content.byteLength > 0;
 }
 
 /** A fresh random 52-bit inode number (unique enough; not a secret, so no crypto: one per created file) */
@@ -253,9 +264,18 @@ function fsError(code: string, message: string): Error {
   return err;
 }
 
-export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename';
-/** `at`: when the change happened (Date.now()), where it reaches the listener later (a node guest's relay) */
-export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, at?: number) => void;
+/**
+ * A change to the filesystem. 'attrib': its mode, owner or times changed.
+ * The detail says, for 'write', whether the path is new (created) and
+ * whether it was made through an open file (fd: the kernel's descriptors,
+ * which report their own close; otherwise a write is a whole file, written
+ * and closed), and for 'delete', 'rename' and 'attrib', whether it is a
+ * directory (dir), when known. `at`: when the change happened (Date.now()),
+ * where it reaches the listener later (a node guest's relay).
+ */
+export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename' | 'attrib';
+export interface FSChangeDetail { created?: boolean; dir?: boolean; fd?: boolean; at?: number }
+export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail) => void;
 
 /**
  * Virtual filesystem provider for synthetic paths like /proc and /dev.
@@ -487,10 +507,14 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/sys/fs/pipe-user-pages-hard': () => '0\n',
     '/proc/sys/kernel/tainted': () => '0\n',
     '/proc/sys/kernel/core_pattern': () => 'core\n',
+    // inotify's limits (src/kernel/inotify.ts: MAX_QUEUED_EVENTS and the like)
+    '/proc/sys/fs/inotify/max_queued_events': () => '16384\n',
+    '/proc/sys/fs/inotify/max_user_instances': () => '128\n',
+    '/proc/sys/fs/inotify/max_user_watches': () => '65536\n',
     '/proc/mounts': () => 'rootfs / rootfs rw 0 0\n',
   };
 
-  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs'];
+  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs', '/proc/sys/fs/inotify'];
 
   handles(path: string): boolean {
     return path === '/proc' || path.startsWith('/proc/')
@@ -754,11 +778,23 @@ export class FileSystem {
     return () => { this._changeListeners.delete(listener); };
   }
 
-  private _emitChange(event: FSChangeEvent, path: string, newPath?: string): void {
+  private _emitChange(event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail): void {
     for (const fn of this._changeListeners) {
-      try { fn(event, path, newPath); } catch {}
+      try { fn(event, path, newPath, detail); } catch {}
     }
   }
+
+  /**
+   * A change made outside FileSystem's own writes, for its listeners now: the
+   * kernel's inode cache reports a guest's write() when it happens, not only
+   * when it writes the file back (inotify, fs.watch).
+   */
+  notify(event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail): void {
+    this._emitChange(event, path, newPath, detail);
+  }
+
+  /** Paths writeNow created, whose writeFile then finds the node it cached: still a creation. */
+  private _createdNow = new Set<string>();
 
   async init(): Promise<void> {
     this.db = await this._openDb();
@@ -1113,7 +1149,7 @@ export class FileSystem {
   private async _get(path: string): Promise<FSNode | undefined> {
     if (this.cache.has(path)) {
       const hit = this.cache.get(path);
-      if (hit?.content && hit.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path);
+      if (tracked(hit)) this._touch(path);
       return hit;
     }
     // Under a pending range delete: gone, though IndexedDB still has it
@@ -1126,7 +1162,12 @@ export class FileSystem {
       this._keysWanted = true;
       if (!this._keysHeld) void this._getAllKeys().catch(() => {});
     }
-    let result = await this._request('readonly', store => store.get(path) as IDBRequest<FSNode | undefined>);
+    // A file whose bytes left memory: its idle neighbours come back in the same
+    // transaction (cat *, grep -r and builds read a directory's files in turn;
+    // one transaction per file made `cat` of 1000 idle files 20 times slower)
+    const near = this._meta.has(path) ? this._evictedNear(path) : [];
+    let result = near.length ? await this._getNear(path, near)
+      : await this._request('readonly', store => store.get(path) as IDBRequest<FSNode | undefined>);
     // A write or delete made while the read was pending is newer than what it returned
     if (this.cache.has(path)) return this.cache.get(path);
     if (result?.link !== undefined) {
@@ -1142,7 +1183,8 @@ export class FileSystem {
       }
     }
     this.cache.set(path, result);
-    if (result?.content && result.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path);
+    this._meta.delete(path);
+    if (tracked(result)) this._touch(path);
     return result;
   }
 
@@ -1207,28 +1249,53 @@ export class FileSystem {
   // Every file read or written stays in `cache` with its bytes. Clean files'
   // contents (committed to IndexedDB, no open file holding them) leave memory
   // once unused for CONTENT_IDLE_MS: all of a big file's at once, and the
-  // least recently used beyond CONTENT_BUDGET. The whole entry goes, as if
-  // never read: sync readers (readBytesCached, lookupCached) then say "needs
-  // IndexedDB", as on a fresh boot. After `apt-get update` the cache held
-  // 164 MiB, 139 MiB of it three apt files that apt reads only on update.
-  // Idle, not merely over budget: evicting what a running apt reads again
-  // made each reload allocate anew and raised the install's peak.
+  // least recently used beyond CONTENT_BUDGET. After `apt-get update` the
+  // cache held 164 MiB, 139 MiB of it three apt files that apt reads only on
+  // update. Idle, not merely over budget: evicting what a running apt reads
+  // again made each reload allocate anew and raised the install's peak.
+  //
+  // What stays is the node without its bytes (`_meta`, FSNode.evicted), so
+  // stat, ls -l, readdir's types and path walks still answer from memory;
+  // readBytesCached says "needs IndexedDB" and the next read loads the bytes
+  // back. A file with hard links goes whole (its names share one record).
+  //
+  // Files under CONTENT_SMALL stay while node runs in the page (no Worker:
+  // TABCOMPUTER_NODE_WORKER=0, or a page without SharedArrayBuffer): its
+  // readFileSync and require read the cache synchronously and have no way
+  // to wait for IndexedDB (holdSmallContent).
 
-  /** Smaller files stay (cheap, and node programs read them synchronously). */
-  static CONTENT_TRACK_MIN = 64 << 10;
+  /** Files under this size leave memory only when no node runs in the page (holdSmallContent). */
+  static CONTENT_SMALL = 64 << 10;
   static CONTENT_BUDGET = 64 << 20;
   static CONTENT_BIG = 8 << 20;
   static CONTENT_IDLE_MS = 30_000;
+  /** Idle neighbours a read of a file whose bytes left memory brings back with it (_evictedNear). */
+  static EVICTED_NEAR = 256;
 
-  /** Cached files of CONTENT_TRACK_MIN or more, least recently used first → last use. */
+  /** Cached files with content, least recently used first → last use. */
   private _contentUse = new Map<string, number>();
   private _contentTimer: ReturnType<typeof setTimeout> | null = null;
   private _contentPins = new Set<(path: string) => boolean>();
+  /** Nodes whose bytes left memory (FSNode.evicted), for synchronous stat; `cache` (when it has the key) is newer. */
+  private _meta = new Map<string, FSNode>();
+  private _smallHeld = false;
 
   /** Keep a file's content in memory while `pinned(path)` (the kernel's open files). */
   addContentPin(pinned: (path: string) => boolean): () => void {
     this._contentPins.add(pinned);
     return () => { this._contentPins.delete(pinned); };
+  }
+
+  /**
+   * Node is running in the page: small files' bytes stay in memory from now
+   * on (for this page's life: its text cache and servers outlive the
+   * command), and those already dropped are read back (readFileSync of a
+   * file the shell wrote a while ago).
+   */
+  async holdSmallContent(): Promise<void> {
+    this._smallHeld = true;
+    const back = [...this._meta.values()].filter((n) => !this.cache.has(n.path) && n.size < FileSystem.CONTENT_SMALL).map((n) => n.path);
+    for (let i = 0; i < back.length; i += 256) await Promise.all(back.slice(i, i + 256).map((p) => this._get(p).catch(() => undefined)));
   }
 
   private _touch(path: string): void {
@@ -1244,7 +1311,7 @@ export class FileSystem {
     this._contentTimer = t;
   }
 
-  /** Bytes of tracked (CONTENT_TRACK_MIN or more) file content in memory. */
+  /** Bytes of file content in memory (what sweepContent can drop). */
   get contentCacheBytes(): number {
     let n = 0;
     for (const p of this._contentUse.keys()) n += this.cache.get(p)?.content?.byteLength ?? 0;
@@ -1262,14 +1329,15 @@ export class FileSystem {
     let total = 0;
     for (const [p] of this._contentUse) {
       const node = this.cache.get(p);
-      if (!node?.content || node.content.byteLength < FileSystem.CONTENT_TRACK_MIN) this._contentUse.delete(p);
-      else total += node.content.byteLength;
+      if (!tracked(node)) this._contentUse.delete(p);
+      else total += node!.content!.byteLength;
     }
+    for (const p of this._meta.keys()) if (this.cache.has(p)) this._meta.delete(p); // (written or read again since)
     for (const [p, at] of this._contentUse) {
       if (now - at < FileSystem.CONTENT_IDLE_MS) break; // the rest were used more recently
       const node = this.cache.get(p)!;
       const size = node.content!.byteLength;
-      if (size < FileSystem.CONTENT_BIG && total <= FileSystem.CONTENT_BUDGET) continue;
+      if (size < FileSystem.CONTENT_SMALL ? this._smallHeld : size < FileSystem.CONTENT_BIG && total <= FileSystem.CONTENT_BUDGET) continue;
       if (this._dirty.has(p) || this._inflight?.has(p) || this._materializing.has(p)) continue;
       let pinned = false;
       for (const f of this._contentPins) if (f(p)) { pinned = true; break; }
@@ -1279,6 +1347,8 @@ export class FileSystem {
         if (this._dirty.has(inodeKey(node.link)) || this._inflight?.has(inodeKey(node.link))) continue;
         for (const n of this._inodes.get(node.link)?.names ?? []) { if (n !== p) { this.cache.delete(n); this._contentUse.delete(n); } }
         this._inodes.delete(node.link);
+      } else {
+        this._meta.set(p, { ...node, content: null, evicted: true });
       }
       this.cache.delete(p);
       this._contentUse.delete(p);
@@ -1440,7 +1510,7 @@ export class FileSystem {
     const filled = { ...node, content: out };
     if (this.cache.get(node.path) === node) {
       this.cache.set(node.path, filled);
-      if (out.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(node.path);
+      if (tracked(filled)) this._touch(node.path);
     }
     return filled;
   }
@@ -1480,7 +1550,7 @@ export class FileSystem {
       size,
       ...(times ? { mtimeNs: times.mtimeNs || undefined, atime: times.atime, atimeNs: times.atimeNs || undefined } : {}),
     });
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, existing ? undefined : { created: true });
   }
 
   /**
@@ -1554,7 +1624,7 @@ export class FileSystem {
         });
         this._blobs.delete(WRITING_KEY + id);
         this._saveBlobMap();
-        this._emitChange('write', path);
+        this._emitChange('write', path, undefined, existing ? undefined : { created: true });
       },
       abort: () => {
         if (done) return;
@@ -1683,7 +1753,7 @@ export class FileSystem {
     const { link: _l, nlink: _n, names: _ns, path, ...data } = node;
     if (node.type === 'symlink' || rec.type === 'symlink') this._canonDirs.clear();
     this._putInode({ ...data, path: inodeKey(ino), ino, names: rec.names });
-    if (node.content && node.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path);
+    if (tracked(node)) this._touch(path);
   }
 
   /**
@@ -1787,7 +1857,7 @@ export class FileSystem {
   linkNow(existing: string, newPath: string): boolean {
     if (this._full || this.virtualProviders.some((vp) => vp.handles(existing) || vp.handles(newPath))) return false;
     const src = this.lookupCached(existing, false);
-    if (!src || src.node.type === 'dir' || src.node.lazy) return false;
+    if (!src || src.node.type === 'dir' || src.node.lazy || src.node.evicted) return false;
     if (src.node.link !== undefined && !this._inodes.has(src.node.link)) return false;
     const slash = newPath.lastIndexOf('/');
     const parent = this.lookupCached(slash <= 0 ? '/' : newPath.slice(0, slash));
@@ -1823,7 +1893,8 @@ export class FileSystem {
     this._canonDirs.clear();
     this._saveLinkMap();
     this._linksChanged();
-    this._emitChange('write', newPath);
+    this._emitChange('write', newPath, undefined, { created: true });
+    this._emitChange('attrib', src); // (its link count)
   }
 
   private _linkListeners = new Set<() => void>();
@@ -1876,11 +1947,53 @@ export class FileSystem {
     if (this._blobOwner.get(id) === ORPHAN_KEY + id) this._noteBlob(ORPHAN_KEY + id, null);
   }
 
+  /** Up to EVICTED_NEAR other files of `path`'s directory whose bytes left memory. */
+  private _evictedNear(path: string): string[] {
+    const i = path.lastIndexOf('/');
+    const dir = i <= 0 ? '/' : path.slice(0, i);
+    const names = this._children?.get(dir);
+    if (!names) return [];
+    const out: string[] = [];
+    for (const name of names) {
+      const p = dir === '/' ? '/' + name : dir + '/' + name;
+      if (p !== path && this._meta.has(p) && !this.cache.has(p)) out.push(p);
+      if (out.length >= FileSystem.EVICTED_NEAR) break;
+    }
+    return out;
+  }
+
+  /** `path`'s record, and those of `near` (files whose bytes left memory) back into the cache, in one transaction. */
+  private async _getNear(path: string, near: string[]): Promise<FSNode | undefined> {
+    const got: (FSNode | undefined)[] = [];
+    const result = await this._request('readonly', (store) => {
+      near.forEach((p, i) => { const q = store.get(p) as IDBRequest<FSNode | undefined>; q.onsuccess = () => { got[i] = q.result; }; });
+      return store.get(path) as IDBRequest<FSNode | undefined>; // (requests complete in order: the others are in by then)
+    });
+    near.forEach((p, i) => {
+      const rec = got[i];
+      // Only what is still as it was dropped: no write, delete or link since
+      if (!rec || rec.link !== undefined || rec.type !== 'file' || this.cache.has(p) || !this._meta.has(p) || (this._ranges.size && this._underRange(p))) return;
+      this.cache.set(p, rec);
+      this._meta.delete(p);
+      if (tracked(rec)) this._touch(p);
+    });
+    return result;
+  }
+
+  /** _get for what needs only the node's type and stat: a file whose bytes left memory (FSNode.evicted) needs no IndexedDB read. Never for writes. */
+  private async _getMeta(path: string): Promise<FSNode | undefined> {
+    const known = this._getCached(path);
+    return known !== undefined ? known ?? undefined : this._get(path);
+  }
+
   private _getCached(path: string): FSNode | null | undefined {
     const hit = this.cache.get(path); // one lookup: misses (cached as undefined) are the rare case
-    if (hit) { if (hit.content && hit.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path); return hit; }
+    if (hit) { if (tracked(hit)) this._touch(path); return hit; }
     if (this.cache.has(path)) return null;
     if (this._allKeys && !this._allKeys.has(path)) return null;
+    // Its bytes left memory: the node is still known (no content: FSNode.evicted)
+    const meta = this._meta.get(path);
+    if (meta && !(this._ranges.size && this._underRange(path))) return meta;
     return undefined;
   }
 
@@ -2010,7 +2123,7 @@ export class FileSystem {
     }
     if (node.type === 'symlink' || this.cache.get(node.path)?.type === 'symlink') this._canonDirs.clear();
     this.cache.set(node.path, node);
-    if (node.content && node.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(node.path);
+    if (tracked(node)) this._touch(node.path);
     this._noteKey(node.path, true);
     this._queue(node.path, node);
     if (node.blob || this._blobs.has(node.path)) this._noteBlob(node.path, node);
@@ -2129,7 +2242,7 @@ export class FileSystem {
   readCached(path: string): string | undefined {
     const node = this.cache.get(path);
     if (!node || node.type !== 'file' || !node.content) return undefined;
-    if (node.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path);
+    this._touch(path);
     return decodeBytes(node.content);
   }
 
@@ -2137,7 +2250,7 @@ export class FileSystem {
   readBytesCached(path: string): Uint8Array | undefined {
     const node = this.cache.get(path);
     if (!node || node.type !== 'file' || !node.content) return undefined;
-    if (node.content.byteLength >= FileSystem.CONTENT_TRACK_MIN) this._touch(path);
+    this._touch(path);
     return node.content;
   }
 
@@ -2181,6 +2294,7 @@ export class FileSystem {
   /** Clear the in-memory cache (useful after external DB modifications) */
   clearCache(): void {
     this.cache.clear();
+    this._meta.clear();
     this._canonDirs.clear();
     this._allKeys = null;
     this._allKeysArr = null;
@@ -2302,8 +2416,7 @@ export class FileSystem {
     for (const vp of this.virtualProviders) {
       if (vp.exists(path)) return true;
     }
-    const node = await this._get(await this._canon(path, false));
-    return !!node;
+    return !!(await this._getMeta(await this._canon(path, false)));
   }
 
   /**
@@ -2340,12 +2453,14 @@ export class FileSystem {
     mode?: number;
     /** Modification (and access) time to record instead of now (the kernel writing back an open file). */
     times?: { mtime: number; mtimeNs?: number; atime?: number; atimeNs?: number };
+    /** Made through an open file (the kernel's O_CREAT): its change event says so (FSChangeDetail.fd) */
+    fd?: boolean;
   }): Promise<void> {
     for (const vp of this.virtualProviders) {
       if (vp.writeFile(path, data)) return;
     }
     path = await this._canon(path, true);
-    if (this.fifoIO && !options?.times && (await this._get(path))?.special === 'fifo') return this.fifoIO.write(path, data);
+    if (this.fifoIO && !options?.times && (await this._getMeta(path))?.special === 'fifo') return this.fifoIO.write(path, data);
     const parentPath = path.substring(0, path.lastIndexOf('/')) || '/';
     const parent = await this._get(parentPath);
     if (!parent) throw fsError('ENOENT', `ENOENT: no such file or directory, open '${path}'`);
@@ -2356,7 +2471,9 @@ export class FileSystem {
     // its entire container)
     const content = typeof data === 'string' ? encodeText(data)
       : data.byteOffset !== 0 || data.byteLength !== data.buffer.byteLength ? data.slice() : data;
-    const existing = await this._get(path);
+    // (its type, number and mode: an idle file's old bytes aren't read to replace them)
+    const existing = await this._getMeta(path);
+    const created = this._createdNow.delete(path) || !existing;
     // Prevent overwriting a directory with a file
     if (existing?.type === 'dir') throw fsError('EISDIR', `EISDIR: illegal operation on a directory, write '${path}'`);
     const now = Date.now();
@@ -2379,7 +2496,7 @@ export class FileSystem {
       size: content.length,
       ...(options?.times ? { mtimeNs: options.times.mtimeNs || undefined, atime: options.times.atime, atimeNs: options.times.atimeNs || undefined } : {}),
     });
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, !created && !options?.fd ? undefined : { ...(created ? { created: true } : {}), ...(options?.fd ? { fd: true } : {}) });
   }
 
   /**
@@ -2396,7 +2513,7 @@ export class FileSystem {
     const now = Date.now();
     const node: FSNode = { path, type: 'file', content: new Uint8Array(0), mode, mtime: now, ctime: now, size: 0 };
     try { this._putNow(node); } catch { return undefined; } // ENOSPC: writeFile reports it
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, { created: true, fd: true });
     return node;
   }
 
@@ -2442,7 +2559,7 @@ export class FileSystem {
     node.special = 'fifo';
     node.mode = mode & 0o7777;
     await this._put(node);
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, { created: true });
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -2525,7 +2642,8 @@ export class FileSystem {
 
     const shown = path;
     path = await this._canon(path, true);
-    const node = await this._get(path);
+    // (isomorphic-git's walker readdirs every file: ENOTDIR from memory, its bytes not needed)
+    const node = await this._getMeta(path);
     if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, readdir '${shown}'`);
     if (node.type !== 'dir') throw fsError('ENOTDIR', `ENOTDIR: not a directory '${path}'`);
 
@@ -2557,7 +2675,9 @@ export class FileSystem {
    */
   writeNow(path: string, content: Uint8Array): Promise<void> {
     if (this._full) return this.writeFile(path, content);
-    const prev = this.cache.get(path);
+    // (an idle file whose bytes left memory keeps its inode number and mode)
+    const prev = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
+    if (!prev) this._createdNow.add(path);
     const now = Date.now();
     this.cache.set(path, {
       path, type: 'file', content, ino: prev ? prev.ino : newIno(),
@@ -2583,7 +2703,7 @@ export class FileSystem {
 
   async unlink(path: string): Promise<void> {
     path = await this._canon(path, false);
-    return this._unlinkNode(path, await this._get(path));
+    return this._unlinkNode(path, await this._getMeta(path)); // (an idle file's bytes aren't read to delete it)
   }
 
   private async _unlinkNode(path: string, node: FSNode | undefined): Promise<void> {
@@ -2638,7 +2758,7 @@ export class FileSystem {
     if (!this._children || this.cache.get(path)?.type !== 'dir') return undefined;
     if (this._children.get(path)?.size) return false;
     this._deleteNow(path);
-    this._emitChange('delete', path);
+    this._emitChange('delete', path, undefined, { dir: true });
     return true;
   }
 
@@ -2651,7 +2771,7 @@ export class FileSystem {
     const entries = await this.readdir(path);
     if (entries.length > 0) throw fsError('ENOTEMPTY', `ENOTEMPTY: directory not empty, rmdir '${path}'`);
     await this._delete(path);
-    this._emitChange('delete', path);
+    this._emitChange('delete', path, undefined, { dir: true });
   }
 
   async rm(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -2675,13 +2795,13 @@ export class FileSystem {
       this._queueRange(path);
       this._dropBlobsUnder(path);
       this._deleteNow(path);
-      this._emitChange('delete', path);
+      this._emitChange('delete', path, undefined, { dir: true });
     } else if (node.type === 'dir' && options?.recursive) {
       const allKeys = await this._getAllKeys();
       const toDelete = allKeys.filter(k => k.startsWith('/'));
       toDelete.sort().reverse();
       for (const key of toDelete) await this._delete(key);
-      this._emitChange('delete', path);
+      this._emitChange('delete', path, undefined, { dir: true });
     } else if (node.type === 'dir') {
       throw fsError('EISDIR', `EISDIR: is a directory, rm '${path}'`);
     } else {
@@ -2720,7 +2840,7 @@ export class FileSystem {
         await this._delete(oldPath);
       }
     }
-    this._emitChange('rename', oldPath, newPath);
+    this._emitChange('rename', oldPath, newPath, node.type === 'dir' ? { dir: true } : undefined);
   }
 
   /**
@@ -2749,8 +2869,8 @@ export class FileSystem {
     this._moveTree(tb, b, a);
     this._moveTree(ta.map((k) => tmp + k.slice(a.length)), tmp, b);
     this._canonDirs.clear();
-    this._emitChange('rename', a, b);
-    this._emitChange('rename', b, a);
+    this._emitChange('rename', a, b, na.type === 'dir' ? { dir: true } : undefined);
+    this._emitChange('rename', b, a, nb.type === 'dir' ? { dir: true } : undefined);
   }
 
   /** Move the cached nodes `keys` (root `from` and what is under it) to under `to`, now. */
@@ -2770,6 +2890,7 @@ export class FileSystem {
     const node = await this._get(path);
     if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, chmod '${path}'`);
     await this._put({ ...node, mode, ctime: Date.now() });
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   /**
@@ -2785,6 +2906,7 @@ export class FileSystem {
     const atimeNs = ns?.atime || undefined;
     const sameA = atimeMs === mtimeMs && atimeNs === mtimeNs;
     await this._put({ ...node, mtime: mtimeMs, mtimeNs, atime: sameA ? undefined : atimeMs, atimeNs: sameA ? undefined : atimeNs });
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   // isomorphic-git compatibility: symlink support
@@ -2805,7 +2927,7 @@ export class FileSystem {
     if (!parent || parent.type !== 'dir') return Promise.reject(fsError('ENOENT', `ENOENT: no such file or directory, symlink '${target}' -> '${path}'`));
     const now = Date.now();
     this._putNow({ path: canon, type: 'symlink', content: new TextEncoder().encode(target), mode: 0o120000, mtime: now, ctime: now, size: target.length, symlinkTarget: target } as FSNode);
-    this._emitChange('write', canon);
+    this._emitChange('write', canon, undefined, { created: true });
     return Promise.resolve();
   }
 
@@ -2826,7 +2948,7 @@ export class FileSystem {
       size: target.length,
       symlinkTarget: target,
     });
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, { created: true });
   }
 
   async readlink(path: string): Promise<string> {

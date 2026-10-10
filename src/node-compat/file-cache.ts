@@ -62,6 +62,8 @@ interface LazySource {
  * that went idle with servers up still reads through it). A lazy file read
  * when the FileSystem no longer has it is gone from the map, as deleted.
  */
+const lazyPins = new FinalizationRegistry<() => void>((unpin) => unpin());
+
 export class LazyTextMap extends Map<string, string> {
   private lazy = new Set<string>();
 
@@ -75,6 +77,9 @@ export class LazyTextMap extends Map<string, string> {
       if (!lazy) { unpin?.(); return false; }
       return lazy.has(path);
     });
+    // and goes when the set is collected (the FileSystem only asks pins in a
+    // sweep, so dead ones piled up: one per `node` run)
+    if (unpin) lazyPins.register(this.lazy, unpin);
   }
 
   /** Add `path` (UTF-8 text in the FileSystem's cache now), decoded when read. */

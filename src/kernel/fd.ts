@@ -474,6 +474,33 @@ const WRITE_BACKLOG_BYTES = 16 << 20;
 const DIRTY_PAGES = 8;
 const KEEP_PAGES = 4;
 
+/**
+ * What a FileSystem's inotify (inotify.ts) hears from the kernel's open
+ * files: IN_OPEN, IN_ACCESS, IN_CLOSE_*. Only when something watches the
+ * path; then a write() is reported through FileSystem.notify too, and the
+ * inode's later write-back of it is an echo (writeBackEcho).
+ */
+export interface FileWatcher {
+  watched(path: string): boolean;
+  fileEvent(path: string, mask: number, dir?: boolean): void;
+  /** `ino`'s last name went while it is open: its watches stay with it until its last close */
+  orphaned(ino: object, path: string): void;
+  /** what an open, unlinked inode's descriptions did */
+  orphanEvent(ino: object, mask: number): void;
+  /** its last close */
+  inodeGone(ino: object): void;
+}
+export const fileWatchers = new WeakMap<FileSystem, FileWatcher>();
+const echoes = new WeakMap<FileSystem, Map<string, number>>();
+/** Whether `path`'s change events now come from the kernel writing back what it already reported */
+export function writeBackEcho(fs: FileSystem, path: string): boolean { return !!echoes.get(fs)?.get(path); }
+function echo(fs: FileSystem, path: string, d: 1 | -1): void {
+  let m = echoes.get(fs);
+  if (!m) echoes.set(fs, m = new Map());
+  const n = (m.get(path) ?? 0) + d;
+  if (n > 0) m.set(path, n); else m.delete(path);
+}
+
 class Inode {
   /** Small files: the bytes (capacity may exceed size). Empty for a paged file. */
   data: Uint8Array;
@@ -809,7 +836,10 @@ class Inode {
     if (this.blob) return false;
     if (this.fs.pendingBytes > WRITE_BACKLOG_BYTES) return false;
     const times = { mtime: this.mtimeMs, mtimeNs: this.mtimeNs, ...(this.atimeMs === null ? {} : { atime: this.atimeMs, atimeNs: this.atimeNs }) };
-    if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
+    echo(this.fs, this.path, 1);
+    try {
+      if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
+    } finally { echo(this.fs, this.path, -1); }
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.dirty = false;
     return true;
@@ -866,6 +896,9 @@ class Inode {
     // uncommitted data a close waits too, or a fast writer (dpkg unpacking)
     // holds it all in memory (python3's install peaked 150 MiB higher)
     const wait = paced || this.fs.pendingBytes > WRITE_BACKLOG_BYTES;
+    const path = this.path;
+    echo(this.fs, path, 1);
+    written = written.finally(() => echo(this.fs, path, -1));
     this.flushing = (wait ? written.then(() => this.fs.flushed()) : written).finally(() => { this.flushing = null; });
     await this.flushing;
   }
@@ -954,6 +987,7 @@ export function rekeyInodes(fs: FileSystem): void {
 
 /** An open inode whose last name went: its data stays for its fds (a big file's blocks held), never written back. */
 function orphanInode(ino: Inode): void {
+  if (!ino.unlinked) fileWatchers.get(ino.fs)?.orphaned(ino, ino.path);
   ino.unlinked = true;
   const table = inodeTables.get(ino.fs);
   if (table?.get(ino.key) === ino) table.delete(ino.key);
@@ -962,6 +996,7 @@ function orphanInode(ino: Inode): void {
 
 function inodeClosed(ino: Inode): void {
   if (ino.opens !== 0) return;
+  if (ino.unlinked && !ino.tmpfile) fileWatchers.get(ino.fs)?.inodeGone(ino);
   const table = inodeTables.get(ino.fs);
   if (table?.get(ino.key) === ino) table.delete(ino.key);
   if (ino.heldBlob) { ino.fs.releaseBlob?.(ino.heldBlob); ino.heldBlob = null; }
@@ -1172,6 +1207,12 @@ export async function exchangeInodes(fs: FileSystem, a: string, b: string): Prom
   };
 }
 
+/** link() gave the file at `path` another name: an open one's st_ctime moves (its fstat answers from the inode). */
+export function touchInodeCtime(fs: FileSystem, path: string): void {
+  const ino = findInode(fs, path);
+  if (ino) ino.ctimeMs = Date.now();
+}
+
 /**
  * Call before unlinking `path`: open descriptions keep its data but never
  * write it back (this waits out a write-back already under way). A file
@@ -1185,6 +1226,7 @@ export async function unlinkInode(fs: FileSystem, path: string): Promise<void> {
   if (!ino) return;
   if (others.length) {
     if (ino.path === path) { await ino.flush(); ino.path = others[0]; }
+    ino.ctimeMs = Date.now(); // (st_nlink changed)
     return;
   }
   orphanInode(ino);
@@ -1292,7 +1334,22 @@ export class RegularFile implements OpenFile {
   private listeners = new ReadyListeners();
   private closed = false;
 
-  constructor(private ino: Inode, public flags: number) {}
+  constructor(private ino: Inode, public flags: number) { this.note(0x20); } // IN_OPEN
+
+  /** inotify: what this description did to its file, when something watches it */
+  private note(mask: number): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, mask);
+    else if (w.watched(this.ino.path)) w.fileEvent(this.ino.path, mask);
+  }
+  /** a write or truncate: IN_MODIFY, through the FileSystem's change events (fs.watch hears it too) */
+  private modified(): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, 0x2); // IN_MODIFY
+    else if (w.watched(this.ino.path)) this.ino.fs.notify('write', this.ino.path, undefined, { fd: true });
+  }
 
   get path(): string { return this.ino.path; }
   /** (attachInodeShared) */
@@ -1307,6 +1364,7 @@ export class RegularFile implements OpenFile {
     if (!canRead(this.flags)) return -EBADF;
     const n = await this.ino.readAt(buf, this.pos);
     this.pos += n;
+    if (n > 0) this.note(0x1); // IN_ACCESS
     return n;
   }
 
@@ -1315,6 +1373,7 @@ export class RegularFile implements OpenFile {
     if (!canRead(this.flags)) return -EBADF;
     const n = this.ino.readSync(buf, this.pos);
     if (n !== undefined) this.pos += n;
+    if (n) this.note(0x1);
     return n;
   }
 
@@ -1339,6 +1398,7 @@ export class RegularFile implements OpenFile {
 
   private wrote(n: number): number {
     this.pos += n;
+    this.modified();
     // O_SYNC/O_DSYNC: start the write-back now rather than after the usual delay
     if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
     return n;
@@ -1347,7 +1407,9 @@ export class RegularFile implements OpenFile {
   async pread(buf: Uint8Array, off: number): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
     if (off < 0) return -EINVAL;
-    return this.ino.readAt(buf, off);
+    const n = await this.ino.readAt(buf, off);
+    if (n > 0) this.note(0x1);
+    return n;
   }
 
   async pwrite(buf: Uint8Array, off: number): Promise<number> {
@@ -1357,6 +1419,7 @@ export class RegularFile implements OpenFile {
     const at = this.flags & O_APPEND ? this.ino.size : off;
     if (!this.ino.writeSync(buf, at)) await this.ino.writeAt(buf, at);
     if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
+    this.modified();
     return buf.length;
   }
 
@@ -1376,6 +1439,7 @@ export class RegularFile implements OpenFile {
     if (!canWrite(this.flags)) return -EINVAL;
     if (len < 0) return -EINVAL;
     await this.ino.truncate(len);
+    this.modified();
     return 0;
   }
 
@@ -1383,7 +1447,9 @@ export class RegularFile implements OpenFile {
   truncateSync(len: number): number | undefined {
     if (!canWrite(this.flags)) return -EINVAL;
     if (len < 0) return -EINVAL;
-    return this.ino.truncateSync(len) ? 0 : undefined;
+    if (!this.ino.truncateSync(len)) return undefined;
+    this.modified();
+    return 0;
   }
 
   /** Unwritten data, or a write-back under way. */
@@ -1413,6 +1479,7 @@ export class RegularFile implements OpenFile {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10); // IN_CLOSE_WRITE, IN_CLOSE_NOWRITE
     await closeInode(this.ino);
   }
 
@@ -1420,6 +1487,7 @@ export class RegularFile implements OpenFile {
     if (this.closed) return true;
     if (!closeInodeSync(this.ino)) return false;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10);
     return true;
   }
 }

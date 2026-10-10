@@ -25,6 +25,24 @@ async function times(h, cmd, runs, check) {
   }, [cmd, runs, check]);
 }
 
+/** times(), each run after the FileSystem's content cache swept (files idle past CONTENT_IDLE_MS). */
+async function idleTimes(h, cmd, runs, check) {
+  return h.eval(async ([cmd, runs, check]) => {
+    const fs = window.__tabcomputer.fs;
+    await fs.sync?.();
+    const out = [];
+    for (let i = 0; i <= runs; i++) {
+      fs.sweepContent?.(Date.now() + 1e9);
+      const t0 = performance.now();
+      const r = await window.__bench.sh(cmd);
+      if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.err || r.out).slice(-200)}`);
+      if (check && !new RegExp(check).test(r.out)) throw new Error(`unexpected output: ${r.out.slice(0, 200)}`);
+      if (i) out.push(performance.now() - t0); // the first warms up the commands
+    }
+    return out;
+  }, [cmd, runs, check]);
+}
+
 /** Wait until a small fs write completes quickly (the IndexedDB queue drained). */
 export async function drainFs(h) {
   return h.eval(async () => {
@@ -83,6 +101,22 @@ export async function run(h) {
     });
     if (process.env.BENCH_VERBOSE) h.log(`    created 1000 files in ${Math.round(created)} ms`);
     h.sample('shell.ls_la_1000', await times(h, 'ls -la /tmp/bench-ls', n, 'file-0999'), 'ms', { notes: '1000-file directory, output captured' });
+  });
+  // The same commands once the files went idle: the content cache let their
+  // bytes go (FileSystem.sweepContent, as CONTENT_IDLE_MS of quiet does)
+  await h.try('shell.ls_la_1000.idle', 'ms', async () => h.sample('shell.ls_la_1000.idle',
+    await idleTimes(h, 'ls -la /tmp/bench-ls', n, 'file-0999'), 'ms', { notes: '`ls -la` of the 1000 files after the content cache swept (idle)' }));
+  await h.try('shell.cat_1000', 'ms', async () => h.sample('shell.cat_1000',
+    await times(h, 'cat /tmp/bench-ls/* | wc -c', n, '^\\s*46995'), 'ms', { notes: '`cat` of the 1000 files (their bytes in memory)' }));
+  await h.try('shell.cat_1000.idle', 'ms', async () => h.sample('shell.cat_1000.idle',
+    await idleTimes(h, 'cat /tmp/bench-ls/* | wc -c', n, '^\\s*46995'), 'ms', { notes: '`cat` of the 1000 files after the content cache swept (idle)' }));
+  await h.try('shell.git_status_1000', 'ms', async () => {
+    await drainFs(h);
+    const r = await h.eval(() => window.__bench.sh('rm -rf /tmp/bench-git && mkdir -p /tmp/bench-git/src && cd /tmp/bench-git && for i in $(seq 1000); do echo "line $i" > src/f$i.txt; done && git init -q && git add -A && git commit -qm init'));
+    if (r.code !== 0) throw new Error(`setup: exit ${r.code}: ${(r.err || r.out).slice(-200)}`);
+    await drainFs(h);
+    h.sample('shell.git_status_1000', await times(h, 'cd /tmp/bench-git && git status --short | wc -l', n, '^\\s*0'), 'ms', { notes: '`git status` (built-in git) of a clean 1000-file repository' });
+    h.sample('shell.git_status_1000.idle', await idleTimes(h, 'cd /tmp/bench-git && git status --short | wc -l', n, '^\\s*0'), 'ms', { notes: 'the same after the content cache swept (idle)' });
   });
   await h.try('shell.pipeline_seq_grep_wc', 'ms', async () => h.sample('shell.pipeline_seq_grep_wc',
     await times(h, 'seq 100000 | grep 7 | wc -l', n, '40951'), 'ms', { notes: '`seq 100000 | grep 7 | wc -l` (builtins)' }));

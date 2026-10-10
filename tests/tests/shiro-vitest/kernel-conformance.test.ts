@@ -10,6 +10,7 @@ import type { Process } from '@shiro/kernel/process';
 import * as A from '@shiro/kernel/abi';
 import { NetStack, installNet, encodeSockaddr } from '@shiro/kernel/net';
 import { JobControl, attachKernel } from '@shiro/kernel/signals';
+import { ProcFs } from '@shiro/kernel/procfs';
 
 describe('kernel syscalls found by LTP', () => {
   let fs: FileSystem;
@@ -1109,5 +1110,111 @@ describe('kernel syscalls found by LTP', () => {
     expect(await sys(A.SYS_signalfd4, [99, 8, 0], set(SIGUSR1))).toBe(-A.EBADF);
     expect(await sys(A.SYS_signalfd4, [ep, 8, 0], set(SIGUSR1))).toBe(-A.EINVAL); // not a signalfd
     kernel.kill(p.pid, A.SIGKILL);
+  });
+
+  it('eventfd overflow waits, close_range flags, fstat of a removed directory, /proc/config.gz (LTP eventfd02/04, close_range02, readahead01, needs_kconfigs)', async () => {
+    const u64 = (v: bigint) => { const d = new Uint8Array(8); new DataView(d.buffer).setBigUint64(0, v, true); return d; };
+    const max = 0xfffffffffffffffen;
+    // a write that would pass the maximum is EAGAIN nonblocking, and waits for a read otherwise
+    const nb = await kernel.syscall(proc, A.SYS_eventfd2, [0, A.O_NONBLOCK], new Uint8Array(8));
+    expect(await kernel.syscall(proc, A.SYS_write, [nb, 8], u64(max))).toBe(8);
+    expect(await kernel.syscall(proc, A.SYS_write, [nb, 8], u64(1n))).toBe(-A.EAGAIN);
+    const ev = await kernel.syscall(proc, A.SYS_eventfd2, [0, 0], new Uint8Array(8));
+    expect(await kernel.syscall(proc, A.SYS_write, [ev, 8], u64(max))).toBe(8);
+    let done = false;
+    const w = kernel.syscall(proc, A.SYS_write, [ev, 8], u64(5n)).then((n) => { done = true; return n; });
+    await new Promise((res) => setTimeout(res, 10));
+    expect(done).toBe(false);
+    const got = new Uint8Array(8);
+    expect(await kernel.syscall(proc, A.SYS_read, [ev, 8], got)).toBe(8);
+    expect(new DataView(got.buffer).getBigUint64(0, true)).toBe(max);
+    expect(await w).toBe(8);
+    expect(await kernel.syscall(proc, A.SYS_read, [ev, 8], got)).toBe(8);
+    expect(new DataView(got.buffer).getBigUint64(0, true)).toBe(5n);
+    for (const fd of [nb, ev]) await call(A.SYS_close, [fd]);
+    // close_range: unknown flags
+    expect(await call(A.SYS_close_range, [100, 200, 1])).toBe(-A.EINVAL);
+    expect(await call(A.SYS_close_range, [100, 200, 4])).toBe(0);
+    // a removed directory's fd still fstats, with nlink 0
+    await fs.mkdir('/tmp/kc/gone');
+    const d = await open('/tmp/kc/gone', A.O_RDONLY | A.O_DIRECTORY);
+    await fs.rmdir('/tmp/kc/gone');
+    const st = new Uint8Array(256);
+    expect(await kernel.syscall(proc, A.SYS_fstat, [d], st)).toBe(0);
+    expect(new DataView(st.buffer).getBigUint64(16, true)).toBe(0n);
+    await call(A.SYS_close, [d]);
+    // /proc/config.gz is gzip of the options
+    const cfg = await open('/proc/config.gz', A.O_RDONLY);
+    const gz = new Uint8Array(65536);
+    const n = await kernel.syscall(proc, A.SYS_read, [cfg, gz.length], gz);
+    expect(n).toBeGreaterThan(20);
+    const text = await new Response(new Blob([gz.subarray(0, n)]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    expect(text).toContain('CONFIG_EVENTFD=y');
+    await call(A.SYS_close, [cfg]);
+  });
+
+  it('RLIMIT_CPU is the kernel\'s: prlimit64 sets and reads it, SIGXCPU at the soft limit, SIGKILL at the hard one, inherited by fork; a call blocked now is not CPU (LTP setrlimit06)', async () => {
+    const INF = 0xffffffffffffffffn;
+    const lim = new Uint8Array(16), dv = new DataView(lim.buffer);
+    const p = kernel.spawn({ path: 'cpulim', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+    const set = (cur: bigint, max: bigint) => { dv.setBigUint64(0, cur, true); dv.setBigUint64(8, max, true); return kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 1], lim); };
+    expect(await kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 0], lim)).toBe(0);
+    expect([dv.getBigUint64(0, true), dv.getBigUint64(8, true)]).toEqual([INF, INF]);
+    expect(await set(3n, 2n)).toBe(-A.EINVAL);
+    expect(await set(1n, 2n)).toBe(0);
+    expect(await kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 0], lim)).toBe(0);
+    expect([dv.getBigUint64(0, true), dv.getBigUint64(8, true)]).toEqual([1n, 2n]);
+    expect(await set(1n, 5n)).toBe(-A.EPERM); // raising the hard limit takes root
+    expect(kernel.cpuLimit(kernel.vfork(p))).toEqual({ cur: 1, max: 2 });
+    // a blocked call (a pipe read) isn't CPU time while it waits
+    const pd = new Uint8Array(16);
+    expect(await kernel.syscall(p, A.SYS_pipe2, [0], pd)).toBe(0);
+    const rfd = new DataView(pd.buffer).getInt32(0, true);
+    p.syscalls = 1;
+    const sigs: number[] = [];
+    const deliver = kernel.deliver.bind(kernel);
+    kernel.deliver = ((q: typeof p, sig: number, ...rest: unknown[]) => { if (q === p) sigs.push(sig); return (deliver as any)(q, sig, ...rest); }) as typeof kernel.deliver;
+    void kernel.syscall(p, A.SYS_read, [rfd, 1], new Uint8Array(1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ProcFs.cpuMs(p)).toBeLessThan(100);
+    expect(sigs).toEqual([]);
+    // computing (its time since start counts) past the soft limit, then the hard one
+    // (SIGXCPU blocked, as a handler would keep it running)
+    p.sigmask.add(A.SIGXCPU);
+    p.inSyscall = 0;
+    const st = p as { startTime: number };
+    st.startTime = Date.now() - 1200;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sigs).toEqual([A.SIGXCPU]);
+    st.startTime -= 1000;
+    await new Promise((r) => setTimeout(r, 300));
+    kernel.deliver = deliver;
+    expect(sigs).toEqual([A.SIGXCPU, A.SIGKILL]);
+  });
+
+  it('a thread-directed signal left to its default action goes to the engine (the thread may block it), not the process\'s default action, job control or not (Open POSIX fork_18-1)', async () => {
+    for (const hooked of [false, true]) {
+      const p = kernel.spawn({ path: 'tdir', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+      const got: number[] = [];
+      p.addSignalListener((sig) => got.push(sig));
+      let hookCalls = 0;
+      if (hooked) p.signalHook = () => { hookCalls++; return true; };
+      kernel.deliver(p, 32, { signo: 32, code: A.SI_TIMER, tid: p.pid + 1 });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(p.exiting).toBe(false);
+      expect(got).toEqual([32]);
+      expect(p.pendingSignals.has(32)).toBe(true);
+      expect(hookCalls).toBe(0);
+      // a process-directed one still takes the default action (through job control when hooked)
+      if (!hooked) {
+        kernel.deliver(p, 32, { signo: 32, code: A.SI_USER });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(p.exiting).toBe(true);
+      } else {
+        kernel.deliver(p, 32, { signo: 32, code: A.SI_USER });
+        expect(hookCalls).toBe(1);
+        kernel.kill(p.pid, A.SIGKILL);
+      }
+    }
   });
 });

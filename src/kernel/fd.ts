@@ -250,6 +250,7 @@ export class ReadyListeners {
    * the edge-triggered entries watching them. 0 = anything may have changed.
    */
   fire(mask = 0): void {
+    if (!this.cbs.size) return; // (every pipe read and write fires: no copy when nobody listens)
     for (const cb of [...this.cbs]) {
       try { cb(mask); } catch { /* listener errors must not break I/O */ }
     }
@@ -1303,6 +1304,11 @@ export class RegularFile implements OpenFile {
   get path(): string { return this.ino.path; }
   /** (attachInodeShared) */
   get inode(): Inode { return this.ino; }
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same file, unlinked or not */
+  reopen(flags: number): RegularFile {
+    this.ino.opens++;
+    return new RegularFile(this.ino, flags);
+  }
 
   async read(buf: Uint8Array): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
@@ -1452,7 +1458,11 @@ export class DirFile implements OpenFile {
   kind: OpenFileKind = 'dir';
   private entries: string[] | null = null;
   private listeners = new ReadyListeners();
-  constructor(private fs: FileSystem, public path: string, public flags: number) {}
+  /** The directory's last known stat: fstat still answers once it's removed (nlink 0), as on Linux */
+  private last: KStat | undefined;
+  constructor(private fs: FileSystem, public path: string, public flags: number) {
+    this.last = this.statSync();
+  }
   async read(): Promise<number> { return -EISDIR; }
   async write(): Promise<number> { return -EBADF; }
   seek(off: number, whence: number): number {
@@ -1471,8 +1481,15 @@ export class DirFile implements OpenFile {
   poll(events: number): number { return events & POLLIN; }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> {
-    const st = await this.fs.stat(this.path);
-    return {
+    let st;
+    try { st = await this.fs.stat(this.path); } catch { st = null; }
+    if (!st || !st.isDirectory()) {
+      // removed (LTP readahead01's directory fd)
+      const now = Date.now();
+      return { ...(this.last ?? { dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | 0o700, uid: 1000, gid: 1000, rdev: 0,
+        size: 4096, blksize: 4096, blocks: 8, atimeMs: now, mtimeMs: now, ctimeMs: now }), nlink: 0 };
+    }
+    return this.last = {
       dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | (st.mode & 0o7777), nlink: 2, uid: 1000, gid: 1000, rdev: 0,
       size: 4096, blksize: 4096, blocks: 8,
       atimeMs: st.atimeMs ?? st.mtime.getTime(), mtimeMs: st.mtime.getTime(), ctimeMs: st.ctime.getTime(),
@@ -1603,17 +1620,21 @@ export class EventFile implements OpenFile {
     this.wake();
     return 8;
   }
-  async write(buf: Uint8Array): Promise<number> {
+  /** A write that would take the counter past its maximum waits for a read (EAGAIN nonblocking), as on Linux (LTP eventfd02) */
+  async write(buf: Uint8Array, signal?: AbortSignal): Promise<number> {
     if (buf.length < 8) return -EINVAL;
     const v = new DataView(buf.buffer, buf.byteOffset, 8).getBigUint64(0, true);
     if (v === 0xffffffffffffffffn) return -EINVAL;
+    while (this.count + v > 0xfffffffffffffffen) {
+      if (this.flags & O_NONBLOCK) return -EAGAIN;
+      if (!(await abortableWait(this.waiters, signal))) return -EINTR;
+    }
     this.count += v;
-    if (this.count > 0xfffffffffffffffen) this.count = 0xfffffffffffffffen;
     this.wake();
     return 8;
   }
   poll(events: number): number {
-    return ((this.count > 0n ? POLLIN : 0) | POLLOUT) & events;
+    return ((this.count > 0n ? POLLIN : 0) | (this.count < 0xfffffffffffffffen ? POLLOUT : 0)) & events;
   }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> { return charDevStat(0); }
@@ -1628,21 +1649,44 @@ let nextMemIno = 1;
  * refuses it, as it does regular files). Blink backs the /proc files it
  * generates (/proc/self/maps) with one, so they seek and poll as Linux's do.
  */
+/** A memfd's contents, shared by its open descriptions (a reopen through /proc/self/fd makes another). */
+interface MemStore {
+  data: Uint8Array<ArrayBufferLike>;
+  len: number;
+  ino: number;
+  mtimeMs: number;
+  seals: number;
+  listeners: ReadyListeners;
+  /** Open descriptions */
+  refs: number;
+}
+
 export class MemFile implements OpenFile {
   kind: OpenFileKind = 'file';
-  private data: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-  private len = 0;
   private pos = 0;
-  private ino = nextMemIno++;
-  private mtimeMs = Date.now();
-  private listeners = new ReadyListeners();
+  private store: MemStore;
+  private get data(): Uint8Array<ArrayBufferLike> { return this.store.data; }
+  private set data(d: Uint8Array<ArrayBufferLike>) { this.store.data = d; }
+  private get len(): number { return this.store.len; }
+  private set len(n: number) { this.store.len = n; }
+  private get ino(): number { return this.store.ino; }
+  private get mtimeMs(): number { return this.store.mtimeMs; }
+  private set mtimeMs(t: number) { this.store.mtimeMs = t; }
+  private get listeners(): ReadyListeners { return this.store.listeners; }
   /**
    * fcntl F_ADD_SEALS/F_GET_SEALS bits (F_SEAL_*). Without MFD_ALLOW_SEALING
    * a memfd starts sealed against more seals, as Linux's does.
    */
-  seals = F_SEAL_SEAL;
+  get seals(): number { return this.store.seals; }
+  set seals(v: number) { this.store.seals = v; }
 
-  constructor(public path: string, public flags = O_RDWR) {}
+  constructor(public path: string, public flags = O_RDWR, store?: MemStore) {
+    this.store = store ?? { data: new Uint8Array(0), len: 0, ino: nextMemIno++, mtimeMs: Date.now(), seals: F_SEAL_SEAL, listeners: new ReadyListeners(), refs: 0 };
+    this.store.refs++;
+  }
+
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same memfd */
+  reopen(flags: number): MemFile { return new MemFile(this.path, flags, this.store); }
 
   /** Shared-object key (shmobj.ts): unique per memfd */
   get shareKey(): string { return `memfd:${this.ino}`; }
@@ -1735,5 +1779,10 @@ export class MemFile implements OpenFile {
     };
   }
   async stat(): Promise<KStat> { return this.statSync(); }
-  async close(): Promise<void> { this.data = new Uint8Array(0); this.len = 0; }
+  async close(): Promise<void> {
+    // (the last description frees the contents)
+    if (--this.store.refs > 0) return;
+    this.data = new Uint8Array(0);
+    this.len = 0;
+  }
 }

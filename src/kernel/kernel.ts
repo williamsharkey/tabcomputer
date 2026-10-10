@@ -27,7 +27,7 @@ import {
 import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
 import type { PtyFile } from './pty';
 import { LockTable, F_RDLCK, F_WRLCK, F_UNLCK } from './locks';
-import { Process } from './process';
+import { Process, abortReason } from './process';
 import { SysvShm } from './sysvshm';
 import { SysvSem } from './sysvsem';
 import { SysvMsg } from './sysvmsg';
@@ -560,6 +560,8 @@ export class Kernel {
     }
     for (const sig of opts.sigdefault ?? []) proc.dispositions.delete(sig);
     this.procs.set(pid, proc);
+    const cpu = parent.data.cpuLimit as { cur: number; max: number } | undefined;
+    if (cpu) this.setCpuLimit(proc, cpu.cur, cpu.max);
     for (const h of [...this.spawnHooks]) {
       try { h(proc); } catch (e) { console.warn('[kernel] onSpawn hook failed', e); }
     }
@@ -649,6 +651,34 @@ export class Kernel {
     }
     arm(valueMs);
     return old;
+  }
+
+  /** RLIMIT_CPU of `proc` in seconds (Infinity: none) */
+  cpuLimit(proc: Process): { cur: number; max: number } {
+    const l = proc.data.cpuLimit as { cur: number; max: number } | undefined;
+    return l ? { cur: l.cur, max: l.max } : { cur: Infinity, max: Infinity };
+  }
+
+  /**
+   * Set RLIMIT_CPU, as Linux enforces it: SIGXCPU when the process's CPU
+   * time (ProcFs.cpuMs: running, not asleep in the engine or in long calls)
+   * reaches the soft limit and at each second after it, SIGKILL at the hard
+   * limit (LTP setrlimit06). Fork children inherit it (spawn).
+   */
+  setCpuLimit(proc: Process, cur: number, max: number): void {
+    const prev = proc.data.cpuLimit as { timer?: ReturnType<typeof setInterval> } | undefined;
+    if (prev?.timer) clearInterval(prev.timer);
+    if (cur === Infinity && max === Infinity) { delete proc.data.cpuLimit; return; }
+    const limit: { cur: number; max: number; next: number; timer?: ReturnType<typeof setInterval> } = { cur, max, next: cur };
+    proc.data.cpuLimit = limit;
+    limit.timer = setInterval(() => {
+      if (proc.exiting || proc.state === 'zombie') { clearInterval(limit.timer); return; }
+      const s = ProcFs.cpuMs(proc) / 1000;
+      if (s >= limit.max) { clearInterval(limit.timer); this.deliver(proc, A.SIGKILL); return; }
+      if (s >= limit.next) { limit.next = Math.floor(s) + 1; this.deliver(proc, A.SIGXCPU); }
+    }, 100);
+    (limit.timer as any)?.unref?.();
+    proc.onTerminate(() => clearInterval(limit.timer));
   }
 
   /** Terminate `proc` with a wait status: close its fds, reparent its children, notify its parent. */
@@ -840,6 +870,22 @@ export class Kernel {
       proc.markContinued(); this.notify();
       if (!proc.signalHook) this.notifyParentOfStop(proc, 0);
     }
+    // A thread-directed one (a SIGEV_THREAD_ID timer's) left to its default
+    // action: that thread may block it, though the process mask (what all
+    // threads block) doesn't (glibc's SIGEV_THREAD helper waits for it in
+    // sigwaitinfo and the main thread doesn't block it). Only the engine knows
+    // the thread's mask: it holds the signal there, or takes the default action
+    // (Open POSIX fork_18-1 died of signal 32 when an expiry came while the
+    // helper was between waits). Before job control, which would act on it.
+    const onSignal = proc.data.onSignal as ((s: number) => void) | undefined;
+    if (info.tid && onSignal && !proc.sigmask.has(sig) && (proc.dispositions.get(sig) ?? 'default') === 'default' &&
+        A.defaultSignalAction(sig) !== 'stop') {
+      if (!proc.queueSiginfo(info) && proc.pendingSignals.has(sig)) return;
+      proc.pendingSignals.add(sig);
+      proc.interruptSyscalls();
+      onSignal(sig);
+      return;
+    }
     if (proc.signalHook) {
       // (job control routes it: signals.ts queues what it carries when it goes pending)
       proc.data.sigInFlight = info;
@@ -1016,6 +1062,43 @@ export class Kernel {
     return false;
   }
 
+  /**
+   * open() of /proc/self/fd/N (or /dev/fd/N): Linux opens the file the fd
+   * refers to again, a new description with its own offset and the new
+   * flags, not a dup. Files (unlinked ones too) and memfds share their
+   * contents; a pipe gives the end the access mode asks for (bash's <(…),
+   * `cat /dev/fd/3`); a socket is ENXIO. A device or pty reopens by its path;
+   * other kinds (epoll, eventfd…) are the same description, as before.
+   */
+  private async reopenFile(proc: Process, f: OpenFile, flags: number, mode: number): Promise<OpenFile | number> {
+    const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
+    const acc = flags & A.O_ACCMODE;
+    if (f.kind === 'socket') return -A.ENXIO;
+    if (f instanceof DirFile) {
+      if (canWrite(flags)) return -A.EISDIR;
+      return new DirFile(this.fs!, f.path!, statusFlags);
+    }
+    if (flags & A.O_DIRECTORY) return -A.ENOTDIR;
+    if (f instanceof RegularFile) {
+      if (ownerDenies(proc, f.inode.mode, flags)) return -A.EACCES;
+      const r = f.reopen(statusFlags);
+      if ((flags & A.O_TRUNC) && canWrite(flags)) await r.truncate(0);
+      return r;
+    }
+    if (f instanceof MemFile) {
+      const r = f.reopen(statusFlags);
+      if ((flags & A.O_TRUNC) && canWrite(flags)) await r.truncate(0);
+      return r;
+    }
+    if (f instanceof PipeEnd || f instanceof FifoRdWr) {
+      const nb = statusFlags & A.O_NONBLOCK;
+      if (acc === A.O_RDWR) return new FifoRdWr(f.pipe, statusFlags);
+      return new PipeEnd(f.pipe, acc === A.O_WRONLY ? 'w' : 'r', (acc === A.O_WRONLY ? A.O_WRONLY : A.O_RDONLY) | nb);
+    }
+    if (f.path?.startsWith('/dev/') && !/^\/dev\/(fd\/|std)/.test(f.path)) return this.open(proc, f.path, flags, mode);
+    return f;
+  }
+
   /** open(2) without the fd: returns the new OpenFile or -errno. */
   async open(proc: Process, path: string, flags: number, mode = 0o666, dirfd = A.AT_FDCWD): Promise<OpenFile | number> {
     // O_PATH: a descriptor that only names the file (fstat, fchdir, *at, dup, close)
@@ -1049,10 +1132,17 @@ export class Kernel {
       const statusFlags = flags & ~(A.O_TMPFILE | A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_NOFOLLOW);
       return new RegularFile(anonymousInode(this.fs, real, mode & ~proc.umask, !(flags & A.O_EXCL)), statusFlags);
     }
-    const fdm = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d+)$/.exec(p) ?? (/^\/dev\/(stdin|stdout|stderr)$/.exec(p));
-    if (fdm) {
-      const n = fdm[1] === 'stdin' ? 0 : fdm[1] === 'stdout' ? 1 : fdm[1] === 'stderr' ? 2 : Number(fdm[1]);
-      return proc.fds.get(n) ?? -A.EBADF;
+    // /proc/PID/fd/N, /dev/fd/N, /dev/stdin…: what the fd refers to, opened anew (reopenFile)
+    const fdm = /^\/(?:dev\/fd|proc\/(self|thread-self|\d+)\/fd)\/(\d+)$/.exec(p);
+    const stdm = /^\/dev\/(stdin|stdout|stderr)$/.exec(p);
+    if (fdm || stdm) {
+      const pid = fdm?.[1];
+      const owner = pid === undefined || pid === 'self' || pid === 'thread-self' ? proc : this.procs.get(Number(pid));
+      if (owner) {
+        const n = stdm ? ['stdin', 'stdout', 'stderr'].indexOf(stdm[1]) : Number(fdm![2]);
+        const f = owner.fds.get(n);
+        return f ? this.reopenFile(proc, f, flags, mode) : -A.ENOENT;
+      }
     }
     const dev = this.devices.get(p);
     if (dev) return dev(proc, flags, p);
@@ -1189,6 +1279,7 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.devices.has(p) || /^\/(?:dev|proc)\//.test(p)) return undefined;
+    if (this.searchDenied(proc, p)) return -A.EACCES;
     const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
     if (flags & (A.O_CREAT | A.O_TRUNC | A.O_NOFOLLOW)) {
       // Creating, truncating or not following: decided on the last component itself
@@ -1324,6 +1415,7 @@ export class Kernel {
     if (!fs || trailingSlash(path)) return undefined;
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
+    if (this.searchDenied(proc, p)) return -A.EACCES;
     if (this.devices.has(p) || p === '/proc' || p.startsWith('/proc/') || this.socketPaths?.has(p)) return undefined;
     const hit = fs.lookupCached(p, follow);
     if (hit === undefined) return undefined;
@@ -1390,6 +1482,10 @@ export class Kernel {
     }
     const fs = this.fs;
     if (!fs) return -A.ENOSYS;
+    // Known missing in memory: ENOENT without fs.stat's thrown error (an
+    // Error with its stack: most of a missing-file stat, as node's module
+    // resolution makes by the hundred)
+    if (!this.socketPaths?.has(p) && fs.lookupCached?.(p, follow) === null) return -A.ENOENT;
     try {
       const st = follow ? await fs.stat(p) : await fs.lstat(p);
       let type = st.isDirectory() ? A.S_IFDIR : st.isSymbolicLink() ? A.S_IFLNK : st.isFIFO?.() ? A.S_IFIFO : A.S_IFREG;
@@ -1456,27 +1552,32 @@ export class Kernel {
    * `echo`, `mkdir`... leave it for the next reader.
    */
   async runBuiltin(proc: Process, cmd: Command): Promise<number> {
-    const shell = this.forkShell(proc);
+    const env = this.processEnv(proc);
+    // The process's Shell is made when the command first asks for it (most
+    // never do: true, cat, ls), then it is that one Shell every time
+    let shell: Shell | undefined;
+    const getShell = () => (shell ??= this.forkShell(proc, env));
     let stdio: KernelStdio | undefined;
     if (SHELL_NAMES.has(cmd.name) || SHELL_NAMES.has(proc.argv[0]?.slice(proc.argv[0].lastIndexOf('/') + 1))) {
+      const sh = getShell();
       stdio = new KernelStdio(this, proc);
-      shell.kernelStdio = stdio;
-      stdio.adoptFds(shell);
-      shell.kernelStdinLive = true;
+      sh.kernelStdio = stdio;
+      stdio.adoptFds(sh);
+      sh.kernelStdinLive = true;
     }
     const lazy = !stdio;
-    const ctx: CommandContext = {
+    const ctx = {
       args: proc.argv.slice(1),
-      fs: this.fs ?? shell.fs,
+      fs: this.fs ?? this.shell!.fs,
       cwd: proc.cwd,
-      env: shell.env,
+      env,
       stdin: '',
       stdout: '',
       stderr: '',
-      shell,
       stdoutIsTTY: proc.fds.get(1)?.kind === 'pty',
       ...(stdio ? { liveStdin: true, streamStdout: stdio.out, streamStderr: stdio.err } : {}),
-    };
+    } as CommandContext;
+    Object.defineProperty(ctx, 'shell', { get: getShell, set: (v: Shell) => { shell = v; }, enumerable: true, configurable: true });
     let code: number;
     try {
       code = lazy ? await execLazyStdin(cmd, ctx, () => this.stdinText(proc)) : await cmd.exec(ctx);
@@ -1489,8 +1590,13 @@ export class Kernel {
     // Byte-exact (src/utils/byte-text.ts): binary output of a builtin keeps its bytes
     if (ctx.stdout) await this.writeAll(proc, 1, encodeText(ctx.stdout));
     if (ctx.stderr && !proc.exiting) await this.writeAll(proc, 2, enc.encode(ctx.stderr));
-    if (shell.cwd !== proc.cwd) proc.cwd = shell.cwd;
+    if (shell && shell.cwd !== proc.cwd) proc.cwd = shell.cwd;
     return code;
+  }
+
+  /** A new process's shell environment: proc.env with PWD and $0. */
+  private processEnv(proc: Process): Record<string, string> {
+    return { ...proc.env, PWD: proc.cwd, 0: proc.argv[0] ?? proc.path };
   }
 
   /** Run argv through a forked shell (scripts, node programs, anything in PATH that is not a registered command). */
@@ -1643,29 +1749,20 @@ export class Kernel {
     return code;
   }
 
-  private forkShell(proc: Process): Shell {
+  private forkShell(proc: Process, env = this.processEnv(proc)): Shell {
     const base = this.shell;
     if (!base) throw new Error('kernel has no shell attached');
-    const shell = base.fork();
-    shell.cwd = proc.cwd;
-    shell.env = { ...proc.env, PWD: proc.cwd, 0: proc.argv[0] ?? proc.path };
-    shell.localVars = new Set(['0']); // $0 is not exported
-    // $$, $PPID and $BASHPID are the process's
-    shell.shellPid = shell.bashPid = shell.kernelPid = proc.pid;
-    shell.parentPid = proc.ppid;
-    shell.uid = proc.uid;
-    // Its fds are the process's (KernelStdio, adoptFds), not whatever exec did in the page's shell
-    shell.userFds = new Map();
-    shell.fileDescriptors = new Map();
-    // A new process: only the page shell's `export -f` functions come along
-    shell.dropUnexportedFunctions();
+    // A new process: what exec passes on (env, `export -f` functions, cwd,
+    // umask, uid; $$ and $PPID are the process's), not a copy of the page's shell
+    // (through the instance: kernel.ts imports Shell only as a type)
+    const shell = (base.constructor as typeof Shell).forProcess(base, { env, cwd: proc.cwd, pid: proc.pid, ppid: proc.ppid, uid: proc.uid, umask: proc.umask });
     // Its own abort, which its end fires. Not the page shell's: killing a
     // program's `sh -c` child would abort the page's foreground job, whose
     // abort SIGINTs that program's whole group (codex's "turn interrupted")
     const abort = new AbortController();
     shell.abortController = null;
     shell.inheritedAbort = abort;
-    proc.onTerminate(() => abort.abort());
+    proc.onTerminate(() => abort.abort(abortReason()));
     return shell;
   }
 
@@ -2201,7 +2298,8 @@ export class Kernel {
             dv.setFloat64(8, i, true);
             return 0;
           }
-          if (args[1] & ~A.TFD_TIMER_ABSTIME) return -A.EINVAL;
+          // (TFD_TIMER_CANCEL_ON_SET is accepted: the realtime clock is never set here)
+          if (args[1] & ~(A.TFD_TIMER_ABSTIME | 2)) return -A.EINVAL;
           let value = dv.getFloat64(0, true);
           const interval = dv.getFloat64(8, true);
           if (!(value >= 0) || !(interval >= 0)) return -A.EINVAL;
@@ -2218,7 +2316,8 @@ export class Kernel {
         case A.SYS_close_range: {
           const first = args[0] >>> 0;
           const last = args[1] >>> 0;
-          if (first > (args[1] >>> 0)) return -A.EINVAL;
+          // (flags: CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC; LTP close_range02)
+          if (first > last || (args[2] & ~6)) return -A.EINVAL;
           for (const [fd] of fds.entries()) {
             if (fd < first || fd > last) continue;
             if (args[2] & 4 /* CLOSE_RANGE_CLOEXEC */) fds.setCloexec(fd, true);
@@ -2829,12 +2928,26 @@ export class Kernel {
           return fds.alloc(file, 0, (args[1] & A.MFD_CLOEXEC) !== 0);
         }
         case A.SYS_prlimit64: { // pid, resource, set → data: old {cur, max} (u64s); a new one first when set
-          // RLIMIT_NOFILE only (the fd table's): engines keep the other limits
-          if (args[1] !== A.RLIMIT_NOFILE) return -A.EINVAL;
+          // RLIMIT_NOFILE (the fd table's) and RLIMIT_CPU (enforced here): engines keep the other limits
+          if (args[1] !== A.RLIMIT_NOFILE && args[1] !== A.RLIMIT_CPU) return -A.EINVAL;
           const target = args[0] ? this.procs.get(args[0]) : proc;
           if (!target) return -A.ESRCH;
           if (data.length < 16) return -A.EFAULT;
           const dv = new DataView(data.buffer, data.byteOffset, 16);
+          if (args[1] === A.RLIMIT_CPU) {
+            const INF = 0xffffffffffffffffn;
+            const old = this.cpuLimit(target);
+            if (args[2]) {
+              const sec = (o: number) => { const v = dv.getBigUint64(o, true); return v === INF ? Infinity : Number(v); };
+              const cur = sec(0), max = sec(8);
+              if (cur > max) return -A.EINVAL;
+              if (max > old.max && proc.uid !== 0) return -A.EPERM;
+              this.setCpuLimit(target, cur, max);
+            }
+            dv.setBigUint64(0, old.cur === Infinity ? INF : BigInt(old.cur), true);
+            dv.setBigUint64(8, old.max === Infinity ? INF : BigInt(old.max), true);
+            return 0;
+          }
           const t = target.fds;
           const old = [t.limit, t.hardLimit];
           if (args[2]) {
@@ -3010,6 +3123,22 @@ export class Kernel {
         if (size > A.PIPE_MAX_SIZE) return -A.EPERM;
         return f.pipe.resize(size);
       }
+      case A.F_SETLEASE:
+      case A.F_GETLEASE: {
+        // Leases on regular files: a read lease while the file is open for
+        // writing, or a write lease while anything else has it open, is
+        // EAGAIN (LTP fcntl27). Nothing breaks a lease (no other opener is
+        // signalled); the type is kept for F_GETLEASE.
+        if (!(f instanceof RegularFile)) return -A.EINVAL;
+        const held = (f as { lease?: number }).lease ?? F_UNLCK;
+        if (cmd === A.F_GETLEASE) return held;
+        if (arg !== F_RDLCK && arg !== F_WRLCK && arg !== F_UNLCK) return -A.EINVAL;
+        if (proc.uid !== 0 && proc.uid !== 1000) return -A.EACCES; // (files here are uid 1000's)
+        if (arg === F_RDLCK && canWrite(f.flags)) return -A.EAGAIN;
+        if (arg === F_WRLCK && f.inode.opens > 1) return -A.EAGAIN;
+        (f as { lease?: number }).lease = arg;
+        return 0;
+      }
       case A.F_ADD_SEALS:
       case A.F_GET_SEALS: {
         // memfds only (Linux: shmem files; anything else is EINVAL)
@@ -3164,6 +3293,8 @@ export class Kernel {
     child.data.embryo = true;
     child.data.forkParent = parent.pid; // startForkChild: the parent may have exited (and the child been reparented) by then
     this.procs.set(pid, child);
+    const cpu = parent.data.cpuLimit as { cur: number; max: number } | undefined;
+    if (cpu) this.setCpuLimit(child, cpu.cur, cpu.max);
     for (const h of [...this.spawnHooks]) {
       try { h(child); } catch (e) { console.warn('[kernel] onSpawn hook failed', e); }
     }

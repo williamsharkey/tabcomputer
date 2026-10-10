@@ -123,17 +123,9 @@
    "failures": []
   },
   "var-op-patsub": {
-   "pass": 23,
+   "pass": 26,
    "total": 28,
    "failures": [
-    {
-     "i": 11,
-     "name": "Confusing unquoted slash matches bash (and ash)"
-    },
-    {
-     "i": 12,
-     "name": "Synthesized ${x///} bug (similar to above)"
-    },
     {
      "i": 15,
      "name": "Replace backslash"
@@ -141,10 +133,6 @@
     {
      "i": 19,
      "name": "When LC_ALL=C, pattern ? doesn't match multibyte character"
-    },
-    {
-     "i": 26,
-     "name": "Chromium from http://www.oilshell.org/blog/2016/11/07.html"
     }
    ]
   },
@@ -776,7 +764,7 @@
    ]
   },
   "assign-extended": {
-   "pass": 29,
+   "pass": 30,
    "total": 34,
    "failures": [
     {
@@ -792,17 +780,13 @@
      "name": "syntax error in array assignment"
     },
     {
-     "i": 30,
-     "name": "declare -g (bash-specific; bash-completion uses it)"
-    },
-    {
      "i": 32,
      "name": "dynamic array parsing is not allowed"
     }
    ]
   },
   "array-literal": {
-   "pass": 7,
+   "pass": 9,
    "total": 19,
    "failures": [
     {
@@ -834,14 +818,6 @@
      "name": "Evaluation order (3)"
     },
     {
-     "i": 11,
-     "name": "[k1]=v1 (BashArray)"
-    },
-    {
-     "i": 14,
-     "name": "[k1]=v1 looking like brace expansions (BashArray)"
-    },
-    {
      "i": 15,
      "name": "BashArray cannot be changed to BashAssoc and vice versa"
     },
@@ -870,7 +846,7 @@
    ]
   },
   "array-assign": {
-   "pass": 4,
+   "pass": 5,
    "total": 11,
    "failures": [
     {
@@ -884,10 +860,6 @@
     {
      "i": 5,
      "name": "file named a[ is  not executed"
-    },
-    {
-     "i": 7,
-     "name": "Are quotes allowed?"
     },
     {
      "i": 8,

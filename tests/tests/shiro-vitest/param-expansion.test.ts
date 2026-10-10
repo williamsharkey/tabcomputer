@@ -54,3 +54,17 @@ describe('operators on $@ and $*', () => {
     expect((await sh('x=abc; echo "${x#}" "${x##}" "${x%}" "${x%%}"')).out).toBe('abc abc abc abc\n');
   });
 });
+
+describe('${x/pat/rep}', () => {
+  it('a / after // and a quoted / are the pattern', async () => {
+    expect((await sh("x='/_/'; echo ${x////c} ${x//'/'/c}; y='a / b'; echo ${y///}")).out).toBe('c_c c_c\na b\n');
+    expect((await sh('x=a/b/c; echo ${x/\\//-} ${x/#/P} ${x/%/S}; p=/; echo ${x//$p/+}')).out).toBe('a-b/c Pa/b/c a/b/cS\na+b+c\n');
+  });
+});
+
+describe('array subscripts', () => {
+  it('double quotes in an indexed subscript are removed', async () => {
+    expect((await sh('a["1"]=2; a[2 + "3"]=5; echo ${a[5]} ${a["1"]} ${#a[@]}')).out).toBe('5 2 2\n');
+  });
+});
+

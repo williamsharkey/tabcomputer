@@ -6157,7 +6157,10 @@ export class Shell {
     }
 
     // ${VAR/pat/rep}, ${VAR//pat/rep}, ${VAR/#pat/rep}, ${VAR/%pat/rep}
-    const subst = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/([/#%]?)((?:[^/\\]|\\.)*)(?:\/([\s\S]*))?$/);
+    // (a / in quotes is part of the pattern; after the // operator a / is the pattern's
+    // first character: ${x////c} replaces each / with c, ${x///} removes them)
+    const subst = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/(\/)(\/?(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^/\\'"]|\\.)*)(?:\/([\s\S]*))?$/)
+      ?? inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/([#%]?)((?:'[^']*'|"(?:[^"\\]|\\.)*"|[^/\\'"]|\\.)*)(?:\/([\s\S]*))?$/);
     if (subst) {
       const [, name, mode, pat, repRaw] = subst;
       const val = this.env[name] ?? this.scalarOf(name) ?? '';
@@ -7161,6 +7164,8 @@ export class Shell {
    * end). Out of range below 0: an error when assigning, -1 (unset) when reading.
    */
   private arrayIndex(name: string, sub: string, forRead = false): number {
+    // (double quotes in it are removed, as bash does: a["1"]=x, a[2 + "3"]; single quotes stay an error)
+    if (sub.includes('"')) sub = sub.replace(/"((?:[^"\\]|\\.)*)"/g, '$1');
     let n = Number(this.evalArithBig(sub));
     if (n < 0) {
       const arr = this.arrays.get(name);

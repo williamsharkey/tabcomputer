@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2126/2417 (88.0%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2133/2417 (88.2%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -33,7 +33,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | var-op-test | 1/35 | 31/37 | 6 |
 | var-op-strip | 0/28 | 28/28 | 0 |
 | var-op-len | 0/7 | 8/8 | 0 |
-| var-op-patsub | 0/27 | 23/28 | 5 |
+| var-op-patsub | 0/27 | 26/28 | 2 |
 | var-op-slice | 0/21 | 21/22 | 1 |
 | var-num | 0/7 | 7/7 | 0 |
 | vars-special | 0/37 | 31/37 | 6 |
@@ -86,10 +86,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | command-parsing | 0/2 | 2/2 | 0 |
 | var-op-bash | — | 25/26 | 1 |
 | nameref | — | 28/32 | 4 |
-| assign-extended | — | 29/34 | 5 |
-| array-literal | — | 7/19 | 12 |
+| assign-extended | — | 30/34 | 4 |
+| array-literal | — | 9/19 | 10 |
 | array-sparse | — | 37/39 | 2 |
-| array-assign | — | 4/11 | 7 |
+| array-assign | — | 5/11 | 6 |
 | array-compat | — | 9/12 | 3 |
 | builtin-trap-bash | — | 8/14 | 6 |
 | builtin-trap-err | — | 8/12 | 4 |
@@ -148,7 +148,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **var-sub**: Braced block inside ${}; Descriptor redirect to bad "$@"; Here doc with bad "$@" delimiter
 - **var-sub-quote**: part_value tree on RHS
 - **var-op-test**: Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
-- **var-op-patsub**: Confusing unquoted slash matches bash (and ash); Synthesized ${x///} bug (similar to above); Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character; Chromium from http://www.oilshell.org/blog/2016/11/07.html
+- **var-op-patsub**: Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character
 - **var-op-slice**: ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
 - **vars-special**: $PATH is set if unset at startup; Vars set interactively only: $HISTFILE; Some vars are set, even without startup file, or env: PATH, PWD; $LINENO is the current line, not line of function call; $LINENO in other for loops; $_ with assignments, arrays, etc.
 - **command-sub**: Syntax errors with double quotes within backticks
@@ -183,10 +183,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **sh-options**: noclobber on \<\>; set without args lists variables; set without args and array variables; set without args and assoc array variables (not in OSH)
 - **var-op-bash**: Array expansion with nullary var op @Q
 - **nameref**: exported nameref; a[expr] in nameref; a[@] in nameref; bad mutation through nameref: ref[0]= where ref is array[0]
-- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; declare -g (bash-specific; bash-completion uses it); dynamic array parsing is not allowed
-- **array-literal**: Tilde expansions in RHS of [k]=v (BashArray); Tilde expansions in RHS of [k]=v (BashAssoc); append to element (BashArray); append to element (BashAssoc); non-index forms of element (BashAssoc); Evaluation order (2); Evaluation order (3); [k1]=v1 (BashArray); [k1]=v1 looking like brace expansions (BashArray); BashArray cannot be changed to BashAssoc and vice versa; (strict_array) declare -A s+=(); (strict_array) assoc=(key value ...) is not allowed
+- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; dynamic array parsing is not allowed
+- **array-literal**: Tilde expansions in RHS of [k]=v (BashArray); Tilde expansions in RHS of [k]=v (BashAssoc); append to element (BashArray); append to element (BashAssoc); non-index forms of element (BashAssoc); Evaluation order (2); Evaluation order (3); BashArray cannot be changed to BashAssoc and vice versa; (strict_array) declare -A s+=(); (strict_array) assoc=(key value ...) is not allowed
 - **array-sparse**: a[i]=v with BigInt; compgen -F _set_COMPREPLY
-- **array-assign**: Multiple LHS array words; LHS array is protected with shopt -s eval_unsafe_arith, e.g. 'a[$(echo 2)]'; file named a[ is  not executed; Are quotes allowed?; Tricky parsing - a[ a[0]=1 ]=X  a[ a[0]+=1 ]+=X; argv.py a[1 + 2]=; declare builtin doesn't allow spaces
+- **array-assign**: Multiple LHS array words; LHS array is protected with shopt -s eval_unsafe_arith, e.g. 'a[$(echo 2)]'; file named a[ is  not executed; Tricky parsing - a[ a[0]=1 ]=X  a[ a[0]+=1 ]+=X; argv.py a[1 + 2]=; declare builtin doesn't allow spaces
 - **array-compat**: Assignment Causes Array Decay; Array Decay with IFS; User arrays decay
 - **builtin-trap-bash**: trap DEBUG and command sub / subshell; trap DEBUG case; trap DEBUG for expr; trap DEBUG if while; trap RETURN; Combine ERR trap and USR1 trap
 - **builtin-trap-err**: trap ERR pipelines without simple commands; Pipeline group quirk; set -o errtrace: trap ERR runs in subprograms; set -o errtrace: trap ERR with &

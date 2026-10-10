@@ -212,6 +212,9 @@ async function kernelCheck(ctx: CommandContext): Promise<Check> {
   return { label: 'kernel', status: high ? 'WARN' : 'OK', detail: `${procs} process${procs === 1 ? "" : "es"}${heap}` };
 }
 
+/** How long plain doctor waits for the agent probes (their own timeouts add up to more) */
+const AGENTS_WAIT_MS = 45_000;
+
 /** Every check, in report order (each one guarded: a failure is a line, never a crash) */
 export async function runDoctorChecks(ctx: CommandContext): Promise<Check[]> {
   const parts = await Promise.all([
@@ -226,8 +229,13 @@ export async function runDoctorChecks(ctx: CommandContext): Promise<Check[]> {
     guard('kernel', () => kernelCheck(ctx)),
     guard('agents', async () => {
       const { agentChecks, agentSummary } = await import('./doctor-agents');
-      return agentSummary(await agentChecks(ctx));
-    }, 45_000),
+      // A loaded page can take longer than this: summarize what finished, never drop the line
+      const partial: Check[] = [];
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const all = await Promise.race([agentChecks(ctx, { into: partial }), new Promise<null>((r) => { timer = setTimeout(() => r(null), AGENTS_WAIT_MS); })]);
+      clearTimeout(timer);
+      return all ? agentSummary(all) : agentSummary(partial, `no answer in ${AGENTS_WAIT_MS / 1000} s`);
+    }, AGENTS_WAIT_MS + 5_000),
   ]);
   return parts.flat();
 }

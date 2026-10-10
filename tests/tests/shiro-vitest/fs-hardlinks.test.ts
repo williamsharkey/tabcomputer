@@ -266,6 +266,37 @@ describe('hard links', { timeout: 60_000 }, () => {
       } finally { kernel.dispose(); }
     });
 
+    it('link(2) and unlink(2) move st_ctime, also for a file open (fstat answers from its inode)', async () => {
+      const { fs, shell } = await createTestShell();
+      const kernel = new Kernel({ shell });
+      try {
+        const proc = kernel.spawn({ path: 'p', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+        await fs.mkdir('/tmp/hlk5', { recursive: true });
+        const la = enc('/tmp/hlk5/la'), lb = enc('/tmp/hlk5/lb');
+        const d = new Uint8Array(512); d.set(la);
+        const fd = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, la.length, A.O_RDWR | A.O_CREAT, 0o644], d) as number;
+        expect(fd).toBeGreaterThanOrEqual(0);
+        const ctime = async () => {
+          const b = new Uint8Array(256);
+          expect(await kernel.syscall(proc, A.SYS_fstat, [fd], b)).toBe(0);
+          const dv = new DataView(b.buffer);
+          return Number(dv.getBigInt64(104, true)) * 1e3 + Number(dv.getBigInt64(112, true)) / 1e6;
+        };
+        const sleep = () => new Promise((r) => setTimeout(r, 15));
+        const c0 = await ctime();
+        await sleep();
+        d.set(la); d.set(lb, la.length);
+        expect(await kernel.syscall(proc, A.SYS_link, [la.length, lb.length], d)).toBe(0);
+        const c1 = await ctime();
+        expect(c1).toBeGreaterThan(c0);
+        await sleep();
+        d.set(lb);
+        expect(await kernel.syscall(proc, A.SYS_unlink, [lb.length], d)).toBe(0);
+        expect(await ctime()).toBeGreaterThan(c1);
+        kernel.kill(proc.pid, A.SIGKILL);
+      } finally { kernel.dispose(); }
+    });
+
     it('a big file unlinked while open: its fd reads every byte (the blocks are held), and they go at the close', async () => {
       const fs = await fresh();
       await fs.mkdir('/tmp/hlk3', { recursive: true });

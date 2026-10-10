@@ -554,6 +554,22 @@ describe.skipIf(!haveHttp)('Blink engine: Go net/http over loopback', () => {
     for (let i = 0; i < 4; i++) expect(r.output).toContain(`pong /${i}`);
     expect(r.exitCode).toBe(0);
   }, 120_000);
+
+  it("tells the kernel its threads (Blink patch 0127)", async () => {
+    const { fs } = await setup(readFileSync(httpBin));
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { BufferFile } = await import('@shiro/kernel/fd');
+    const { blinkRunner } = await import('@shiro/x86-engine/blink');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const out = new BufferFile(null);
+    const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
+    let most = 0;
+    const t = setInterval(() => { most = Math.max(most, (p.data.engineThreads as Set<number> | undefined)?.size ?? 0); }, 5);
+    expect(await p.wait()).toBe(0);
+    clearInterval(t);
+    expect(out.text()).toContain('pong /3');
+    expect(most).toBeGreaterThan(1);  // Go's runtime starts threads
+  }, 120_000);
 });
 
 describe('Blink engine: kernel processes', () => {
@@ -615,6 +631,10 @@ describe('Blink engine: kernel processes', () => {
     expect(holder).toBe(0);           // blocked reading stdin: the lock is free
     expect(waiters).toBe(0);
     expect(acquires).toBeGreaterThan(0);
+    // and the kernel call it's in, by its tid (patch 0127): read (0) on the main thread
+    const calls = p.data.engineCalls as Map<number, { nr: number; since: number }> | undefined;
+    expect(calls?.get(p.pid)?.nr).toBe(0);
+    expect((p.data.engineThreads as Set<number>).has(p.pid)).toBe(true);
     await w.write(new TextEncoder().encode('x\n'));
     await w.close();
     expect(await p.wait()).toBe(0);

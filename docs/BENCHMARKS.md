@@ -844,6 +844,27 @@ medians 1240 and 1215 proc/s, base 1200. One of those passes stalled at
 ≈10 proc/s for its last 11 samples and did not recur in two more; worth
 watching if it shows up on other branches.
 
+### unix/perf-blink 16 — the page's kept compiled modules
+
+Blink patches 0124/0125 and src/x86-engine/blink.ts: the page keeps Blink's
+compiled-code modules so the next process gets them from V8's cache. In
+headless Chromium a kept module costs **5–7× its wasm bytes in renderer
+RSS** (its compiled code). One page running Debian perl (12 modules) ×4,
+vim ×3, perl ×2, 3 rounds, RSS after the sequence:
+
+| kept | renderer RSS | perl repeat launch | perl again after vim |
+|---|---|---|---|
+| none (`TABCOMPUTER_BLINK_WJ_KEEP=0`) | 342–358 MiB | ≈7.4 s | ≈7.4 s |
+| 6 MiB (default with ≥8 GB) | 389–392 MiB | ≈5.9 s | 7.1 s, then 5.6 s |
+| 16 MiB (`TABCOMPUTER_BLINK_WJ_KEEP=16`) | 467–471 MiB | ≈4.7 s | ≈4.7 s |
+
+perl compiles ~14 MB of modules in the same order every run, so keeping
+the most recent ones (plain LRU) kept none it would use: a module seen
+before now displaces only modules compiled less often (6.6 → 6.1 s at 6
+MiB). 16 MiB stays opt-in while renderer-memory freezes are open: the
+JS-heap pressure signal (performance.memory, which shrinks the cache to
+2 MiB past 60%) doesn't see this memory.
+
 ### unix/perf-blink 15 — SSE float arithmetic in compiled code
 
 Blink patch 0116: compiled code computes SSE float arithmetic (ss/sd/ps/pd),

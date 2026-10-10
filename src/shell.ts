@@ -7608,7 +7608,7 @@ export class Shell {
    */
   private async expandRedirectTarget(raw: string, writeStderr: (s: string) => void): Promise<string | null> {
     if (/^[<>]\(/.test(raw) || /^&(\d+|-)$/.test(raw)) return raw;
-    if (!/[$`'"\\{]/.test(raw)) return raw;
+    if (!/[$`'"\\{]/.test(raw) && !raw.startsWith('~')) return raw;
     const words = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
     if (words.length !== 1) { writeStderr(`tabcomputer: ${raw}: ambiguous redirect\r\n`); return null; }
     return words[0];
@@ -8923,8 +8923,14 @@ export class Shell {
       handled = true;
       for (const x of lastRedirects) {
         const file = { path: this.fs.resolvePath(x.target, this.cwd), append: x.type.endsWith('>>') };
-        if (x.type === '2>&1') { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
-        else if (x.type.startsWith('2') || x.fd === 2) stderrTo = file;
+        const toErr = x.type.startsWith('2') || x.fd === 2;
+        // `2> /dev/stdout` after `> f` is `2>&1`; `> /dev/stderr` after `2> f` is that file
+        // (before them, the job's own stdout/stderr: runKernelPipeline)
+        const std = /^\/(?:dev\/(?:std(out|err)|fd\/([12]))|proc\/self\/fd\/([12]))$/.exec(file.path);
+        const stdN = std ? (std[1] === 'out' || std[2] === '1' || std[3] === '1' ? 1 : 2) : 0;
+        if (x.type === '2>&1' || (toErr && stdN === 1 && stdoutTo)) { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
+        else if (!toErr && stdN === 2 && stderrTo && stderrTo !== 'stdout') stdoutTo = stderrTo; // (one open file for both)
+        else if (toErr) stderrTo = file;
         else stdoutTo = file;
       }
       if (!handled) { stdoutTo = undefined; stderrTo = undefined; }

@@ -834,9 +834,20 @@ async function run(msg) {
       return { wasmBytes: M.HEAPU8.buffer.byteLength, fileBytes: files };
     };
     if (pool.length) M._blink_shiro_enable(msg.pid, chunk, ignLo >>> 0, ignHi >>> 0);
-    // Who holds Blink's GIL (patch 0126), for the kernel's /proc/PID/status: the
-    // page reads it in the wasm memory, the same memory (it's shared)
-    if (M._shiro_gil_state && M.wasmMemory) post({ type: 'blink-engine', memory: M.wasmMemory, gilAddr: M._shiro_gil_state() });
+    // Who holds Blink's GIL (patch 0126), for the kernel's /proc/PID/status: a
+    // copy every 50 ms in 16 bytes of their own. Handing the page the wasm
+    // memory itself kept every finished process's memory alive until the
+    // page's next GC (peak RSS +10-25 MiB a process)
+    if (M._shiro_gil_state && M.wasmMemory) {
+      const gilAddr = M._shiro_gil_state(), gil = new Int32Array(new SharedArrayBuffer(16));
+      const copy = () => {
+        const src = new Int32Array(M.wasmMemory.buffer, gilAddr, 4);
+        for (let i = 0; i < 4; i++) Atomics.store(gil, i, Atomics.load(src, i));
+      };
+      copy();
+      setInterval(copy, 50);
+      post({ type: 'blink-engine', gil: gil.buffer });
+    }
     // Direct channels (Blink patch 0065): in Blink's wasm memory, used by its
     // threads themselves and served by the page watching their state words,
     // so a kernel call skips the proxy to this thread and both messages.

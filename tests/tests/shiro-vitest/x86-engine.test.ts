@@ -633,7 +633,8 @@ describe('Blink engine: kernel processes', () => {
     const out = new BufferFile(null);
     const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: r, 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
     await new Promise((res) => setTimeout(res, 1500));
-    const engine = p.data.engine as { memory: WebAssembly.Memory; gilAddr: number } | undefined;
+    const engine = p.data.engine as { memory: { buffer: SharedArrayBuffer }; gilAddr: number } | undefined;
+    expect(engine?.memory.buffer.byteLength).toBe(16);  // a copy, not Blink's wasm memory
     expect(engine).toBeDefined();
     const [holder, waiters, acquires] = new Int32Array(engine!.memory.buffer, engine!.gilAddr, 4);
     expect(holder).toBe(0);           // blocked reading stdin: the lock is free

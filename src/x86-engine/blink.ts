@@ -580,10 +580,12 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       if (m.op) threads.add(m.tid | 0);
       else { threads.delete(m.tid | 0); engineCalls(proc).delete(m.tid | 0); }
     } else if (m?.type === 'blink-engine') {
-      // Blink's GIL state in its wasm memory (patch 0126), for /proc/PID/status's
-      // EngineLock line: Int32Array(memory.buffer, gilAddr, 4) is the holder's
-      // tid (0: nobody), the waiters, and the times it was taken
-      if (!exiting && m.memory && typeof m.gilAddr === 'number') proc.data.engine = { memory: m.memory, gilAddr: m.gilAddr };
+      // Blink's GIL state (patch 0126), for /proc/PID/status's EngineLock line:
+      // Int32Array(memory.buffer, gilAddr, 4) is the holder's tid (0: nobody),
+      // the waiters, and the times it was taken, as of at most 50 ms ago
+      // (host.mjs copies it into this buffer; not Blink's own memory, which
+      // the page would keep alive past the process)
+      if (!exiting && m.gil instanceof SharedArrayBuffer) proc.data.engine = { memory: { buffer: m.gil }, gilAddr: 0 };
       proc.data.engineThreads ??= new Set<number>([proc.pid]);
     } else if (m?.type === 'blink-quiet') {
       if (exiting && !quiet) {

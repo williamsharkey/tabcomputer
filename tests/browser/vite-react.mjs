@@ -326,6 +326,11 @@ try {
 } catch (e) {
   failed = true;
   console.log(`FAIL ${String(e.message).replace(/\n/g, '\n  ')}`);
+  if (process.env.DUMP_DEPS) for (const m of new Set(String(e.message).match(/node_modules\/\.vite\/deps\/[\w.-]+\.js/g) ?? [])) {
+    const r = await side(page, `ls -la ~/app/${m} ~/app/node_modules/.vite/deps | head -50; cat ~/app/${m}`).catch((x) => ({ out: String(x) }));
+    (await import('node:fs')).writeFileSync(`${process.env.DUMP_DEPS}/${m.replace(/\//g, '_')}`, r.out);
+    console.log(`  dumped ${m}`);
+  }
   for (const f of page.frames()) {
     const text = await f.evaluate(() => document.body?.innerText.slice(0, 200) ?? '').catch((err) => `(${err.message})`);
     console.log(`  frame ${f.url()}: ${JSON.stringify(text)}`);

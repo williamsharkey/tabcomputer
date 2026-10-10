@@ -786,7 +786,7 @@ s.on('error', (e) => console.log('error', e.code));`)).toBe('{"address":"::","fa
   return Promise.resolve({ instance, module });
 }`;
     for (const path of ['/p/node_modules/esbuild/bin/esbuild', '/p/node_modules/esbuild-wasm/bin/esbuild']) {
-      expect(patchPackageSource(path, src)).toContain('return WebAssembly.instantiate(bytes, importObject);');
+      expect(patchPackageSource(path, src)).toContain('return WebAssembly.instantiate(bytes, importObject).finally(');
       expect(patchPackageSource(path, src)).not.toContain('new WebAssembly.Module');
     }
     expect(patchPackageSource('/p/other/bin/esbuild', src)).toBe(src);
@@ -796,6 +796,30 @@ s.on('error', (e) => console.log('error', e.code));`)).toBe('{"address":"::","fa
     const exit = new Function('process', `const go = {}; ${code} return go.exit;`)({ exit: (c: number) => { throw new Error(`process.exit(${c})`); } });
     expect(() => exit(0)).not.toThrow();
   });
+
+  it('esbuild-wasm\'s bin is alive while its .wasm compiles (an idle service ended: "The service was stopped")', async () => {
+    // The compile takes 300 ms of work nothing else tracks (a chain of digests stands in for it)
+    await fs.mkdir('/home/user/m/node_modules/esbuild-wasm/bin', { recursive: true });
+    await fs.writeFile('/home/user/m/node_modules/esbuild-wasm/bin/esbuild', `WebAssembly.instantiate = () => new Promise((r) => {
+  const t = Date.now();
+  const spin = () => Date.now() - t > 300 ? r({ instance: {} }) : crypto.subtle.digest('SHA-256', new Uint8Array(16)).then(spin);
+  spin();
+});
+function instantiate(bytes, importObject) {
+  const module = new WebAssembly.Module(bytes);
+  const instance = new WebAssembly.Instance(module, importObject);
+  return Promise.resolve({ instance, module });
+}
+instantiate(new Uint8Array(0), {}).then(() => console.log('compiled'));
+`);
+    // (in the page, the page's WebAssembly: put back for the tests after)
+    const instantiate = WebAssembly.instantiate;
+    try {
+      expect(await node(`require('./node_modules/esbuild-wasm/bin/esbuild')`)).toBe('compiled\n');
+    } finally {
+      WebAssembly.instantiate = instantiate;
+    }
+  }, 60_000);
 
   it("a node child's stdio are live pipes: the parent talks to it while it runs (esbuild's service)", async () => {
     // The child answers each line as it comes, from fs.read(0) (as Go does), with raw bytes on fd 1

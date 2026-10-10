@@ -26,6 +26,20 @@ beforeEach(() => {
 });
 
 describe('window manager', () => {
+  it('opens windows inside the work area, never past the top of the dock, however they cascade', () => {
+    // the work area here: 1000 × 600 below the menu bar, the dock under it
+    for (let i = 0; i < 8; i++) {
+      const w = wm.createWindow({ appId: 'apps', title: 'Apps', width: 660, height: 640 });   // the Apps sheet's size
+      const g = w.geometry();
+      expect(g.y).toBeGreaterThanOrEqual(0);
+      expect(g.y + 38 + g.height).toBeLessThanOrEqual(600);
+      expect(g.x + g.width).toBeLessThanOrEqual(1000);
+    }
+    // an asked-for spot low on the screen moves up rather than spilling over the dock
+    const low = wm.createWindow({ title: 'Low', x: 100, y: 500, width: 400, height: 300 }).geometry();
+    expect([low.y, low.height]).toEqual([600 - 38 - 300, 300]);
+  });
+
   it('creates windows with ids, titles, frames and geometry', () => {
     const w = wm.createWindow({ title: 'One', appId: 'a', x: 10, y: 20, width: 300, height: 200 });
     expect(w.id).toMatch(/^w\d+$/);

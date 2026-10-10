@@ -940,7 +940,8 @@ export function transformBundledESM(src: string, pass?: MaskedPass): string {
       const items = exports.split(',').map((s: string) => s.trim()).filter((s: string) => s);
       return items.map((item: string) => {
         const asMatch = item.match(/^([\w$]+)\s+as\s+([\w$]+)$/);
-        if (asMatch) return `__shiro_module.exports.${asMatch[2]} = __shiro_require(${q}${mod}${q}).${asMatch[1]};`;
+        // (`default as x`: the module's exports, as `import x from` takes them)
+        if (asMatch) return `__shiro_module.exports.${asMatch[2]} = __shiro_require(${q}${mod}${q})${asMatch[1] === 'default' ? '' : '.' + asMatch[1]};`;
         return `__shiro_module.exports.${item} = __shiro_require(${q}${mod}${q}).${item};`;
       }).join(' ');
     });
@@ -1159,8 +1160,12 @@ export function transformESModules(src: string, pass?: MaskedPass): string {
 
   // export { x, y as z } from 'w'
   replaceInCode(ms, new RegExp(I + String.raw`export\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]\s*;?`, 'g'),
-    (_: string, list: string, mod: string) => exportItems(list).map(([local, exported]) =>
-      exported === '.default' ? `__shiro_module.exports = __shiro_require("${mod}").${local};` : `__shiro_module.exports${exported} = __shiro_require("${mod}").${local};`).join(' '));
+    // (a module's default export is its exports, as `import x from` takes them: esm-env's
+    // `export { default as DEV } from 'esm-env/development'` read `.default` of undefined)
+    (_: string, list: string, mod: string) => exportItems(list).map(([local, exported]) => {
+      const value = local === 'default' ? `__shiro_require("${mod}")` : `__shiro_require("${mod}").${local}`;
+      return exported === '.default' ? `__shiro_module.exports = ${value};` : `__shiro_module.exports${exported} = ${value};`;
+    }).join(' '));
 
   // export * as name from 'z' → module.exports.name = require('z')
   replaceInCode(ms, new RegExp(I + String.raw`export\s*\*\s*as\s+([\w$]+)\s+from\s*['"]([^'"]+)['"]\s*;?`, 'g'),

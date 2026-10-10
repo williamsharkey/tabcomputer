@@ -21,6 +21,7 @@ Blink engine.
 | pnpm 9 | `npm install pnpm` | works (add, store, symlinks, run, exec, bins) |
 | yarn 1 | `npm install yarn` | works (add, lockfile, run, bins, offline) |
 | Next.js 16 (App Router, webpack) | `npx create-next-app`, then `next dev --webpack` / `next build` / `next start` (node in a Worker, the default) | dev server with HMR, builds (static pages prerendered) and serves; see "Next.js 16" below |
+| SvelteKit 2 (Svelte 5, Vite 7) | `npm i @sveltejs/kit svelte vite …`, then `vite dev` / `vite build` (adapter-static) | dev server with HMR, builds and prerenders; see "SvelteKit 2" below |
 | ruby, gem, rake | `pkg install ruby` (ruby.wasm 3.4.1) | works (no sockets) |
 | perl | `pkg install perl` (x86-64 in Blink) | works |
 | lua | `pkg install lua` | works |
@@ -351,6 +352,35 @@ Shell and platform fixes these needed (all with tests in the same file):
   (`tests/browser/node-wasi.mjs`). In the page there is no blocking channel:
   `new WASI()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `stdin`/`stdout`/
   `stderr` other than 0, 1 and 2 aren't supported.
+- SvelteKit 2 (Svelte 5, Vite 7, adapter-static; `APP=sveltekit` in
+  tests/browser/vite-react.mjs, a minimal site written there): `npm i` 2.6 s,
+  `vite dev` ready 3.8 s, the preview 3.1 s, an edit to `+page.svelte` by HMR
+  0.1 s, `vite build` with prerendering 10 s. Node in a Worker, the default.
+  What it took, all general:
+  - Top-level await reaches importers, as in ES modules: a module whose imports
+    are still evaluating (their own top-level await, or their imports') runs
+    once they are done. Kit's `core/sync/utils.js` awaits `svelte/compiler`;
+    its importers called into it first ("Cannot access 'MAJOR' before
+    initialization").
+  - `export { default as x } from 'y'` re-exports y's default as `import x
+    from 'y'` reads it (esm-env's `DEV` read `.default` of undefined).
+  - A `worker_threads` Worker's `env` option is the worker's `process.env`
+    (kit's post-build steps run in Workers told so by `SVELTEKIT_FORK`: the
+    build ended without them).
+  - Vite reloads the preview once when it optimizes more dependencies on the
+    first load; the check edits once the preview has settled.
+  Also from these checks, for every framework in worker mode:
+  - Packages load as their node builds, not their browser ones, in a guest:
+    a Worker has no DOM (decode-named-character-reference's `index.dom.js`
+    wants `document`: `astro dev` failed at startup). In the page, browser
+    builds still come first.
+  - A Worker's own `self` and `WorkerGlobalScope` are hidden from node code:
+    Prism (in Astro) took the guest for a Web Worker and parsed its syscall
+    channel's messages.
+  - fs.watch drops a change older than the watch: changes reach a guest later
+    than its own reads see them, and chokidar reported the creation of
+    `.astro/settings.json`, which it had found by reading the directory, as
+    an edit (Astro restarted at once).
 - Next.js 16 (`create-next-app`, App Router, webpack): `next dev --webpack`,
   `next build` and `next start` work in worker mode (the default on a
   cross-origin isolated page). `APP=next node tests/browser/vite-react.mjs`
@@ -994,9 +1024,9 @@ real account takes over (the sign-in page opens and the CLI waits for the code).
 | Claude Code, native (default) | 2.1.296 | `claude install` 140 s | 3 s | 52 s | `-p`: "Invalid API key", ~100 s | `claude login` → `claude auth login`: the sign-in page opens in a tab (or an Open card), then "Paste code here" | Startup is ~48–52 s offline, mostly compiled guest code (perf-blink's profiles). In worker mode: same. |
 | Claude Code, `--npm` | 2.1.112 (reports 2.1.280) | installed at boot | 5–7 s | 14 s | `-p`: "Invalid API key", 4 s | `claude --npm login` → the in-session `/login` (URL, paste prompt) | 2.1.112's `auth login` has no paste prompt and could never finish here; fixed (ad91c0e). In worker mode (the default) it starts onboarded too (8e78beb8). |
 | OpenAI Codex | 0.162.1 | GitHub release tarball with the real curl (`pkg install curl`): 65 s; `npm i -g @openai/codex` 8–11 s (the `linux-x64` package installs since f86aded) | 4.7 s (tarball), 12 s (npm launcher) | — | `exec`: 401 on `wss://` then `https://api.openai.com`, ~40–50 s (tarball and, on ed8a01c, the npm launcher) | not tried (ChatGPT sign-in) | After the 401s, `exec` could hang until Ctrl-C (the npm launcher on ed8a01c; one of three tarball runs). That was codex retrying failed HTTPS without limit (`codex-rs/core/src/responses_retry.rs`), not a kernel deadlock; the likely cause of the failures was the missing CA bundle: its TLS (OpenSSL through native-tls/openssl-probe, and rustls with rustls-native-certs) needs `/etc/ssl/certs/ca-certificates.crt`, `/etc/ssl/cert.pem` or `SSL_CERT_FILE`, and plain mode had none unless `pkg install curl` or `ca-certificates` had run (the tarball route did, the npm route didn't). Both profiles now preinstall `ca-certificates` at boot (81be3dc6). Fixed since, also not re-run with codex: a "turn interrupted" SIGINT after codex's 30 s timeout killed a `git fetch` child (killing a program's `sh -c` child signalled the page shell's foreground group; 6e50918c), and, after `debian install`, a hang in its startup plugin sync (`git fetch --depth 1 --no-tags` of github.com/openai/plugins: the built-in git took Debian mode's `/usr/bin/git` shim for the full git and ran itself without end; 48e4e8c0 installs the full git over the shim). Through npm, the terminal used to freeze after `codex --version` (fixed in 102fc13), and `exec` used to wait on stdin (compat-tools' stdio-inherit fix). |
-| Grok Build (xAI) | 1.0.50 | `x.ai/cli/install.sh` after `pkg install curl`: 118 s | 2.4 s | — | `-p`: 400 "Incorrect API key", 25 s (148 s on 2026-10-09) | not tried | The builtin `curl` can't fetch the binary (browser fetch); the real curl goes through the relay. |
+| Grok Build (xAI) | 1.0.50 | `x.ai/cli/install.sh` after `pkg install curl`: 118 s | 2.4 s | — | `-p`: 400 "Incorrect API key", 25 s (148 s on 2026-10-09) | not tried | The builtin `curl` can't fetch the binary (browser fetch); the real curl goes through the relay. The dock's Grok entry installs the real curl first, and finds the program under `~` when the installer's directory isn't on PATH. |
 | Gemini CLI | 0.63.0 | `npm i -g` 2–6 s | 12 s, plus a harmless proper-lockfile "Lock is already released" trace | — | `-p` reaches `/api/gemini/` (400) and exits 1 in 41 s, but on a terminal it prints "An unexpected critical error occurred:[object Object]" rather than the API's message | not tried | On b2571fb `-p` froze the terminal: it printed, then called `process.exit()` from a timer, which cancelled xterm's pending write (fixed in 102fc13). `--version` also prints a bogus "critical error: process.exit(0)" after the prompt (Gemini catches the throw our `process.exit` uses to stop the script). |
-| Antigravity (`agy`) | 1.3.3 | `antigravity.google/cli/install.sh` 22 s (`set -euo pipefail` fixed in d505335) | 19 s after `debian install` | — | — | not tried (Google sign-in) | A glibc binary: without `debian install` (no `ld-linux-x86-64.so.2`) it exits 127 with no message. After `debian install`, `curl … \| bash` runs Debian's bash, which can't find tabcomputer's `grep` and `curl` (the overlay leaves `/usr/bin/grep` absent), so install agy first. |
+| Antigravity (`agy`) | 1.3.3 | `antigravity.google/cli/install.sh` 22 s (`set -euo pipefail` fixed in d505335) | 19 s after `debian install` | — | — | not tried (Google sign-in) | A glibc binary: without `debian install` (no `ld-linux-x86-64.so.2`) it exits 127 with no message. After `debian install`, `curl … \| bash` runs Debian's bash, which can't find tabcomputer's `grep` and `curl` (the overlay leaves `/usr/bin/grep` absent), so install agy first. The dock's entry does that: the installer, then `debian install`. |
 | opencode | 1.18.35 | `opencode.ai/install` (real curl): 40.5 s on ed8a01c; `npm i -g` 25 s | 160 s after `debian install` (a glibc build, `opencode-linux-x64-baseline`); without it: "cannot execute: required file not found (this program needs glibc: run `debian install`)" | — | — | — | The install script needed two shell fixes: `local` in a piped `{ }` group of a function (fa6b68a), and a `{ }` group after `cmd \| \<newline>` (f17cef32). |
 | aider | 0.86.2 | `debian install`, `pkg install curl`, `aider.chat/install.sh` (uv, Python 3.12): 609 s | 362 s | — | `--message`: litellm `AuthenticationError` "Incorrect API key", 776 s | not tried | Works end to end since the v4-mapped UDP fix (0a5e7e5); very slow (CPython under Blink). |
 

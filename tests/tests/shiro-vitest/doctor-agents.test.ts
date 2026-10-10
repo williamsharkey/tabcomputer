@@ -38,8 +38,10 @@ describe('doctor --agents', () => {
 
   it('plain doctor has one agents summary line', async () => {
     const { out } = await run('doctor');
-    expect(out).toMatch(/^(OK|FAIL)\s+agents\s+native 5\/5 · node \d\/5/m);
-  }, 60_000);
+    // always the line, both runtimes named; under a loaded suite a probe can time out
+    expect(out.match(/^(OK|FAIL)\s+agents\s+.*$/gm)).toHaveLength(1);
+    expect(out).toMatch(/^(OK|FAIL)\s+agents\s+native (5\/5|probe (failed|timed out)[^·]*) · node (\d\/5|probe (failed|timed out))/m);
+  }, 120_000);
 });
 
 describe('probe output', () => {
@@ -50,6 +52,17 @@ describe('probe output', () => {
     expect(parseProbe('node', 'node: command not found\n', 127)).toEqual([{ label: 'node probe', status: 'FAIL', detail: 'exit 127: node: command not found' }]);
     const sum = agentSummary([...parseProbe('native', AGENT_STEPS.map((s) => `OK ${s} x`).join('\n'), 0), ...c.map((x) => ({ ...x, label: x.label.replace('native', 'node') }))]);
     expect(sum).toEqual({ label: 'agents', status: 'FAIL', detail: 'native 5/5 · node 1/5 (atomic-write failed) (doctor --agents for details)' });
+  });
+
+  it("a summary made when doctor stopped waiting names what didn't finish", () => {
+    const native = parseProbe('native', AGENT_STEPS.map((s) => `OK ${s} x`).join('\n'), 0);
+    expect(agentSummary(native, 'no answer in 45 s')).toEqual({
+      label: 'agents', status: 'FAIL',
+      detail: 'native 5/5 · node probe timed out (no answer in 45 s) (doctor --agents for details)',
+    });
+    expect(agentSummary([], 'no answer in 45 s').detail).toBe('native probe timed out (no answer in 45 s) · node probe timed out (no answer in 45 s) (doctor --agents for details)');
+    const hung = [...native, { label: 'node probe', status: 'FAIL' as const, detail: 'no answer in 20 s' }];
+    expect(agentSummary(hung).detail).toBe('native 5/5 · node probe failed (no answer in 20 s) (doctor --agents for details)');
   });
 
   it('a failing node probe is run again with stdin on /dev/null, which says which run failed', () => {

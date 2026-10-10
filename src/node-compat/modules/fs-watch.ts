@@ -33,6 +33,9 @@ export function createWatchApi(deps: WatchDeps) {
   const { ctx, fileCache, getBuiltinModule } = deps;
   const fsMod = () => getBuiltinModule('fs');
 
+  /** When this process started watching each file it watches by itself (see subscribe) */
+  const fileWatchSince = new Map<string, number>();
+
   const enoent = (syscall: string, p: string) =>
     Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`), { code: 'ENOENT', errno: -2, syscall, path: p, filename: p });
 
@@ -80,11 +83,22 @@ export function createWatchApi(deps: WatchDeps) {
       return rel;
     };
     const queue = (eventType: Change['eventType'], filename: string) => queueMicrotask(() => emit({ eventType, filename }));
-    return ctx.fs.onChange((event, path, newPath) => {
+    // A change from before this subscription (one relayed late to a guest) is already in
+    // what its subscriber read, and so is one from before this process started watching
+    // that file itself: chokidar found .astro/settings.json by reading its directory,
+    // watched it, then heard the file's creation from the directory's watcher (chokidar
+    // hands a directory's events to its files' watchers) and reported a 'change' (Astro
+    // took it for a settings edit and restarted)
+    const since = Date.now();
+    if (!dirWatch) fileWatchSince.set(target, Math.max(fileWatchSince.get(target) ?? 0, since));
+    const off = ctx.fs.onChange((event, path, newPath, detail) => {
+      const at = detail?.at;
+      if (at !== undefined && at < since) return;
       for (const [p, gone] of [[path, event === 'delete' || event === 'rename'], [newPath, false]] as [string | undefined, boolean][]) {
         if (!p) continue;
         const name = nameFor(p);
         if (name === null) continue;
+        if (at !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) { if (gone) known.delete(p); else known.add(p); continue; }
         // (a mode or times change: Node reports 'change', as Linux's IN_ATTRIB)
         if (event === 'attrib') { queue('change', name); continue; }
         if (event === 'write' && known.has(p)) { queue('change', name); continue; }
@@ -93,6 +107,7 @@ export function createWatchApi(deps: WatchDeps) {
         queue('rename', name);
       }
     });
+    return () => { off(); if (!dirWatch && fileWatchSince.get(target) === since) fileWatchSince.delete(target); };
   };
 
   /** A promise the script counts as activity until `release` runs (close or unref). */

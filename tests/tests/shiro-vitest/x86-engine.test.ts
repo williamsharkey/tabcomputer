@@ -313,6 +313,10 @@ const haveLease = blinkHas0515 && (Abi as Record<string, unknown>).F_SETLEASE !=
 const procbitsBin = join(out, 'procbits');
 const haveProcbits = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_procbits') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', procbitsBin, 'procbits.c', '-lpthread']);
+// Blink 0517: inotify is the kernel's
+const inotifyBin = join(out, 'inotifywatch');
+const haveInotify = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_inotify') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', inotifyBin, 'inotifywatch.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1013,6 +1017,21 @@ it.skipIf(!haveProcbits)('affinity of a pid that does not exist and tgkill of an
   const { shell } = await setup(readFileSync(procbitsBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('affinity other 3\ntgkill dead 3\nbrk exact 1\nparent comm renamed\nslack 70000\nchild slack default 70000\nchild comm renamed\nlstat null 14\nsealed map 1\n');
+}, 60_000);
+
+it.skipIf(!haveInotify)('inotify: a guest hears its own changes and, blocked in read(), a file the page writes; an unlinked open file through its fd (LTP inotify01-12)', async () => {
+  const { fs, shell } = await setup(readFileSync(inotifyBin));
+  await fs.mkdir('/home/user/work/watched', { recursive: true });
+  let out = '';
+  const done = shell.execute('./prog', (t: string) => { out += t; });
+  for (let i = 0; i < 400 && !out.includes('waiting'); i++) await new Promise((r) => setTimeout(r, 25));
+  expect(out).toContain('waiting');
+  await fs.writeFile('/home/user/work/watched/outside', 'hi\n');
+  expect(await done).toBe(0);
+  expect(out.replace(/\r\n/g, '\n')).toBe([
+    'mask 100 name mine', 'mask 2 name mine', 'mask 8 name mine', 'mask 40 name mine', 'mask 80 name moved', 'waiting',
+    'mask 100 name outside', 'mask 2 name outside', 'mask 8 name outside', 'mask 200 name moved', 'mask 2 name moved', '',
+  ].join('\n'));
 }, 60_000);
 
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {

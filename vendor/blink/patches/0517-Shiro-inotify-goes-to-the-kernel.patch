@@ -1,0 +1,38 @@
+From 51b43727b1be923b5555231d8810d748591407ee Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 20:46:33 +0000
+Subject: [PATCH] Shiro: inotify goes to the kernel
+
+---
+ blink/shiro.inc | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 5bb1960..9d27f77 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2582,6 +2582,8 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_argchecks(void) { return 1; }
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_cpulimit(void) { return 1; }
+ // 0516: affinity and tgkill of others ask the kernel, exact brk, timer slack, comm
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_procbits(void) { return 1; }
++// 0517: inotify goes to the kernel
++EMSCRIPTEN_KEEPALIVE int blink_shiro_inotify(void) { return 1; }
+ 
+ // the same with the signal's siginfo (the kernel's call 1030, made as `pid`)
+ EMSCRIPTEN_KEEPALIVE void blink_shiro_signal_pid_info(int pid, int sig, int w0, int w1, int w2,
+@@ -4675,7 +4677,11 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       if (r == -ENOSYS_LINUX) r = -EPERM_LINUX;  // a kernel without them
+       break;
+     case 0x01B: r = ShiroMincore(m, a, b, c); break;                  // mincore
+-    case 0x0FD: case 0x0FE: case 0x0FF: case 0x126: r = -ENOSYS_LINUX; break;  // inotify
++    // inotify is the kernel's (its watches hear the FileSystem's changes)
++    case 0x0FD: r = KS(m, 253, A12(0)); break;                        // inotify_init
++    case 0x126: r = KS(m, 294, A12((int)a)); break;                   // inotify_init1
++    case 0x0FE: r = ShiroAtCall(m, 254, (int)a, b, (int)c, 0); break; // inotify_add_watch
++    case 0x0FF: r = KS(m, 255, A12((int)a, (int)b)); break;           // inotify_rm_watch
+     case 0x11D: r = -EOPNOTSUPP_LINUX; break;                         // fallocate (Go's linker then writes)
+     case 0x11B: r = KS(m, 283, A12(a, b)); break;                     // timerfd_create
+     case 0x11E:                                                       // timerfd_settime
+-- 
+2.43.0
+

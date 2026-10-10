@@ -17,6 +17,7 @@
  */
 import * as A from './abi';
 import { DirFile, EventFile, ReadyListeners, TimerFile, type OpenFile } from './fd';
+import { InotifyFile } from './inotify';
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from './kernel';
 import type { Process } from './process';
@@ -215,11 +216,17 @@ export class ProcFs {
       if (!/^\d+$/.test(sub) || !f) return undefined;
       return { type: 'link', target: () => fdTarget(f) };
     }
+    if (rest.length === 2 && name === 'fdinfo') {
+      const f = p.fds.get(Number(sub));
+      if (!/^\d+$/.test(sub) || !f) return undefined;
+      return { type: 'file', text: () => fdInfo(f, p.fds.getCloexec(Number(sub)) ?? false) };
+    }
     if (rest.length === 2 && name === 'task' && sub === String(p.pid)) return { type: 'dir', list: () => PID_ENTRIES.filter((e) => e !== 'task') };
     if (rest.length === 3 && name === 'task' && sub === String(p.pid)) return this.pidNode(caller, p, rest.slice(2));
     if (rest.length !== 1) return undefined;
     switch (name) {
-      case 'fd': return { type: 'dir', list: () => p.fds.entries().map(([fd]) => String(fd)) };
+      case 'fd':
+      case 'fdinfo': return { type: 'dir', list: () => p.fds.entries().map(([fd]) => String(fd)) };
       case 'task': return { type: 'dir', list: () => [String(p.pid)] };
       case 'cwd': return { type: 'link', target: () => p.cwd };
       // A runner can name the program the process reports as itself (a WASI package's "self")
@@ -478,7 +485,7 @@ const VMSTAT_KEYS = [
   'pgscan_kswapd', 'pgscan_direct', 'pgalloc_normal', 'pgactivate', 'pgdeactivate',
 ];
 
-const PID_ENTRIES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'io', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
+const PID_ENTRIES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'fdinfo', 'io', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
 
 export function wchanText(p: Process): string {
   return p.calls.length || p.engineSleeps ? 'do_syscall_64' : '0';
@@ -492,6 +499,22 @@ export function syscallText(p: Process): string {
   const a = Array.from({ length: 6 }, (_, i) => '0x' + ((c.args[i] ?? 0) >>> 0).toString(16));
   return `${c.nr} ${a.join(' ')} 0x0 0x0\n`;
 }
+
+/**
+ * /proc/PID/fdinfo/N: the description's offset and flags, and an inotify
+ * instance's watches as Linux lists them (LTP inotify12 reads their masks)
+ */
+function fdInfo(f: OpenFile, cloexec: boolean): string {
+  const pos = f.seek ? Math.max(0, f.seek(0, A.SEEK_CUR)) : 0;
+  let t = `pos:\t${pos}\nflags:\t0${((f.flags | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
+  if (f instanceof InotifyFile) {
+    for (const w of f.watches.values()) {
+      t += `inotify wd:${w.wd} ino:${(fnv(w.path) >>> 0).toString(16)} sdev:1 mask:${(w.mask >>> 0).toString(16)} ignored_mask:0\n`;
+    }
+  }
+  return t;
+}
+const fnv = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x1000193); return h; };
 
 /** What /proc/PID/fd/N points at. */
 export function fdTarget(f: OpenFile): string {
@@ -517,10 +540,10 @@ const KCONFIG = [
   '# Linux/x86_64 kernel configuration (tabcomputer)',
   'CONFIG_64BIT=y', 'CONFIG_X86_64=y', 'CONFIG_SMP=y', 'CONFIG_MMU=y', 'CONFIG_HZ=100',
   'CONFIG_MULTIUSER=y', 'CONFIG_SYSVIPC=y', 'CONFIG_POSIX_MQUEUE=y', 'CONFIG_POSIX_TIMERS=y', 'CONFIG_FUTEX=y',
-  'CONFIG_EPOLL=y', 'CONFIG_SIGNALFD=y', 'CONFIG_TIMERFD=y', 'CONFIG_EVENTFD=y', 'CONFIG_SHMEM=y', 'CONFIG_MEMFD_CREATE=y',
+  'CONFIG_EPOLL=y', 'CONFIG_INOTIFY_USER=y', 'CONFIG_SIGNALFD=y', 'CONFIG_TIMERFD=y', 'CONFIG_EVENTFD=y', 'CONFIG_SHMEM=y', 'CONFIG_MEMFD_CREATE=y',
   'CONFIG_FILE_LOCKING=y', 'CONFIG_PROC_FS=y', 'CONFIG_TMPFS=y', 'CONFIG_UNIX=y', 'CONFIG_NET=y', 'CONFIG_INET=y', 'CONFIG_IPV6=y',
   'CONFIG_UNIX98_PTYS=y', 'CONFIG_IKCONFIG=y', 'CONFIG_IKCONFIG_PROC=y',
-  '# CONFIG_AIO is not set', '# CONFIG_IO_URING is not set', '# CONFIG_INOTIFY_USER is not set', '# CONFIG_FANOTIFY is not set',
+  '# CONFIG_AIO is not set', '# CONFIG_IO_URING is not set', '# CONFIG_FANOTIFY is not set',
   '# CONFIG_USERFAULTFD is not set', '# CONFIG_NAMESPACES is not set', '# CONFIG_USER_NS is not set', '# CONFIG_NET_NS is not set',
   '# CONFIG_PID_NS is not set', '# CONFIG_UTS_NS is not set', '# CONFIG_IPC_NS is not set', '# CONFIG_CGROUPS is not set',
   '# CONFIG_SECCOMP is not set', '# CONFIG_BPF_SYSCALL is not set', '# CONFIG_PERF_EVENTS is not set', '# CONFIG_KCMP is not set',

@@ -11,7 +11,9 @@
 // - apt: `apt-get update` and `apt-get install -y hello` from server.mjs's
 //   mirror disk cache (.debian-build/mirror-cache), i.e. a warm cache after
 //   the first run on a machine.
-import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MB } from '../lib/harness.mjs';
@@ -22,12 +24,13 @@ export const ownPages = true;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 async function timed(h, cmd, limitS, check) {
-  const r = await h.withPeakRss(() => h.eval(([c, ms]) => window.__bench.shLimit(c, ms), [`${cmd} > /tmp/wf.out 2>&1`, limitS * 1000]), { buffer: true });
+  const r = await h.withPeakRss(() => h.withHostCpu(() => h.eval(([c, ms]) => window.__bench.shLimit(c, ms), [`${cmd} > /tmp/wf.out 2>&1`, limitS * 1000])), { buffer: true });
+  const { result: res, user, sys } = r.result;
   const out = (await h.sh('cat /tmp/wf.out')).out;
-  if (r.result.code !== 0 || (check && !check.test(out))) {
-    throw new Error(`${cmd.slice(0, 70)}: ${r.result.code === 124 ? `timed out after ${limitS} s` : `exit ${r.result.code}`}: ${out.trim().split('\n').slice(-3).join(' | ').slice(0, 300)}`);
+  if (res.code !== 0 || (check && !check.test(out))) {
+    throw new Error(`${cmd.slice(0, 70)}: ${res.code === 124 ? `timed out after ${limitS} s` : `exit ${res.code}`}: ${out.trim().split('\n').slice(-3).join(' | ').slice(0, 300)}`);
   }
-  return { ms: r.result.ms, peak: r.peakDelta / MB, net: r.peakDeltaNet != null ? r.peakDeltaNet / MB : null };
+  return { ms: res.ms, user, sys, peak: r.peakDelta / MB, net: r.peakDeltaNet != null ? r.peakDeltaNet / MB : null };
 }
 
 /** Terminal text from line `from` on, and helpers to type and wait (the terminal runs vite). */
@@ -52,9 +55,10 @@ async function typeAndWait(h, line, re, limitMs, what) {
 let marks = 0;
 async function termStep(h, cmd, limitMs) {
   const mark = `@@wf${++marks}`;
-  const r = await h.withPeakRss(() => typeAndWait(h, `${cmd}; echo "${mark} $?"\r`, new RegExp(`^${mark} (\\d+)$`, 'm'), limitMs, cmd), { buffer: true });
-  if (r.result.m[1] !== '0') throw new Error(`exit ${r.result.m[1]}: ${cmd}: ${(await termText(h)).split('\n').slice(-6).join(' | ').slice(0, 300)}`);
-  return { ms: r.result.ms, peak: r.peakDelta / MB, net: r.peakDeltaNet != null ? r.peakDeltaNet / MB : null };
+  const r = await h.withPeakRss(() => h.withHostCpu(() => typeAndWait(h, `${cmd}; echo "${mark} $?"\r`, new RegExp(`^${mark} (\\d+)$`, 'm'), limitMs, cmd)), { buffer: true });
+  const { result: res, user, sys } = r.result;
+  if (res.m[1] !== '0') throw new Error(`exit ${res.m[1]}: ${cmd}: ${(await termText(h)).split('\n').slice(-6).join(' | ').slice(0, 300)}`);
+  return { ms: res.ms, user, sys, peak: r.peakDelta / MB, net: r.peakDeltaNet != null ? r.peakDeltaNet / MB : null };
 }
 async function preview(h) {
   for (let i = 0; i < 600; i++) {
@@ -72,6 +76,21 @@ const side = (h, cmd) => h.eval(async (c) => {
   const code = await sh.execute(c, (s) => { out += s; }, (s) => { out += s; });
   return { code, out };
 }, cmd);
+
+/** A step's wall time and host user/sys (Chromium tree), as `key`, `key_user`, `key_sys`. */
+function addCpu(add, key, r) { add(key, r.ms); add(`${key}_user`, r.user); add(`${key}_sys`, r.sys); }
+
+/**
+ * A build natively on this machine (the reference row): wall, user and sys
+ * of `cmd` in `cwd` from bash's `time`, children included. { ms, user, sys }.
+ */
+function nativeTime(cmd, cwd, env = {}) {
+  const script = `TIMEFORMAT='@@time %R %U %S'; time { ${cmd} ; } > /dev/null 2>&1`;
+  const r = execFileSync('bash', ['-c', `{ ${script} ; } 2>&1`], { cwd, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 1_800_000 });
+  const m = /@@time ([\d.]+) ([\d.]+) ([\d.]+)/.exec(r);
+  if (!m) throw new Error(`native \`${cmd}\`: no timing in ${r.slice(-200)}`);
+  return { ms: Number(m[1]) * 1000, user: Number(m[2]), sys: Number(m[3]) };
+}
 
 async function vite(h, add) {
   await h.page?.context().close().catch(() => {});
@@ -95,11 +114,56 @@ async function vite(h, add) {
   await frame.waitForFunction(() => /Edited by HMR/.test(document.body?.innerText ?? ''), null, { timeout: 60000 });
   add('hmr', Date.now() - t0);
   if (!await frame.evaluate(() => window.__notReloaded === true)) throw new Error('the preview reloaded instead of hot-updating');
+  // vite build from a second shell while the dev server runs (the sequence above stays as before)
+  const build = await h.withHostCpu(async () => { const t = Date.now(); const r = await side(h, 'cd ~/app && npm run build'); return { ...r, ms: Date.now() - t }; });
+  if (build.result.code !== 0) throw new Error(`npm run build: exit ${build.result.code}: ${build.result.out.slice(-200)}`);
+  addCpu(add, 'vite_build', { ms: build.result.ms, user: build.user, sys: build.sys });
 }
 
-const VITE = ['workflow.vite', 'workflow.vite.create', 'workflow.vite.npm_i', 'workflow.vite.dev_ready', 'workflow.vite.preview', 'workflow.vite.hmr', 'workflow.peak_rss.vite_npm_i', 'workflow.peak_rss.vite_dev', 'workflow.peak_rss.vite_npm_i_net', 'workflow.peak_rss.vite_dev_net'];
-const GO = ['workflow.go', 'workflow.go.toolchain_install', 'workflow.go.run_first', 'workflow.go.run_warm', 'workflow.peak_rss.go_run_first', 'workflow.peak_rss.go_run_warm', 'workflow.peak_rss.go_run_first_net'];
+const VITE = ['workflow.vite', 'workflow.vite.create', 'workflow.vite.build', 'workflow.vite.npm_i', 'workflow.vite.dev_ready', 'workflow.vite.preview', 'workflow.vite.hmr', 'workflow.peak_rss.vite_npm_i', 'workflow.peak_rss.vite_dev', 'workflow.peak_rss.vite_npm_i_net', 'workflow.peak_rss.vite_dev_net'];
+const GO = ['workflow.go', 'workflow.go.toolchain_install', 'workflow.go.build_a', 'workflow.go.run_first', 'workflow.go.run_warm', 'workflow.peak_rss.go_run_first', 'workflow.peak_rss.go_run_warm', 'workflow.peak_rss.go_run_first_net'];
 const APT = ['workflow.apt', 'workflow.apt.update', 'workflow.apt.install_hello', 'workflow.apt.hello_run', 'workflow.peak_rss.apt_update', 'workflow.peak_rss.apt_install_hello', 'workflow.peak_rss.apt_update_net', 'workflow.peak_rss.apt_install_hello_net'];
+
+/** The builds natively on this machine, `rounds` times each: the reference rows next to the workflow.* ones. */
+function nativeBuilds(h, rounds) {
+  const rows = (metric, rs, what) => {
+    if (!rs.length) return;
+    h.sample(metric, rs.map((r) => r.ms), 'ms', { notes: `native reference: ${what} on this machine's Linux` });
+    h.sample(`${metric}.user`, rs.map((r) => r.user), 's', { notes: `native: user CPU of ${what} (bash \`time\`, children included)` });
+    h.sample(`${metric}.sys`, rs.map((r) => r.sys), 's', { notes: `native: sys CPU of ${what}` });
+  };
+  const tmp = mkdtempSync(join(tmpdir(), 'wf-native-'));
+  try {
+    if (h.wantsAny('workflow.native.go', 'workflow.native.go_build_first', 'workflow.native.go_build_a')) {
+      let go = null;
+      try { go = execFileSync('go', ['version'], { encoding: 'utf8' }).trim(); } catch {}
+      if (!go) h.skip('workflow.native.go_build_a', 'ms', 'no go on this machine');
+      else {
+        writeFileSync(join(tmp, 'hello.go'), 'package main\nimport "fmt"\nfunc main() { fmt.Println("hello") }\n');
+        const first = [], all = [];
+        try {
+          for (let i = 0; i < rounds; i++) {
+            const env = { GOCACHE: join(tmp, `cache${i}`), GO111MODULE: 'off', GOFLAGS: '', CGO_ENABLED: '0' };
+            first.push(nativeTime('go build -o h1 hello.go', tmp, env));
+            all.push(nativeTime('go build -a -o h2 hello.go && ./h2', tmp, env));
+          }
+          rows('workflow.native.go_build_first', first, `\`go build hello.go\` with an empty build cache (${go}; what the first \`go run\` compiles)`);
+          rows('workflow.native.go_build_a', all, `\`go build -a hello.go\` + run (${go})`);
+        } catch (e) { h.skip('workflow.native.go_build_a', 'ms', String(e.message).slice(0, 200)); }
+      }
+    }
+    if (h.wantsAny('workflow.native.vite_build')) {
+      try {
+        // the app natively (registry over the network, not the bench cache): only `vite build` is timed
+        const env = { npm_config_cache: join(tmp, 'npm-cache'), npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false' };
+        execFileSync('bash', ['-c', 'npm create vite@7 app -- --template react --no-interactive && cd app && npm i'], { cwd: tmp, env: { ...process.env, ...env }, stdio: 'ignore', timeout: 600_000 });
+        const rs = [];
+        for (let i = 0; i < rounds; i++) rs.push(nativeTime('npx vite build', join(tmp, 'app'), env));
+        rows('workflow.native.vite_build', rs, `\`npm run build\` (vite build) of the same React template, Node ${process.version}`);
+      } catch (e) { h.skip('workflow.native.vite_build', 'ms', `native app setup or build failed: ${String(e.message).split('\n')[0].slice(0, 200)}`); }
+    }
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
 
 export async function run(h) {
   if (!h.isolated) { h.skip('workflow.suite', '', 'measured in the isolated (production) configuration only'); return; }
@@ -114,6 +178,9 @@ export async function run(h) {
     }
     S(R, 'workflow.vite.create', 'create', 'ms', '`npm create vite@7 app -- --template react --no-interactive` typed at the terminal, fresh profile (pinned: @latest moves to new majors)');
     S(R, 'workflow.vite.npm_i', 'npm_i', 'ms', '`npm i` in the new app (react, vite, plugins; registry from the bench cache)');
+    S(R, 'workflow.vite.build', 'vite_build', 'ms', '`npm run build` (vite build of the React template) from a second shell, after the HMR check');
+    S(R, 'workflow.vite.build.user', 'vite_build_user', 's', 'host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `npm run build`');
+    S(R, 'workflow.vite.build.sys', 'vite_build_sys', 's', 'host sys CPU of the Chromium tree during `npm run build`');
     S(R, 'workflow.vite.dev_ready', 'dev_ready', 'ms', '`npm run dev` until vite prints ready');
     S(R, 'workflow.vite.preview', 'preview', 'ms', '`serve open 5173` until the preview renders the app');
     S(R, 'workflow.vite.hmr', 'hmr', 'ms', 'edit src/App.jsx → the change shows in the preview by HMR (no reload)');
@@ -141,6 +208,13 @@ export async function run(h) {
           const first = await timed(h, 'cd /tmp && go run hello.go', 1200, /^hello$/m);
           const warm = await timed(h, 'cd /tmp && go run hello.go', 1200, /^hello$/m);
           add('go_install', inst.ms); add('go_first', first.ms); add('go_first_peak', first.peak); if (first.net != null) add('go_first_net', first.net); add('go_warm', warm.ms); add('go_warm_peak', warm.peak);
+          addCpu(add, 'go_first_cpu', first); addCpu(add, 'go_warm_cpu', warm);
+          // `go build -a`: every package hello.go needs (runtime, fmt, ...) compiled again.
+          // Full runs only: ~20 min in Blink (the quick run's go build user/sys is run_first's)
+          if (!h.quick && h.wants('workflow.go.build_a')) {
+            const all = await timed(h, `cd /tmp && go build -a -o /tmp/hello-a hello.go && /tmp/hello-a`, 1800, /^hello$/m);
+            addCpu(add, 'go_build_a', all);
+          }
         } catch (e) {
           h.skip('workflow.go.round', '', `round ${i + 1} failed: ${String(e.message).slice(0, 300)}`);
         }
@@ -154,6 +228,7 @@ export async function run(h) {
           const up = await timed(h, `${apt} update`, 1800);
           const hello = await timed(h, `${apt} install -y hello`, 1800);
           const runIt = await timed(h, 'hello', 120, /Hello, world!/);
+          addCpu(add, 'apt_hello_cpu', hello); addCpu(add, 'apt_update_cpu', up);
           add('apt_update', up.ms); add('apt_update_peak', up.peak); if (up.net != null) add('apt_update_net', up.net); add('apt_hello', hello.ms); add('apt_hello_peak', hello.peak); if (hello.net != null) add('apt_hello_net', hello.net); add('apt_hello_run', runIt.ms);
         } catch (e) {
           h.skip('workflow.apt.round', '', `round ${i + 1} failed: ${String(e.message).slice(0, 300)}`);
@@ -166,6 +241,16 @@ export async function run(h) {
     S(R, 'workflow.peak_rss.go_run_first', 'go_first_peak', 'MiB', 'renderer RSS peak above the pre-run level');
     S(R, 'workflow.peak_rss.go_run_first_net', 'go_first_net', 'MiB', 'renderer RSS peak above the pre-run level, minus the growth of the renderer\'s buffer partition (DevTools copies of response bodies)');
     S(R, 'workflow.peak_rss.go_run_warm', 'go_warm_peak', 'MiB', 'renderer RSS peak above the pre-run level');
+    const cpuRows = (R, metric, key, what) => {
+      S(R, `${metric}.user`, `${key}_user`, 's', `host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during ${what}`);
+      S(R, `${metric}.sys`, `${key}_sys`, 's', `host sys CPU of the Chromium tree during ${what}`);
+    };
+    cpuRows(R, 'workflow.go.run_first', 'go_first_cpu', 'the first `go run hello.go`');
+    cpuRows(R, 'workflow.go.run_warm', 'go_warm_cpu', 'the second `go run hello.go`');
+    S(R, 'workflow.go.build_a', 'go_build_a', 'ms', '`go build -a hello.go` (runtime, fmt and their dependencies recompiled) + run, after the two `go run`s');
+    cpuRows(R, 'workflow.go.build_a', 'go_build_a', '`go build -a`');
+    cpuRows(R, 'workflow.apt.update', 'apt_update_cpu', '`apt-get update`');
+    cpuRows(R, 'workflow.apt.install_hello', 'apt_hello_cpu', '`apt-get install -y hello`');
     S(R, 'workflow.apt.update', 'apt_update', 'ms', '`apt-get update` from the mirror disk cache (needed before any install on a fresh profile)');
     S(R, 'workflow.apt.install_hello', 'apt_hello', 'ms', '`apt-get install -y hello` (one small package, no new dependencies) from the warm mirror cache');
     S(R, 'workflow.apt.hello_run', 'apt_hello_run', 'ms', 'then `hello`');
@@ -174,4 +259,5 @@ export async function run(h) {
     S(R, 'workflow.peak_rss.apt_install_hello_net', 'apt_hello_net', 'MiB', 'renderer RSS peak above the pre-run level, minus the growth of the renderer\'s buffer partition (DevTools copies of response bodies)');
     S(R, 'workflow.peak_rss.apt_install_hello', 'apt_hello_peak', 'MiB', 'renderer RSS peak above the pre-run level');
   }
+  nativeBuilds(h, rounds);
 }

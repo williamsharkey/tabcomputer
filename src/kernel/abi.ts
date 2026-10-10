@@ -131,6 +131,10 @@ export const SYS_setfsuid = 122;
 export const SYS_setfsgid = 123;
 export const SYS_eventfd = 284;
 export const SYS_eventfd2 = 290;
+export const SYS_inotify_init = 253;
+export const SYS_inotify_add_watch = 254;
+export const SYS_inotify_rm_watch = 255;
+export const SYS_inotify_init1 = 294;
 /**
  * timerfd_create(clockid, flags). Engines that keep their own clocks pass
  * times as milliseconds (f64) in the data area instead of struct itimerspec:

@@ -1533,6 +1533,8 @@ export class Kernel {
   private async runShellProcess(proc: Process): Promise<number> {
     const shell = this.forkShell(proc);
     shell.kernelHost = { kernel: this, proc };
+    // (its stdin is its fd 0, not a parent shell's piped input that came with the environment)
+    delete shell.env.__PIPE_STDIN;
     // bash's options, before or after -c: `sh -c -l 'cmd'` (Claude Code), `bash -l -c 'cmd' a b`
     const name = (proc.argv[0] ?? 'sh').replace(/^.*\//, '').replace(/^-/, '') || 'sh';
     const opts = parseShellArgs(proc.argv.slice(1));

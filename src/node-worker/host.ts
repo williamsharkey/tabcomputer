@@ -240,7 +240,9 @@ export function installNodeLoader(kernel: Kernel): void {
 /** `node ARGS` from the shell as a kernel process: a foreground job on the terminal's pty, or on the shell's stdio */
 export async function runNodeInWorker(ctx: CommandContext): Promise<number> {
   const argv = ['node', ...ctx.args];
+  // (not the shell's own __PIPE_STDIN: process.ts)
   const env = { ...ctx.env };
+  delete env.__PIPE_STDIN;
   const { kernelForContext } = await import('../wasi/run-command');
   installNodeLoader(kernelForContext(ctx)); // node that this node starts runs as a guest too
   const term = ctx.terminal;

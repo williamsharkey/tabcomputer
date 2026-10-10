@@ -213,7 +213,8 @@ export async function executeNodeScript(
     const { fileCache, fileMtimes, moduleCache, tickSyncOps } = createFileCache(guest?.readText, guest ? (p) => !!(ctx.fs as any).isDirCached?.(p) : undefined, guest ? undefined : ctx.fs);
 
     // Pre-load environment (the page's: files into the cache, Claude's bootstrap)
-    if (!guest) await preloadEnvironment(ctx, fileCache, fileMtimes, scriptPath);
+    // In the page, readFileSync reads the FileSystem's cache: small files stay in it from now on
+    if (!guest) { await (ctx.fs as { holdSmallContent?: () => Promise<void> }).holdSmallContent?.(); await preloadEnvironment(ctx, fileCache, fileMtimes, scriptPath); }
     else await claudeBootstrap(ctx, ctx.env['HOME'] || '/home/user', scriptPath);
     const homeDir = ctx.env['HOME'] || '/home/user';
 

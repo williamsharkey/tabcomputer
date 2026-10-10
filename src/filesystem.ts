@@ -785,10 +785,9 @@ export class FileSystem {
   }
 
   /**
-   * Tell onChange listeners about a change made outside FileSystem's own
-   * writes: the kernel's open files write back later, so it announces a
-   * guest's write() or truncate when it happens (inotify, fs.watch); the
-   * write-back's own 'write' follows.
+   * A change made outside FileSystem's own writes, for its listeners now: the
+   * kernel's inode cache reports a guest's write() when it happens, not only
+   * when it writes the file back (inotify, fs.watch).
    */
   notify(event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail): void {
     this._emitChange(event, path, newPath, detail);
@@ -2497,7 +2496,7 @@ export class FileSystem {
       size: content.length,
       ...(options?.times ? { mtimeNs: options.times.mtimeNs || undefined, atime: options.times.atime, atimeNs: options.times.atimeNs || undefined } : {}),
     });
-    this._emitChange('write', path, undefined, created || options?.fd ? { ...(created ? { created } : {}), ...(options?.fd ? { fd: true } : {}) } : undefined);
+    this._emitChange('write', path, undefined, !created && !options?.fd ? undefined : { ...(created ? { created: true } : {}), ...(options?.fd ? { fd: true } : {}) });
   }
 
   /**

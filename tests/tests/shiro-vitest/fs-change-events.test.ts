@@ -39,7 +39,7 @@ describe('FileSystem change events', { timeout: 60_000 }, () => {
     expect(take()).toEqual([
       ['write', '/tmp/ce1/ln', undefined, { created: true }],
       ['write', '/tmp/ce1/hard', undefined, { created: true }],
-      ['attrib', '/tmp/ce1/a', undefined, undefined], // (its link count)
+      ['attrib', '/tmp/ce1/a', undefined, undefined], // (its link count: IN_ATTRIB)
       ['write', '/tmp/ce1/fifo', undefined, { created: true }],
     ]);
     const w = await fs.createWriter('/tmp/ce1/streamed');
@@ -94,7 +94,7 @@ describe('FileSystem change events', { timeout: 60_000 }, () => {
       const d = new Uint8Array(256); d.set(p);
       const fd = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, p.length, A.O_WRONLY | A.O_CREAT, 0o644], d);
       expect(fd).toBeGreaterThanOrEqual(0);
-      expect(ev[0]).toEqual(['write', '/tmp/ce3/new', undefined, { created: true, fd: true }]); // (its close reports itself)
+      expect(ev[0]).toEqual(['write', '/tmp/ce3/new', undefined, { created: true, fd: true }]);
       kernel.kill(proc.pid, A.SIGKILL);
     } finally { kernel.dispose(); }
   });

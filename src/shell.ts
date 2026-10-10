@@ -564,6 +564,8 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** Kernel fd kinds a command reads as data when given no file (ripgrep's is_readable_stdin) */
+const READABLE_STDIN_KINDS = new Set(['file', 'pipe', 'socket']);
 /** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
 const PREFIX_REDIR_RE = /^\s*(\d*(?:&>>?|>>|>\||<>|>&|<&|>|<)\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+)(?=\s)/;
 /** A command word as it stands after expansion */
@@ -2446,10 +2448,10 @@ export class Shell {
       return lastExit;
     }
 
-    // Handle heredocs before anything else
-    const heredoc = this.parseHeredoc(trimmed);
-    const effectiveLine = heredoc ? heredoc.command : trimmed;
-    const heredocStdin = heredoc ? heredoc.body : (injectedStdin ?? '');
+    // (here-documents are `< MARKER` redirections by now: extractHeredocs above;
+    // a `<<` still here is quoted, as in `eval 'cat <<E …'`, and stays as written)
+    const effectiveLine = trimmed;
+    const heredocStdin = injectedStdin ?? '';
 
     // Strip control characters from history entries (ink UI can leak ANSI/DEL chars)
     // Only record user-typed commands (not programmatic calls from child_process, spawn, etc.)
@@ -4736,6 +4738,10 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
+            // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
+            : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
+              !redirects.some(r => r.type === '<' && /^\/dev\/(null|zero|tty)$/.test(r.target)),
           // (not when the caller collects stdout: $(...), a builtin's own sink)
           stdoutIsTTY: i === pipeline.length - 1 && !redirects.some(r => r.type === '>' || r.type === '>>') &&
             !(terminalOverride || this.terminal)?.captureStdout,
@@ -6320,56 +6326,6 @@ export class Shell {
     return alts;
   }
 
-  private parseHeredoc(input: string): { command: string; body: string } | null {
-    // Match <<DELIM, <<'DELIM', <<"DELIM", or <<-DELIM patterns
-    const lines = input.split(/\r?\n/);
-    if (lines.length < 2) return null;
-
-    // Find <<DELIM on the first line (could be anywhere in the command)
-    const heredocMatch = lines[0].match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))/);
-    if (!heredocMatch) return null;
-
-    const delimiter = heredocMatch[1] || heredocMatch[2] || heredocMatch[3];
-    const quoted = !!(heredocMatch[1] || heredocMatch[2]);
-    const stripTabs = lines[0].match(/<<-/) !== null;
-
-    // Remove the <<DELIM token from the command line
-    const command = lines[0].replace(/<<-?\s*(?:'[^']+'|"[^"]+"|(\S+))/, '').trim();
-
-    // Collect body lines until we find the delimiter on its own line
-    const bodyLines: string[] = [];
-    let found = false;
-    let delimiterIndex = -1;
-    for (let i = 1; i < lines.length; i++) {
-      const line = stripTabs ? lines[i].replace(/^\t+/, '') : lines[i];
-      if (line.trim() === delimiter) {
-        found = true;
-        delimiterIndex = i;
-        break;
-      }
-      bodyLines.push(line);
-    }
-
-    if (!found) return null;
-
-    // Capture any commands after the closing delimiter line
-    let finalCommand = command;
-    const remaining = lines.slice(delimiterIndex + 1).map(l => l.trim()).filter(Boolean);
-    if (remaining.length > 0) {
-      finalCommand = finalCommand + ' && ' + remaining.join(' && ');
-    }
-
-    let body = bodyLines.join('\n');
-    // If delimiter was not quoted, expand variables
-    if (!quoted) {
-      body = restoreExpansion(this.expandVars(body));
-    }
-    // Add trailing newline (standard heredoc behavior)
-    body += '\n';
-
-    return { command: finalCommand, body };
-  }
-
   private parseCompound(line: string): { operator: '' | '&&' | '||' | ';'; command: string }[] {
     const result: { operator: '' | '&&' | '||' | ';'; command: string }[] = [];
     let current = '';
@@ -7456,6 +7412,8 @@ export class Shell {
   private compoundsBalanced(src: string): boolean {
     const close: Record<string, string> = { for: 'done', while: 'done', until: 'done', select: 'done', if: 'fi', case: 'esac' };
     const stack: string[] = [];
+    // (here-document bodies are data: `if`, `case`, `{` there aren't keywords)
+    if (hasHeredoc(src)) src = extractHeredocs(src, new HeredocStore());
     for (const { word } of this.shellTokenScan(src)) {
       if (close[word]) stack.push(close[word]);
       else if (word === 'done' || word === 'fi' || word === 'esac') { if (stack.pop() !== word) return false; }

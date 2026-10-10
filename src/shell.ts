@@ -276,6 +276,9 @@ let procSubCounter = 0;
 /** Where installed programs live: tabcomputer's own commands count as being in the first of these on PATH */
 const STD_BIN_DIRS = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin'];
 
+/** Finished background jobs a shell keeps for jobs/wait (trimDoneJobs) */
+const MAX_DONE_JOBS = 256;
+
 /** Pids for in-page background jobs ($!), above any kernel pid in practice */
 let nextInPagePid = 40000;
 
@@ -1323,7 +1326,12 @@ export class Shell {
     const own = new AbortController();
     const outer = this.inheritedAbort?.signal;
     if (outer?.aborted) own.abort();
-    else outer?.addEventListener('abort', () => own.abort(), { once: true });
+    else if (outer) {
+      const onAbort = () => own.abort();
+      outer.addEventListener('abort', onAbort, { once: true });
+      // (endProcess removes it: a script running thousands of `sh -c` keeps one abort)
+      this.unlinkAbort = () => outer.removeEventListener('abort', onAbort);
+    }
     this.processAbort = this.inheritedAbort = own;
     // A new process starts with no call stack, and getopts at the start (OPTIND=1, not exported)
     this.sourceFile = '';
@@ -1438,6 +1446,8 @@ export class Shell {
   }
 
   endProcess(): void {
+    this.unlinkAbort?.();
+    this.unlinkAbort = undefined;
     if (shellsByPid.get(this.shellPid)?.deref() === this) shellsByPid.delete(this.shellPid);
   }
 
@@ -1454,6 +1464,8 @@ export class Shell {
   }
   /** A shell process's own abort (startProcess): its parent's aborts reach it, not the reverse */
   private processAbort?: AbortController;
+  /** Detaches processAbort from the parent's abort (endProcess) */
+  private unlinkAbort?: () => void;
   /** A fatal signal aborted the command in progress: the EXIT trap gets a fresh abort */
   private killedMidCommand = false;
 
@@ -1647,6 +1659,20 @@ export class Shell {
     return { stdout, stderr, exitCode };
   }
 
+  /**
+   * Finished jobs wait in the table for jobs/wait/the prompt to report them;
+   * a shell nothing reports them in (a script, a kernel `sh` looping `cmd &`)
+   * keeps at most MAX_DONE_JOBS, the oldest go (bash bounds remembered
+   * statuses too).
+   */
+  private trimDoneJobs(): void {
+    if (this.backgroundJobs.size <= MAX_DONE_JOBS) return;
+    for (const [id, j] of this.backgroundJobs) {
+      if (this.backgroundJobs.size <= MAX_DONE_JOBS) break;
+      if (j.status === 'done' || j.status === 'failed') this.backgroundJobs.delete(id);
+    }
+  }
+
   private executeBackground(
     command: string,
     writeStdout: (s: string) => void,
@@ -1676,12 +1702,18 @@ export class Shell {
     }
     const abort = new AbortController();
     const outer = this.abortController ?? this.inheritedAbort;
-    outer?.signal.addEventListener('abort', () => abort.abort(outer.signal.reason), { once: true });
+    const onOuterAbort = () => abort.abort(outer!.signal.reason);
+    outer?.signal.addEventListener('abort', onOuterAbort, { once: true });
     child.inheritedAbort = abort;
     // A script or a kernel process's `sh -c` (an agent's) has no job control: the job's stdin
     // is /dev/null (POSIX 2.9.3.1), not the stream the shell reads, and no [N] pid is printed
     const jobControl = this.options.has('monitor') || this.interactiveFlag || (!this.scriptShell && !this.kernelStdio);
     if (!jobControl) child.kernelStdinLive = false;
+    // A finished job keeps its status for jobs/wait, not its shell or the outer abort's listener
+    const ended = () => {
+      outer?.signal.removeEventListener('abort', onOuterAbort);
+      job.shell = undefined;
+    };
     const job: BackgroundJob = {
       id: jobId,
       command,
@@ -1698,6 +1730,7 @@ export class Shell {
         .then((code) => child.finishSubshell(code, writeStdout, stderrWriter)).then(
         (code) => {
           inPageJobs.delete(pid);
+          ended();
           if (job.signal) code = 128 + job.signal;
           job.status = code === 0 ? 'done' : 'failed';
           job.exitCode = code;
@@ -1705,6 +1738,7 @@ export class Shell {
         },
         (err) => {
           inPageJobs.delete(pid);
+          ended();
           job.status = 'failed';
           job.exitCode = 1;
           return 1;
@@ -1713,6 +1747,7 @@ export class Shell {
     };
     this.backgroundJobs.set(jobId, job);
     if (job.status === 'running') inPageJobs.set(pid, job);
+    this.trimDoneJobs();
     this.env['!'] = String(pid);
     if (jobControl) writeStdout(`[${jobId}] ${pid}\n`);
     return 0;
@@ -2379,6 +2414,9 @@ export class Shell {
       const sanitized = trimmed.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
       if (sanitized.trim()) {
         this.history.push(sanitized);
+        // Kept to maxHistorySize in memory too (in place: forks share the
+        // array); an agent session runs thousands of commands
+        if (this.history.length >= this.maxHistorySize * 2) this.history.splice(0, this.history.length - this.maxHistorySize);
         this.scheduleHistorySave(); // Persist to disk (debounced)
       }
     }

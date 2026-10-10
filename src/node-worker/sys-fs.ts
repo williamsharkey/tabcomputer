@@ -329,29 +329,29 @@ export class SyscallFs {
     return { path: real, node: { path: real, type: st.type, mode: s.mode, size: s.size, mtime: s.mtimeMs, ctime: s.ctimeMs, ino: s.ino, special: st.isFIFO() ? 'fifo' : undefined } };
   }
 
-  private listeners = new Set<(event: string, path: string, newPath?: string) => void>();
+  private listeners = new Set<(event: string, path: string, newPath?: string, at?: number) => void>();
   /** Set by the guest: ask the page for its filesystem's change feed (once) */
   requestChanges: (() => void) | null = null;
 
   /** The page's filesystem changes (any process's writes), for fs.watch and chokidar */
-  onChange(listener: (event: string, path: string, newPath?: string) => void): () => void {
+  onChange(listener: (event: string, path: string, newPath?: string, at?: number) => void): () => void {
     this.listeners.add(listener);
     if (this.requestChanges) { this.requestChanges(); this.requestChanges = null; }
     return () => { this.listeners.delete(listener); };
   }
 
   /** Hear changes while something else has the feed on (a watcher), without asking for it */
-  onChangePassive(listener: (event: string, path: string, newPath?: string) => void): () => void {
+  onChangePassive(listener: (event: string, path: string, newPath?: string, at?: number) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
 
-  /** A change the page reported: what we cached about those paths goes, then the listeners hear it */
-  changed(event: string, path: string, newPath?: string): void {
+  /** A change the page reported (`at`: its Date.now() then): what we cached about those paths goes, then the listeners hear it */
+  changed(event: string, path: string, newPath?: string, at?: number): void {
     this.forget(path);
     if (newPath) this.forget(newPath);
     this.last = null;
-    for (const fn of this.listeners) { try { fn(event, path, newPath); } catch { /* a listener's problem */ } }
+    for (const fn of this.listeners) { try { fn(event, path, newPath, at); } catch { /* a listener's problem */ } }
   }
 
   // ── FileSystem's async surface: the same calls ──

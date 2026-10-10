@@ -219,7 +219,8 @@ function fsError(code: string, message: string): Error {
 }
 
 export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename';
-export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string) => void;
+/** `at`: when the change happened (Date.now()), where it reaches the listener later (a node guest's relay) */
+export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, at?: number) => void;
 
 /**
  * Virtual filesystem provider for synthetic paths like /proc and /dev.

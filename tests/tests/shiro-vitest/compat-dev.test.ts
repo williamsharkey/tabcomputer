@@ -1067,17 +1067,18 @@ ws.write(bin.subarray(0, 3)); ws.end(bin.subarray(3), () => {
 });`)).toBe('open\nfinish 6 true\npiped null 1,0,129,11,201,2\nappended 7\nerror ENOENT\n');
   }, 60_000);
 
-  it('package exports: require picks require over import (browser first), import() a namespace', async () => {
+  // (browser first in the page; a guest in a Worker has no DOM and takes node builds, as Astro's needed)
+  it('package exports: require picks require over import (browser first in the page), import() a namespace', async () => {
     await fs.mkdir('/home/user/m/node_modules/dual/esm', { recursive: true });
     await fs.writeFile('/home/user/m/node_modules/dual/package.json', JSON.stringify({ name: 'dual', exports: { '.': { import: './esm/index.mjs', require: './index.cjs' }, './feature': { browser: './b.js', node: './n.js' } } }));
     await fs.writeFile('/home/user/m/node_modules/dual/index.cjs', 'module.exports = { kind: "cjs" };');
     await fs.writeFile('/home/user/m/node_modules/dual/esm/index.mjs', 'export const kind = "esm";');
     await fs.writeFile('/home/user/m/node_modules/dual/n.js', 'module.exports = "node";');
     await fs.writeFile('/home/user/m/node_modules/dual/b.js', 'module.exports = "browser";');
-    expect(await node(`console.log(require('dual').kind, require('dual/feature'));
+    expect(await node(`console.log(require('dual').kind, require('dual/feature') === (typeof document === 'undefined' ? 'node' : 'browser'));
 import('dual').then(ns => console.log(ns.default.kind, ns.kind));
 const dyn = new Function('m', 'return import(m)'); dyn('./node_modules/dual/n.js').then(ns => console.log(ns.default));`))
-      .toBe('cjs browser\ncjs cjs\nnode\n');
+      .toBe('cjs true\ncjs cjs\nnode\n');
   }, 60_000);
 
   // Expected values are real node 22's (cases ported from node's
@@ -2088,6 +2089,60 @@ describe('require.resolve finds any existing file', () => {
     await fs.writeFile('/home/user/rr/app/favicon.ico', new Uint8Array([0, 0, 1, 0, 0xff, 0xfe]));
     const r = await sh(shell, `cd /home/user/rr && node -e "console.log(require.resolve('/home/user/rr/app/favicon.ico'), require.resolve('./app/favicon.ico')); try { require.resolve('./app/nope.ico') } catch (e) { console.log(e.code) }"`);
     expect(r.out).toBe('/home/user/rr/app/favicon.ico /home/user/rr/app/favicon.ico\nMODULE_NOT_FOUND\n');
+  }, 60_000);
+});
+
+describe('worker_threads Worker env', () => {
+  it("is the worker's process.env, and the parent's stays as it was (SvelteKit's forked build steps)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/wte', { recursive: true });
+    await fs.writeFile('/home/user/wte/w.mjs', `import { Worker, parentPort } from 'node:worker_threads';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+if (process.env.FORKED && parentPort) {
+  parentPort.on('message', (d) => parentPort.postMessage({ type: 'result', v: d.v * 2, forked: process.env.FORKED }));
+  parentPort.postMessage({ type: 'ready' });
+} else if (!parentPort) {
+  const w = new Worker(fileURLToPath(import.meta.url), { env: { ...process.env, FORKED: 'yes' } });
+  w.on('message', (d) => {
+    if (d.type === 'ready') w.postMessage({ v: 21 });
+    if (d.type === 'result') { console.log(d.v, d.forked, process.env.FORKED); w.terminate(); }
+  });
+} else console.log('no env in the worker');
+`);
+    const r = await sh(shell, 'node /home/user/wte/w.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('42 yes undefined\n');
+  }, 60_000);
+});
+
+describe('export { default as x } from', () => {
+  it("re-exports the module's default as `import x from` reads it, undefined included (esm-env, SvelteKit's build)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/edf', { recursive: true });
+    await fs.writeFile('/home/user/edf/t.mjs', 'export default true;\n');
+    await fs.writeFile('/home/user/edf/u.mjs', 'export default undefined;\n');
+    await fs.writeFile('/home/user/edf/o.mjs', 'export default { a: 1 };\nexport const b = 2;\n');
+    await fs.writeFile('/home/user/edf/i.mjs', "export { default as T } from './t.mjs';\nexport { default as U } from './u.mjs';\nexport { default as O, b } from './o.mjs';\n");
+    await fs.writeFile('/home/user/edf/m.mjs', "import { T, U, O, b } from './i.mjs';\nconsole.log(T, U, O.a, b);\n");
+    const r = await sh(shell, 'node /home/user/edf/m.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('true undefined 1 2\n');
+  }, 60_000);
+});
+
+describe('top-level await reaches importers', () => {
+  it("a module importing one that is still evaluating waits for it, and so do its importers (SvelteKit's core/sync/utils.js)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/tla', { recursive: true });
+    await fs.writeFile('/home/user/tla/v.mjs', 'await new Promise((r) => setTimeout(r, 20));\nexport const v = 21;\n');
+    await fs.writeFile('/home/user/tla/u.mjs', "const { v } = await import('./v.mjs');\nconst MAJOR = v * 2;\nexport function major() { return MAJOR; }\n");
+    await fs.writeFile('/home/user/tla/mid.mjs', "import { major } from './u.mjs';\nexport const plugin = () => major();\n");
+    await fs.writeFile('/home/user/tla/top.mjs', "import { plugin } from './mid.mjs';\nconsole.log('major', plugin());\n");
+    await fs.writeFile('/home/user/tla/entry.mjs', "const m = await import('./top.mjs');\nconsole.log('done');\n");
+    const r = await sh(shell, 'node /home/user/tla/entry.mjs');
+    // (node 22's output)
+    expect(r.out).toBe('major 42\ndone\n');
   }, 60_000);
 });
 

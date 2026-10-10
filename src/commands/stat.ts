@@ -16,6 +16,7 @@ export const stat: Command = {
     const format = values.c || values.format;
     const terse = flags.t;
     const fileSystem = flags.f;
+    const deref = !!(flags.L || flags.dereference); // -L: the file a symlink names
 
     const output: string[] = [];
 
@@ -24,7 +25,7 @@ export const stat: Command = {
         const resolved = ctx.fs.resolvePath(path, ctx.cwd);
 
         try {
-          const statInfo = await statEntry(ctx.fs, resolved);
+          const statInfo = await statEntry(ctx.fs, resolved, deref);
 
           if (format) {
             // Custom format
@@ -35,7 +36,7 @@ export const stat: Command = {
             output.push(`${path} ${statInfo.size} 0 ${statInfo.mode} 0 0 0 0 0 0 ${statInfo.mtime}`);
           } else {
             // Default verbose format
-            const typeStr = statInfo.type === "dir" ? "directory" : "regular file";
+            const typeStr = fileType(statInfo);
             const modeStr = formatMode(statInfo.mode);
             const dateStr = new Date(statInfo.mtime).toISOString();
 
@@ -60,6 +61,11 @@ export const stat: Command = {
     }
   },
 };
+
+/** %F: GNU stat's names */
+function fileType(st: { type: string; fifo?: boolean }): string {
+  return st.type === "dir" ? "directory" : st.type === "symlink" ? "symbolic link" : st.fifo ? "fifo" : "regular file";
+}
 
 function formatMode(mode: number): string {
   const perms = [
@@ -86,7 +92,7 @@ function formatStat(path: string, stat: any, format: string): string {
     .replace(/%f/g, stat.mode.toString(16)) // mode in hex
     .replace(/%a/g, stat.mode.toString(8)) // mode in octal
     .replace(/%A/g, formatMode(stat.mode).split("/")[1]) // human-readable permissions
-    .replace(/%F/g, stat.type === "dir" ? "directory" : "regular file") // file type
+    .replace(/%F/g, fileType(stat)) // file type
     .replace(/%u/g, "0") // user ID
     .replace(/%g/g, "0") // group ID
     .replace(/%U/g, "root") // user name

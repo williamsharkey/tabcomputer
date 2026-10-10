@@ -431,6 +431,12 @@ async function runTar(ctx: CommandContext): Promise<number> {
         }
         return;
       }
+      if (st.isFIFO?.()) {
+        // A named pipe is a member of its own (type 6, no data), as GNU tar: reading it would wait for a writer
+        blocks.push(...headerBlocks({ ...base, type: '6' }));
+        if (verbose) vout(verbose > 1 ? verboseLine({ ...base, type: '6' }, verbose) : name + '\n');
+        return;
+      }
       if ((st.nlink ?? 1) > 1 && st.ino) {
         const first = linkedNames.get(st.ino);
         if (first !== undefined) {
@@ -676,6 +682,8 @@ async function runTar(ctx: CommandContext): Promise<number> {
         const sst = await fs.lstat(src).catch(() => null);
         if (!sst) { warn(`${name}: Cannot hard link to '${h.linkname}': No such file or directory`); status = 2; continue; }
         await fs.link(src, target);
+      } else if (h.type === '6') {
+        await fs.mkfifo(target, h.mode & 0o7777);
       } else if (h.type === '0' || h.type === '7') {
         await fs.writeFile(target, body.slice(), { mode: h.mode & 0o7777 });
         await fs.chmod(target, h.mode & 0o7777).catch(() => {});
@@ -705,7 +713,7 @@ function verboseLine(h: Header, verbose: number): string {
   const d = new Date(h.mtime * 1000);
   const when = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
   const owner = `${h.uname || h.uid}/${h.gname || h.gid}`;
-  const size = String(h.type === '5' || h.type === '2' || h.type === '1' ? 0 : h.size);
+  const size = String(h.type === '5' || h.type === '2' || h.type === '1' || h.type === '6' ? 0 : h.size);
   const pad = owner.length + 1 + size.length;
   const width = Math.max(19, pad);
   let line = `${MODE_CHARS(h.type, h.mode)} ${owner} ${size.padStart(width - pad + size.length)} ${when} ${h.name}`;

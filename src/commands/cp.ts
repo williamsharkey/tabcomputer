@@ -291,6 +291,13 @@ export const cp: Command = {
         if (o.verbose) ctx.stdout += `${q(srcName)} -> ${q(dstName)}\n`;
         return;
       }
+      if (o.recursive && st.isFIFO?.()) {
+        // -r makes a new named pipe, as GNU cp (reading one would wait for a writer)
+        if (await tryLstat(ctx, dstAbs)) await fs.unlink(dstAbs).catch(() => {});
+        try { await fs.mkfifo(dstAbs, o.preserveMode ? st.mode & 0o7777 : st.mode & 0o777 & ~UMASK); } catch (e: any) { err(`cannot create fifo ${q(dstName)}: ${errText(e)}`); return; }
+        if (o.verbose) ctx.stdout += `${q(srcName)} -> ${q(dstName)}\n`;
+        return;
+      }
       if (o.link) {
         // -l: a hard link to the file instead of a copy (-f replaces an existing name)
         if (await tryLstat(ctx, dstAbs)) {
@@ -311,13 +318,6 @@ export const cp: Command = {
           return;
         }
         copiedInodes.set(st.ino, dstAbs);
-      }
-      // -r/-a: a named pipe is made anew, not read (GNU cp without --copy-contents)
-      if (o.recursive && st.isFIFO?.()) {
-        if (await tryLstat(ctx, dstAbs)) await fs.unlink(dstAbs).catch(() => {});
-        try { await fs.mkfifo(dstAbs, o.preserveMode ? st.mode & 0o7777 : st.mode & 0o777 & ~UMASK); } catch (e: any) { err(`cannot create fifo ${q(dstName)}: ${errText(e)}`); return; }
-        if (o.verbose) ctx.stdout += `${q(srcName)} -> ${q(dstName)}\n`;
-        return;
       }
       if (!(st.mode & 0o400) && !o.link) {
         err(`cannot open ${q(srcName)} for reading: Permission denied`);

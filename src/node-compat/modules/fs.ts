@@ -69,11 +69,12 @@ export function inodeOf(path: string): number {
 /** A node fs.Stats-like object. */
 export function makeStats(o: { type: 'file' | 'dir' | 'symlink'; size: number; mtimeMs: number; mode: number; ino: number; fifo?: boolean }): any {
   const t = new Date(o.mtimeMs);
-  // (a named pipe is a 'file' node marked special: S_IFIFO, not a regular file)
-  const fmt = o.type === 'dir' ? 0o40000 : o.type === 'symlink' ? 0o120000 : o.fifo ? 0o10000 : 0o100000;
+  // A named pipe is stored as a file: not a regular one (reading it waits for a writer)
+  const fifo = o.type === 'file' && !!o.fifo;
+  const fmt = o.type === 'dir' ? 0o40000 : o.type === 'symlink' ? 0o120000 : fifo ? 0o10000 : 0o100000;
   return {
-    isFile: () => o.type === 'file' && !o.fifo, isDirectory: () => o.type === 'dir', isSymbolicLink: () => o.type === 'symlink',
-    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => !!o.fifo, isSocket: () => false,
+    isFile: () => o.type === 'file' && !fifo, isDirectory: () => o.type === 'dir', isSymbolicLink: () => o.type === 'symlink',
+    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => fifo, isSocket: () => false,
     dev: 1, ino: o.ino, mode: fmt | (o.mode & 0o7777), nlink: o.type === 'dir' ? 2 : 1, uid: 1000, gid: 1000, rdev: 0,
     size: o.size, blksize: 4096, blocks: Math.ceil(o.size / 512),
     atime: t, mtime: t, ctime: t, birthtime: t,
@@ -445,8 +446,7 @@ export function createFsModule(deps: FsDeps): any {
   /** A node Stats from the filesystem's own stat (what memory couldn't answer) */
   const fromFsStat = (st: any, r: string, link = false): any => makeStats({
     type: link && st.isSymbolicLink?.() ? 'symlink' : st.isDirectory?.() ? 'dir' : 'file',
-    size: st.size ?? 0, mtimeMs: st.mtimeMs ?? st.mtime?.getTime?.() ?? Date.now(), mode: st.mode ?? 0o644, ino: inodeOf(r),
-    fifo: !!st.isFIFO?.(),
+    size: st.size ?? 0, mtimeMs: st.mtimeMs ?? st.mtime?.getTime?.() ?? Date.now(), mode: st.mode ?? 0o644, ino: inodeOf(r), fifo: !!st.isFIFO?.(),
   });
   const statAsync = async (p: any, link: boolean): Promise<any> => {
     const r = link ? realParent(p) : real(p);

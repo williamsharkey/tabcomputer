@@ -307,6 +307,14 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         return JSON.stringify({ type: 'console_result', ...result, requestId });
       }
 
+      case 'abort': {
+        // Like Ctrl-C in every terminal (the watchdog worker handles this one
+        // itself when it hosts the relay, so it works while the page is frozen)
+        const { abortForeground } = await import('../watchdog');
+        const hit = abortForeground('remote request');
+        return JSON.stringify({ type: 'abort_result', requested: true, hit, requestId });
+      }
+
       case 'diag': {
         // Why is the page slow or frozen: event-loop lag, long tasks, heap,
         // commands in flight, the watchdog's events (or the previous load's

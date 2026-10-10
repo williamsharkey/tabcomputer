@@ -290,6 +290,11 @@ A frozen page can't answer until it recovers; if this times out, retry after a r
     }
   },
   {
+    name: "abort",
+    description: `Kill switch: abort the tabcomputer page's foreground commands, like Ctrl-C in every terminal (in-page shell commands are aborted; the kernel's foreground process groups get SIGINT). Over the HTTPS relay the watchdog worker takes this request, so it works while the page is frozen: it raises a shared abort flag that the page checks at its yield points (shell function calls, source, loops; the x86 runner). A page stuck in one JavaScript loop with no yield point can't be stopped this way; reload it (the next load offers safe mode).`,
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
     name: "errors",
     description: "Get and clear pending console errors from Shiro browser. Errors accumulate passively and show as pendingErrors count in exec results.",
     inputSchema: {
@@ -747,6 +752,10 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       const result: any = await sendCommand({ type: "console", grep: args.grep, level: args.level, since: args.since, limit: args.limit, maxBytes: args.maxBytes, previous: args.previous });
       attachUserMessages(result);
       return result;
+    }
+
+    case "abort": {
+      return await sendCommand({ type: "abort" });
     }
 
     case "diag": {

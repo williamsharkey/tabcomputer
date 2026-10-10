@@ -9,6 +9,7 @@
 //    during a 10 s freeze the watchdog worker answers diag itself.
 // 3. A page frozen for good and then closed leaves a wedge record that the next
 //    load reports (`watchdog --prev`, previousWedge).
+// 2c. `abort` from outside ends a long command like Ctrl-C.
 // 4. `watchdog --kernel` lists kernel processes; `watchdog off` holds across a load.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -108,11 +109,19 @@ check(frozen.snapshot?.active?.some((a) => a.line.includes('js-eval')), `…nami
 await wait(10000);
 const after = await tool('diag', { kind: 'stall' }).catch((e) => ({ error: e.message }));
 check(!after.frozen && after.events?.length > 0, 'the page answers diag itself again afterwards');
+
+// 2c. The kill switch: abort a long command from outside
+const long = sh(page, 'slow() { sleep 60; }; slow; echo after=$?');
+await wait(1000);
+const ab = await tool('abort').catch((e) => ({ error: e.message }));
+check(ab.requested === true, `abort accepted (${JSON.stringify(ab).slice(0, 120)})`);
+const ended = await Promise.race([long, wait(10000).then(() => null)]);
+check(ended && ended.code === 130, `…and the command ended like Ctrl-C (${ended ? `status ${ended.code}` : 'still running after 10 s'})`);
 mcp.kill();
 
 // 3. Frozen for good, then closed: the next load reports it
 page.evaluate(() => window.__tabcomputer.shell.execute(`js-eval 'for (;;) {}'`, () => {})).catch(() => {});
-await wait(6000); // the worker writes the record after 3 s without a heartbeat
+await wait(12000); // the worker writes the record after 3 s without a heartbeat; 10 s+ offers safe mode
 const cdp = await browser.newBrowserCDPSession();
 const { targetInfos } = await cdp.send('Target.getTargets');
 for (const t of targetInfos) if (t.type === 'page') await cdp.send('Target.closeTarget', { targetId: t.targetId }).catch(() => {});
@@ -123,6 +132,8 @@ const prev = JSON.parse((await sh(next, 'watchdog --json -k wedge')).out);
 check(prev.previousWedge && prev.previousWedge.seenAt - prev.previousWedge.since >= 3000, `the next load found the wedge record (${prev.previousWedge ? Math.round((prev.previousWedge.seenAt - prev.previousWedge.since) / 1000) + 's' : 'none'})`);
 check(prev.previousWedge?.snapshot?.active?.some((a) => a.line.includes('for (;;)')), `…naming what was running (${prev.previousWedge?.snapshot?.active?.[0]?.line})`);
 check((await sh(next, 'watchdog --prev -n 400')).out.includes('js-eval'), 'watchdog --prev shows the previous load\'s commands');
+const screenText = await next.evaluate(() => { const b = window.__tabcomputer.terminal.term.buffer.active; let t = ''; for (let i = 0; i < b.length; i++) t += b.getLine(i).translateToString(true) + '\n'; return t; });
+check(/The last load froze for \d+ s while running: js-eval/.test(screenText) && screenText.includes('safe=1'), 'the next load offers safe mode');
 // 4. The kernel side of diag, and the kill switch
 const kd = JSON.parse((await sh(next, 'watchdog --kernel')).out);
 check(kd && kd.total > 0 && kd.procs.every((p) => Array.isArray(p.fds)), `watchdog --kernel lists kernel processes (${kd?.total})`);

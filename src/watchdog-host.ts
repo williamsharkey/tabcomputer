@@ -11,6 +11,13 @@
  *   page hasn't answered within REPLY_GRACE_MS is answered from here with the
  *   last snapshot and how long the page has been unresponsive, so an outside
  *   agent can see a wedged page. The page's late reply to it is dropped.
+ * - Kill switch: an `abort` request from the peer (or a freeze longer than
+ *   the page's `watchdog abort-after` setting) raises the abort flag, a
+ *   SharedArrayBuffer word the page checks at its yield points
+ *   (watchdogCheckpoint: the shell's, the x86 runner's), plus a message for
+ *   pages without SAB. The page then aborts its foreground commands like
+ *   Ctrl-C. A page stuck in one JS loop with no yield point can't be
+ *   stopped this way; the next load offers safe mode instead.
  */
 import { RelayChannel, type RelayInfo } from './remote-relay';
 
@@ -20,6 +27,7 @@ export const REPLY_GRACE_MS = 3000;
 /** What the page sends: any message is also a heartbeat */
 export type ToWorker =
   | { snap?: unknown; hidden?: boolean }
+  | { init: { abortFlag?: SharedArrayBuffer; autoAbortMs?: number } }
   | { relayStart: { base: string; info: RelayInfo; code: string } }
   | { relaySend: string }
   | { relayStop: true };
@@ -27,6 +35,7 @@ export type ToWorker =
 /** What the worker sends the page */
 export type FromWorker =
   | { stall: number; since: number }
+  | { abort: string }
   | { relayOpen: true }
   | { relayMessage: string }
   | { relayClose: true };
@@ -59,6 +68,10 @@ export class WatchdogHost {
   pending = new Map<string, { t: number; type: string }>();
   /** Answered here because the page didn't: its late replies are dropped */
   answered = new Set<string>();
+  abortFlag: Int32Array | null = null;
+  autoAbortMs = 0;
+  /** The auto-abort already fired for the current freeze */
+  private autoAborted = false;
   private now: () => number;
 
   constructor(private deps: HostDeps) {
@@ -75,6 +88,12 @@ export class WatchdogHost {
       this.deps.post({ stall: now - this.lastBeat, since: this.lastBeat });
     }
     this.lastBeat = now;
+    this.autoAborted = false;
+    if ('init' in m) {
+      if (m.init.abortFlag) this.abortFlag = new Int32Array(m.init.abortFlag);
+      this.autoAbortMs = m.init.autoAbortMs ?? 0;
+      return;
+    }
     if ('relayStart' in m) return this.startRelay(m.relayStart);
     if ('relayStop' in m) { this.stopRelay(); return; }
     if ('relaySend' in m) return this.sendFromPage(m.relaySend);
@@ -88,6 +107,10 @@ export class WatchdogHost {
     if (!this.hidden && now - this.lastBeat >= WEDGE_MS) {
       this.wedged = true;
       this.deps.saveWedge({ since: this.lastBeat, seenAt: now, snapshot: this.snap });
+      if (this.autoAbortMs > 0 && !this.autoAborted && now - this.lastBeat >= this.autoAbortMs) {
+        this.autoAborted = true;
+        this.requestAbort(`frozen ${Math.round((now - this.lastBeat) / 1000)} s (watchdog abort-after)`);
+      }
     }
     for (const [id, p] of this.pending) {
       if (now - p.t < REPLY_GRACE_MS) continue;
@@ -97,6 +120,12 @@ export class WatchdogHost {
       if (this.answered.size > 1000) this.answered.delete(this.answered.values().next().value!);
       this.replyFrozen(id, p.type, now);
     }
+  }
+
+  /** Raise the abort flag; the page aborts its foreground commands at its next yield point */
+  requestAbort(reason: string): void {
+    if (this.abortFlag) Atomics.store(this.abortFlag, 0, 1);
+    this.deps.post({ abort: reason });
   }
 
   private replyFrozen(requestId: string, type: string, now: number): void {
@@ -122,6 +151,13 @@ export class WatchdogHost {
       if (this.relay !== relay) return;
       try {
         const m = JSON.parse(ev.data);
+        // The kill switch is handled here: the page may be the thing that's stuck
+        if (m?.type === 'abort') {
+          this.requestAbort('remote request');
+          const now = this.now();
+          relay.send(JSON.stringify({ type: 'abort_result', requested: true, shared: !!this.abortFlag, frozenMs: now - this.lastBeat, requestId: m.requestId }));
+          return;
+        }
         if (m && typeof m.requestId === 'string') this.pending.set(m.requestId, { t: this.now(), type: String(m.type) });
       } catch { /* the page reports bad JSON */ }
       this.deps.post({ relayMessage: ev.data });

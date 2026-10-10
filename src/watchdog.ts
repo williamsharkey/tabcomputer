@@ -39,7 +39,10 @@ export interface WatchdogEvent {
   active?: string[];  // commands in flight, innermost first (lag/stall/longtask)
 }
 
-export interface ActiveCommand { line: string; started: number; depth: number }
+/** What can be aborted: a Shell (its abortController is what Ctrl-C aborts) */
+export interface Abortable { abortController: AbortController | null }
+
+export interface ActiveCommand { line: string; started: number; depth: number; owner?: Abortable }
 
 export interface WedgeRecord {
   since: number;      // last heartbeat the worker saw
@@ -109,6 +112,28 @@ const ended: { line: string; started: number; ended: number }[] = [];
 let workerAlive = false;
 let watchWorker: Worker | null = null;
 let previousWedge: WedgeRecord | null | undefined;
+let resolveWedge: (w: WedgeRecord | null) => void = () => {};
+const wedgeRead = new Promise<WedgeRecord | null>((r) => { resolveWedge = r; });
+/** A freeze this long in the previous load makes the next one offer safe mode */
+export const OFFER_SAFE_MODE_MS = 10_000;
+
+/**
+ * The lines the terminal shows at boot when the previous load froze for
+ * OFFER_SAFE_MODE_MS or more and was closed or reloaded: what it was running,
+ * and how to come back in safe mode. Empty otherwise (waits at most `waitMs`
+ * for the IndexedDB read).
+ */
+export async function frozenLastTimeNotice(href: string, waitMs = 300): Promise<string[]> {
+  const w = await Promise.race([wedgeRead, new Promise<null>((r) => setTimeout(() => r(null), waitMs))]);
+  if (!w || w.seenAt - w.since < OFFER_SAFE_MODE_MS) return [];
+  const u = new URL(href);
+  u.searchParams.set('safe', '1');
+  const first = w.snapshot?.active?.[0]?.line;
+  return [
+    `\x1b[1;33mThe last load froze\x1b[0m for ${Math.round((w.seenAt - w.since) / 1000)} s${first ? ` while running: ${first.slice(0, 100)}` : ''} and was closed or reloaded.`,
+    `  If it freezes again, reload in safe mode: ${u.toString()}   (\`watchdog --prev\` shows what led up to it)`,
+  ];
+}
 
 const clip = (s: string) => (s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…' : s);
 
@@ -143,9 +168,9 @@ const activeLines = (windowMs = 0) => {
  * typed at a prompt or sent by a remote peer; deeper ones are function bodies,
  * `source`, loops. Returns the token for commandEnded.
  */
-export function commandStarted(line: string, depth: number): number {
+export function commandStarted(line: string, depth: number, owner?: Abortable): number {
   const id = ++activeSeq;
-  if (active.size < MAX_ACTIVE) active.set(id, { line: clip(line), started: Date.now(), depth });
+  if (active.size < MAX_ACTIVE) active.set(id, { line: clip(line), started: Date.now(), depth, owner });
   if (depth === 0) {
     recordEvent({ t: Date.now(), kind: 'cmd', text: line });
     recent.push(clip(line).slice(0, 160));
@@ -441,10 +466,14 @@ function install(): void {
 
   try {
     worker = watchWorker = new Worker(new URL('./watchdog-worker.ts', import.meta.url), { type: 'module', name: 'watchdog' });
+    // The abort flag: a shared word the page's yield points read without a turn of the event loop
+    if (typeof SharedArrayBuffer !== 'undefined' && (globalThis as any).crossOriginIsolated) abortFlag = new Int32Array(new SharedArrayBuffer(4));
+    worker.postMessage({ init: { abortFlag: abortFlag?.buffer, autoAbortMs: autoAbortMs() } });
     workerAlive = true;
     worker.onmessage = (e) => {
       const m = e.data || {};
       if (m.stall) recordEvent({ t: m.since, kind: 'note', ms: m.stall, text: `worker saw the page frozen for ${Math.round(m.stall / 1000)}s` });
+      else if (m.abort) { messageAbort = m.abort; watchdogCheckpoint(); }
       else if (m.relayOpen) { if (relayProxy) { relayProxy.readyState = 'open'; relayProxy.onopen?.(); } }
       else if (m.relayMessage !== undefined) relayProxy?.onmessage?.({ data: m.relayMessage });
       else if (m.relayClose) { const p = relayProxy; relayProxy = null; if (p) { p.readyState = 'closed'; p.onclose?.(); } }
@@ -453,9 +482,11 @@ function install(): void {
   } catch { worker = null; }
 
   // Did the previous load end frozen? (Read before this load's worker can write)
-  if (typeof indexedDB !== 'undefined') {
+  if (typeof indexedDB === 'undefined') resolveWedge(null);
+  else {
     idbTake(pageStart).then((w) => {
       previousWedge = w;
+      resolveWedge(w);
       if (w) {
         const first = w.snapshot?.active?.[0];
         recordEvent({ t: w.since, kind: 'wedge', ms: w.seenAt - w.since,
@@ -464,6 +495,53 @@ function install(): void {
       }
     });
   }
+}
+
+// ── Abort: the kill switch for a runaway foreground command ──────────────
+
+let abortFlag: Int32Array | null = null;
+let messageAbort: string | null = null;
+export const ABORT_AFTER_KEY = 'tabcomputer-watchdog-abort-after';
+/** `watchdog abort-after N`: the worker aborts after N s frozen (0: never, the default) */
+export function autoAbortMs(): number {
+  try { return Math.max(0, Number(localStorage.getItem(ABORT_AFTER_KEY)) || 0) * 1000; } catch { return 0; }
+}
+
+/**
+ * Called at the page's yield points (the shell's maybeYield, the x86 runner's
+ * checkpoint): if the watchdog worker raised the abort flag, abort now. Cheap
+ * when it isn't: one Atomics.load.
+ */
+export function watchdogCheckpoint(): void {
+  if (!messageAbort && !(abortFlag && Atomics.load(abortFlag, 0))) return;
+  const reason = messageAbort ?? 'abort flag';
+  messageAbort = null;
+  if (abortFlag) Atomics.store(abortFlag, 0, 0);
+  abortForeground(reason);
+}
+
+/**
+ * Like Ctrl-C everywhere: abort the in-page shell commands in flight, and send
+ * SIGINT to the kernel's foreground process groups. Returns what it hit.
+ */
+export function abortForeground(reason: string): string[] {
+  const hit: string[] = [];
+  const owners = new Set<Abortable>();
+  for (const c of active.values()) {
+    if (c.owner && !owners.has(c.owner)) { owners.add(c.owner); if (c.depth === 0) hit.push(`shell: ${c.line.slice(0, 80)}`); }
+  }
+  for (const o of owners) {
+    try { if (o.abortController && !o.abortController.signal.aborted) o.abortController.abort(); } catch { /* already gone */ }
+  }
+  const k = (globalThis as any).__tabcomputerKernel;
+  if (k?.procs) {
+    const groups = new Set<number>();
+    for (const p of k.procs.values()) { const g = p.ctty?.pty?.fgPgrp; if (g > 1) groups.add(g); }
+    for (const g of groups) { try { k.kill(-g, 2 /* SIGINT */); hit.push(`SIGINT to process group ${g}`); } catch { /* gone */ } }
+  }
+  recordEvent({ t: Date.now(), kind: 'note', text: `watchdog abort (${reason}): ${hit.join('; ') || 'nothing in the foreground'}` });
+  console.warn(`[watchdog] abort (${reason}): ${hit.join('; ') || 'nothing in the foreground'}`);
+  return hit;
 }
 
 /** Kill switch: `watchdog off` (localStorage, honored in safe mode too) or ?watchdog=0 for one load */
@@ -482,3 +560,4 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined' && !(window
   try { install(); installed = true; } catch { /* never break boot */ }
   (window as any).__tabcomputerWatchdog = { diagnostics, format: formatDiagnostics, clear: clearWatchdog };
 }
+if (!installed) resolveWedge(null);

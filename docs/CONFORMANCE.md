@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2113/2417 (87.4%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2126/2417 (88.0%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -30,11 +30,11 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | word-eval | 0/8 | 8/8 | 0 |
 | var-sub | 0/6 | 3/6 | 3 |
 | var-sub-quote | 0/41 | 40/41 | 1 |
-| var-op-test | 1/35 | 30/37 | 7 |
-| var-op-strip | 0/28 | 25/28 | 3 |
+| var-op-test | 1/35 | 31/37 | 6 |
+| var-op-strip | 0/28 | 28/28 | 0 |
 | var-op-len | 0/7 | 8/8 | 0 |
 | var-op-patsub | 0/27 | 23/28 | 5 |
-| var-op-slice | 0/21 | 19/22 | 3 |
+| var-op-slice | 0/21 | 21/22 | 1 |
 | var-num | 0/7 | 7/7 | 0 |
 | vars-special | 0/37 | 31/37 | 6 |
 | arith | 2/71 | 74/74 | 0 |
@@ -64,8 +64,8 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | array-basic | 0/5 | 5/5 | 0 |
 | array | 2/78 | 77/78 | 1 |
 | array-assoc | 0/38 | 36/38 | 2 |
-| brace-expansion | 0/55 | 51/55 | 4 |
-| tilde | 0/14 | 9/14 | 5 |
+| brace-expansion | 0/55 | 52/55 | 3 |
+| tilde | 0/14 | 13/14 | 1 |
 | glob | 0/23 | 21/23 | 2 |
 | pipeline | 0/25 | 24/26 | 2 |
 | exit-status | 0/11 | 11/11 | 0 |
@@ -120,7 +120,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | for-expr | — | 7/8 | 1 |
 | bugs | — | 23/29 | 6 |
 | toysh-posix | — | 17/23 | 6 |
-| toysh | — | 4/8 | 4 |
+| toysh | — | 6/8 | 2 |
 | blog1 | — | 4/9 | 5 |
 | blog2 | — | 4/8 | 4 |
 | blog-other1 | — | 4/4 | 0 |
@@ -147,10 +147,9 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **word-split**: IFS and joining arrays by assignments; IFS=x and '' and $@ (#2)
 - **var-sub**: Braced block inside ${}; Descriptor redirect to bad "$@"; Here doc with bad "$@" delimiter
 - **var-sub-quote**: part_value tree on RHS
-- **var-op-test**: Lazy Evaluation of Alternative; Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
-- **var-op-strip**: Remove const suffix is vectorized on $@ array; strip none; Strip Right Brace (#702)
+- **var-op-test**: Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
 - **var-op-patsub**: Confusing unquoted slash matches bash (and ash); Synthesized ${x///} bug (similar to above); Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character; Chromium from http://www.oilshell.org/blog/2016/11/07.html
-- **var-op-slice**: ${@:offset} and ${*:offset}; ${@:offset:length} and ${*:offset:length}; ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
+- **var-op-slice**: ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
 - **vars-special**: $PATH is set if unset at startup; Vars set interactively only: $HISTFILE; Some vars are set, even without startup file, or env: PATH, PWD; $LINENO is the current line, not line of function call; $LINENO in other for loops; $_ with assignments, arrays, etc.
 - **command-sub**: Syntax errors with double quotes within backticks
 - **here-doc**: Here doc with bad comsub delimiter; Function def and execution with here doc
@@ -170,8 +169,8 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **assign**: Trying to run keyword 'for'; Test above without 'local' (which is not POSIX); aliased assignment doesn't split; "declare -a arr" and "readonly -a a" creates an empty array (OSH)
 - **array**: array with invalid token
 - **array-assoc**: unset -v and assoc array; bash bug: (( A["$key"] = 1 )) doesn't work
-- **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Two kinds of tilde expansion; Mixed case char expansion is invalid
-- **tilde**: ${undef:-~}; ${x//~/~root}; a[x]=foo:~ has tilde expansion; x=${undef-~:~}; temp assignment x=~ env
+- **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Mixed case char expansion is invalid
+- **tilde**: x=${undef-~:~}
 - **glob**: \ in unquoted substitutions does not match a backslash; \ in unquoted substitutions escapes globchars
 - **pipeline**: \|&; SIGPIPE causes pipeline to die (regression for issue #295)
 - **command_**: Permission denied; Non-executable on $PATH
@@ -212,7 +211,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **for-expr**: Accepts { } syntax too
 - **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution; Crash after changing $[] to be alias of $(( ))
 - **toysh-posix**: IFS; IFS - http://landley.net/notes.html#05-03-2020; IFS=x and '' and unquoted $@ - reduction of case above - copied into spec/word-split; for loop parsing - http://landley.net/notes.html#04-03-2020; IFS 4; Command Sub Syntax Error
-- **toysh**: char class / extglob; patsub of $* - http://landley.net/notes.html#23-04-2020; Brace Expansion; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
+- **toysh**: char class / extglob; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
 - **blog1**: ${##}; ${###}; ${####}; ${##2}; ${###2}
 - **blog2**: -a -a -a -a; -a -a -a -a -a; -a -a -a -a -a -a -a; -a -a -a -a -a -a -a -a
 - **nix-idioms**: ${!ref} to undefined string var is fatal, INCONSISTENT with array; export with dynamic var name +=

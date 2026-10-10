@@ -83,13 +83,9 @@
    ]
   },
   "var-op-test": {
-   "pass": 30,
+   "pass": 31,
    "total": 37,
    "failures": [
-    {
-     "i": 0,
-     "name": "Lazy Evaluation of Alternative"
-    },
     {
      "i": 3,
      "name": "Unquoted with array as default value"
@@ -117,22 +113,9 @@
    ]
   },
   "var-op-strip": {
-   "pass": 25,
+   "pass": 28,
    "total": 28,
-   "failures": [
-    {
-     "i": 3,
-     "name": "Remove const suffix is vectorized on $@ array"
-    },
-    {
-     "i": 23,
-     "name": "strip none"
-    },
-    {
-     "i": 26,
-     "name": "Strip Right Brace (#702)"
-    }
-   ]
+   "failures": []
   },
   "var-op-len": {
    "pass": 8,
@@ -166,17 +149,9 @@
    ]
   },
   "var-op-slice": {
-   "pass": 19,
+   "pass": 21,
    "total": 22,
    "failures": [
-    {
-     "i": 16,
-     "name": "${@:offset} and ${*:offset}"
-    },
-    {
-     "i": 17,
-     "name": "${@:offset:length} and ${*:offset:length}"
-    },
     {
      "i": 20,
      "name": "${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent"
@@ -521,7 +496,7 @@
    ]
   },
   "brace-expansion": {
-   "pass": 51,
+   "pass": 52,
    "total": 55,
    "failures": [
     {
@@ -533,38 +508,18 @@
      "name": "no expansion with RHS assignment"
     },
     {
-     "i": 29,
-     "name": "Two kinds of tilde expansion"
-    },
-    {
      "i": 42,
      "name": "Mixed case char expansion is invalid"
     }
    ]
   },
   "tilde": {
-   "pass": 9,
+   "pass": 13,
    "total": 14,
    "failures": [
     {
-     "i": 6,
-     "name": "${undef:-~}"
-    },
-    {
-     "i": 7,
-     "name": "${x//~/~root}"
-    },
-    {
-     "i": 9,
-     "name": "a[x]=foo:~ has tilde expansion"
-    },
-    {
      "i": 11,
      "name": "x=${undef-~:~}"
-    },
-    {
-     "i": 13,
-     "name": "temp assignment x=~ env"
     }
    ]
   },
@@ -1547,20 +1502,12 @@
    ]
   },
   "toysh": {
-   "pass": 4,
+   "pass": 6,
    "total": 8,
    "failures": [
     {
      "i": 3,
      "name": "char class / extglob"
-    },
-    {
-     "i": 4,
-     "name": "patsub of $* - http://landley.net/notes.html#23-04-2020"
-    },
-    {
-     "i": 5,
-     "name": "Brace Expansion"
     },
     {
      "i": 6,

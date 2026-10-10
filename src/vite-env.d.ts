@@ -10,3 +10,5 @@ declare const __BUILD_SHA__: string;
 
 /** This build's own copy of the Blink engine, e.g. 'engines/blink/v-0123456789ab/' ('' in dev); vite-plugin-engines.ts */
 declare const __BLINK_ENGINE_DIR__: string;
+/** sql.js ships no types; sqlite.ts uses its initSqlJs (the module's default) */
+declare module 'sql.js';

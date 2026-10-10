@@ -42,6 +42,26 @@ describe('tabcomputer#14 kernel parts', () => {
     expect((await kernel.waitpid(parent.pid, A.WNOHANG)).pid).toBe(parent.pid);
   });
 
+  it("the page's children, reaped, aren't kept for init's 30 s backstop (their workers and channels go)", async () => {
+    const { Session } = await import('node:inspector');
+    const session = new Session();
+    session.connect();
+    const gc = () => new Promise<void>((r) => session.post('HeapProfiler.collectGarbage', () => r()));
+    const refs: WeakRef<object>[] = [];
+    // (in a function of its own: the test's frame doesn't hold the last one)
+    const runOne = async () => {
+      const p = kernel.spawn({ path: 'script', cwd: '/tmp', fds: {}, run: async () => 0 });
+      p.data.channel = { sab: new SharedArrayBuffer(1 << 20) }; // what workerRunner keeps
+      refs.push(new WeakRef(p));
+      await p.wait();
+      expect((await kernel.waitpid(p.pid)).pid).toBe(p.pid);
+    };
+    for (let i = 0; i < 5; i++) await runOne();
+    for (let i = 0; i < 3; i++) { await new Promise((r) => setTimeout(r, 10)); await gc(); }
+    session.disconnect();
+    expect(refs.filter((r) => r.deref()).length).toBe(0);
+  });
+
   it('load averages move toward the run count with 1, 5 and 15 minute windows', () => {
     const t0 = 1_000_000;
     const l = new LoadAvg(t0);

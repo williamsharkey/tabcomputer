@@ -6,14 +6,17 @@
  * Astro's esbuild) compiles its 12 MB esbuild.wasm with the synchronous
  * `new WebAssembly.Module`, which Chromium refuses on a page's main thread
  * over 8 MB. Its helper already returns a promise, so it can compile
- * asynchronously instead.
+ * asynchronously instead, with a timer going meanwhile: the service has nothing
+ * else in flight while it compiles, and node ended it as idle, its parent
+ * reporting "The service was stopped" (astro build, `vite dev > log`).
  */
 const PATCHES: { file: RegExp; edits: [string, string][] }[] = [{
   // (installed as esbuild too: npm-tree.ts puts esbuild-wasm where esbuild goes)
   file: /\/esbuild(-wasm)?\/bin\/esbuild$/,
   edits: [[
     'const module = new WebAssembly.Module(bytes);\n  const instance = new WebAssembly.Instance(module, importObject);\n  return Promise.resolve({ instance, module });',
-    'return WebAssembly.instantiate(bytes, importObject);',
+    // (a timer that comes again until it's done: in the page an interval isn't activity)
+    'let compiling = true;\n  const hold = () => { if (compiling) setTimeout(hold, 50); };\n  hold();\n  return WebAssembly.instantiate(bytes, importObject).finally(() => { compiling = false; });',
   ], [
     // Go's runtime ends with go.exit(code) from inside its own event loop, where
     // process.exit's throw (how a script stops here) has nothing above it to land

@@ -291,7 +291,17 @@ let sharedAbortReason: unknown;
  * a builtin's spawn-to-exit.
  */
 export function abortReason(): unknown {
-  return sharedAbortReason ??= (typeof DOMException === 'function'
-    ? new DOMException('The operation was aborted.', 'AbortError')
-    : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+  if (sharedAbortReason) return sharedAbortReason;
+  // No stack: V8's would hold the receivers of the frames it was made in
+  // (a Process) for the page's lifetime
+  const E = Error as { stackTraceLimit?: number };
+  const limit = E.stackTraceLimit;
+  E.stackTraceLimit = 0;
+  try {
+    return sharedAbortReason = typeof DOMException === 'function'
+      ? new DOMException('The operation was aborted.', 'AbortError')
+      : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+  } finally {
+    E.stackTraceLimit = limit;
+  }
 }

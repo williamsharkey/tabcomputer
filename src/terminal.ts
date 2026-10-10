@@ -13,6 +13,7 @@ import { needsMoreInput } from './shell-syntax';
 import { activeProfile } from './profile';
 import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
+import { frozenLastTimeNotice } from './watchdog';
 
 /**
  * HUD (Heads-Up Display) state for dynamic banner updates.
@@ -466,6 +467,9 @@ export class ShiroTerminal {
       for (const line of safeModeBanner(safe, location.href)) this.term.writeln(line);
       this.term.writeln('');
     } else {
+      // The last load froze and was closed: say what it ran, and offer safe mode
+      // before ~/.profile (which may start the same thing again)
+      for (const line of await frozenLastTimeNotice(location.href)) this.term.writeln(line);
       // Source ~/.profile if it exists (env vars, aliases, etc. — persisted in IndexedDB).
       // Boot goes on after 15 s: a ~/.profile that runs something long can't hold it up
       await bootStep('~/.profile', async () => {

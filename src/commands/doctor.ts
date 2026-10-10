@@ -46,7 +46,8 @@ async function buildCheck(): Promise<Check> {
     if (/^[0-9a-f]{7,40}$/.test(text)) {
       deploy = ` · deploy ${text.slice(0, 12)}`;
       // This tab was loaded before the server's latest deploy: reload to get it
-      if (page && page !== text) { deploy = ` · this tab ${page.slice(0, 12)}, server ${text.slice(0, 12)} (reload to update)`; status = 'WARN'; }
+      // (its engine files may be newer than the code that loads them: tabcomputer#18)
+      if (page && page !== text) { deploy = ` · this tab ${page.slice(0, 12)}, server ${text.slice(0, 12)}: x86 programs may fail until you reload this tab`; status = 'WARN'; }
     }
     else { deploy = ' · no /deployed.txt (dev server?)'; status = 'WARN'; }
   } catch {
@@ -85,7 +86,47 @@ async function engineCheck(ctx: CommandContext): Promise<Check> {
   } catch (e: any) {
     build = ` · blink.wasm unreadable (${e?.message ?? e})`;
   }
-  return { label: 'x86 engine', status: build.includes('sha256') ? 'OK' : 'WARN', detail: `Blink${build} · same-instance fork ${forkMode}` };
+  // Run a program, not just read the engine: a static x86-64 exit(0)
+  let run = '';
+  let ran = false;
+  try {
+    const path = `/tmp/doctor-exit0-${Date.now()}`;
+    await ctx.fs.writeFile(path, exitZeroElf(), { mode: 0o755 } as any);
+    const { runIn } = await import('./doctor-agents');
+    const t0 = Date.now();
+    const r = await runIn(ctx, path, 15_000);
+    await ctx.fs.unlink(path).catch(() => {});
+    ran = r.code === 0;
+    run = ran ? ` · a static program ran (exit 0, ${Date.now() - t0} ms)` : ` · a static exit(0) program exited ${r.code}${r.out.trim() ? `: ${r.out.trim().slice(0, 120)}` : ''}`;
+  } catch (e: any) {
+    run = ` · a static exit(0) program didn't finish (${e?.message ?? e})`;
+  }
+  return { label: 'x86 engine', status: !ran ? 'FAIL' : build.includes('sha256') ? 'OK' : 'WARN', detail: `Blink${build}${run} · same-instance fork ${forkMode}` };
+}
+
+/** The smallest static x86-64 Linux program: exit(0) (one PT_LOAD of 129 bytes at 0x400000). */
+export function exitZeroElf(): Uint8Array {
+  const code = [0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]; // mov eax,60 (exit); xor edi,edi; syscall
+  const b = new Uint8Array(64 + 56 + code.length);
+  const v = new DataView(b.buffer);
+  b.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]); // ELF, 64-bit, little-endian, version 1
+  v.setUint16(16, 2, true); // ET_EXEC
+  v.setUint16(18, 62, true); // EM_X86_64
+  v.setUint32(20, 1, true);
+  v.setBigUint64(24, 0x400000n + 120n, true); // entry
+  v.setBigUint64(32, 64n, true); // phoff
+  v.setUint16(52, 64, true); // ehsize
+  v.setUint16(54, 56, true); // phentsize
+  v.setUint16(56, 1, true); // phnum
+  v.setUint32(64, 1, true); // PT_LOAD
+  v.setUint32(68, 5, true); // R+X
+  v.setBigUint64(80, 0x400000n, true); // vaddr
+  v.setBigUint64(88, 0x400000n, true); // paddr
+  v.setBigUint64(96, BigInt(b.length), true); // filesz
+  v.setBigUint64(104, BigInt(b.length), true); // memsz
+  v.setBigUint64(112, 0x1000n, true); // align
+  b.set(code, 120);
+  return b;
 }
 
 async function relayChecks(ctx: CommandContext): Promise<Check[]> {

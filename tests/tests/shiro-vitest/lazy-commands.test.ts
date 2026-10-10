@@ -543,28 +543,25 @@ describe('Lazy-Loaded Commands', () => {
 
     it('should error on interactive mode without terminal', async () => {
       // sqlite3 with no query arg tries interactive mode → needs terminal
-      // But first it tries to load sql.js from CDN which fails in test env
       const { sqlite3Cmd } = await import('@shiro/commands/sqlite');
       const ctx = {
         args: [],
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // Will fail at sql.js load in test env
       expect(code).toBe(1);
-      expect(ctx.stderr).toContain('error');
+      expect(ctx.stderr).toBe('sqlite3: interactive mode requires a terminal\n');
     });
 
-    it('should handle stdin piping path (sql.js unavailable)', async () => {
+    it('runs a query (sql.js and its .wasm load under Node too)', async () => {
       const { sqlite3Cmd } = await import('@shiro/commands/sqlite');
       const ctx = {
-        args: [':memory:', 'SELECT 1;'],
+        args: [':memory:', 'SELECT 6*7;'],
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // CDN load will fail in test env
-      expect(code).toBe(1);
-      expect(ctx.stderr).toContain('sql.js');
+      expect([code, ctx.stderr]).toEqual([0, '']);
+      expect(ctx.stdout).toMatch(/(^|\n)42\n$/);
     });
 
     it('loads the bundled sql.js and its .wasm from our own origin, not a CDN', async () => {

@@ -26,9 +26,12 @@ async function ensureSQLjs(ctx: CommandContext): Promise<any> {
     ctx.stdout += 'Loading SQLite (sql.js)... ';
 
     // The bundled sql.js and its .wasm, from tabcomputer's own origin (they came from a CDN)
-    const [mod, { default: wasmUrl }] = await Promise.all([
+    const [mod, { default: assetUrl }] = await Promise.all([
       import('sql.js'), import('sql.js/dist/sql-wasm.wasm?url'),
     ]);
+    // (under Node, as vitest runs this, sql.js reads the .wasm with fs: the dev server's /@fs/<path> is that path)
+    const inNode = typeof process === 'object' && typeof (process as any).versions?.node === 'string';
+    const wasmUrl = inNode && assetUrl.startsWith('/@fs/') ? assetUrl.slice(4) : assetUrl;
     const initSqlJs = (mod as any).default ?? mod;
     if (typeof initSqlJs !== 'function') throw new Error('sql.js: no initSqlJs');
     SQL = await initSqlJs({ locateFile: () => wasmUrl });

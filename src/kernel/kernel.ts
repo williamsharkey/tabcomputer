@@ -28,6 +28,7 @@ import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
 import type { PtyFile } from './pty';
 import { LockTable, F_RDLCK, F_WRLCK, F_UNLCK } from './locks';
 import { Process, abortReason } from './process';
+import { PidFdFile } from './pidfd';
 import { SysvShm } from './sysvshm';
 import { SysvSem } from './sysvsem';
 import { SysvMsg } from './sysvmsg';
@@ -2347,6 +2348,23 @@ export class Kernel {
           const flags = nr === A.SYS_eventfd2 ? args[1] : 0;
           if (flags & ~(A.O_NONBLOCK | A.O_CLOEXEC | A.EFD_SEMAPHORE)) return -A.EINVAL;
           return fds.alloc(new EventFile(args[0], A.O_RDWR | (flags & A.O_NONBLOCK), !!(flags & A.EFD_SEMAPHORE)), 0, !!(flags & A.O_CLOEXEC));
+        }
+        case A.SYS_pidfd_open: {
+          // (pid, flags): always close-on-exec
+          const pid = args[0] | 0;
+          if (args[1] & ~(A.O_NONBLOCK | A.PIDFD_THREAD) || pid <= 0) return -A.EINVAL;
+          const target = args[1] & A.PIDFD_THREAD ? this.processOfTid(pid) : this.procs.get(pid);
+          if (!target) return -A.ESRCH;
+          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK)), 0, true);
+        }
+        case A.SYS_pidfd_send_signal: {
+          // (pidfd, sig, siginfo, flags)
+          if (args[3]) return -A.EINVAL;
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          if (!(f instanceof PidFdFile)) return -A.EBADF;
+          if (f.exited) return -A.ESRCH;
+          return this.kill(f.target.pid, args[1], proc);
         }
         case A.SYS_signalfd:
         case A.SYS_signalfd4: {

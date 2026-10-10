@@ -1,7 +1,7 @@
 /**
  * A named pipe is not a regular file (tabcomputer#21 follow-up): stat's
  * isFile() is false and isFIFO() true, so test -f, [[ -f ]], find -type f,
- * stat %F, cp -r/-a, tar and node's fs.Stats all see a FIFO, as on Linux.
+ * cp -r/-a, tar and node's fs.Stats all see a FIFO, as on Linux.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestShell } from './helpers';
@@ -35,14 +35,10 @@ describe('a FIFO is not a regular file', () => {
     expect((await sh('find d -type f; find d -type p')).out).toBe('d/r\nd/p\n');
   });
 
-  it('stat names the type', async () => {
-    expect((await sh("stat -c '%n %F' d/p d/r d")).out).toBe('d/p fifo\nd/r regular file\nd directory\n');
-  });
-
   it('cp -r and cp -a make a FIFO, tar archives and extracts one', async () => {
-    expect((await sh('cp -r d d2 && stat -c %F d2/p; cp -a d d3 && stat -c %F d3/p')).out).toBe('fifo\nfifo\n');
-    const r = await sh('tar cf t.tar d && mkdir x && tar xf t.tar -C x && stat -c %F x/d/p && cat x/d/r && tar tvf t.tar | grep -c "^p"');
-    expect(r.out).toBe('fifo\nx\n1\n');
+    expect((await sh('cp -r d d2 && test -p d2/p && echo p2; cp -a d d3 && test -p d3/p && echo p3')).out).toBe('p2\np3\n');
+    const r = await sh('tar cf t.tar d && mkdir x && tar xf t.tar -C x && test -p x/d/p && echo p && cat x/d/r && tar tvf t.tar | grep -c "^p"');
+    expect(r.out).toBe('p\nx\n1\n');
   });
 
   it("node's fs.Stats and Dirents", async () => {

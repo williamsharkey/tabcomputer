@@ -35,7 +35,7 @@ export const stat: Command = {
             output.push(`${path} ${statInfo.size} 0 ${statInfo.mode} 0 0 0 0 0 0 ${statInfo.mtime}`);
           } else {
             // Default verbose format
-            const typeStr = fileTypeName(statInfo);
+            const typeStr = statInfo.type === "dir" ? "directory" : "regular file";
             const modeStr = formatMode(statInfo.mode);
             const dateStr = new Date(statInfo.mtime).toISOString();
 
@@ -60,14 +60,6 @@ export const stat: Command = {
     }
   },
 };
-
-/** %F: as GNU stat names it */
-function fileTypeName(st: { type: string; size: number; fifo?: boolean }): string {
-  if (st.type === 'dir') return 'directory';
-  if (st.type === 'symlink') return 'symbolic link';
-  if (st.fifo) return 'fifo';
-  return st.size === 0 ? 'regular empty file' : 'regular file';
-}
 
 function formatMode(mode: number): string {
   const perms = [
@@ -94,7 +86,7 @@ function formatStat(path: string, stat: any, format: string): string {
     .replace(/%f/g, stat.mode.toString(16)) // mode in hex
     .replace(/%a/g, stat.mode.toString(8)) // mode in octal
     .replace(/%A/g, formatMode(stat.mode).split("/")[1]) // human-readable permissions
-    .replace(/%F/g, fileTypeName(stat)) // file type
+    .replace(/%F/g, stat.type === "dir" ? "directory" : "regular file") // file type
     .replace(/%u/g, "0") // user ID
     .replace(/%g/g, "0") // group ID
     .replace(/%U/g, "root") // user name

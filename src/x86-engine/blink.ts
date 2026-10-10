@@ -438,7 +438,7 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       if (c.data.embryo && c.data.forkParent === proc.pid && !c.exiting) void kernel.exit(c, SIGKILL);
     }
   }, 1000);
-  const terminate = () => { stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
+  const terminate = () => { delete proc.data.engine; stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
   // The engine crashed (an abort or a wasm trap ends the whole instance): the
   // children it hosted died with it.
   let crashed = false;
@@ -545,6 +545,12 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       });
     } else if (m?.type === 'blink-exiting') {
       exiting = true;
+      delete proc.data.engine;  // (so the page doesn't hold the wasm memory past the process)
+    } else if (m?.type === 'blink-engine') {
+      // Blink's GIL state in its wasm memory (patch 0126), for /proc/PID/status's
+      // EngineLock line: Int32Array(memory.buffer, gilAddr, 4) is the holder's
+      // tid (0: nobody), the waiters, and the times it was taken
+      if (!exiting && m.memory && typeof m.gilAddr === 'number') proc.data.engine = { memory: m.memory, gilAddr: m.gilAddr };
     } else if (m?.type === 'blink-quiet') {
       if (exiting && !quiet) {
         quiet = true;

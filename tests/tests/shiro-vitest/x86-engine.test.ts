@@ -597,6 +597,29 @@ describe('Blink engine: kernel processes', () => {
     expect(await p.wait()).toBe(0);
     expect(out.text()).toContain('stdin=late line');
   }, 60_000);
+
+  it("shows who holds Blink's GIL while it runs (patch 0126), and lets go of the memory after", async () => {
+    const { fs } = await setup(readFileSync(join(FIX, 'hello-musl')));
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { BufferFile } = await import('@shiro/kernel/fd');
+    const { createPipe } = await import('@shiro/kernel/pipe');
+    const { blinkRunner } = await import('@shiro/x86-engine/blink');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const [r, w] = createPipe();
+    const out = new BufferFile(null);
+    const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: r, 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
+    await new Promise((res) => setTimeout(res, 1500));
+    const engine = p.data.engine as { memory: WebAssembly.Memory; gilAddr: number } | undefined;
+    expect(engine).toBeDefined();
+    const [holder, waiters, acquires] = new Int32Array(engine!.memory.buffer, engine!.gilAddr, 4);
+    expect(holder).toBe(0);           // blocked reading stdin: the lock is free
+    expect(waiters).toBe(0);
+    expect(acquires).toBeGreaterThan(0);
+    await w.write(new TextEncoder().encode('x\n'));
+    await w.close();
+    expect(await p.wait()).toBe(0);
+    expect(p.data.engine).toBeUndefined();
+  }, 60_000);
 });
 
 describe.skipIf(!haveTcp)('Blink engine: real TCP through the kernel relay', () => {

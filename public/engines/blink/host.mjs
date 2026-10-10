@@ -591,8 +591,12 @@ async function run(msg) {
   let M = null;
 
   // ── The channel pool for the guest's own syscalls (shiro-kernel.js) ──
+  // (a pool channel's last poolAsBytes are the page's word, not data: Blink's
+  // chunk must be the data area exactly, or a full chunk is answered short)
+  const asBytes = msg.poolAsBytes | 0;
+  const poolData = (sab) => new Uint8Array(sab, CH_DATA, sab.byteLength - CH_DATA - asBytes);
   const pool = (msg.pool || []).map((sab) => ({
-    i32: new Int32Array(sab, 0, CH_DATA / 4), data: new Uint8Array(sab, CH_DATA), busy: false, done: null,
+    i32: new Int32Array(sab, 0, CH_DATA / 4), data: poolData(sab), busy: false, done: null,
   }));
   const chunk = pool.length ? pool[0].data.length : 0;
   const waiting = [];
@@ -609,7 +613,7 @@ async function run(msg) {
   const addChannel = (sab) => {
     growing = false;
     if (!sab) return; // at the cap: the waiters queue for a free channel
-    const ch = { i32: new Int32Array(sab, 0, CH_DATA / 4), data: new Uint8Array(sab, CH_DATA), busy: true, done: null };
+    const ch = { i32: new Int32Array(sab, 0, CH_DATA / 4), data: poolData(sab), busy: true, done: null };
     pool.push(ch);
     release(ch);
     if (waiting.length && !growing) { growing = true; post({ type: 'blink-grow' }); }
@@ -742,6 +746,8 @@ async function run(msg) {
     // a thread in a kernel call has a signal to take (Blink patches 0065,
     // 0507): the page interrupts the process's blocking calls
     kick() { post({ type: 'blink-kick' }); },
+    // a compiled-code module (wjit.c) for the page's cache (src/x86-engine/blink.ts)
+    keepWasm(d) { post({ type: 'blink-wjmod', module: d.shiroWjModule, key: d.key, size: d.size }); },
     get data() { return data; },
     poll: (kfd, events, timeoutMs = 0) => pollFd(kfd, events, timeoutMs),
     watch(kfd, node) { watched.set(kfd, node); post({ type: 'blink-watch', fd: kfd }); },
@@ -797,6 +803,11 @@ async function run(msg) {
         }
         for (const k of Object.keys(M.ENV)) delete M.ENV[k];
         Object.assign(M.ENV, msg.env || {});
+        // The guest's environment is the kernel's, nothing more: emscripten
+        // adds its defaults (PATH=/, USER=web_user, HOME, LANG, PWD, LOGNAME,
+        // _) unless ENV holds the key as undefined (LTP execve01: env -i, or
+        // execve from a fork child, got PATH=/)
+        for (const k of ['USER', 'LOGNAME', 'PATH', 'PWD', 'HOME', 'LANG', '_']) if (!(k in M.ENV)) M.ENV[k] = undefined;
         try { FS.chdir(msg.cwd || '/'); } catch { /* cwd missing: stay at / */ }
       }],
     });

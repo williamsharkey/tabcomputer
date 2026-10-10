@@ -201,6 +201,60 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
 }
 
 /**
+ * Blink's compiled code (its wasm JIT) as WebAssembly.Modules, kept for the
+ * page: V8 caches a module by its bytes while one is alive, and Blink
+ * generates the same bytes for the same code, so the next process running
+ * the same program (or library code it shares) gets its modules without
+ * compiling them. A Blink process is its own worker, so without this its
+ * modules die with it. Least recently compiled go first past
+ * keepBudget() bytes of modules (TABCOMPUTER_BLINK_WJ_KEEP=0: none), and
+ * all go when the page has been hidden for a while. In Chromium a module
+ * costs ~5.7x its bytes in renderer memory (its compiled code): vim's
+ * startup leaves 320 modules, 2.4 MiB of bytes, +13.6 MiB RSS, and its next
+ * start takes 0.81 s instead of 1.24 s (docs/BENCHMARKS.md).
+ */
+const MIB = 1 << 20;
+const WJ_HIDDEN_DROP_MS = 5 * 60_000;
+let keepBudgetBytes = 0;
+/** 6 MiB of module bytes with 8 GB of memory or more, 2 MiB with 4 GB or less (or on a phone or tablet), else 4 MiB */
+function keepBudget(): number {
+  if (keepBudgetBytes) return keepBudgetBytes;
+  const nav = (globalThis as { navigator?: { deviceMemory?: number; userAgent?: string } }).navigator;
+  const mem = nav?.deviceMemory;
+  const mobile = /Mobi|Android|iPad|iPhone|Tablet/i.test(nav?.userAgent ?? '');
+  keepBudgetBytes = mobile || (mem !== undefined && mem <= 4) ? 2 * MIB : mem !== undefined && mem >= 8 ? 6 * MIB : 4 * MIB;
+  // a page hidden for a while lets them go (the next launch compiles again)
+  const doc = (globalThis as { document?: Document }).document;
+  if (doc?.addEventListener) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    doc.addEventListener('visibilitychange', () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (doc.visibilityState === 'hidden') timer = setTimeout(() => { keptModules.clear(); keptBytes = 0; }, WJ_HIDDEN_DROP_MS);
+    });
+  }
+  return keepBudgetBytes;
+}
+const keptModules = new Map<string, { module: unknown; size: number }>();
+let keptBytes = 0;
+/** (tests) how many compiled modules the page keeps, and their bytes */
+export function keptCompiledModules(): { count: number; bytes: number } {
+  return { count: keptModules.size, bytes: keptBytes };
+}
+function keepCompiledModule(key: unknown, module: unknown, size: number): void {
+  const budget = keepBudget();
+  if (typeof key !== 'string' || !module || size <= 0 || size > budget / 4) return;
+  const old = keptModules.get(key);
+  if (old) { keptModules.delete(key); keptBytes -= old.size; }
+  keptModules.set(key, { module, size });
+  keptBytes += size;
+  for (const [k, v] of keptModules) {
+    if (keptBytes <= budget) break;
+    keptModules.delete(k);
+    keptBytes -= v.size;
+  }
+}
+
+/**
  * Serve one request on a pool channel (blink-sys from host.mjs). `as` names
  * the process the call is for: the guest's vfork child runs on this
  * worker's thread until it execs (Blink patch 0011), 0 = the guest itself.
@@ -214,7 +268,10 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     const nr = i32[CH_SYSNO];
     const args = Array.from(i32.subarray(CH_ARGS, CH_ARGS + CH_NARGS));
     const target = as ? kernel.procs.get(as) : proc;
-    let result = target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
+    // A call the kernel can answer from memory (stat, fstat, getpid, pipe and
+    // file I/O that needn't wait) skips the async path, as WASI guests' do
+    const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
+    let result = fast !== undefined ? fast : target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
     if (!as && proc.exiting) return false;
     if (result > 0x7fffffff || result < -0x80000000) {
       i32[CH_ARGS] = Math.floor(result / 0x100000000);
@@ -246,6 +303,8 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
 export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: SharedArrayBuffer[]): void {
   const busy = new Set<SharedArrayBuffer>();
   const direct: KernelChannel[] = [];
+  // a blink-kick that found no call of this process in the kernel
+  let kickPending = false;
   // Same-instance fork children (Blink): kernel processes this worker runs
   // too. The worker outlives its own process until the last of them ends.
   const hosted = new Set<number>();
@@ -355,7 +414,19 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
   w.onMessage((m: any) => {
     if (m?.type === 'blink-sys') {
       const sab = pool[m.ch];
-      if (sab) void servePoolChannel(kernel, proc, sab, m.as | 0, busy).then((ok) => { if (ok) w.postMessage({ type: 'blink-done', ch: m.ch }); });
+      if (sab) {
+        const served = servePoolChannel(kernel, proc, sab, m.as | 0, busy);
+        // a kick that came first ends the call once it waits (twice: the
+        // kernel may await before it starts waiting); an extra EINTR is
+        // only a call again for Blink
+        if (kickPending) {
+          kickPending = false;
+          const kick = () => { if (busy.has(sab)) proc.interruptSyscalls(); };
+          setTimeout(kick, 0);
+          setTimeout(kick, 5);
+        }
+        void served.then((ok) => { if (ok) w.postMessage({ type: 'blink-done', ch: m.ch }); });
+      }
     } else if (m?.type === 'blink-direct') {
       // Channels in Blink's wasm memory that its threads use themselves
       // (Blink patch 0065): served here by watching their state words, with
@@ -366,12 +437,17 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         direct.push(ch);
         void ch.watch();
       }
+    } else if (m?.type === 'blink-wjmod') {
+      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0') keepCompiledModule(m.key, m.module, m.size | 0);
     } else if (m?.type === 'blink-kick') {
       // A guest thread is in a kernel call with a signal to take (it came
       // between the call's start and the kernel's interrupt, or another
       // thread's tkill queued it in Blink): end the process's blocking calls
-      // with EINTR, as a signal would; the threads it wasn't for call again
+      // with EINTR, as a signal would; the threads it wasn't for call again.
+      // A kick before its call reaches us (host.mjs posts both, in order)
+      // interrupts that call once it has started (Linux's pending signal)
       if (busy.size || direct.some(ch => ch.pending)) proc.interruptSyscalls();
+      else kickPending = true;
     } else if (m?.type === 'blink-grow') {
       // every channel is busy (blocked calls): one more, shared by this
       // process's workers like the rest (indices match host.mjs's order)

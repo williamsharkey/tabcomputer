@@ -73,16 +73,12 @@
    ]
   },
   "var-sub-quote": {
-   "pass": 39,
+   "pass": 40,
    "total": 41,
    "failures": [
     {
      "i": 19,
      "name": "part_value tree on RHS"
-    },
-    {
-     "i": 31,
-     "name": "Syntax error for single quote in double quote"
     }
    ]
   },
@@ -228,13 +224,9 @@
    "failures": []
   },
   "command-sub": {
-   "pass": 26,
+   "pass": 27,
    "total": 28,
    "failures": [
-    {
-     "i": 7,
-     "name": "Making keyword out of command sub should NOT work"
-    },
     {
      "i": 28,
      "name": "Syntax errors with double quotes within backticks"
@@ -242,16 +234,12 @@
    ]
   },
   "here-doc": {
-   "pass": 29,
+   "pass": 30,
    "total": 32,
    "failures": [
     {
      "i": 6,
      "name": "Here doc with bad comsub delimiter"
-    },
-    {
-     "i": 15,
-     "name": "Here doc with line continuation, then pipe.  Syntax error."
     },
     {
      "i": 25,
@@ -260,16 +248,12 @@
    ]
   },
   "redirect": {
-   "pass": 36,
+   "pass": 37,
    "total": 39,
    "failures": [
     {
      "i": 27,
      "name": "1>&2- (Bash bug: fail to restore closed fd)"
-    },
-    {
-     "i": 28,
-     "name": "<> for read/write"
     },
     {
      "i": 29,
@@ -298,14 +282,9 @@
    ]
   },
   "case_": {
-   "pass": 12,
+   "pass": 13,
    "total": 13,
-   "failures": [
-    {
-     "i": 12,
-     "name": "case \\n bug regression"
-    }
-   ]
+   "failures": []
   },
   "sh-func": {
    "pass": 12,
@@ -313,13 +292,9 @@
    "failures": []
   },
   "func-parsing": {
-   "pass": 9,
+   "pass": 10,
    "total": 12,
    "failures": [
-    {
-     "i": 8,
-     "name": "= in function name"
-    },
     {
      "i": 9,
      "name": "Function name with $"
@@ -331,18 +306,9 @@
    ]
   },
   "builtin-echo": {
-   "pass": 25,
+   "pass": 27,
    "total": 27,
-   "failures": [
-    {
-     "i": 3,
-     "name": "echo builtin should disallow typed args - literal"
-    },
-    {
-     "i": 4,
-     "name": "echo builtin should disallow typed args - variable"
-    }
-   ]
+   "failures": []
   },
   "builtin-printf": {
    "pass": 51,
@@ -372,7 +338,7 @@
    "failures": []
   },
   "builtin-eval-source": {
-   "pass": 20,
+   "pass": 21,
    "total": 23,
    "failures": [
     {
@@ -382,10 +348,6 @@
     {
      "i": 13,
      "name": "Source with syntax error"
-    },
-    {
-     "i": 14,
-     "name": "Eval with syntax error"
     }
    ]
   },
@@ -416,8 +378,8 @@
      "name": "exit 1 when trap code string is invalid"
     },
     {
-     "i": 26,
-     "name": "trap USR1, sleep, SIGINT: non-interactively"
+     "i": 27,
+     "name": "trap INT, sleep, SIGINT: non-interactively"
     }
    ]
   },
@@ -440,16 +402,12 @@
    ]
   },
   "builtin-cd": {
-   "pass": 26,
+   "pass": 27,
    "total": 28,
    "failures": [
     {
      "i": 14,
      "name": "pwd in symlinked dir on shell initialization"
-    },
-    {
-     "i": 26,
-     "name": "Survey of getcwd() syscall"
     }
    ]
   },
@@ -459,16 +417,12 @@
    "failures": []
   },
   "builtin-type": {
-   "pass": 4,
+   "pass": 5,
    "total": 6,
    "failures": [
     {
      "i": 1,
      "name": "type -> alias external"
-    },
-    {
-     "i": 2,
-     "name": "type of relative path"
     }
    ]
   },
@@ -483,7 +437,7 @@
    ]
   },
   "dbracket": {
-   "pass": 45,
+   "pass": 46,
    "total": 49,
    "failures": [
     {
@@ -497,10 +451,6 @@
     {
      "i": 23,
      "name": "[[ with env prefix doesn't work"
-    },
-    {
-     "i": 45,
-     "name": "[[ ]] with redirect"
     }
    ]
   },
@@ -547,13 +497,9 @@
    "failures": []
   },
   "array": {
-   "pass": 76,
+   "pass": 77,
    "total": 78,
    "failures": [
-    {
-     "i": 3,
-     "name": "space before ( in array initialization"
-    },
     {
      "i": 5,
      "name": "array with invalid token"
@@ -692,50 +638,26 @@
    "failures": []
   },
   "command_": {
-   "pass": 10,
+   "pass": 14,
    "total": 16,
    "failures": [
-    {
-     "i": 0,
-     "name": "Command block"
-    },
     {
      "i": 1,
      "name": "Permission denied"
     },
     {
-     "i": 9,
-     "name": "filling $PATH cache, then insert the same command earlier in cache"
-    },
-    {
-     "i": 10,
-     "name": "filling $PATH cache, then deleting command"
-    },
-    {
      "i": 11,
      "name": "Non-executable on $PATH"
-    },
-    {
-     "i": 12,
-     "name": "hash without args prints the cache"
     }
    ]
   },
   "posix": {
-   "pass": 11,
+   "pass": 13,
    "total": 15,
    "failures": [
     {
      "i": 1,
      "name": "Empty for loop without in.  Do can be on the same line I guess."
-    },
-    {
-     "i": 6,
-     "name": "Empty action for case is syntax error"
-    },
-    {
-     "i": 9,
-     "name": "Bare semi-colon not allowed"
     },
     {
      "i": 10,
@@ -744,16 +666,12 @@
    ]
   },
   "alias": {
-   "pass": 35,
+   "pass": 36,
    "total": 48,
    "failures": [
     {
      "i": 2,
      "name": "define and use alias on a single line"
-    },
-    {
-     "i": 15,
-     "name": "Alias must be an unquoted word, no expansions allowed"
     },
     {
      "i": 17,
@@ -822,14 +740,9 @@
    "failures": []
   },
   "shell-grammar": {
-   "pass": 32,
+   "pass": 33,
    "total": 33,
-   "failures": [
-    {
-     "i": 23,
-     "name": "If with then on same line missing semicolon"
-    }
-   ]
+   "failures": []
   },
   "process-sub": {
    "pass": 7,
@@ -938,7 +851,7 @@
    ]
   },
   "assign-extended": {
-   "pass": 28,
+   "pass": 29,
    "total": 34,
    "failures": [
     {
@@ -960,10 +873,6 @@
     {
      "i": 32,
      "name": "dynamic array parsing is not allowed"
-    },
-    {
-     "i": 37,
-     "name": "invalid var name"
     }
    ]
   },
@@ -1180,24 +1089,12 @@
    ]
   },
   "builtin-type-bash": {
-   "pass": 20,
+   "pass": 23,
    "total": 24,
    "failures": [
     {
-     "i": 8,
-     "name": "type -p and -P builtin -> file"
-    },
-    {
      "i": 16,
      "name": "type -f builtin -> function and file exists"
-    },
-    {
-     "i": 23,
-     "name": "type -a -> keyword"
-    },
-    {
-     "i": 30,
-     "name": "type -P does not find directories (regression)"
     }
    ]
   },
@@ -1278,40 +1175,16 @@
    ]
   },
   "builtin-meta": {
-   "pass": 10,
+   "pass": 16,
    "total": 18,
    "failures": [
-    {
-     "i": 1,
-     "name": "command -v executable, builtin"
-    },
-    {
-     "i": 3,
-     "name": "command -v doesn't find non-executable file"
-    },
-    {
-     "i": 4,
-     "name": "command -v doesn't find executable dir"
-    },
-    {
-     "i": 5,
-     "name": "command -V"
-    },
     {
      "i": 10,
      "name": "command -p (override existing program)"
     },
     {
-     "i": 11,
-     "name": "command -p (hide tool in custom path)"
-    },
-    {
      "i": 15,
      "name": "builtin ls not found"
-    },
-    {
-     "i": 16,
-     "name": "builtin usage"
     }
    ]
   },
@@ -1583,94 +1456,19 @@
    ]
   },
   "redirect-command": {
-   "pass": 17,
+   "pass": 23,
    "total": 23,
-   "failures": [
-    {
-     "i": 2,
-     "name": "`< $file` behaves like $(< file)"
-    },
-    {
-     "i": 8,
-     "name": "Redirect in the middle of two assignments"
-    },
-    {
-     "i": 10,
-     "name": "Redirect in function body"
-    },
-    {
-     "i": 11,
-     "name": "Redirect in function body is evaluated multiple times"
-    },
-    {
-     "i": 18,
-     "name": "redirect subshell"
-    },
-    {
-     "i": 19,
-     "name": "Prefix redirect for loop -- not allowed"
-    }
-   ]
+   "failures": []
   },
   "redirect-multi": {
-   "pass": 5,
+   "pass": 13,
    "total": 13,
-   "failures": [
-    {
-     "i": 0,
-     "name": "File redirects with glob args (bash and zsh only)"
-    },
-    {
-     "i": 3,
-     "name": "File redirect without matching any file, with failglob"
-    },
-    {
-     "i": 6,
-     "name": "File redirect to $var with glob char"
-    },
-    {
-     "i": 7,
-     "name": "File redirect that globs to more than one file (bash and zsh only)"
-    },
-    {
-     "i": 8,
-     "name": "File redirect with extended glob"
-    },
-    {
-     "i": 9,
-     "name": "Extended glob that doesn't match anything"
-    },
-    {
-     "i": 11,
-     "name": "Redirect with brace expansion isn't allowed"
-    },
-    {
-     "i": 12,
-     "name": "File redirects have word splitting too!"
-    }
-   ]
+   "failures": []
   },
   "redir-order": {
-   "pass": 1,
+   "pass": 5,
    "total": 5,
-   "failures": [
-    {
-     "i": 1,
-     "name": "subshell + redirect order"
-    },
-    {
-     "i": 2,
-     "name": "for word + redirect order"
-    },
-    {
-     "i": 3,
-     "name": "case word + redirect order"
-    },
-    {
-     "i": 4,
-     "name": "[[ + redirect order"
-    }
-   ]
+   "failures": []
   },
   "arith-context": {
    "pass": 12,
@@ -1719,20 +1517,12 @@
    ]
   },
   "bugs": {
-   "pass": 21,
+   "pass": 23,
    "total": 29,
    "failures": [
     {
      "i": 3,
      "name": "assign readonly -- one line"
-    },
-    {
-     "i": 8,
-     "name": "First word like foo$x() and foo$[1+2] (regression)"
-    },
-    {
-     "i": 9,
-     "name": "Function names"
     },
     {
      "i": 10,
@@ -1757,13 +1547,9 @@
    ]
   },
   "toysh-posix": {
-   "pass": 15,
+   "pass": 17,
    "total": 23,
    "failures": [
-    {
-     "i": 5,
-     "name": "Function def in pipeline"
-    },
     {
      "i": 8,
      "name": "IFS"
@@ -1783,10 +1569,6 @@
     {
      "i": 18,
      "name": "IFS 4"
-    },
-    {
-     "i": 20,
-     "name": "Can't parse extra }"
     },
     {
      "i": 21,
@@ -1963,90 +1745,17 @@
    ]
   },
   "parse-errors": {
-   "pass": 8,
+   "pass": 25,
    "total": 25,
-   "failures": [
-    {
-     "i": 5,
-     "name": "Incomplete while"
-    },
-    {
-     "i": 6,
-     "name": "Incomplete for"
-    },
-    {
-     "i": 7,
-     "name": "Incomplete if"
-    },
-    {
-     "i": 9,
-     "name": "} is a parse error"
-    },
-    {
-     "i": 10,
-     "name": "{ is its own word, needs a space"
-    },
-    {
-     "i": 13,
-     "name": "bad var name globally isn't parsed like an assignment"
-    },
-    {
-     "i": 14,
-     "name": "bad var name in export"
-    },
-    {
-     "i": 15,
-     "name": "bad var name in local"
-    },
-    {
-     "i": 16,
-     "name": "misplaced parentheses are not a subshell"
-    },
-    {
-     "i": 17,
-     "name": "incomplete command sub"
-    },
-    {
-     "i": 18,
-     "name": "incomplete backticks"
-    },
-    {
-     "i": 19,
-     "name": "misplaced ;;"
-    },
-    {
-     "i": 21,
-     "name": "interactive parse error (regression)"
-    },
-    {
-     "i": 22,
-     "name": "array literal inside array is a parse error"
-    },
-    {
-     "i": 23,
-     "name": "array literal inside loop is a parse error"
-    },
-    {
-     "i": 24,
-     "name": "array literal in case"
-    },
-    {
-     "i": 25,
-     "name": "%foo=() is parse error (regression)"
-    }
-   ]
+   "failures": []
   },
   "unicode": {
-   "pass": 0,
+   "pass": 1,
    "total": 2,
    "failures": [
     {
      "i": 0,
      "name": "OSH source code doesn't have to be valid Unicode (like other shells)"
-    },
-    {
-     "i": 1,
-     "name": "Unicode escapes \\u03bc \\U000003bc in $'', echo -e, printf"
     }
    ]
   },

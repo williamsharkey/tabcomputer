@@ -17,6 +17,7 @@
  */
 import * as A from './abi';
 import { DirFile, EventFile, ReadyListeners, TimerFile, type OpenFile } from './fd';
+import { InotifyFile } from './inotify';
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from './kernel';
 import type { Process } from './process';
@@ -29,7 +30,7 @@ const PAGE = 4096;
 
 type Node =
   | { type: 'dir'; list: () => string[] }
-  | { type: 'file'; text: () => string }
+  | { type: 'file'; text: () => string | Uint8Array }
   | { type: 'link'; target: () => string };
 
 /** A directory under /proc; getdents reads its generated entries. */
@@ -60,9 +61,13 @@ class ProcFile implements OpenFile {
   private data: Uint8Array | null = null;
   private pos = 0;
   private listeners = new ReadyListeners();
-  constructor(public path: string, public flags: number, private text: () => string) {}
+  constructor(public path: string, public flags: number, private text: () => string | Uint8Array) {}
+  private content(): Uint8Array {
+    const t = this.text();
+    return typeof t === 'string' ? new TextEncoder().encode(t) : t;
+  }
   private snapshot(): Uint8Array {
-    this.data ??= new TextEncoder().encode(this.text());
+    this.data ??= this.content();
     return this.data;
   }
   async read(buf: Uint8Array): Promise<number> {
@@ -73,7 +78,7 @@ class ProcFile implements OpenFile {
     return n;
   }
   async pread(buf: Uint8Array, off: number): Promise<number> {
-    const d = off === 0 ? (this.data = new TextEncoder().encode(this.text())) : this.snapshot();
+    const d = off === 0 ? (this.data = this.content()) : this.snapshot();
     const n = Math.max(0, Math.min(buf.length, d.length - off));
     buf.set(d.subarray(off, off + n));
     return n;
@@ -148,7 +153,9 @@ export class ProcFs {
     if (!p.syscalls) return 0;
     const end = p.state === 'zombie' && p.exitTime ? p.exitTime : now;
     const asleep = p.engineSleeps > 0 ? Math.max(0, end - p.engineSleepSince) : 0;
-    return Math.max(0, end - p.startTime - p.kernelMs - asleep);
+    // and a call it is blocked in now (wait4, a read): counted once it ends, as kernelMs
+    const blocked = p.state !== 'zombie' && p.inSyscall > 0 && end - p.syscallSince >= 2 ? end - p.syscallSince : 0;
+    return Math.max(0, end - p.startTime - p.kernelMs - Math.max(asleep, blocked));
   }
 
   private live(): Process[] {
@@ -192,6 +199,7 @@ export class ProcFs {
       case 'stat': return { type: 'file', text: () => this.statText() };
       case 'vmstat': return { type: 'file', text: () => VMSTAT_KEYS.map((k) => `${k} 0`).join('\n') + '\n' };
       case 'loadavg': return { type: 'file', text: () => this.loadavgText() };
+      case 'config.gz': return { type: 'file', text: () => gzipStored(new TextEncoder().encode(KCONFIG)) };
       case 'uptime': return { type: 'file', text: () => {
         const up = (Date.now() - bootMs) / 1000;
         const idle = Math.max(0, up * this.ncpu() - this.live().reduce((s, p) => s + ProcFs.cpuMs(p) / 1000, 0));
@@ -208,11 +216,17 @@ export class ProcFs {
       if (!/^\d+$/.test(sub) || !f) return undefined;
       return { type: 'link', target: () => fdTarget(f) };
     }
+    if (rest.length === 2 && name === 'fdinfo') {
+      const f = p.fds.get(Number(sub));
+      if (!/^\d+$/.test(sub) || !f) return undefined;
+      return { type: 'file', text: () => fdInfo(f, p.fds.getCloexec(Number(sub)) ?? false) };
+    }
     if (rest.length === 2 && name === 'task' && sub === String(p.pid)) return { type: 'dir', list: () => PID_ENTRIES.filter((e) => e !== 'task') };
     if (rest.length === 3 && name === 'task' && sub === String(p.pid)) return this.pidNode(caller, p, rest.slice(2));
     if (rest.length !== 1) return undefined;
     switch (name) {
-      case 'fd': return { type: 'dir', list: () => p.fds.entries().map(([fd]) => String(fd)) };
+      case 'fd':
+      case 'fdinfo': return { type: 'dir', list: () => p.fds.entries().map(([fd]) => String(fd)) };
       case 'task': return { type: 'dir', list: () => [String(p.pid)] };
       case 'cwd': return { type: 'link', target: () => p.cwd };
       // A runner can name the program the process reports as itself (a WASI package's "self")
@@ -373,14 +387,16 @@ export class ProcFs {
    * in-page commands (the shell's cat, ls, grep) read the same /proc/PID as
    * programs. undefined when it isn't ours.
    */
-  fsNode(path: string): { dir: string[] } | { text: string } | { link: string } | undefined {
+  fsNode(path: string): { dir: string[] } | { text: string } | { bytes: Uint8Array } | { link: string } | undefined {
     if (path === '/proc') return undefined; // (the FileSystem lists /proc itself)
     const head = path.slice(6).split('/')[0];
     const p = /^\d+$/.test(head) ? this.kernel.procs.get(Number(head)) : this.kernel.init;
     if (!p || head === 'self' || head === 'thread-self') return undefined;
     const n = this.node(p, path);
     if (!n) return undefined;
-    return n.type === 'dir' ? { dir: n.list() } : n.type === 'file' ? { text: n.text() } : { link: n.target() };
+    if (n.type !== 'file') return n.type === 'dir' ? { dir: n.list() } : { link: n.target() };
+    const t = n.text();
+    return typeof t === 'string' ? { text: t } : { bytes: t };
   }
 
   // ── what the kernel calls ──
@@ -469,7 +485,7 @@ const VMSTAT_KEYS = [
   'pgscan_kswapd', 'pgscan_direct', 'pgalloc_normal', 'pgactivate', 'pgdeactivate',
 ];
 
-const PID_ENTRIES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'io', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
+const PID_ENTRIES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'fdinfo', 'io', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
 
 export function wchanText(p: Process): string {
   return p.calls.length || p.engineSleeps ? 'do_syscall_64' : '0';
@@ -484,6 +500,22 @@ export function syscallText(p: Process): string {
   return `${c.nr} ${a.join(' ')} 0x0 0x0\n`;
 }
 
+/**
+ * /proc/PID/fdinfo/N: the description's offset and flags, and an inotify
+ * instance's watches as Linux lists them (LTP inotify12 reads their masks)
+ */
+function fdInfo(f: OpenFile, cloexec: boolean): string {
+  const pos = f.seek ? Math.max(0, f.seek(0, A.SEEK_CUR)) : 0;
+  let t = `pos:\t${pos}\nflags:\t0${((f.flags | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
+  if (f instanceof InotifyFile) {
+    for (const w of f.watches.values()) {
+      t += `inotify wd:${w.wd} ino:${(fnv(w.path) >>> 0).toString(16)} sdev:1 mask:${(w.mask >>> 0).toString(16)} ignored_mask:0\n`;
+    }
+  }
+  return t;
+}
+const fnv = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x1000193); return h; };
+
 /** What /proc/PID/fd/N points at. */
 export function fdTarget(f: OpenFile): string {
   if (f.path) return f.path;
@@ -497,4 +529,48 @@ export function fdTarget(f: OpenFile): string {
     case 'epoll': return 'anon_inode:[eventpoll]';
     default: return 'anon_inode:[shiro]';
   }
+}
+
+/**
+ * /proc/config.gz: the kernel's build options as this kernel has them (what
+ * it implements =y, what it doesn't "is not set"), for programs that check
+ * (LTP's needs_kconfigs).
+ */
+const KCONFIG = [
+  '# Linux/x86_64 kernel configuration (tabcomputer)',
+  'CONFIG_64BIT=y', 'CONFIG_X86_64=y', 'CONFIG_SMP=y', 'CONFIG_MMU=y', 'CONFIG_HZ=100',
+  'CONFIG_MULTIUSER=y', 'CONFIG_SYSVIPC=y', 'CONFIG_POSIX_MQUEUE=y', 'CONFIG_POSIX_TIMERS=y', 'CONFIG_FUTEX=y',
+  'CONFIG_EPOLL=y', 'CONFIG_INOTIFY_USER=y', 'CONFIG_SIGNALFD=y', 'CONFIG_TIMERFD=y', 'CONFIG_EVENTFD=y', 'CONFIG_SHMEM=y', 'CONFIG_MEMFD_CREATE=y',
+  'CONFIG_FILE_LOCKING=y', 'CONFIG_PROC_FS=y', 'CONFIG_TMPFS=y', 'CONFIG_UNIX=y', 'CONFIG_NET=y', 'CONFIG_INET=y', 'CONFIG_IPV6=y',
+  'CONFIG_UNIX98_PTYS=y', 'CONFIG_IKCONFIG=y', 'CONFIG_IKCONFIG_PROC=y',
+  '# CONFIG_AIO is not set', '# CONFIG_IO_URING is not set', '# CONFIG_FANOTIFY is not set',
+  '# CONFIG_USERFAULTFD is not set', '# CONFIG_NAMESPACES is not set', '# CONFIG_USER_NS is not set', '# CONFIG_NET_NS is not set',
+  '# CONFIG_PID_NS is not set', '# CONFIG_UTS_NS is not set', '# CONFIG_IPC_NS is not set', '# CONFIG_CGROUPS is not set',
+  '# CONFIG_SECCOMP is not set', '# CONFIG_BPF_SYSCALL is not set', '# CONFIG_PERF_EVENTS is not set', '# CONFIG_KCMP is not set',
+  '# CONFIG_CHECKPOINT_RESTORE is not set', '# CONFIG_SWAP is not set', '# CONFIG_QUOTA is not set', '# CONFIG_MODULES is not set',
+].join('\n') + '\n';
+
+/** `data` as a gzip file of stored (uncompressed) deflate blocks */
+function gzipStored(data: Uint8Array): Uint8Array {
+  let crc = ~0;
+  for (const b of data) {
+    crc ^= b;
+    for (let k = 0; k < 8; k++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  crc = ~crc >>> 0;
+  const blocks = Math.max(1, Math.ceil(data.length / 65535));
+  const out = new Uint8Array(10 + data.length + blocks * 5 + 8);
+  out.set([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]);
+  let o = 10;
+  for (let i = 0; i < blocks; i++) {
+    const part = data.subarray(i * 65535, (i + 1) * 65535);
+    out[o++] = i === blocks - 1 ? 1 : 0;
+    out[o++] = part.length & 0xff; out[o++] = part.length >> 8;
+    out[o++] = ~part.length & 0xff; out[o++] = (~part.length >> 8) & 0xff;
+    out.set(part, o); o += part.length;
+  }
+  const dv = new DataView(out.buffer);
+  dv.setUint32(o, crc, true);
+  dv.setUint32(o + 4, data.length, true);
+  return out;
 }

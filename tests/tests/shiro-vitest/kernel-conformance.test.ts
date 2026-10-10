@@ -10,6 +10,7 @@ import type { Process } from '@shiro/kernel/process';
 import * as A from '@shiro/kernel/abi';
 import { NetStack, installNet, encodeSockaddr } from '@shiro/kernel/net';
 import { JobControl, attachKernel } from '@shiro/kernel/signals';
+import { ProcFs } from '@shiro/kernel/procfs';
 
 describe('kernel syscalls found by LTP', () => {
   let fs: FileSystem;
@@ -912,6 +913,76 @@ describe('kernel syscalls found by LTP', () => {
     off();
   });
 
+  it('splice, tee, vmsplice and copy_file_range move bytes between pipes and files as Linux checks them (LTP splice01-07, tee01-02, vmsplice01-04, copy_file_range03)', async () => {
+    const off = (a: number | null, b: number | null) => {
+      const d = new Uint8Array(4096); const dv = new DataView(d.buffer);
+      if (a !== null) dv.setBigInt64(0, BigInt(a), true);
+      if (b !== null) dv.setBigInt64(8, BigInt(b), true);
+      return d;
+    };
+    await fs.writeFile('/tmp/kc/spl', 'hello world');
+    const f = await open('/tmp/kc/spl', A.O_RDWR);
+    const [r, w] = await pipe();
+    const [r2, w2] = await pipe();
+    // file → pipe at an offset (the offset moves, the file position doesn't)
+    let d = off(6, null);
+    expect(await kernel.syscall(proc, A.SYS_splice, [f, 1, w, 0, 5, 0], d)).toBe(5);
+    expect(new DataView(d.buffer).getBigInt64(0, true)).toBe(11n);
+    // tee copies without taking; then pipe → file at its position
+    expect(await kernel.syscall(proc, A.SYS_tee, [r, w2, 100, 0], new Uint8Array(0))).toBe(5);
+    expect(await kernel.syscall(proc, A.SYS_splice, [r, 0, f, 0, 100, 0], off(null, null))).toBe(5);
+    const back = new Uint8Array(32);
+    expect(await kernel.syscall(proc, A.SYS_pread64, [f, 32, 0, 0], back)).toBe(11);
+    expect(new TextDecoder().decode(back.subarray(0, 11))).toBe('worldworld\0'.slice(0, 5) + ' world');
+    expect(await kernel.syscall(proc, A.SYS_read, [r2, 32], back)).toBe(5);
+    // errors: no pipe, an offset on a pipe, the same pipe, a nonblocking empty pipe
+    expect(await kernel.syscall(proc, A.SYS_splice, [f, 0, f, 0, 1, 0], off(null, null))).toBe(-A.EINVAL);
+    expect(await kernel.syscall(proc, A.SYS_splice, [r, 1, f, 0, 1, 0], off(0, null))).toBe(-A.ESPIPE);
+    expect(await kernel.syscall(proc, A.SYS_tee, [r, w, 1, 0], new Uint8Array(0))).toBe(-A.EINVAL);
+    expect(await kernel.syscall(proc, A.SYS_splice, [r, 0, f, 0, 1, 2], off(null, null))).toBe(-A.EAGAIN);
+    // vmsplice moves what fits in the pipe (64 KiB of 128 KiB)
+    const big = new Uint8Array(128 * 1024).fill(7);
+    expect(await kernel.syscall(proc, A.SYS_vmsplice, [w, big.length, 0], big)).toBe(65536);
+    expect(await kernel.syscall(proc, A.SYS_vmsplice, [f, 1, 0], big)).toBe(-A.EBADF);
+    const out = new Uint8Array(70000);
+    expect(await kernel.syscall(proc, A.SYS_vmsplice, [r, out.length, 0], out)).toBe(65536);
+    // copy_file_range within one file: overlapping ranges are EINVAL
+    d = off(0, 20);
+    expect(await kernel.syscall(proc, A.SYS_copy_file_range, [f, 1, f, 1, 5, 0], d)).toBe(5);
+    expect(new DataView(d.buffer).getBigInt64(8, true)).toBe(25n);
+    expect(await kernel.syscall(proc, A.SYS_copy_file_range, [f, 1, f, 1, 5, 0], off(0, 2))).toBe(-A.EINVAL);
+    expect(await kernel.syscall(proc, A.SYS_copy_file_range, [f, 1, f, 1, 5, 1], off(0, 40))).toBe(-A.EINVAL);
+    for (const fd of [f, r, w, r2, w2]) await call(A.SYS_close, [fd]);
+  });
+
+  it('flock: whole-file locks of the open file description, apart from fcntl locks; LOCK_NB, conversion, release at the last close and at exit (LTP flock02-04)', async () => {
+    await fs.writeFile('/tmp/kc/flk', 'x');
+    const a = await open('/tmp/kc/flk', A.O_RDWR), b = await open('/tmp/kc/flk', A.O_RDWR);
+    expect(await call(A.SYS_flock, [a, 0])).toBe(-A.EINVAL);
+    expect(await call(A.SYS_flock, [a, A.LOCK_SH])).toBe(0);
+    expect(await call(A.SYS_flock, [b, A.LOCK_SH | A.LOCK_NB])).toBe(0);
+    expect(await call(A.SYS_flock, [b, A.LOCK_EX | A.LOCK_NB])).toBe(-A.EAGAIN);
+    expect(await call(A.SYS_flock, [a, A.LOCK_UN])).toBe(0);
+    expect(await call(A.SYS_flock, [b, A.LOCK_EX | A.LOCK_NB])).toBe(0); // (converted)
+    expect(await call(A.SYS_flock, [a, A.LOCK_SH | A.LOCK_NB])).toBe(-A.EAGAIN);
+    // a dup shares the description (and its lock); the last close drops it
+    const c = await call(A.SYS_dup, [b]);
+    expect(await call(A.SYS_close, [b])).toBe(0);
+    expect(await call(A.SYS_flock, [a, A.LOCK_SH | A.LOCK_NB])).toBe(-A.EAGAIN);
+    expect(await call(A.SYS_close, [c])).toBe(0);
+    expect(await call(A.SYS_flock, [a, A.LOCK_EX | A.LOCK_NB])).toBe(0);
+    // a waiter gets it once the holder exits
+    const p = kernel.spawn({ path: 'flk', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+    const d = new Uint8Array(64); d.set(new TextEncoder().encode('/tmp/kc/flk'));
+    const pf = await kernel.syscall(p, A.SYS_openat, [A.AT_FDCWD, 11, A.O_RDWR, 0], d);
+    const waiting = kernel.syscall(p, A.SYS_flock, [pf, A.LOCK_EX], new Uint8Array(0));
+    expect(await call(A.SYS_close, [a])).toBe(0);
+    expect(await waiting).toBe(0);
+    expect(await call(A.SYS_flock, [await open('/tmp/kc/flk', A.O_RDWR), A.LOCK_EX | A.LOCK_NB])).toBe(-A.EAGAIN);
+    await kernel.exit(p, 0);
+    expect(await call(A.SYS_flock, [await open('/tmp/kc/flk', A.O_RDWR), A.LOCK_EX | A.LOCK_NB])).toBe(0);
+  });
+
   it('timer_create SIGEV_THREAD_ID to a thread the engine vouches for; its signal\'s siginfo names the thread in its last word (Blink 0510, Open POSIX fork_18-1)', async () => {
     const p = kernel.spawn({ path: 'tt', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
     p.dispositions.set(34, 0x1234);
@@ -1039,5 +1110,144 @@ describe('kernel syscalls found by LTP', () => {
     expect(await sys(A.SYS_signalfd4, [99, 8, 0], set(SIGUSR1))).toBe(-A.EBADF);
     expect(await sys(A.SYS_signalfd4, [ep, 8, 0], set(SIGUSR1))).toBe(-A.EINVAL); // not a signalfd
     kernel.kill(p.pid, A.SIGKILL);
+  });
+
+  it('eventfd overflow waits, close_range flags, fstat of a removed directory, /proc/config.gz (LTP eventfd02/04, close_range02, readahead01, needs_kconfigs)', async () => {
+    const u64 = (v: bigint) => { const d = new Uint8Array(8); new DataView(d.buffer).setBigUint64(0, v, true); return d; };
+    const max = 0xfffffffffffffffen;
+    // a write that would pass the maximum is EAGAIN nonblocking, and waits for a read otherwise
+    const nb = await kernel.syscall(proc, A.SYS_eventfd2, [0, A.O_NONBLOCK], new Uint8Array(8));
+    expect(await kernel.syscall(proc, A.SYS_write, [nb, 8], u64(max))).toBe(8);
+    expect(await kernel.syscall(proc, A.SYS_write, [nb, 8], u64(1n))).toBe(-A.EAGAIN);
+    const ev = await kernel.syscall(proc, A.SYS_eventfd2, [0, 0], new Uint8Array(8));
+    expect(await kernel.syscall(proc, A.SYS_write, [ev, 8], u64(max))).toBe(8);
+    let done = false;
+    const w = kernel.syscall(proc, A.SYS_write, [ev, 8], u64(5n)).then((n) => { done = true; return n; });
+    await new Promise((res) => setTimeout(res, 10));
+    expect(done).toBe(false);
+    const got = new Uint8Array(8);
+    expect(await kernel.syscall(proc, A.SYS_read, [ev, 8], got)).toBe(8);
+    expect(new DataView(got.buffer).getBigUint64(0, true)).toBe(max);
+    expect(await w).toBe(8);
+    expect(await kernel.syscall(proc, A.SYS_read, [ev, 8], got)).toBe(8);
+    expect(new DataView(got.buffer).getBigUint64(0, true)).toBe(5n);
+    for (const fd of [nb, ev]) await call(A.SYS_close, [fd]);
+    // close_range: unknown flags
+    expect(await call(A.SYS_close_range, [100, 200, 1])).toBe(-A.EINVAL);
+    expect(await call(A.SYS_close_range, [100, 200, 4])).toBe(0);
+    // a removed directory's fd still fstats, with nlink 0
+    await fs.mkdir('/tmp/kc/gone');
+    const d = await open('/tmp/kc/gone', A.O_RDONLY | A.O_DIRECTORY);
+    await fs.rmdir('/tmp/kc/gone');
+    const st = new Uint8Array(256);
+    expect(await kernel.syscall(proc, A.SYS_fstat, [d], st)).toBe(0);
+    expect(new DataView(st.buffer).getBigUint64(16, true)).toBe(0n);
+    await call(A.SYS_close, [d]);
+    // /proc/config.gz is gzip of the options
+    const cfg = await open('/proc/config.gz', A.O_RDONLY);
+    const gz = new Uint8Array(65536);
+    const n = await kernel.syscall(proc, A.SYS_read, [cfg, gz.length], gz);
+    expect(n).toBeGreaterThan(20);
+    const text = await new Response(new Blob([gz.subarray(0, n)]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    expect(text).toContain('CONFIG_EVENTFD=y');
+    await call(A.SYS_close, [cfg]);
+  });
+
+  it('RLIMIT_CPU is the kernel\'s: prlimit64 sets and reads it, SIGXCPU at the soft limit, SIGKILL at the hard one, inherited by fork; a call blocked now is not CPU (LTP setrlimit06)', async () => {
+    const INF = 0xffffffffffffffffn;
+    const lim = new Uint8Array(16), dv = new DataView(lim.buffer);
+    const p = kernel.spawn({ path: 'cpulim', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+    const set = (cur: bigint, max: bigint) => { dv.setBigUint64(0, cur, true); dv.setBigUint64(8, max, true); return kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 1], lim); };
+    expect(await kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 0], lim)).toBe(0);
+    expect([dv.getBigUint64(0, true), dv.getBigUint64(8, true)]).toEqual([INF, INF]);
+    expect(await set(3n, 2n)).toBe(-A.EINVAL);
+    expect(await set(1n, 2n)).toBe(0);
+    expect(await kernel.syscall(p, A.SYS_prlimit64, [0, A.RLIMIT_CPU, 0], lim)).toBe(0);
+    expect([dv.getBigUint64(0, true), dv.getBigUint64(8, true)]).toEqual([1n, 2n]);
+    expect(await set(1n, 5n)).toBe(-A.EPERM); // raising the hard limit takes root
+    expect(kernel.cpuLimit(kernel.vfork(p))).toEqual({ cur: 1, max: 2 });
+    // a blocked call (a pipe read) isn't CPU time while it waits
+    const pd = new Uint8Array(16);
+    expect(await kernel.syscall(p, A.SYS_pipe2, [0], pd)).toBe(0);
+    const rfd = new DataView(pd.buffer).getInt32(0, true);
+    p.syscalls = 1;
+    const sigs: number[] = [];
+    const deliver = kernel.deliver.bind(kernel);
+    kernel.deliver = ((q: typeof p, sig: number, ...rest: unknown[]) => { if (q === p) sigs.push(sig); return (deliver as any)(q, sig, ...rest); }) as typeof kernel.deliver;
+    void kernel.syscall(p, A.SYS_read, [rfd, 1], new Uint8Array(1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ProcFs.cpuMs(p)).toBeLessThan(100);
+    expect(sigs).toEqual([]);
+    // computing (its time since start counts) past the soft limit, then the hard one
+    // (SIGXCPU blocked, as a handler would keep it running)
+    p.sigmask.add(A.SIGXCPU);
+    p.inSyscall = 0;
+    const st = p as { startTime: number };
+    st.startTime = Date.now() - 1200;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sigs).toEqual([A.SIGXCPU]);
+    st.startTime -= 1000;
+    await new Promise((r) => setTimeout(r, 300));
+    kernel.deliver = deliver;
+    expect(sigs).toEqual([A.SIGXCPU, A.SIGKILL]);
+  });
+
+  it('a thread-directed signal left to its default action goes to the engine (the thread may block it), not the process\'s default action, job control or not (Open POSIX fork_18-1)', async () => {
+    for (const hooked of [false, true]) {
+      const p = kernel.spawn({ path: 'tdir', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+      const got: number[] = [];
+      p.addSignalListener((sig) => got.push(sig));
+      let hookCalls = 0;
+      if (hooked) p.signalHook = () => { hookCalls++; return true; };
+      kernel.deliver(p, 32, { signo: 32, code: A.SI_TIMER, tid: p.pid + 1 });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(p.exiting).toBe(false);
+      expect(got).toEqual([32]);
+      expect(p.pendingSignals.has(32)).toBe(true);
+      expect(hookCalls).toBe(0);
+      // a process-directed one still takes the default action (through job control when hooked)
+      if (!hooked) {
+        kernel.deliver(p, 32, { signo: 32, code: A.SI_USER });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(p.exiting).toBe(true);
+      } else {
+        kernel.deliver(p, 32, { signo: 32, code: A.SI_USER });
+        expect(hookCalls).toBe(1);
+        kernel.kill(p.pid, A.SIGKILL);
+      }
+    }
+  });
+
+  it('a timer started long in the past: the expiries missed are the first signal\'s overruns, capped at DELAYTIMER_MAX (LTP timer_settime03)', async () => {
+    const t = kernel.vfork(proc);
+    kernel.setSigmask(t, new Set([A.SIGUSR1]));
+    const sev = new Uint8Array(24);
+    new DataView(sev.buffer).setInt32(8, A.SIGUSR1, true);
+    const id = await kernel.syscall(t, A.SYS_timer_create, [0 /* CLOCK_REALTIME */, 1], sev);
+    // every 1 µs from 3000 s ago (TIMER_ABSTIME): 3e9 expiries missed
+    const b = new Uint8Array(32), v = new DataView(b.buffer);
+    v.setBigInt64(8, 1000n, true);
+    const start = BigInt(Date.now() - 3_000_000) * 1_000_000n;
+    v.setBigInt64(16, start / 1_000_000_000n, true); v.setBigInt64(24, start % 1_000_000_000n, true);
+    expect(await kernel.syscall(t, A.SYS_timer_settime, [id, 1], b)).toBe(0);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.deferredSignals.has(A.SIGUSR1)).toBe(true);
+    t.deferredSignals.delete(A.SIGUSR1);
+    expect(await kernel.syscall(t, A.SYS_timer_getoverrun, [id], new Uint8Array(8))).toBe(0x7fffffff);
+    kernel.kill(t.pid, A.SIGKILL);
+    await kernel.syscall(proc, A.SYS_wait4, [t.pid, 0], new Uint8Array(8));
+  });
+
+  it('setpgid of a child that has exec\'d is EACCES; prctl(PR_SET_NAME) is the process\'s comm until exec, and a fork child keeps it (LTP setpgid03, prctl05)', async () => {
+    const c = kernel.vfork(proc);
+    await kernel.syscall(proc, A.SYS_setpgid, [c.pid, 0], new Uint8Array(8)); // (still the parent's to move)
+    c.data.execed = true;
+    expect(await kernel.syscall(proc, A.SYS_setpgid, [c.pid, 0], new Uint8Array(8))).toBe(-A.EACCES);
+    const name = new TextEncoder().encode('renamed-thread-name');
+    expect(await kernel.syscall(c, A.SYS_prctl, [15, name.length], name)).toBe(0);
+    expect(c.comm).toBe('renamed-thread-');
+    expect(kernel.vfork(c).comm).toBe('renamed-thread-');
+    expect(await kernel.syscall(c, A.SYS_prctl, [16, 0], new Uint8Array(16))).toBe(-A.EINVAL);
+    kernel.kill(c.pid, A.SIGKILL);
   });
 });

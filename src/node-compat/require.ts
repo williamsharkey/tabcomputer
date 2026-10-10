@@ -11,6 +11,8 @@ import { transformESModules, transformTS, transformJSX } from '../commands/jseva
 import { carryAsyncContext, carriesAsyncContext } from './async-context';
 import { ProcessExitError } from '../commands/jseval/utils';
 import { BrowserBuildFailure } from './browser-packages';
+import { nodeGuestOf } from '../node-worker/hooks';
+import { WORKER_ONLY_GLOBALS } from './process-global';
 
 export interface RequireDeps {
   ctx: CommandContext;
@@ -49,6 +51,11 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
   const { ctx, fileCache, fileMtimes, moduleCache, pendingPromises, processEvents,
     getBuiltinModule, fakeConsole, fakeProcess, FakeBuffer,
     createExpressShim, createSqliteShim, createAutoStub } = deps;
+  // A kernel guest (node in a Worker) has no DOM and a real network stack: packages
+  // load as their node builds there, not their browser ones (decode-named-character-
+  // reference's index.dom.js wants `document`: astro dev failed at startup)
+  const guest = !!nodeGuestOf(ctx);
+  const buildOf = (pkg: { name?: unknown }) => nodeBuild(pkg) || guest;
 
   // Modules whose body is still running (top-level await), by path, and which
   // module each importer is waiting on (to spot cycles)
@@ -237,7 +244,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
                 const subpathKey = `./${subpath}`;
                 const exp = pkg.exports[subpathKey];
                 if (exp) {
-                  const target = exportTarget(exp, nodeBuild(pkg));
+                  const target = exportTarget(exp, buildOf(pkg));
                   if (target) {
                     subpathResolved = `${pkgDir}/${target.replace(/^\.\//, '')}`;
                   }
@@ -249,7 +256,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
                       const regex = new RegExp(`^${pattern}$`);
                       const match = subpath.match(regex);
                       if (match) {
-                        const target = exportTarget(value, nodeBuild(pkg));
+                        const target = exportTarget(value, buildOf(pkg));
                         if (target) {
                           subpathResolved = `${pkgDir}/${target.replace(/^\.\//, '').replace('*', match[1])}`;
                           break;
@@ -287,9 +294,9 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
                   main = exp;
                 } else if (exp['.']) {
                   const dotExport = exp['.'];
-                  main = exportTarget(dotExport, nodeBuild(pkg));
+                  main = exportTarget(dotExport, buildOf(pkg));
                 } else {
-                  main = exportTarget(exp, nodeBuild(pkg));
+                  main = exportTarget(exp, buildOf(pkg));
                 }
               }
 
@@ -358,7 +365,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
               if (pkg.exports) {
                 const exp = pkg.exports;
                 if (typeof exp === 'string') main = exp;
-                else main = exportTarget(exp['.'] ?? exp, nodeBuild(pkg));
+                else main = exportTarget(exp['.'] ?? exp, buildOf(pkg));
               }
               if (!main) main = pkg.main || pkg.module || 'index.js';
               if (typeof main !== 'string') main = 'index.js';
@@ -395,7 +402,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
               if (pkg.exports) {
                 const exp = pkg.exports;
                 if (typeof exp === 'string') main = exp;
-                else main = exportTarget(exp['.'] ?? exp, nodeBuild(pkg));
+                else main = exportTarget(exp['.'] ?? exp, buildOf(pkg));
               }
               if (!main) main = pkg.main || pkg.module || 'index.js';
               if (typeof main !== 'string') main = 'index.js';
@@ -478,7 +485,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
         'module', 'exports', 'require', '__filename', '__dirname',
         'console', 'process', 'global', 'Buffer', '__import_meta',
         '__shiro_module', '__shiro_require', '__dynamic_import', '__shiro_require_ready', 'globalThis', 'Function',
-        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES : []),
+        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES : []), ...(guest ? WORKER_ONLY_GLOBALS : []),
       ];
       const dynamicImport = async (specifier: unknown) => {
         let spec = String(specifier);
@@ -489,20 +496,10 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       const fnArgs = [mod, mod.exports, nestedRequire, resolved, modDir,
         fakeConsole, fakeProcess, deps.processGlobal ?? globalThis, FakeBuffer, modImportMeta,
         mod, nestedRequire, dynamicImport, (p: string) => requireReady(p, modDir, resolved), deps.processGlobal ?? globalThis, deps.processFunction ?? Function,
-        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES.map((k) => deps.scriptTimers![k]) : [])];
+        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES.map((k) => deps.scriptTimers![k]) : []), ...(guest ? WORKER_ONLY_GLOBALS.map(() => undefined) : [])];
 
-      // Try synchronous execution first — most npm packages don't use top-level await.
-      // This ensures module.exports is populated before require() returns,
-      // fixing ESM-only packages like chalk v5 that export via `export default`.
-      try {
-        const syncFn = new Function(...fnParams, wrapModuleBody(transformedContent, false));
-        syncFn.apply(mod.exports, fnArgs);
-        loaded();
-      } catch (syncErr: any) {
-        // SyntaxError from top-level `await` -> fall back to AsyncFunction
-        if (syncErr instanceof SyntaxError && /\bawait\b/.test(transformedContent)) {
-          const AsyncFn = Object.getPrototypeOf(async function(){}).constructor;
-          const wrapped = compileAsyncModule(AsyncFn, fnParams, transformedContent);
+      const AsyncFn = Object.getPrototypeOf(async function(){}).constructor;
+      const runAsync = (wrapped: (...a: any[]) => Promise<any>) => {
           const execPromise = wrapped.apply(mod.exports, fnArgs);
           pendingEval.set(resolved, execPromise);
           execPromise.then(() => { pendingEval.delete(resolved); loaded(); }, () => { pendingEval.delete(resolved); loading.delete(resolved); });
@@ -514,6 +511,59 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
               }
             }
           }));
+      };
+      // An import still evaluating (its own top-level await, or one of its imports'):
+      // ES module importers wait for it. The body runs synchronously first, so its
+      // hoisted exports are there for a cyclic import; at the first static import still
+      // evaluating it stops, and runs again as an async module awaiting its imports
+      // (they are cached by then, and the hoisted exports come first). SvelteKit's
+      // config called kit's sveltekit() before core/sync/utils.js's `await import_peer(…)`
+      const waiting = new Set<string>();
+      let waited: ((...a: any[]) => Promise<any>) | null | undefined;
+      let inBody = false;
+      const noteWaiting = (spec: string) => {
+        lastResolved = '';
+        const exp = nestedRequire(spec);
+        if (lastResolved && pendingEval.has(lastResolved)) {
+          waiting.add(spec);
+          if (inBody) {
+            if (waited === undefined) waited = compileWaiting();
+            if (waited) { inBody = false; throw NEEDS_WAIT; }
+          }
+        }
+        return exp;
+      };
+      const compileWaiting = () => {
+        try {
+          return new AsyncFn(...fnParams, wrapModuleBody(transformedContent.replace(IMPORT_CALL,
+            (_: string, q: string, spec: string) => `(await __shiro_require_ready(${q}${spec}${q}))`), true));
+        } catch (e) {
+          if (!(e instanceof SyntaxError)) throw e;
+          return null; // (an import inside a function: it runs as it is)
+        }
+      };
+      const syncArgs = fnArgs.slice();
+      syncArgs[11] = Object.assign(noteWaiting, nestedRequire);
+      try {
+        // Synchronous first: most packages have no top-level await, and module.exports
+        // is then filled before require() returns (chalk 5's `export default`)
+        const syncFn = new Function(...fnParams, wrapModuleBody(transformedContent, false));
+        inBody = true;
+        try { syncFn.apply(mod.exports, syncArgs); } finally { inBody = false; }
+        loaded();
+        // (an import still evaluating that it could not wait for)
+        if (waiting.size) {
+          // (one at a time: waitsOn holds one import per importer, for the cycle check)
+          const settled = (async () => { for (const spec of waiting) await requireReady(spec, modDir, resolved); })().catch(() => {});
+          pendingEval.set(resolved, settled);
+          settled.then(() => { if (pendingEval.get(resolved) === settled) pendingEval.delete(resolved); });
+        }
+      } catch (syncErr: any) {
+        if (syncErr === NEEDS_WAIT && waited) {
+          runAsync(waited);
+        } else if (syncErr instanceof SyntaxError && /\bawait\b/.test(transformedContent)) {
+          // SyntaxError from top-level `await` -> fall back to AsyncFunction
+          runAsync(compileAsyncModule(AsyncFn, fnParams, transformedContent));
         } else {
           throw syncErr;
         }
@@ -615,6 +665,11 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
  * Code's cli.js) runs as before. Falls back to the plain body if the rewrite
  * doesn't compile (a generated call inside a non-async function).
  */
+/** A static import as transformESModules writes it */
+/** Thrown out of a module body that has to wait for an import (see requireModule) */
+const NEEDS_WAIT = new Error('(waits for an import)');
+const IMPORT_CALL = /__shiro_require\((['"])([^'"\n]+)\1\)/g;
+
 export function compileAsyncModule(AsyncFn: any, params: string[], body: string): (...a: any[]) => Promise<any> {
   const awaited = body.replace(/__shiro_require\((['"])((?:\.\.?)?\/[^'"\n]*)\1\)/g, '(await __shiro_require_ready($1$2$1))');
   if (awaited !== body) {

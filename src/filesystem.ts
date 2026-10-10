@@ -253,8 +253,18 @@ function fsError(code: string, message: string): Error {
   return err;
 }
 
-export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename';
-export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string) => void;
+/**
+ * A change to the filesystem. 'attrib': its mode, owner or times changed.
+ * The detail says, for 'write', whether the path is new (created) and
+ * whether it was made through an open file (fd: the kernel's descriptors,
+ * which report their own close; otherwise a write is a whole file, written
+ * and closed), and for 'delete', 'rename' and 'attrib', whether it is a
+ * directory (dir), when known. `at`: when the change happened (Date.now()),
+ * where it reaches the listener later (a node guest's relay).
+ */
+export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename' | 'attrib';
+export interface FSChangeDetail { created?: boolean; dir?: boolean; fd?: boolean; at?: number }
+export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail) => void;
 
 /**
  * Virtual filesystem provider for synthetic paths like /proc and /dev.
@@ -377,9 +387,9 @@ export function setProcSelf(fn: () => number | undefined): void {
 }
 const PROC_PID_RE = /^\/proc\/(\d+|self|thread-self)(?:\/(.*))?$/;
 const PROC_PID_FILES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'io', 'limits', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
-type ProcPidNode = { dir: string[] } | { text: string } | { link: string };
+type ProcPidNode = { dir: string[] } | { text: string } | { bytes: Uint8Array } | { link: string };
 /** Top-level /proc files the kernel generates from its process table (ProcInfoSource.node) */
-const SYSTEM_NAMES = ['stat', 'loadavg', 'uptime', 'vmstat', 'sysvipc'];
+const SYSTEM_NAMES = ['stat', 'loadavg', 'uptime', 'vmstat', 'sysvipc', 'config.gz'];
 
 /** /proc virtual provider — dynamic system info from Shiro */
 class ProcProvider implements VirtualFSProvider {
@@ -486,10 +496,14 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/sys/fs/pipe-user-pages-hard': () => '0\n',
     '/proc/sys/kernel/tainted': () => '0\n',
     '/proc/sys/kernel/core_pattern': () => 'core\n',
+    // inotify's limits (src/kernel/inotify.ts: MAX_QUEUED_EVENTS and the like)
+    '/proc/sys/fs/inotify/max_queued_events': () => '16384\n',
+    '/proc/sys/fs/inotify/max_user_instances': () => '128\n',
+    '/proc/sys/fs/inotify/max_user_watches': () => '65536\n',
     '/proc/mounts': () => 'rootfs / rootfs rw 0 0\n',
   };
 
-  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs'];
+  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs', '/proc/sys/fs/inotify'];
 
   handles(path: string): boolean {
     return path === '/proc' || path.startsWith('/proc/')
@@ -515,6 +529,7 @@ class ProcProvider implements VirtualFSProvider {
     if (node && 'dir' in node) return null;
     const gen = this.entries[path];
     if (!gen && !node) return null;
+    if (node && 'bytes' in node) return encoding === 'utf8' ? new TextDecoder().decode(node.bytes) : node.bytes;
     const content = node && 'text' in node ? node.text : gen!();
     return encoding === 'utf8' ? content : new TextEncoder().encode(content);
   }
@@ -532,7 +547,8 @@ class ProcProvider implements VirtualFSProvider {
       return null; // the FileSystem follows it to a real path
     }
     if ('dir' in node) return makeStat({ path, type: 'dir', content: null, mode: 0o555, mtime: Date.now(), ctime: this.startTime, size: 0 });
-    return makeStat({ path, type: 'file', content: new TextEncoder().encode(node.text), mode: 0o444, mtime: Date.now(), ctime: this.startTime, size: node.text.length });
+    const content = 'bytes' in node ? node.bytes : new TextEncoder().encode(node.text);
+    return makeStat({ path, type: 'file', content, mode: 0o444, mtime: Date.now(), ctime: this.startTime, size: content.length });
   }
 
   stat(path: string, follow = true): StatResult | null {
@@ -751,10 +767,19 @@ export class FileSystem {
     return () => { this._changeListeners.delete(listener); };
   }
 
-  private _emitChange(event: FSChangeEvent, path: string, newPath?: string): void {
+  private _emitChange(event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail): void {
     for (const fn of this._changeListeners) {
-      try { fn(event, path, newPath); } catch {}
+      try { fn(event, path, newPath, detail); } catch {}
     }
+  }
+
+  /**
+   * A change made outside FileSystem's own writes, for its listeners now: the
+   * kernel's inode cache reports a guest's write() when it happens, not only
+   * when it writes the file back (inotify, fs.watch).
+   */
+  notify(event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail): void {
+    this._emitChange(event, path, newPath, detail);
   }
 
   async init(): Promise<void> {
@@ -1755,10 +1780,14 @@ export class FileSystem {
    * `existing` (AT_SYMLINK_FOLLOW); otherwise the symlink itself gets the name.
    */
   async link(existing: string, newPath: string, options?: { follow?: boolean }): Promise<void> {
+    // /proc, /dev and the like are other filesystems
+    if (this.virtualProviders.some((vp) => vp.handles(existing) || vp.handles(newPath))) {
+      throw fsError('EXDEV', `EXDEV: cross-device link, link '${existing}' -> '${newPath}'`);
+    }
     const src = await this._canon(existing, !!options?.follow);
     newPath = await this._canon(newPath, false);
     let node = await this._get(src);
-    if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, link '${existing}'`);
+    if (!node) throw await this._missing(src, 'link');
     if (node.type === 'dir') throw fsError('EPERM', `EPERM: operation not permitted, link '${existing}'`);
     if (await this._get(newPath)) throw fsError('EEXIST', `EEXIST: file already exists, link '${newPath}'`);
     const parentPath = newPath.substring(0, newPath.lastIndexOf('/')) || '/';
@@ -1816,7 +1845,8 @@ export class FileSystem {
     this._canonDirs.clear();
     this._saveLinkMap();
     this._linksChanged();
-    this._emitChange('write', newPath);
+    this._emitChange('write', newPath, undefined, { created: true });
+    this._emitChange('attrib', src); // (its link count)
   }
 
   private _linkListeners = new Set<() => void>();
@@ -1829,6 +1859,16 @@ export class FileSystem {
 
   private _linksChanged(): void {
     for (const fn of this._linkListeners) { try { fn(); } catch {} }
+  }
+
+  /** The error for a canonical path that doesn't exist: ENOTDIR when a component on the way is not a directory. */
+  private async _missing(path: string, op: string): Promise<Error> {
+    for (let i = path.indexOf('/', 1); i > 0; i = path.indexOf('/', i + 1)) {
+      const n = await this._get(path.slice(0, i));
+      if (!n) break;
+      if (n.type !== 'dir') return fsError('ENOTDIR', `ENOTDIR: not a directory, ${op} '${path}'`);
+    }
+    return fsError('ENOENT', `ENOENT: no such file or directory, ${op} '${path}'`);
   }
 
   /** Inode number of the linked file at canonical `path` (cached), if it has links. */
@@ -2323,6 +2363,8 @@ export class FileSystem {
     mode?: number;
     /** Modification (and access) time to record instead of now (the kernel writing back an open file). */
     times?: { mtime: number; mtimeNs?: number; atime?: number; atimeNs?: number };
+    /** Made through an open file (the kernel's O_CREAT): its change event says so (FSChangeDetail.fd) */
+    fd?: boolean;
   }): Promise<void> {
     for (const vp of this.virtualProviders) {
       if (vp.writeFile(path, data)) return;
@@ -2362,7 +2404,7 @@ export class FileSystem {
       size: content.length,
       ...(options?.times ? { mtimeNs: options.times.mtimeNs || undefined, atime: options.times.atime, atimeNs: options.times.atimeNs || undefined } : {}),
     });
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, existing && !options?.fd ? undefined : { ...(existing ? {} : { created: true }), ...(options?.fd ? { fd: true } : {}) });
   }
 
   /**
@@ -2379,7 +2421,7 @@ export class FileSystem {
     const now = Date.now();
     const node: FSNode = { path, type: 'file', content: new Uint8Array(0), mode, mtime: now, ctime: now, size: 0 };
     try { this._putNow(node); } catch { return undefined; } // ENOSPC: writeFile reports it
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, { created: true, fd: true });
     return node;
   }
 
@@ -2634,7 +2676,7 @@ export class FileSystem {
     const entries = await this.readdir(path);
     if (entries.length > 0) throw fsError('ENOTEMPTY', `ENOTEMPTY: directory not empty, rmdir '${path}'`);
     await this._delete(path);
-    this._emitChange('delete', path);
+    this._emitChange('delete', path, undefined, { dir: true });
   }
 
   async rm(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -2703,7 +2745,49 @@ export class FileSystem {
         await this._delete(oldPath);
       }
     }
-    this._emitChange('rename', oldPath, newPath);
+    this._emitChange('rename', oldPath, newPath, node.type === 'dir' ? { dir: true } : undefined);
+  }
+
+  /**
+   * renameat2(RENAME_EXCHANGE): `a` and `b`, both existing (files or
+   * directories, with whatever is under them), swap names. Everything that
+   * moves is read into memory first, then the swap is made at once (one
+   * commit, so a crash leaves both or neither moved).
+   */
+  async exchange(a: string, b: string): Promise<void> {
+    a = await this._canon(a, false);
+    b = await this._canon(b, false);
+    const na = await this._get(a), nb = await this._get(b);
+    if (!na || !nb) throw fsError('ENOENT', `ENOENT: no such file or directory, rename '${na ? b : a}'`);
+    if (a === b || (na.link !== undefined && na.link === nb.link)) return; // one file
+    if (a === '/' || b === '/' || b.startsWith(a + '/') || a.startsWith(b + '/')) throw fsError('EINVAL', `EINVAL: invalid argument, rename '${a}' '${b}'`);
+    const keys = na.type === 'dir' || nb.type === 'dir' ? await this._getAllKeys() : [];
+    const tree = (root: string, node: FSNode) => [root, ...(node.type === 'dir' ? keys.filter((k) => k.startsWith(root + '/')) : [])];
+    const ta = tree(a, na), tb = tree(b, nb);
+    for (const k of [...ta, ...tb]) {
+      const n = await this._get(k);
+      if (n?.link !== undefined) await this._loadInode(n.link);
+    }
+    // From here on synchronous: a -> tmp, b -> a, tmp -> b
+    const tmp = `${a.slice(0, a.lastIndexOf('/'))}/.\u0001exchange-${newIno()}`;
+    this._moveTree(ta, a, tmp);
+    this._moveTree(tb, b, a);
+    this._moveTree(ta.map((k) => tmp + k.slice(a.length)), tmp, b);
+    this._canonDirs.clear();
+    this._emitChange('rename', a, b);
+    this._emitChange('rename', b, a);
+  }
+
+  /** Move the cached nodes `keys` (root `from` and what is under it) to under `to`, now. */
+  private _moveTree(keys: string[], from: string, to: string): void {
+    for (const key of [...keys].sort((x, y) => x.length - y.length)) {
+      const node = this.cache.get(key);
+      if (!node) continue;
+      const dest = to + key.slice(from.length);
+      if (node.link !== undefined && this._inodes.has(node.link)) { this._moveLinkName(key, dest, node.link); continue; }
+      this._putNow({ ...node, path: dest, ino: node.ino ?? pathIno(key) }, true);
+      this._deleteNow(key);
+    }
   }
 
   async chmod(path: string, mode: number): Promise<void> {
@@ -2711,6 +2795,7 @@ export class FileSystem {
     const node = await this._get(path);
     if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, chmod '${path}'`);
     await this._put({ ...node, mode, ctime: Date.now() });
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   /**
@@ -2726,6 +2811,7 @@ export class FileSystem {
     const atimeNs = ns?.atime || undefined;
     const sameA = atimeMs === mtimeMs && atimeNs === mtimeNs;
     await this._put({ ...node, mtime: mtimeMs, mtimeNs, atime: sameA ? undefined : atimeMs, atimeNs: sameA ? undefined : atimeNs });
+    this._emitChange('attrib', path, undefined, { dir: node.type === 'dir' });
   }
 
   // isomorphic-git compatibility: symlink support
@@ -2746,7 +2832,7 @@ export class FileSystem {
     if (!parent || parent.type !== 'dir') return Promise.reject(fsError('ENOENT', `ENOENT: no such file or directory, symlink '${target}' -> '${path}'`));
     const now = Date.now();
     this._putNow({ path: canon, type: 'symlink', content: new TextEncoder().encode(target), mode: 0o120000, mtime: now, ctime: now, size: target.length, symlinkTarget: target } as FSNode);
-    this._emitChange('write', canon);
+    this._emitChange('write', canon, undefined, { created: true });
     return Promise.resolve();
   }
 
@@ -2767,7 +2853,7 @@ export class FileSystem {
       size: target.length,
       symlinkTarget: target,
     });
-    this._emitChange('write', path);
+    this._emitChange('write', path, undefined, { created: true });
   }
 
   async readlink(path: string): Promise<string> {
@@ -2780,7 +2866,7 @@ export class FileSystem {
     }
     path = await this._canon(path, false);
     const node = await this._get(path);
-    if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, readlink '${path}'`);
+    if (!node) throw await this._missing(path, 'readlink');
     if (node.type !== 'symlink') throw fsError('EINVAL', `EINVAL: not a symlink '${path}'`);
     return node.symlinkTarget || new TextDecoder().decode(node.content!);
   }

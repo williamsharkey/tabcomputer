@@ -31,8 +31,9 @@
   }
   B.liveShared = () => {
     let sabs = 0, sabBytes = 0, mems = 0, memBytes = 0;
-    for (const r of B.sabs) { const b = r.deref(); if (b) { sabs++; sabBytes += b.byteLength; } }
-    for (const r of B.memories) { const m = r.deref(); if (m) { mems++; memBytes += m.buffer.byteLength; } }
+    // (dead references are dropped, so a long run's tracking doesn't grow the heap)
+    B.sabs = B.sabs.filter((r) => { const b = r.deref(); if (b) { sabs++; sabBytes += b.byteLength; } return b; });
+    B.memories = B.memories.filter((r) => { const m = r.deref(); if (m) { mems++; memBytes += m.buffer.byteLength; } return m; });
     return { sabs, sabBytes, sharedMemories: mems, sharedMemoryBytes: memBytes };
   };
 
@@ -70,9 +71,11 @@
     const before = new Set(k.procs.keys());
     let timedOut = false;
     const run = B.sh(cmd);
-    const timer = new Promise((res) => setTimeout(() => res('timeout'), ms));
+    let id;
+    const timer = new Promise((res) => { id = setTimeout(() => res('timeout'), ms); });
     const first = await Promise.race([run, timer]);
-    if (first !== 'timeout') return first;
+    // (the timer goes: a soak runs thousands of these well inside `ms`)
+    if (first !== 'timeout') { clearTimeout(id); return first; }
     timedOut = true;
     for (const [pid, p] of k.procs) if (!before.has(pid) && p.state !== 'zombie') k.kill(pid, 9);
     const r = await Promise.race([run, new Promise((res) => setTimeout(() => res(null), 5000))]);

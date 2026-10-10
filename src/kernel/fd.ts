@@ -10,7 +10,7 @@
 import type { FileSystem } from '../filesystem';
 import {
   type KStat, EBADF, EMFILE, EINVAL, EISDIR, ESPIPE, ENOTTY, EAGAIN, EINTR,
-  O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, O_NONBLOCK, O_DSYNC, OPEN_MAX, NR_OPEN,
+  O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, O_NONBLOCK, O_DSYNC, O_PATH, OPEN_MAX, NR_OPEN,
   POLLIN, POLLOUT, SEEK_SET, SEEK_CUR, SEEK_END,
   S_IFCHR, S_IFREG, S_IFDIR, S_IFIFO, FIONREAD, errnoFromError,
   EPERM, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW, F_SEAL_WRITE, F_SEAL_FUTURE_WRITE,
@@ -250,6 +250,7 @@ export class ReadyListeners {
    * the edge-triggered entries watching them. 0 = anything may have changed.
    */
   fire(mask = 0): void {
+    if (!this.cbs.size) return; // (every pipe read and write fires: no copy when nobody listens)
     for (const cb of [...this.cbs]) {
       try { cb(mask); } catch { /* listener errors must not break I/O */ }
     }
@@ -473,6 +474,33 @@ const WRITE_BACKLOG_BYTES = 16 << 20;
 const DIRTY_PAGES = 8;
 const KEEP_PAGES = 4;
 
+/**
+ * What a FileSystem's inotify (inotify.ts) hears from the kernel's open
+ * files: IN_OPEN, IN_ACCESS, IN_CLOSE_*. Only when something watches the
+ * path; then a write() is reported through FileSystem.notify too, and the
+ * inode's later write-back of it is an echo (writeBackEcho).
+ */
+export interface FileWatcher {
+  watched(path: string): boolean;
+  fileEvent(path: string, mask: number, dir?: boolean): void;
+  /** `ino`'s last name went while it is open: its watches stay with it until its last close */
+  orphaned(ino: object, path: string): void;
+  /** what an open, unlinked inode's descriptions did */
+  orphanEvent(ino: object, mask: number): void;
+  /** its last close */
+  inodeGone(ino: object): void;
+}
+export const fileWatchers = new WeakMap<FileSystem, FileWatcher>();
+const echoes = new WeakMap<FileSystem, Map<string, number>>();
+/** Whether `path`'s change events now come from the kernel writing back what it already reported */
+export function writeBackEcho(fs: FileSystem, path: string): boolean { return !!echoes.get(fs)?.get(path); }
+function echo(fs: FileSystem, path: string, d: 1 | -1): void {
+  let m = echoes.get(fs);
+  if (!m) echoes.set(fs, m = new Map());
+  const n = (m.get(path) ?? 0) + d;
+  if (n > 0) m.set(path, n); else m.delete(path);
+}
+
 class Inode {
   /** Small files: the bytes (capacity may exceed size). Empty for a paged file. */
   data: Uint8Array;
@@ -495,6 +523,8 @@ class Inode {
   key = '';
   /** Blocks of an unlinked big file this inode still reads (FileSystem.holdBlob), released at the last close. */
   heldBlob: string | null = null;
+  /** An O_TMPFILE file without O_EXCL: linkat may give it a name (linkAnonymousInode). */
+  tmpfile = false;
   /** Nanoseconds past mtimeMs; atime when set apart from mtime (null: follows it). See FSNode. */
   mtimeNs = 0;
   atimeMs: number | null = null;
@@ -656,7 +686,7 @@ class Inode {
   }
 
   /** To be written back, with the times it has (no new mtime). */
-  private markDirty(): void {
+  markDirty(): void {
     if (!this.dirty) this.dirtySince = Date.now();
     this.dirty = true;
     if (!this.flushTimer) this.armFlush(FLUSH_DELAY_MS);
@@ -806,7 +836,10 @@ class Inode {
     if (this.blob) return false;
     if (this.fs.pendingBytes > WRITE_BACKLOG_BYTES) return false;
     const times = { mtime: this.mtimeMs, mtimeNs: this.mtimeNs, ...(this.atimeMs === null ? {} : { atime: this.atimeMs, atimeNs: this.atimeNs }) };
-    if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
+    echo(this.fs, this.path, 1);
+    try {
+      if (!this.fs.writeCachedSync(this.path, this.data.slice(0, this.size), times)) return false;
+    } finally { echo(this.fs, this.path, -1); }
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.dirty = false;
     return true;
@@ -863,6 +896,9 @@ class Inode {
     // uncommitted data a close waits too, or a fast writer (dpkg unpacking)
     // holds it all in memory (python3's install peaked 150 MiB higher)
     const wait = paced || this.fs.pendingBytes > WRITE_BACKLOG_BYTES;
+    const path = this.path;
+    echo(this.fs, path, 1);
+    written = written.finally(() => echo(this.fs, path, -1));
     this.flushing = (wait ? written.then(() => this.fs.flushed()) : written).finally(() => { this.flushing = null; });
     await this.flushing;
   }
@@ -897,6 +933,45 @@ function findInode(fs: FileSystem, path: string): Inode | undefined {
   return table.get(inodeKey(fs, path)) ?? [...table.values()].find((i) => i.path === path && !i.unlinked);
 }
 
+let anonymousSeq = 0;
+
+/**
+ * open(dir, O_TMPFILE): a file with no name in `dir`, kept for its fds only
+ * (never written back) until linkAnonymousInode names it. `linkable`: opened
+ * without O_EXCL.
+ */
+export function anonymousInode(fs: FileSystem, dir: string, mode: number, linkable: boolean): Inode {
+  const now = Date.now();
+  const ino = new Inode(fs, `${dir === '/' ? '' : dir}/#tmpfile-${++anonymousSeq}`, new Uint8Array(0), mode & 0o7777, now, now);
+  ino.unlinked = true;
+  ino.tmpfile = linkable;
+  ino.opens = 1;
+  return ino;
+}
+
+/**
+ * linkat(fd, "", AT_EMPTY_PATH) (or "/proc/self/fd/N" with AT_SYMLINK_FOLLOW)
+ * of an O_TMPFILE fd: the file gets the name `to` (canonical, free) and is
+ * that file from now on (its bytes written there, its fds writing back there).
+ */
+export async function linkAnonymousInode(fs: FileSystem, ino: Inode, to: string): Promise<void> {
+  if (!ino.tmpfile || !ino.unlinked) throw Object.assign(new Error('ENOENT: not a linkable O_TMPFILE file'), { code: 'ENOENT' });
+  ino.tmpfile = false;
+  ino.unlinked = false;
+  ino.path = to;
+  ino.markDirty();
+  try {
+    await ino.flush();
+    await fs.chmod(to, ino.mode & 0o7777);
+  } catch (e) {
+    ino.unlinked = true;
+    ino.tmpfile = true;
+    throw e;
+  }
+  ino.key = inodeKey(fs, to);
+  tableOf(fs).set(ino.key, ino);
+}
+
 /** Recompute the keys of open inodes (their files gained or lost names). */
 export function rekeyInodes(fs: FileSystem): void {
   const table = inodeTables.get(fs);
@@ -912,6 +987,7 @@ export function rekeyInodes(fs: FileSystem): void {
 
 /** An open inode whose last name went: its data stays for its fds (a big file's blocks held), never written back. */
 function orphanInode(ino: Inode): void {
+  if (!ino.unlinked) fileWatchers.get(ino.fs)?.orphaned(ino, ino.path);
   ino.unlinked = true;
   const table = inodeTables.get(ino.fs);
   if (table?.get(ino.key) === ino) table.delete(ino.key);
@@ -920,6 +996,7 @@ function orphanInode(ino: Inode): void {
 
 function inodeClosed(ino: Inode): void {
   if (ino.opens !== 0) return;
+  if (ino.unlinked && !ino.tmpfile) fileWatchers.get(ino.fs)?.inodeGone(ino);
   const table = inodeTables.get(ino.fs);
   if (table?.get(ino.key) === ino) table.delete(ino.key);
   if (ino.heldBlob) { ino.fs.releaseBlob?.(ino.heldBlob); ino.heldBlob = null; }
@@ -950,28 +1027,69 @@ function useShared(ino: Inode, view: Uint8Array): void {
 
 /** The shared object for the file at `path` turned remote: its fds use `sab`'s first `length` bytes. */
 export function attachInodeShared(fs: FileSystem, path: string, sab: SharedArrayBuffer, length: number, file?: OpenFile): void {
+  const view = new Uint8Array(sab, 0, length);
+  // the mapped fd's own inode: once unlinked (shm_open then shm_unlink, Open
+  // POSIX mmap_7-4) it's no longer the path's, and the path (a new file of
+  // that name, maybe) has nothing to do with this object
+  const own = file instanceof RegularFile ? file.inode : undefined;
+  if (own?.unlinked) { useShared(own, view); return; }
   let m = sharedFiles.get(fs);
   if (!m) { m = new Map(); sharedFiles.set(fs, m); }
-  const view = new Uint8Array(sab, 0, length);
   m.set(inodeKey(fs, path), view);
   const ino = findInode(fs, path);
   if (ino) useShared(ino, view);
-  // the mapped fd's own inode too: once unlinked (shm_open then shm_unlink,
-  // Open POSIX mmap_7-4) it's no longer the path's
-  const own = file instanceof RegularFile ? file.inode : undefined;
   if (own && own !== ino) useShared(own, view);
+}
+
+/** Back to its own array, with the bytes it has now. */
+function detachInode(ino: Inode): void {
+  if (!(ino.data.buffer instanceof SharedArrayBuffer)) return;
+  const own = ino.privateData;
+  ino.privateData = undefined;
+  if (own && own.length >= ino.size) { own.set(ino.data.subarray(0, ino.size)); ino.data = own; }
+  else ino.data = ino.data.slice(0, ino.size);
+  ino.pageIfBig();
 }
 
 /** Its last mapping went: the inode keeps a private copy of the bytes it has now. */
 function detachInodeShared(fs: FileSystem, path: string): void {
   sharedFiles.get(fs)?.delete(inodeKey(fs, path));
   const ino = findInode(fs, path);
-  if (!ino || !(ino.data.buffer instanceof SharedArrayBuffer)) return;
-  const own = ino.privateData;
-  ino.privateData = undefined;
-  if (own && own.length >= ino.size) { own.set(ino.data.subarray(0, ino.size)); ino.data = own; }
-  else ino.data = ino.data.slice(0, ino.size);
-  ino.pageIfBig();
+  if (ino) detachInode(ino);
+}
+
+/**
+ * The last mapping of the object `file` mapped went: its own inode leaves the
+ * buffer too (an unlinked one isn't the path's; it would keep the buffer alive).
+ */
+export function detachOpenFileShared(file: OpenFile): void {
+  if (!(file instanceof RegularFile)) return;
+  const ino = file.inode;
+  // A closed one (no fd has it, nothing to write back) just lets go of the buffer
+  if (ino.opens === 0) {
+    if (ino.data.buffer instanceof SharedArrayBuffer) { ino.data = new Uint8Array(0); ino.privateData = undefined; }
+    return;
+  }
+  detachInode(ino);
+}
+
+/** The shared object's buffer `file`'s inode reads and writes, if it is attached to one. */
+export function sharedBufferOf(file: OpenFile): ArrayBufferLike | undefined {
+  return file instanceof RegularFile && file.inode.shared ? file.inode.data.buffer : undefined;
+}
+
+const inodeIds = new WeakMap<Inode, number>();
+let nextInodeId = 1;
+/**
+ * A shared-object key for `file` when it is an unlinked file (its own inode,
+ * not its old name's number: a new file of that name is another object), else
+ * undefined.
+ */
+export function unlinkedFileKey(file: OpenFile): string | undefined {
+  if (!(file instanceof RegularFile) || !file.inode.unlinked) return undefined;
+  let id = inodeIds.get(file.inode);
+  if (!id) { id = nextInodeId++; inodeIds.set(file.inode, id); }
+  return `unlinked:${id}`;
 }
 
 function newInode(fs: FileSystem, path: string, ino: Inode): Inode {
@@ -1073,14 +1191,33 @@ export async function renameInodes(fs: FileSystem, from: string, to: string): Pr
 }
 
 /**
+ * Call before FileSystem.exchange(a, b): writes back what open files under
+ * either hold, and afterwards (the returned function) swaps their paths.
+ */
+export async function exchangeInodes(fs: FileSystem, a: string, b: string): Promise<() => void> {
+  const table = inodeTables.get(fs);
+  if (!table) return () => {};
+  const under = (p: string) => [...table.values()].filter((ino) => !ino.unlinked && (ino.path === p || ino.path.startsWith(p + '/')));
+  const ia = under(a), ib = under(b);
+  for (const ino of [...ia, ...ib]) await ino.flush();
+  return () => {
+    for (const ino of ia) ino.path = b + ino.path.slice(a.length);
+    for (const ino of ib) ino.path = a + ino.path.slice(b.length);
+    rekeyInodes(fs);
+  };
+}
+
+/**
  * Call before unlinking `path`: open descriptions keep its data but never
  * write it back (this waits out a write-back already under way). A file
  * with other names stays theirs.
  */
 export async function unlinkInode(fs: FileSystem, path: string): Promise<void> {
+  const others = (fs.namesOf?.(path) ?? [path]).filter((n) => n !== path);
+  // The last name of a mapped object goes: a new file of that name is another object
+  if (!others.length) sharedFiles.get(fs)?.delete(inodeKey(fs, path));
   const ino = findInode(fs, path);
   if (!ino) return;
-  const others = (fs.namesOf?.(path) ?? [path]).filter((n) => n !== path);
   if (others.length) {
     if (ino.path === path) { await ino.flush(); ino.path = others[0]; }
     return;
@@ -1110,7 +1247,7 @@ export function inodeStat(fs: FileSystem, path: string): KStat | undefined {
 
 function inodeKStat(ino: Inode): KStat {
   return {
-    dev: 1, ino: inodeNumber(ino.fs, ino.path), mode: S_IFREG | (ino.mode & 0o7777), nlink: linkCount(ino.fs, ino.path), uid: 1000, gid: 1000, rdev: 0,
+    dev: 1, ino: inodeNumber(ino.fs, ino.path), mode: S_IFREG | (ino.mode & 0o7777), nlink: ino.unlinked ? 0 : linkCount(ino.fs, ino.path), uid: 1000, gid: 1000, rdev: 0,
     size: ino.size, blksize: 4096, blocks: Math.ceil(ino.size / 512),
     atimeMs: ino.atimeMs ?? ino.mtimeMs, mtimeMs: ino.mtimeMs, ctimeMs: ino.ctimeMs,
     atimeNs: ino.atimeMs === null ? ino.mtimeNs : ino.atimeNs, mtimeNs: ino.mtimeNs,
@@ -1190,16 +1327,37 @@ export class RegularFile implements OpenFile {
   private listeners = new ReadyListeners();
   private closed = false;
 
-  constructor(private ino: Inode, public flags: number) {}
+  constructor(private ino: Inode, public flags: number) { this.note(0x20); } // IN_OPEN
+
+  /** inotify: what this description did to its file, when something watches it */
+  private note(mask: number): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, mask);
+    else if (w.watched(this.ino.path)) w.fileEvent(this.ino.path, mask);
+  }
+  /** a write or truncate: IN_MODIFY, through the FileSystem's change events (fs.watch hears it too) */
+  private modified(): void {
+    const w = fileWatchers.get(this.ino.fs);
+    if (!w) return;
+    if (this.ino.unlinked) w.orphanEvent(this.ino, 0x2); // IN_MODIFY
+    else if (w.watched(this.ino.path)) this.ino.fs.notify('write', this.ino.path, undefined, { fd: true });
+  }
 
   get path(): string { return this.ino.path; }
   /** (attachInodeShared) */
   get inode(): Inode { return this.ino; }
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same file, unlinked or not */
+  reopen(flags: number): RegularFile {
+    this.ino.opens++;
+    return new RegularFile(this.ino, flags);
+  }
 
   async read(buf: Uint8Array): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
     const n = await this.ino.readAt(buf, this.pos);
     this.pos += n;
+    if (n > 0) this.note(0x1); // IN_ACCESS
     return n;
   }
 
@@ -1208,6 +1366,7 @@ export class RegularFile implements OpenFile {
     if (!canRead(this.flags)) return -EBADF;
     const n = this.ino.readSync(buf, this.pos);
     if (n !== undefined) this.pos += n;
+    if (n) this.note(0x1);
     return n;
   }
 
@@ -1232,6 +1391,7 @@ export class RegularFile implements OpenFile {
 
   private wrote(n: number): number {
     this.pos += n;
+    this.modified();
     // O_SYNC/O_DSYNC: start the write-back now rather than after the usual delay
     if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
     return n;
@@ -1240,7 +1400,9 @@ export class RegularFile implements OpenFile {
   async pread(buf: Uint8Array, off: number): Promise<number> {
     if (!canRead(this.flags)) return -EBADF;
     if (off < 0) return -EINVAL;
-    return this.ino.readAt(buf, off);
+    const n = await this.ino.readAt(buf, off);
+    if (n > 0) this.note(0x1);
+    return n;
   }
 
   async pwrite(buf: Uint8Array, off: number): Promise<number> {
@@ -1250,6 +1412,7 @@ export class RegularFile implements OpenFile {
     const at = this.flags & O_APPEND ? this.ino.size : off;
     if (!this.ino.writeSync(buf, at)) await this.ino.writeAt(buf, at);
     if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
+    this.modified();
     return buf.length;
   }
 
@@ -1269,6 +1432,7 @@ export class RegularFile implements OpenFile {
     if (!canWrite(this.flags)) return -EINVAL;
     if (len < 0) return -EINVAL;
     await this.ino.truncate(len);
+    this.modified();
     return 0;
   }
 
@@ -1276,7 +1440,9 @@ export class RegularFile implements OpenFile {
   truncateSync(len: number): number | undefined {
     if (!canWrite(this.flags)) return -EINVAL;
     if (len < 0) return -EINVAL;
-    return this.ino.truncateSync(len) ? 0 : undefined;
+    if (!this.ino.truncateSync(len)) return undefined;
+    this.modified();
+    return 0;
   }
 
   /** Unwritten data, or a write-back under way. */
@@ -1306,6 +1472,7 @@ export class RegularFile implements OpenFile {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10); // IN_CLOSE_WRITE, IN_CLOSE_NOWRITE
     await closeInode(this.ino);
   }
 
@@ -1313,8 +1480,31 @@ export class RegularFile implements OpenFile {
     if (this.closed) return true;
     if (!closeInodeSync(this.ino)) return false;
     this.closed = true;
+    this.note(canWrite(this.flags) ? 0x8 : 0x10);
     return true;
   }
+}
+
+/**
+ * open(symlink, O_PATH|O_NOFOLLOW): a descriptor naming the symlink itself.
+ * fstat (and fstatat AT_EMPTY_PATH) is the link's lstat, readlinkat(fd, "")
+ * its target, linkat(fd, "", AT_EMPTY_PATH) gives it another name; no I/O.
+ */
+export class SymlinkPathFile implements OpenFile {
+  kind: OpenFileKind = 'file';
+  flags = O_PATH;
+  constructor(public path: string, private lstat: () => Promise<KStat | number>) {}
+  async read(): Promise<number> { return -EBADF; }
+  async write(): Promise<number> { return -EBADF; }
+  poll(): number { return 0; }
+  onReady(): () => void { return () => {}; }
+  async stat(): Promise<KStat> {
+    const st = await this.lstat();
+    if (typeof st === 'number') throw Object.assign(new Error('stat'), { errno: -st });
+    return st;
+  }
+  async close(): Promise<void> {}
+  closeSync(): boolean { return true; }
 }
 
 /** A directory stream (open(dir, O_RDONLY|O_DIRECTORY)); getdents reads it. */
@@ -1322,7 +1512,11 @@ export class DirFile implements OpenFile {
   kind: OpenFileKind = 'dir';
   private entries: string[] | null = null;
   private listeners = new ReadyListeners();
-  constructor(private fs: FileSystem, public path: string, public flags: number) {}
+  /** The directory's last known stat: fstat still answers once it's removed (nlink 0), as on Linux */
+  private last: KStat | undefined;
+  constructor(private fs: FileSystem, public path: string, public flags: number) {
+    this.last = this.statSync();
+  }
   async read(): Promise<number> { return -EISDIR; }
   async write(): Promise<number> { return -EBADF; }
   seek(off: number, whence: number): number {
@@ -1341,8 +1535,15 @@ export class DirFile implements OpenFile {
   poll(events: number): number { return events & POLLIN; }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> {
-    const st = await this.fs.stat(this.path);
-    return {
+    let st;
+    try { st = await this.fs.stat(this.path); } catch { st = null; }
+    if (!st || !st.isDirectory()) {
+      // removed (LTP readahead01's directory fd)
+      const now = Date.now();
+      return { ...(this.last ?? { dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | 0o700, uid: 1000, gid: 1000, rdev: 0,
+        size: 4096, blksize: 4096, blocks: 8, atimeMs: now, mtimeMs: now, ctimeMs: now }), nlink: 0 };
+    }
+    return this.last = {
       dev: 1, ino: inodeNumber(this.fs, this.path), mode: S_IFDIR | (st.mode & 0o7777), nlink: 2, uid: 1000, gid: 1000, rdev: 0,
       size: 4096, blksize: 4096, blocks: 8,
       atimeMs: st.atimeMs ?? st.mtime.getTime(), mtimeMs: st.mtime.getTime(), ctimeMs: st.ctime.getTime(),
@@ -1473,17 +1674,21 @@ export class EventFile implements OpenFile {
     this.wake();
     return 8;
   }
-  async write(buf: Uint8Array): Promise<number> {
+  /** A write that would take the counter past its maximum waits for a read (EAGAIN nonblocking), as on Linux (LTP eventfd02) */
+  async write(buf: Uint8Array, signal?: AbortSignal): Promise<number> {
     if (buf.length < 8) return -EINVAL;
     const v = new DataView(buf.buffer, buf.byteOffset, 8).getBigUint64(0, true);
     if (v === 0xffffffffffffffffn) return -EINVAL;
+    while (this.count + v > 0xfffffffffffffffen) {
+      if (this.flags & O_NONBLOCK) return -EAGAIN;
+      if (!(await abortableWait(this.waiters, signal))) return -EINTR;
+    }
     this.count += v;
-    if (this.count > 0xfffffffffffffffen) this.count = 0xfffffffffffffffen;
     this.wake();
     return 8;
   }
   poll(events: number): number {
-    return ((this.count > 0n ? POLLIN : 0) | POLLOUT) & events;
+    return ((this.count > 0n ? POLLIN : 0) | (this.count < 0xfffffffffffffffen ? POLLOUT : 0)) & events;
   }
   onReady(cb: () => void): () => void { return this.listeners.add(cb); }
   async stat(): Promise<KStat> { return charDevStat(0); }
@@ -1498,21 +1703,44 @@ let nextMemIno = 1;
  * refuses it, as it does regular files). Blink backs the /proc files it
  * generates (/proc/self/maps) with one, so they seek and poll as Linux's do.
  */
+/** A memfd's contents, shared by its open descriptions (a reopen through /proc/self/fd makes another). */
+interface MemStore {
+  data: Uint8Array<ArrayBufferLike>;
+  len: number;
+  ino: number;
+  mtimeMs: number;
+  seals: number;
+  listeners: ReadyListeners;
+  /** Open descriptions */
+  refs: number;
+}
+
 export class MemFile implements OpenFile {
   kind: OpenFileKind = 'file';
-  private data: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-  private len = 0;
   private pos = 0;
-  private ino = nextMemIno++;
-  private mtimeMs = Date.now();
-  private listeners = new ReadyListeners();
+  private store: MemStore;
+  private get data(): Uint8Array<ArrayBufferLike> { return this.store.data; }
+  private set data(d: Uint8Array<ArrayBufferLike>) { this.store.data = d; }
+  private get len(): number { return this.store.len; }
+  private set len(n: number) { this.store.len = n; }
+  private get ino(): number { return this.store.ino; }
+  private get mtimeMs(): number { return this.store.mtimeMs; }
+  private set mtimeMs(t: number) { this.store.mtimeMs = t; }
+  private get listeners(): ReadyListeners { return this.store.listeners; }
   /**
    * fcntl F_ADD_SEALS/F_GET_SEALS bits (F_SEAL_*). Without MFD_ALLOW_SEALING
    * a memfd starts sealed against more seals, as Linux's does.
    */
-  seals = F_SEAL_SEAL;
+  get seals(): number { return this.store.seals; }
+  set seals(v: number) { this.store.seals = v; }
 
-  constructor(public path: string, public flags = O_RDWR) {}
+  constructor(public path: string, public flags = O_RDWR, store?: MemStore) {
+    this.store = store ?? { data: new Uint8Array(0), len: 0, ino: nextMemIno++, mtimeMs: Date.now(), seals: F_SEAL_SEAL, listeners: new ReadyListeners(), refs: 0 };
+    this.store.refs++;
+  }
+
+  /** open() of /proc/self/fd/N: a new description (its own offset and flags) of the same memfd */
+  reopen(flags: number): MemFile { return new MemFile(this.path, flags, this.store); }
 
   /** Shared-object key (shmobj.ts): unique per memfd */
   get shareKey(): string { return `memfd:${this.ino}`; }
@@ -1605,5 +1833,10 @@ export class MemFile implements OpenFile {
     };
   }
   async stat(): Promise<KStat> { return this.statSync(); }
-  async close(): Promise<void> { this.data = new Uint8Array(0); this.len = 0; }
+  async close(): Promise<void> {
+    // (the last description frees the contents)
+    if (--this.store.refs > 0) return;
+    this.data = new Uint8Array(0);
+    this.len = 0;
+  }
 }

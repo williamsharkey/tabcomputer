@@ -36,7 +36,7 @@ import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
 import { createWasiModule } from './modules/wasi';
 import { createStreamModule } from './modules/stream';
 import { createCryptoModule } from './modules/crypto';
-import { createProcessGlobal, createProcessFunction } from './process-global';
+import { createProcessGlobal, WORKER_ONLY_GLOBALS, createProcessFunction } from './process-global';
 import { loadBrowserPackages } from './browser-packages';
 import { patchPackageSource } from './source-patches';
 import { createHttpModule, createHttpsModule, createHttp2Module } from './modules/http';
@@ -234,7 +234,9 @@ export async function executeNodeScript(
       clearImmediate: (id: any) => scriptTimers.clearTimeout(id),
     };
     // The process's own globalThis (its writes stay its own; globalThis.process is its process)
-    const processGlobal = createProcessGlobal({ process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers });
+    // (a guest runs in a Worker: node code doesn't see its worker globals)
+    const workerOnly = nodeGuestOf(ctx) ? WORKER_ONLY_GLOBALS : [];
+    const processGlobal = createProcessGlobal({ process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers }, workerOnly);
     const processFunction = createProcessFunction(processGlobal, fakeProcess, FakeBuffer);
     /** Packages this script reaches that run as their browser builds (rolldown): filled before it starts */
     const browserModules = new Map<string, any>();
@@ -419,10 +421,15 @@ export async function executeNodeScript(
       worker._toWorker = (v: any) => { const c = clone(v); deliver(() => { if (alive) parentPort.emit('message', c); }); };
       worker._terminate = () => { alive = false; parentPort.removeAllListeners(); };
       const workerWT = { ...mainWT, isMainThread: false, parentPort, workerData: clone(options.workerData), threadId: worker.threadId };
-      const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT : getBuiltinModule(name);
+      // `new Worker(f, { env })`: the worker's process.env (SvelteKit's build tells its forked steps so)
+      const workerEnv = options?.env && typeof options.env === 'object'
+        ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : null;
+      const workerProcess = workerEnv ? new Proxy(fakeProcess, { get: (t, k) => k === 'env' ? workerEnv : Reflect.get(t, k) }) : fakeProcess;
+      const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT
+        : workerEnv && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
       const workerRequire = createRequireFunction({
         ctx, fileCache, fileMtimes, moduleCache: new Map(), pendingPromises, processEvents,
-        getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess, FakeBuffer,
+        getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess: workerProcess, FakeBuffer,
         createExpressShim: expressFactory,
         createSqliteShim: () => createSqliteShim({ ctx }),
         createAutoStub,
@@ -479,7 +486,7 @@ export async function executeNodeScript(
     const fn = compileAsyncModule(AsyncFunction, [
       'console', 'process', 'require', 'Buffer', '__filename', '__dirname', 'shiro', '__import_meta', 'module', 'exports', '__dynamic_import',
       '__shiro_module', '__shiro_require', 'global', '__shiro_require_ready', 'globalThis', 'Function',
-      ...SCRIPT_TIMER_NAMES,
+      ...SCRIPT_TIMER_NAMES, ...workerOnly,
     ], wrappedCode);
 
     // Fake import.meta for ES modules
@@ -871,7 +878,7 @@ export async function executeNodeScript(
           cwd: ctx.cwd,
         }, fakeImportMeta, fakeModule, fakeExports, dynamicImport, fakeModule, entryRequire, processGlobal,
         (p: string) => requireModule.ready(p, entryDirname, entryFilename), processGlobal, processFunction,
-        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k])),
+        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...workerOnly.map(() => undefined)),
         timeoutPromise,
       ]);
     } catch (e: any) {

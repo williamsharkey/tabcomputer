@@ -1,6 +1,7 @@
 import { stripComments } from './shell-comments';
 import * as fifo from './shell-fifo';
 import { groupStatements, trimCommand } from './shell-statements';
+import { syntaxError } from './shell-syntax';
 import { printfFormat } from './utils/printf';
 import { evalArith, ArithError, type ArithEnv } from './utils/arith';
 import { readRecord, recordText, splitRecord } from './shell-read';
@@ -21,6 +22,7 @@ import { builtinIndex, findEntry, packageStatus, packageShadows, pkgOwnShadows, 
 import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
+import { redirectWordSpans } from './shell-redirect-words';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -60,6 +62,8 @@ interface Redirect {
   mode?: '>' | '>>' | '<';
   /** >| : write even with noclobber */
   force?: boolean;
+  /** N<> file: open N<file that writes too */
+  rw?: boolean;
 }
 
 /** Does a word have a glob character the tokenizer didn't mark as quoted (\x01)? */
@@ -272,6 +276,12 @@ function pipeAmpToRedirect(text: string): string {
 
 /** Distinct names for process-substitution files */
 let procSubCounter = 0;
+
+/** Where installed programs live: tabcomputer's own commands count as being in the first of these on PATH */
+const STD_BIN_DIRS = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin', '/sbin'];
+
+/** Finished background jobs a shell keeps for jobs/wait (trimDoneJobs) */
+const MAX_DONE_JOBS = 256;
 
 /** Pids for in-page background jobs ($!), above any kernel pid in practice */
 let nextInPagePid = 40000;
@@ -553,6 +563,10 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
+const PREFIX_REDIR_RE = /^\s*(\d*(?:&>>?|>>|>\||<>|>&|<&|>|<)\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+)(?=\s)/;
+/** A command word as it stands after expansion */
+const PREFIX_WORD_RE = /^(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+/;
 const ENV_PREFIX_RE = /^\s*([A-Za-z_][A-Za-z0-9_]*)(\+?)=((?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])*)(?=\s)/;
 
 /**
@@ -605,7 +619,17 @@ export function rawCommandWord(seg: string): string | null {
 export function splitEnvPrefix(segment: string): { assignments: ([string, string] | [string, string, true])[]; rest: string } | null {
   const assignments: ([string, string] | [string, string, true])[] = [];
   let rest = segment;
-  for (let m = ENV_PREFIX_RE.exec(rest); m; m = ENV_PREFIX_RE.exec(rest)) {
+  // Redirections among the assignments (`A=1 >f B=2 cmd`) go after the command word
+  const redirs: string[] = [];
+  for (;;) {
+    const m = ENV_PREFIX_RE.exec(rest);
+    if (!m) {
+      const r = /^\s*\d*[<>&]/.test(rest) ? PREFIX_REDIR_RE.exec(rest) : null;
+      if (!r) break;
+      redirs.push(r[1]);
+      rest = rest.slice(r[0].length);
+      continue;
+    }
     const value = m[3].replace(/"((?:[^"\\]|\\.)*)"|'([^']*)'|\\(.)/g, (_all, dq, sq, esc) =>
       dq !== undefined ? dq.replace(/\\(["\\$`])/g, '$1') : sq ?? esc);
     assignments.push(m[2] === '+' ? [m[1], value, true] : [m[1], value]); // (NAME+=value appends)
@@ -614,7 +638,12 @@ export function splitEnvPrefix(segment: string): { assignments: ([string, string
   if (assignments.length === 0 || !rest.trim() || /^\s*[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(rest)) return null;
   // Array assignments (arr=(...)) and bare compound words stay on the existing path
   if (/^\s*\(/.test(rest)) return null;
-  return { assignments, rest: rest.trimStart() };
+  rest = rest.trimStart();
+  if (redirs.length) {
+    const w = PREFIX_WORD_RE.exec(rest)?.[0].length ?? 0;
+    rest = `${rest.slice(0, w)} ${redirs.join(' ')}${rest.slice(w)}`;
+  }
+  return { assignments, rest };
 }
 
 /**
@@ -681,6 +710,19 @@ function withoutTty<T extends object>(term: T): T {
 const LOOP_ITERATION_LIMIT = 10_000_000;
 /** Let the page paint and handle input during long shell loops */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** When the shell last let the page run (timers, input, rendering) */
+let lastYield = 0;
+/**
+ * Yield to the event loop if the shell has held it for a while: function
+ * calls and `source` (deep recursion, a ~/.profile and ~/.bashrc sourcing
+ * each other) otherwise never give the page a turn. Cheap when not due.
+ */
+async function maybeYield(): Promise<void> {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (now - lastYield < 30) return;
+  await yieldToEventLoop();
+  lastYield = typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
 
 /**
  * Expansion results ($VAR, ${NAME}, $(cmd)) are data: bash never re-reads their
@@ -952,7 +994,8 @@ export class Shell {
   }
   private terminal?: ShiroTerminal;
 
-  constructor(fs: FileSystem, commands: CommandRegistry) {
+  /** `forked`: a fork's (fork()): it shares its parent's history, so it doesn't read ~/.bash_history */
+  constructor(fs: FileSystem, commands: CommandRegistry, forked = false) {
     this.fs = fs;
     this.commands = commands;
     // Commands that read or write a named pipe by name (cat fifo, tee fifo) go through the kernel's pipe
@@ -975,8 +1018,8 @@ export class Shell {
       // (no FORCE_COLOR: programs colour when their stdout is a tty, and
       // chalk, npm and python tracebacks put no escapes into pipes and files)
     };
-    // Load history async (don't block construction)
-    this.loadHistory();
+    // Load history async (don't block construction); a fork shares its parent's
+    if (!forked) this.loadHistory();
     this.syncOptionVars();
   }
 
@@ -1154,7 +1197,8 @@ export class Shell {
     let status = 0;
     for (const word of names) {
       const m = /^([A-Za-z_][A-Za-z0-9_]*)(\+?=)?([\s\S]*)$/.exec(word);
-      if (!m) { err(`tabcomputer: ${cmd}: \`${word}': not a valid identifier\r\n`); status = 1; continue; }
+      // (NAME, NAME=…, NAME+=…, NAME[…]=…: `a-b=1` is no name)
+      if (!m || !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?(\+?=|$)/.test(word)) { err(`tabcomputer: ${cmd}: \`${word}': not a valid identifier\r\n`); status = 1; continue; }
       const name = m[1];
       const append = m[2] === '+=';
       let value: string | undefined = m[2] ? m[3] : undefined;
@@ -1306,7 +1350,12 @@ export class Shell {
     const own = new AbortController();
     const outer = this.inheritedAbort?.signal;
     if (outer?.aborted) own.abort();
-    else outer?.addEventListener('abort', () => own.abort(), { once: true });
+    else if (outer) {
+      const onAbort = () => own.abort();
+      outer.addEventListener('abort', onAbort, { once: true });
+      // (endProcess removes it: a script running thousands of `sh -c` keeps one abort)
+      this.unlinkAbort = () => outer.removeEventListener('abort', onAbort);
+    }
     this.processAbort = this.inheritedAbort = own;
     // A new process starts with no call stack, and getopts at the start (OPTIND=1, not exported)
     this.sourceFile = '';
@@ -1376,8 +1425,23 @@ export class Shell {
   /** Where a command name resolves for `hash`: a file on PATH, or a registered command's /usr/bin name */
   private async commandPath(name: string): Promise<string | null> {
     if (SHELL_BUILTIN_NAMES.has(name)) return null;
-    const file = await this.findExecutableInPath(name).catch(() => null);
-    return file ?? (this.commands.get(name) ? `/usr/bin/${name}` : null);
+    return this.programPath(name);
+  }
+
+  /**
+   * Where NAME is as a program, as `command -v`, `which` and `hash` report it:
+   * an executable file on PATH, else one of tabcomputer's commands as if
+   * installed in the first standard bin directory on PATH (where the tab
+   * puts their shims), else /usr/bin/NAME. Null when it is neither.
+   */
+  async programPath(name: string): Promise<string | null> {
+    const file = await this.findExecutableInPath(name, true).catch(() => null);
+    if (file) return file;
+    if (name.includes('/') || !this.commands.get(name)) return null;
+    // (/usr/bin, as on Linux, when PATH has it; in the tab the real shims in /usr/local/bin are found above)
+    const dirs = (this.env['PATH'] ?? '').split(':').map((d) => d.replace(/\/+$/, ''));
+    const dir = dirs.includes('/usr/bin') ? '/usr/bin' : dirs.find((d) => STD_BIN_DIRS.includes(d));
+    return `${dir ?? '/usr/bin'}/${name}`;
   }
 
   /** Errors that end a non-interactive POSIX shell (sh, or set -o posix) do so here */
@@ -1406,6 +1470,8 @@ export class Shell {
   }
 
   endProcess(): void {
+    this.unlinkAbort?.();
+    this.unlinkAbort = undefined;
     if (shellsByPid.get(this.shellPid)?.deref() === this) shellsByPid.delete(this.shellPid);
   }
 
@@ -1422,6 +1488,8 @@ export class Shell {
   }
   /** A shell process's own abort (startProcess): its parent's aborts reach it, not the reverse */
   private processAbort?: AbortController;
+  /** Detaches processAbort from the parent's abort (endProcess) */
+  private unlinkAbort?: () => void;
   /** A fatal signal aborted the command in progress: the EXIT trap gets a fresh abort */
   private killedMidCommand = false;
 
@@ -1451,7 +1519,7 @@ export class Shell {
   }
 
   fork(): Shell {
-    const child = new Shell(this.fs, this.commands);
+    const child = new Shell(this.fs, this.commands, true);
     child.inheritedAbort = this.abortController ?? this.inheritedAbort;
     child.kernelStdio = this.kernelStdio;
     child.kernelStdinLive = this.kernelStdinLive;
@@ -1515,6 +1583,47 @@ export class Shell {
   }
 
   /**
+   * The shell of a new kernel process (Kernel.forkShell: a builtin, `sh -c`,
+   * a script run as a program): what exec passes on and nothing more. `env`
+   * (adopted, not copied) is the process's environment, every name exported;
+   * `base`'s exported functions come along. Options and shopts start at
+   * bash's defaults, or from SHELLOPTS/BASHOPTS when the environment exports
+   * them. No aliases, arrays, traps (ignored signals are the process's
+   * dispositions), hash table, dir stack or fds (the kernel's fd table is the
+   * process's; runShellProcess wires kernelStdio). Cheaper than fork(), which
+   * copies all of the page shell only for it to be replaced.
+   */
+  static forProcess(base: Shell, p: { env: Record<string, string>; cwd: string; pid: number; ppid: number; uid: number; umask: number }): Shell {
+    const s = new Shell(base.fs, base.commands, true);
+    // (the defaults' SHELLOPTS/BASHOPTS, which the constructor computed)
+    const defOpts = s.env.SHELLOPTS, defShopts = s.env.BASHOPTS;
+    s.env = p.env;
+    s.localVars = new Set(['0']); // $0 is not exported
+    for (const name of base.exportedFunctions) {
+      const fn = base.functions[name];
+      if (fn) { s.functions[name] = fn; s.exportedFunctions.add(name); }
+    }
+    // Options: the defaults, or what an exported SHELLOPTS/BASHOPTS says (the setters resync the variables)
+    if (p.env.SHELLOPTS === undefined) { p.env.SHELLOPTS = defOpts; s.localVars.add('SHELLOPTS'); }
+    else if (p.env.SHELLOPTS !== defOpts) s.options = new Set(p.env.SHELLOPTS.split(':').filter((o) => SET_O_OPTIONS.includes(o)));
+    if (p.env.BASHOPTS === undefined) { p.env.BASHOPTS = defShopts; s.localVars.add('BASHOPTS'); }
+    else if (p.env.BASHOPTS !== defShopts) s.shoptopts = new Set(p.env.BASHOPTS.split(':').filter(Boolean));
+    s.cwd = p.cwd;
+    // PWD names cwd (Kernel.processEnv): the logical directory pwd prints, no realpath
+    if (p.env.PWD === p.cwd) s.logicalPwd = p.cwd;
+    // The command-location cache, seeded from the page's (a cache, as fork()
+    // copies it: a new bash would find the same files on PATH)
+    if (base.hashPath === p.env.PATH) s.hashTable = new Map([...base.hashTable].map(([k, v]) => [k, { ...v }]));
+    s.hashPath = base.hashPath;
+    s.ownUmask = p.umask;
+    s.uid = p.uid;
+    s.bashPid = s.shellPid = s.kernelPid = p.pid;
+    s.parentPid = p.ppid;
+    s.bootGate = base.bootGate;
+    return s;
+  }
+
+  /**
    * Replace secret env values in text with '***'.
    * Used by terminals to mask tokens in output.
    */
@@ -1574,6 +1683,20 @@ export class Shell {
     return { stdout, stderr, exitCode };
   }
 
+  /**
+   * Finished jobs wait in the table for jobs/wait/the prompt to report them;
+   * a shell nothing reports them in (a script, a kernel `sh` looping `cmd &`)
+   * keeps at most MAX_DONE_JOBS, the oldest go (bash bounds remembered
+   * statuses too).
+   */
+  private trimDoneJobs(): void {
+    if (this.backgroundJobs.size <= MAX_DONE_JOBS) return;
+    for (const [id, j] of this.backgroundJobs) {
+      if (this.backgroundJobs.size <= MAX_DONE_JOBS) break;
+      if (j.status === 'done' || j.status === 'failed') this.backgroundJobs.delete(id);
+    }
+  }
+
   private executeBackground(
     command: string,
     writeStdout: (s: string) => void,
@@ -1603,12 +1726,18 @@ export class Shell {
     }
     const abort = new AbortController();
     const outer = this.abortController ?? this.inheritedAbort;
-    outer?.signal.addEventListener('abort', () => abort.abort(outer.signal.reason), { once: true });
+    const onOuterAbort = () => abort.abort(outer!.signal.reason);
+    outer?.signal.addEventListener('abort', onOuterAbort, { once: true });
     child.inheritedAbort = abort;
     // A script or a kernel process's `sh -c` (an agent's) has no job control: the job's stdin
     // is /dev/null (POSIX 2.9.3.1), not the stream the shell reads, and no [N] pid is printed
     const jobControl = this.options.has('monitor') || this.interactiveFlag || (!this.scriptShell && !this.kernelStdio);
     if (!jobControl) child.kernelStdinLive = false;
+    // A finished job keeps its status for jobs/wait, not its shell or the outer abort's listener
+    const ended = () => {
+      outer?.signal.removeEventListener('abort', onOuterAbort);
+      job.shell = undefined;
+    };
     const job: BackgroundJob = {
       id: jobId,
       command,
@@ -1625,6 +1754,7 @@ export class Shell {
         .then((code) => child.finishSubshell(code, writeStdout, stderrWriter)).then(
         (code) => {
           inPageJobs.delete(pid);
+          ended();
           if (job.signal) code = 128 + job.signal;
           job.status = code === 0 ? 'done' : 'failed';
           job.exitCode = code;
@@ -1632,6 +1762,7 @@ export class Shell {
         },
         (err) => {
           inPageJobs.delete(pid);
+          ended();
           job.status = 'failed';
           job.exitCode = 1;
           return 1;
@@ -1640,6 +1771,7 @@ export class Shell {
     };
     this.backgroundJobs.set(jobId, job);
     if (job.status === 'running') inPageJobs.set(pid, job);
+    this.trimDoneJobs();
     this.env['!'] = String(pid);
     if (jobControl) writeStdout(`[${jobId}] ${pid}\n`);
     return 0;
@@ -1835,11 +1967,17 @@ export class Shell {
     if (!done() && SHELL_BUILTIN_NAMES.has(name)) out.push({ kind: 'builtin' });
     // Shiro's own commands come before files on PATH, unless a program shadows
     // them as it does when run (pkg install, or Debian mode's /usr/bin/NAME)
-    if (!done() && !name.includes('/') && this.commands.get(name) && !SHELL_BUILTIN_NAMES.has(name) &&
-      !(this.pkgShadowBypass !== name && packageShadows(this.fs).has(name))) out.push({ kind: 'registered' });
+    if (!done() && !name.includes('/') && this.commands.get(name) && !SHELL_BUILTIN_NAMES.has(name) && !SHELL_KEYWORDS.has(name) &&
+      !(this.pkgShadowBypass !== name && packageShadows(this.fs).has(name))) out.push({ kind: 'registered', path: (await this.programPath(name)) ?? `/usr/bin/${name}` });
     if (!done()) {
-      const path = await this.findExecutableInPath(name).catch(() => null);
-      if (path) out.push({ kind: 'file', path });
+      const path = await this.findExecutableInPath(name, true).catch(() => null);
+      // A path names a program only if it is an executable file (not a directory, not -x)
+      let ok = !!path;
+      if (path && name.includes('/')) {
+        const st = await this.fs.stat(this.fs.resolvePath(name, this.cwd)).catch(() => null);
+        ok = !!st && st.type !== 'dir' && !!(((st as { mode?: number }).mode ?? 0o755) & 0o111);
+      }
+      if (ok) out.push({ kind: 'file', path: name.includes('/') ? name : path! });
     }
     return out;
   }
@@ -2123,7 +2261,16 @@ export class Shell {
         case '2>': case '2>>': err = openOut(2, r.target, r.type === '2>'); break;
         case '2>&1': this.userFds.set(2, this.resolveOutFd(1)!); break;
         case 'open':
-          if (r.mode === '<') {
+          if (r.mode === '<' && r.rw) {
+            // N<> file: read from the start, writes go after what is there (made if missing)
+            const fd = r.fd!;
+            const path = this.fs.resolvePath(r.target, this.cwd);
+            if (await fifo.isFifo(this, path)) { err = openOut(fd, r.target, false); break; }
+            this.dropFd(fd);
+            this.userFds.set(fd, { path });
+            pending.push(this.fs.appendFile(path, '').then(() => this.readInputRedirect(r.target))
+              .then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
+          } else if (r.mode === '<') {
             const fd = r.fd!;
             pending.push(this.readInputRedirect(r.target).then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
           } else err = openOut(r.fd!, r.target, r.mode === '>');
@@ -2300,6 +2447,9 @@ export class Shell {
       const sanitized = trimmed.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
       if (sanitized.trim()) {
         this.history.push(sanitized);
+        // Kept to maxHistorySize in memory too (in place: forks share the
+        // array); an agent session runs thousands of commands
+        if (this.history.length >= this.maxHistorySize * 2) this.history.splice(0, this.history.length - this.maxHistorySize);
         this.scheduleHistorySave(); // Persist to disk (debounced)
       }
     }
@@ -2468,7 +2618,17 @@ export class Shell {
       {
         const neg = /^!\s+\[\[/.test(trimmedCmd);
         const dbText = neg ? trimmedCmd.replace(/^!\s+/, '') : trimmedCmd;
-        if (dbText.startsWith('[[') && doubleBracketEnd(dbText, 0) === dbText.length) {
+        const dbEnd = dbText.startsWith('[[') ? doubleBracketEnd(dbText, 0) : -1;
+        // [[ … ]] > f: as a { …; } group, so f is opened before the operands expand
+        if (dbEnd > 0 && dbEnd < dbText.length && /^\s+\d*[<>&]/.test(dbText.slice(dbEnd)) &&
+          splitCompoundRedirects(`{ ${dbText.slice(0, dbEnd)}; }${dbText.slice(dbEnd)}`).redirects.length) {
+          exitCode = await this.execControlStructure(`{ ${dbText.slice(0, dbEnd)}; }${dbText.slice(dbEnd)}`, writeStdout, stderrWriter);
+          if (neg) exitCode = exitCode === 0 ? 1 : 0;
+          this.lastExitCode = exitCode;
+          this.env['?'] = String(exitCode);
+          continue;
+        }
+        if (dbEnd === dbText.length) {
           exitCode = await this.evalDoubleBracket(dbText.slice(2, -2), stderrWriter);
           if (neg) exitCode = exitCode === 0 ? 1 : 0;
           this.lastExitCode = exitCode;
@@ -2491,9 +2651,21 @@ export class Shell {
       // are expanded up front
       let pipeline: string[];
       this.substStatus = null;
-      const rawSegments = splitTopLevelPipes(compound.command);
+      let cmdText = compound.command;
+      let rawSegments = splitTopLevelPipes(cmdText);
       // (A `( … )` subshell segment too: its words expand inside the subshell)
       const keepRaw = (seg: string) => this.isControlStructure(seg) || /^\s*\((?!\()[\s\S]*\)\s*$/.test(seg);
+      // `> $f`, `< a-*`: each redirection's file word expands on its own, to one word
+      if (/[<>]/.test(cmdText)) {
+        const fixed = await this.expandRedirectWords(rawSegments, keepRaw, stderrWriter);
+        if (!fixed) {
+          exitCode = 1;
+          this.lastExitCode = 1;
+          this.env['?'] = '1';
+          continue;
+        }
+        if (fixed !== rawSegments) { rawSegments = fixed; cmdText = fixed.join(' | '); }
+      }
       if (rawSegments.length > 1 && rawSegments.some(keepRaw)) {
         pipeline = [];
         for (const seg of rawSegments) {
@@ -2502,9 +2674,9 @@ export class Shell {
       } else {
         // Only `a=1 b=$a cmd` (two or more leading assignments, one expanding) needs the ordered pass;
         // checking that first keeps a tokenizer pass and an await off every other command
-        const ordered = rawSegments.length === 1 && ORDERED_PREFIX_RE.test(compound.command) && /[$`]/.test(compound.command)
-          ? await this.expandPrefixAssignments(compound.command, stderrWriter) : null;
-        pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(compound.command), stderrWriter));
+        const ordered = rawSegments.length === 1 && ORDERED_PREFIX_RE.test(cmdText) && /[$`]/.test(cmdText)
+          ? await this.expandPrefixAssignments(cmdText, stderrWriter) : null;
+        pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
       }
 
       // Check for ! negation prefix
@@ -2734,7 +2906,8 @@ export class Shell {
         // Handle /usr/bin/env CMD ARGS → execute CMD ARGS
         if (cmdName === '/usr/bin/env' || cmdName === '/bin/env') {
           if (cmdArgs.length > 0) {
-            const envCmd = quoteArgsForShell(cmdArgs);
+            // (through the env builtin: -i, -u, NAME=value and the rest apply)
+            const envCmd = quoteArgsForShell(['env', ...cmdArgs]);
             this.injectedStdin = nestedStdin;
             exitCode = await this.execute(envCmd, writeStdout, stderrWriter, false, terminalOverride || this.terminal, true);
           } else {
@@ -2794,7 +2967,8 @@ export class Shell {
         }
 
         // Handle array assignment: arr=(a b c) or arr[N]=val
-        if (effectiveCmdName.includes('=') && !effectiveCmdName.startsWith('=')) {
+        // (only NAME= / NAME[…]= / NAME+=: `FOO-BAR=foo` is a command word, as in bash)
+        if (effectiveCmdName.includes('=') && /^[A-Za-z_][A-Za-z0-9_]*(\[[\s\S]*\])?\+?=/.test(cmdName)) {
           const eqIdx = cmdName.indexOf('=');
           const key = cmdName.substring(0, eqIdx);
           const val = cmdName.substring(eqIdx + 1);
@@ -2950,9 +3124,12 @@ export class Shell {
           // Execute remaining args as a shell command
           exitCode = 0;
           const evalCmd = stripComments((cmdArgs[0] === '--' ? cmdArgs.slice(1) : cmdArgs).join(' '));
-          if (evalCmd && !this.compoundsBalanced(evalCmd)) {
-            // `eval "if"`: a syntax error; as sh it ends the script (eval is a special builtin)
-            stderrWriter('tabcomputer: eval: syntax error: unexpected end of file\r\n');
+          // The string is parsed whole first: a syntax error runs none of it
+          // (`eval 'echo hi; if'` prints nothing); as sh it ends the script (a special builtin)
+          const evalErr = !evalCmd ? null : !this.compoundsBalanced(evalCmd) ? 'syntax error: unexpected end of file'
+            : this.aliases.size ? null : syntaxError(evalCmd);
+          if (evalErr) {
+            stderrWriter(`tabcomputer: eval: ${evalErr}\r\n`);
             exitCode = 2;
             if (this.posixFatal()) throw new ExitSignal(2);
           } else if (evalCmd) {
@@ -3418,10 +3595,12 @@ export class Shell {
           }
           exitCode = 0;
           for (const name of names) {
-            let found = await this.commandKinds(name, all || mode === 'P');
+            let found = await this.commandKinds(name, all || mode === 'P' || noFuncs);
             if (noFuncs) found = found.filter((k) => k.kind !== 'function');
-            if (mode === 'P') found = found.filter((k) => k.kind === 'file');
-            if (mode === 'p' && found.length && found[0].kind !== 'file') { continue; }
+            // (tabcomputer's own commands count as files: they are programs here)
+            const isProgram = (k: { kind: string }) => k.kind === 'file' || k.kind === 'registered';
+            if (mode === 'P') found = found.filter(isProgram);
+            if (mode === 'p' && found.length && !isProgram(found[0])) { continue; }
             if (!found.length) {
               if (mode === 'long') stderrWriter(`tabcomputer: type: ${name}: not found\r\n`);
               exitCode = 1;
@@ -3429,7 +3608,7 @@ export class Shell {
             }
             for (const k of all ? found : found.slice(0, 1)) {
               if (mode === 't') { writeStdout((k.kind === 'registered' ? 'file' : k.kind) + '\r\n'); continue; }
-              if (mode === 'p' || mode === 'P') { if (k.kind === 'file') writeStdout(k.path + '\r\n'); continue; }
+              if (mode === 'p' || mode === 'P') { if (k.kind === 'file' || k.kind === 'registered') writeStdout(k.path + '\r\n'); continue; }
               switch (k.kind) {
                 case 'alias': writeStdout(`${name} is aliased to \`${k.path}'\r\n`); break;
                 case 'keyword': writeStdout(`${name} is a shell keyword\r\n`); break;
@@ -3439,8 +3618,9 @@ export class Shell {
                   break;
                 }
                 case 'builtin': writeStdout(`${name} is a shell builtin\r\n`); break;
+                // (tabcomputer's own command, told apart from an installed program of that name)
                 case 'registered': writeStdout(`${name} is a registered command\r\n`); break;
-                case 'file': writeStdout(`${name} is ${k.path}\r\n`); break;
+                case 'file': writeStdout(`${name} is ${name.includes('/') ? name : k.path}\r\n`); break;
               }
             }
           }
@@ -3456,10 +3636,15 @@ export class Shell {
           for (const name of cmdArgs.slice(1)) {
             const [k] = await this.commandKinds(name, false);
             if (!k) { if (verbose) stderrWriter(`tabcomputer: command: ${name}: not found\r\n`); exitCode = 1; continue; }
-            if (!verbose) writeStdout((k.kind === 'file' ? k.path : k.kind === 'alias' ? `alias ${name}='${k.path}'` : name) + '\r\n');
-            else if (k.kind === 'file') writeStdout(`${name} is ${k.path}\r\n`);
+            // (a program's path; a name with a slash as given)
+            const where = name.includes('/') ? name : k.path;
+            if (!verbose) writeStdout((k.kind === 'file' || k.kind === 'registered' ? where : k.kind === 'alias' ? `alias ${name}='${k.path}'` : name) + '\r\n');
+            else if (k.kind === 'file' || k.kind === 'registered') writeStdout(`${name} is ${where}\r\n`);
             else if (k.kind === 'alias') writeStdout(`${name} is aliased to \`${k.path}'\r\n`);
-            else writeStdout(`${name} is a ${k.kind === 'keyword' ? 'shell keyword' : k.kind === 'builtin' ? 'shell builtin' : k.kind === 'registered' ? 'registered command' : 'function'}\r\n`);
+            else if (k.kind === 'function') {
+              const body = this.functions[name].body.split('\n').map((l) => '    ' + l.trim().replace(/;$/, '')).join('\r\n');
+              writeStdout(`${name} is a function\r\n${name} () \r\n{ \r\n${body}\r\n}\r\n`);
+            } else writeStdout(`${name} is a ${k.kind === 'keyword' ? 'shell keyword' : 'shell builtin'}\r\n`);
           }
           this.lastExitCode = exitCode;
           this.env['?'] = String(exitCode);
@@ -3508,7 +3693,7 @@ export class Shell {
           } else if (names.length) {
             for (const name of names) {
               if (name.includes('/')) continue; // (bash: a name with a slash isn't hashed)
-              const path = this.commands.get(name) && !SHELL_BUILTIN_NAMES.has(name) ? `/usr/bin/${name}` : await this.findExecutableInPath(name);
+              const path = SHELL_BUILTIN_NAMES.has(name) ? null : await this.programPath(name);
               if (path) table.set(name, { path, hits: 0 });
               else { stderrWriter(`tabcomputer: hash: ${name}: not found\r\n`); exitCode = 1; }
             }
@@ -3813,6 +3998,11 @@ export class Shell {
             for (const arg of cmdArgs) {
               if (arg === '-p') continue;
               const eqIdx = arg.indexOf('=');
+              if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(eqIdx !== -1 ? arg.slice(0, eqIdx) : arg)) {
+                stderrWriter(`tabcomputer: readonly: \`${arg}': not a valid identifier\r\n`);
+                exitCode = 1;
+                continue;
+              }
               if (eqIdx !== -1) {
                 const name = arg.slice(0, eqIdx);
                 const val = arg.slice(eqIdx + 1);
@@ -3863,6 +4053,11 @@ export class Shell {
               }
               const eqIdx = arg.indexOf('=');
               const name = eqIdx !== -1 ? arg.slice(0, eqIdx) : arg;
+              if (!/^[A-Za-z_][A-Za-z0-9_]*(\+)?$/.test(name)) {
+                stderrWriter(`tabcomputer: export: \`${arg}': not a valid identifier\r\n`);
+                exitCode = 1;
+                continue;
+              }
               if (eqIdx !== -1) {
                 const err = this.setVar(name, arg.slice(eqIdx + 1));
                 if (err) {
@@ -4024,6 +4219,7 @@ export class Shell {
               const popFrame = this.pushCallFrame('source', srcArgs[0]);
               const savedSource = this.sourceFile;
               this.sourceFile = srcArgs[0];
+              await maybeYield();
               const srcView = this.aliasView;
               this.aliasView = null; // (a sourced file is parsed now)
               try {
@@ -4133,10 +4329,15 @@ export class Shell {
             delete this.functions[rest[0]];
             const savedAlias = this.aliases.get(rest[0]);
             this.aliases.delete(rest[0]);
+            // -p: the standard PATH, whatever $PATH holds (and none of its hashed paths)
+            const pathP = cmdArgs[0] === '-p';
+            const savedPath = this.env['PATH'];
+            if (pathP) this.env['PATH'] = '/usr/bin:/bin';
             this.injectedStdin = nestedStdin;
             try {
               exitCode = await this.execute(quoteArgsForShell(rest), writeStdout, stderrWriter, false, terminalOverride || this.terminal, true);
             } finally {
+              if (pathP) { if (savedPath === undefined) delete this.env['PATH']; else this.env['PATH'] = savedPath; }
               if (savedFn) this.functions[rest[0]] = savedFn;
               if (savedAlias !== undefined) this.aliases.set(rest[0], savedAlias);
             }
@@ -4147,20 +4348,23 @@ export class Shell {
           continue;
         }
         if (!_builtinDisabled && effectiveCmdName === 'builtin') {
-          if (cmdArgs.length > 0) {
-            const builtinCmd = quoteArgsForShell(cmdArgs);
+          // (tabcomputer: `builtin NAME` also runs its own NAME past a package's, documented in COMPAT.md)
+          const bArgs = cmdArgs[0] === '--' ? cmdArgs.slice(1) : cmdArgs;
+          exitCode = 0;
+          if (bArgs.length > 0) {
+            const builtinCmd = quoteArgsForShell(bArgs);
             // Temporarily remove function override (and an installed package's shadowing)
-            const savedFn = this.functions[cmdArgs[0]];
-            delete this.functions[cmdArgs[0]];
+            const savedFn = this.functions[bArgs[0]];
+            delete this.functions[bArgs[0]];
             const savedBypass = this.pkgShadowBypass;
-            this.pkgShadowBypass = cmdArgs[0];
+            this.pkgShadowBypass = bArgs[0];
             this.injectedStdin = nestedStdin;
             try {
               exitCode = await this.execute(builtinCmd, writeStdout, stderrWriter, false, terminalOverride || this.terminal, true);
             } finally {
               this.pkgShadowBypass = savedBypass;
             }
-            if (savedFn) this.functions[cmdArgs[0]] = savedFn;
+            if (savedFn) this.functions[bArgs[0]] = savedFn;
           }
           this.lastExitCode = exitCode;
           this.env['?'] = String(exitCode);
@@ -4624,7 +4828,7 @@ export class Shell {
           const h = table.get(effectiveCmdName);
           if (h) h.hits++;
           else {
-            const path = cmd ? `/usr/bin/${effectiveCmdName}` : await this.findExecutableInPath(effectiveCmdName);
+            const path = await this.programPath(effectiveCmdName);
             if (path) table.set(effectiveCmdName, { path, hits: 1 });
           }
         }
@@ -4656,10 +4860,24 @@ export class Shell {
           }
         } else {
           // Try to find executable in PATH
-          const executable = pkgShadowed && pkgOwnShadows(this.fs).has(effectiveCmdName)
+          let executable = pkgShadowed && pkgOwnShadows(this.fs).has(effectiveCmdName)
             ? `${PKG_BIN_DIR}/${effectiveCmdName}`
             : await this.findExecutableInPath(effectiveCmdName);
-          if (executable) {
+          // bash runs the path it hashed for NAME, even if an earlier PATH directory
+          // has NAME now; a hashed program that is gone is an error until `hash -r`
+          let failure: { msg: string; code: number } | null = null;
+          const hashed = !pkgShadowed && !effectiveCmdName.includes('/') ? this.hashTable.get(effectiveCmdName) : undefined;
+          const hashedAbs = hashed && this.fs.resolvePath(hashed.path, this.cwd);
+          if (hashed && hashedAbs && !hashed.pinned && hashedAbs !== executable && !this.commands.get(effectiveCmdName)) {
+            if (await this.fs.exists(hashedAbs)) executable = hashedAbs;
+            else failure = { msg: `${hashed.path}: No such file or directory`, code: 127 };
+          }
+          if (failure) {
+            ctx.stderr += `tabcomputer: ${failure.msg}\n`;
+            exitCode = failure.code;
+            this.lastExitCode = exitCode;
+            this.env['?'] = String(exitCode);
+          } else if (executable) {
             try {
               if (live) ctx.liveStdin = true;
               // A script whose output is redirected or piped writes into ctx like
@@ -6397,7 +6615,7 @@ export class Shell {
       if (fd === 2 && kind !== '<') redirects.push({ type: kind === '>>' ? '2>>' : '2>', target, force });
       else if (fd === 1 && kind !== '<') redirects.push({ type: kind as '>' | '>>', target, force });
       else if (fd === 0 && kind === '<') redirects.push({ type: '<', target });
-      else redirects.push({ type: 'open', mode: kind as '>' | '>>' | '<', target, fd, force });
+      else redirects.push({ type: 'open', mode: kind as '>' | '>>' | '<', target, fd, force, ...(op === '<>' ? { rw: true } : {}) });
     }
 
     return {
@@ -6624,28 +6842,11 @@ export class Shell {
           j++;
         }
         const subCmd = input.slice(i + 2, j - 1);
-        // $(< file) shorthand: read file contents directly
-        const fileReadMatch = subCmd.trim().match(/^<(?![<&(])\s*((?:"[^"]*"|'[^']*'|\\.|[^\s;&|<>"'\\])+)$/);
-        let subOut: string;
-        if (fileReadMatch) {
-          const filePath = restoreExpansion(this.expandVars(fileReadMatch[1].trim())).replace(/^["']|["']$/g, '').replace(/\\(.)/g, '$1');
-          const resolved = this.fs.resolvePath(filePath, this.cwd);
-          try {
-            subOut = await this.fs.readFile(resolved, 'utf8') as string;
-            subOut = subOut.replace(/[\r\n]+$/, '');
-          } catch {
-            stderrWriter(`${filePath}: No such file or directory\r\n`);
-            subOut = '';
-          }
-        } else {
-          const subResult = await this.subshellExec(subCmd);
-          if (subResult.stderr) stderrWriter(subResult.stderr);
-          subOut = subResult.stdout.replace(/\r\n/g, '\n').replace(/\n+$/, '');
-        }
+        const subOut0 = await this.substitutionOutput(subCmd, stderrWriter);
         // If $() appears as the RHS of a variable assignment (VAR=$(...)), wrap the
         // output in double-quotes so tokenize() preserves spaces. This matches bash
         // semantics: VAR=$(cmd) preserves spaces, bare $(cmd) word-splits.
-        subOut = this.substitutionText(subOut, result.join(''), outerDQ || quoted);
+        const subOut = this.substitutionText(subOut0, result.join(''), outerDQ || quoted);
         result.push(subOut);
         i = j;
       } else if (input[i] === '`') {
@@ -6655,9 +6856,7 @@ export class Shell {
         while (j < input.length && input[j] !== '`') j += input[j] === '\\' ? 2 : 1;
         if (j >= input.length) { result.push(input.slice(i)); break; }
         const subCmd = input.slice(i + 1, j).replace(outerDQ || quoted ? /\\([\\$`"])/g : /\\([\\$`])/g, '$1');
-        const subResult = await this.subshellExec(subCmd);
-        if (subResult.stderr) stderrWriter(subResult.stderr);
-        const subOut = this.substitutionText(subResult.stdout.replace(/\r\n/g, '\n').replace(/\n+$/, ''), result.join(''), outerDQ || quoted);
+        const subOut = this.substitutionText(await this.substitutionOutput(subCmd, stderrWriter), result.join(''), outerDQ || quoted);
         result.push(subOut);
         i = j + 1;
       } else {
@@ -7071,6 +7270,7 @@ export class Shell {
       writeStderr(`${name}: maximum function nesting level exceeded (${funcnest})\r\n`);
       return 1;
     }
+    await maybeYield();
 
     // Save and set positional parameters
     // The function's positional parameters replace the caller's ($0 stays the script name)
@@ -7300,6 +7500,29 @@ export class Shell {
       || isBraceGroup(input);
   }
 
+  /** What $(cmd) or `cmd` gives: cmd's output less trailing newlines; $(< file) reads file */
+  private async substitutionOutput(subCmd: string, stderrWriter: (s: string) => void): Promise<string> {
+    // $(< file) shorthand: read file contents directly
+    const fileReadMatch = subCmd.trim().match(/^<(?![<&(])\s*((?:"[^"]*"|'[^']*'|\\.|[^\s;&|<>"'\\])+)$/);
+    let subOut: string;
+    if (fileReadMatch) {
+      const filePath = restoreExpansion(this.expandVars(fileReadMatch[1].trim())).replace(/^["']|["']$/g, '').replace(/\\(.)/g, '$1');
+      const resolved = this.fs.resolvePath(filePath, this.cwd);
+      try {
+        subOut = await this.fs.readFile(resolved, 'utf8') as string;
+        subOut = subOut.replace(/[\r\n]+$/, '');
+      } catch {
+        stderrWriter(`${filePath}: No such file or directory\r\n`);
+        subOut = '';
+      }
+    } else {
+      const subResult = await this.subshellExec(subCmd);
+      if (subResult.stderr) stderrWriter(subResult.stderr);
+      subOut = subResult.stdout.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+    }
+    return subOut;
+  }
+
   /** Brace, arithmetic, command-substitution, and variable expansion of command text */
   private async expandWords(text: string, writeStderr: (s: string) => void): Promise<string> {
     // <(…) and >(…) bodies expand in their own subshell, not here
@@ -7311,6 +7534,46 @@ export class Shell {
     expanded = this.expandArithmetic(expanded);
     expanded = this.expandVars(expanded);
     return procSubs.length ? expanded.replace(/\uE030(\d+)\uE031/g, (_m, n) => procSubs[Number(n)]) : expanded;
+  }
+
+  /**
+   * A simple command's redirection file words, expanded each on its own (as
+   * bash does) and put back quoted: one word, a glob matching one file, else
+   * "ambiguous redirect" (null). The segments as they were when none needs it.
+   */
+  private async expandRedirectWords(segments: string[], keepRaw: (seg: string) => boolean,
+    writeStderr: (s: string) => void): Promise<string[] | null> {
+    let out = segments;
+    for (const [k, seg] of segments.entries()) {
+      if (keepRaw(seg)) continue;
+      const spans = redirectWordSpans(seg);
+      if (!spans.length) continue;
+      let text = seg;
+      for (const sp of spans.reverse()) {
+        const expanded = await this.expandWords(sp.word, writeStderr);
+        const words = await this.expandGlobs(this.parseSegment(expanded).args, writeStderr);
+        if (!words) return null; // failglob
+        let file: string;
+        if (words.length === 1) file = words[0];
+        else { writeStderr(`tabcomputer: ${sp.word}: ambiguous redirect\r\n`); return null; }
+        text = text.slice(0, sp.start) + `'${file.replace(/'/g, `'\\''`)}'` + text.slice(sp.end);
+      }
+      if (out === segments) out = [...segments];
+      out[k] = text;
+    }
+    return out;
+  }
+
+  /**
+   * A compound's redirection target as it runs: expanded ($var, $(…), $((…)),
+   * quotes removed), one word or "ambiguous redirect"; <(…) and >(…) as written
+   */
+  private async expandRedirectTarget(raw: string, writeStderr: (s: string) => void): Promise<string | null> {
+    if (/^[<>]\(/.test(raw) || /^&(\d+|-)$/.test(raw)) return raw;
+    if (!/[$`'"\\{]/.test(raw)) return raw;
+    const words = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
+    if (words.length !== 1) { writeStderr(`tabcomputer: ${raw}: ambiguous redirect\r\n`); return null; }
+    return words[0];
   }
 
   /**
@@ -7356,7 +7619,8 @@ export class Shell {
         if (code !== 0) { restoreFds(); return code; }
         continue;
       }
-      const target = restoreExpansion(this.expandVars(r.target));
+      const target = await this.expandRedirectTarget(r.target, writeStderr);
+      if (target === null) { restoreFds(); return 1; }
       // >&N, 2>&N, > /dev/stdout, 2> /dev/stderr: a copy of another descriptor
       const dup = /^&(\d+|-)$/.exec(target)?.[1] ?? (target === '/dev/stdout' ? '1' : target === '/dev/stderr' ? '2' : undefined);
       if (dup !== undefined && r.op !== '<' && r.op !== '2>&1') {
@@ -7395,6 +7659,16 @@ export class Shell {
         if (ps) outSub = ps[1];
         else outFile = { path: this.fs.resolvePath(target, this.cwd), append: r.op === '>>' };
         out = (s) => { captured += s; };
+      }
+    }
+    // `> f` opens (truncates) f before the compound runs, so `(echo $(cat f)) > f` and
+    // `for x in $(cat f); do …; done > f` read it empty. Only one with data is
+    // emptied now (a new file is made by the one write at the end); not a virtual one
+    for (const file of [outFile, errFile]) {
+      if (!file || file.append || this.fs.isVirtual?.(file.path)) continue;
+      const st = await this.fs.stat(file.path).catch(() => null);
+      if (st && !st.isDirectory() && st.size > 0 && !(await fifo.isFifo(this, file.path))) {
+        await this.fs.writeFile(file.path, '').catch(() => {});
       }
     }
     let code: number;
@@ -8696,7 +8970,7 @@ export class Shell {
    * Search PATH directories for an executable file.
    * Also checks node_modules/.bin relative to cwd.
    */
-  async findExecutableInPath(name: string): Promise<string | null> {
+  async findExecutableInPath(name: string, display = false): Promise<string | null> {
     // If name contains '/', treat it as a path
     if (name.includes('/')) {
       const resolved = this.fs.resolvePath(name, this.cwd);
@@ -8733,10 +9007,14 @@ export class Shell {
       for (const suffix of ['', '.wasm']) {
         // (a relative PATH entry is relative to the current directory)
         const candidate = this.fs.resolvePath(`${pathDir}/${name}${suffix}`, this.cwd);
+        // (display: a relative PATH entry gives a relative path, as bash reports it)
+        const shown = pathDir.startsWith('/') ? candidate : `${pathDir.replace(/\/+$/, '')}/${name}${suffix}`;
         try {
           const stat = await this.fs.stat(candidate);
+          // (bash skips a file without an x bit; here tabcomputer's own files on PATH,
+          // shims, wasm modules and package bins, are not all marked, so it doesn't)
           if (stat.type === 'file' || stat.type === 'symlink') {
-            return candidate;
+            return display ? shown : candidate;
           }
         } catch {
           // Not found, continue
@@ -9097,12 +9375,26 @@ export class Shell {
   ): Promise<number> {
     const depth = this.executeDepth;
     this.scriptShell = true;
+    // A new shell process starts with an empty command hash table
+    this.hashTable = new Map();
     // Statements run nested, so exit/errexit unwind to here rather than to each statement
     this.executeDepth++;
     if (!this.abortController) this.abortController = this.inheritedAbort ?? new AbortController();
     let exitCode = 0;
+    // Each statement is parsed whole before it runs, as bash does: one with a syntax
+    // error doesn't run at all and ends the script (2). Aliases can change how a line
+    // parses, so a script that uses them isn't checked.
+    const checkSyntax = !this.aliases.size && !/\balias\b/.test(content);
     try {
       for (const stmt of groupStatements(stripComments(content))) {
+        if (checkSyntax) {
+          const err = syntaxError(stmt.text);
+          if (err) {
+            writeStderr(`tabcomputer: line ${stmt.line}: ${err}\r\n`);
+            exitCode = 2;
+            break;
+          }
+        }
         if (this.pendingSignals.length) await this.processSignals(writeStdout, writeStderr);
         if (this.abortController?.signal.aborted) { exitCode = 130; break; }
         // set -n (noexec): a non-interactive shell reads the rest without running it
@@ -9249,7 +9541,8 @@ export function splitCompoundRedirects(cmd: string): { compound: string; redirec
   const suffix = cmd.slice(end);
   const redirects: CompoundRedirect[] = [];
   // (a target may be a process substitution: `done < <(cmd)`)
-  const re = /\s*(2>&1|&>|2>>|2>|>>|>|<)\s*([<>]\((?:[^()]|\([^()]*\))*\)|'[^']*'|"[^"]*"|[^\s<>]+)?/y;
+  // (1> and 0< are > and <)
+  const re = /\s*(?:1(?=>)|0(?=<(?!&)))?(2>&1|&>|2>>|2>|>>|>|<)\s*([<>]\((?:[^()]|\([^()]*\))*\)|'[^']*'|"[^"]*"|[^\s<>]+)?/y;
   // N<file, N>file, N>>file, N<&M, N>&M, N<&-, N>&- for a descriptor other than 0-2
   const fdRe = /\s*(([3-9])(?:<&-|>&-|<&\d|>&\d|>>|<|>)\s*(?:'[^']*'|"[^"]*"|[^\s<>&]+)?)/y;
   let pos = 0;
@@ -9268,8 +9561,7 @@ export function splitCompoundRedirects(cmd: string): { compound: string; redirec
     const op = m[1] as CompoundRedirect['op'];
     let target = m[2] ?? '';
     if (op !== '2>&1' && !target) return { compound: cmd, redirects: [] };
-    if (/^['"]/.test(target)) target = target.slice(1, -1);
-    redirects.push({ op, target });
+    redirects.push({ op, target }); // (as written: expanded when it runs)
     pos = re.lastIndex;
   }
   return { compound: cmd.slice(0, end).trim(), redirects };

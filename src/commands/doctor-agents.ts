@@ -139,9 +139,10 @@ async function scratch(ctx: CommandContext): Promise<string> {
 }
 
 /** Both probes, native first (they share nothing but the scratch root) */
-export async function agentChecks(ctx: CommandContext, opts: { claudeVersion?: boolean } = {}): Promise<Check[]> {
+export async function agentChecks(ctx: CommandContext, opts: { claudeVersion?: boolean; into?: Check[] } = {}): Promise<Check[]> {
+  // `into` gets each result as it comes: a caller that stops waiting still has them
+  const checks: Check[] = opts.into ?? [];
   const dir = await scratch(ctx);
-  const checks: Check[] = [];
 
   // native: the probe binary under Blink
   try {
@@ -230,12 +231,16 @@ async function claudeBinaryCheck(ctx: CommandContext, version: boolean): Promise
   }
 }
 
-/** One line for plain `doctor` */
-export function agentSummary(checks: Check[]): Check {
+/**
+ * One line for plain `doctor`. `timedOut`: the caller stopped waiting (a busy
+ * page), so a runtime with no results yet says so instead of going missing.
+ */
+export function agentSummary(checks: Check[], timedOut?: string): Check {
   const by = (rt: string) => {
     const mine = checks.filter((c) => (AGENT_STEPS as readonly string[]).includes(c.label.slice(rt.length + 1)) && c.label.startsWith(`${rt} `));
     const probe = checks.find((c) => c.label === `${rt} probe`);
-    if (probe) return { text: `${rt} probe failed`, ok: false };
+    if (probe) return { text: `${rt} probe failed${/^no answer/.test(probe.detail) ? ` (${probe.detail})` : ''}`, ok: false };
+    if (timedOut && !mine.length) return { text: `${rt} probe timed out (${timedOut})`, ok: false };
     const good = mine.filter((c) => c.status === 'OK').length;
     const bad = mine.filter((c) => c.status === 'FAIL').map((c) => c.label.slice(rt.length + 1));
     return { text: `${rt} ${good}/${AGENT_STEPS.length}${bad.length ? ` (${bad.join(', ')} failed)` : ''}`, ok: good === AGENT_STEPS.length };

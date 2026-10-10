@@ -17,6 +17,7 @@
  */
 import * as A from '../kernel/abi';
 import type { GuestSys } from '../kernel/channel';
+import type { FSChangeDetail as ChangeDetail } from '../filesystem';
 
 const enc = new TextEncoder();
 
@@ -329,25 +330,25 @@ export class SyscallFs {
     return { path: real, node: { path: real, type: st.type, mode: s.mode, size: s.size, mtime: s.mtimeMs, ctime: s.ctimeMs, ino: s.ino, special: st.isFIFO() ? 'fifo' : undefined } };
   }
 
-  private listeners = new Set<(event: string, path: string, newPath?: string, detail?: { created?: boolean; dir?: boolean }) => void>();
+  private listeners = new Set<(event: string, path: string, newPath?: string, detail?: ChangeDetail) => void>();
   /** Set by the guest: ask the page for its filesystem's change feed (once) */
   requestChanges: (() => void) | null = null;
 
   /** The page's filesystem changes (any process's writes), for fs.watch and chokidar */
-  onChange(listener: (event: string, path: string, newPath?: string, detail?: { created?: boolean; dir?: boolean }) => void): () => void {
+  onChange(listener: (event: string, path: string, newPath?: string, detail?: ChangeDetail) => void): () => void {
     this.listeners.add(listener);
     if (this.requestChanges) { this.requestChanges(); this.requestChanges = null; }
     return () => { this.listeners.delete(listener); };
   }
 
   /** Hear changes while something else has the feed on (a watcher), without asking for it */
-  onChangePassive(listener: (event: string, path: string, newPath?: string, detail?: { created?: boolean; dir?: boolean }) => void): () => void {
+  onChangePassive(listener: (event: string, path: string, newPath?: string, detail?: ChangeDetail) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
 
-  /** A change the page reported: what we cached about those paths goes, then the listeners hear it */
-  changed(event: string, path: string, newPath?: string, detail?: { created?: boolean; dir?: boolean }): void {
+  /** A change the page reported (detail.at: its Date.now() then): what we cached about those paths goes, then the listeners hear it */
+  changed(event: string, path: string, newPath?: string, detail?: ChangeDetail): void {
     this.forget(path);
     if (newPath) this.forget(newPath);
     this.last = null;

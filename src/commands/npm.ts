@@ -142,7 +142,7 @@ async function npmMain(ctx: CommandContext): Promise<number> {
       case 'x': {
         // npm exec [--] <pkg> [args]: npx
         const rest = ctx.args.slice(1).filter((a, i) => !(i === 0 && a === '--'));
-        return ctx.shell.execute(quoteArgsForShell(['npx', ...rest]), (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+        return ctx.shell.execute(quoteArgsForShell(['npx', ...rest]), (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, scriptTerminal(ctx), true);
       }
       case 'install':
       case 'i':
@@ -214,7 +214,7 @@ async function npmCreate(ctx: CommandContext): Promise<number> {
   const rest = ctx.args.slice(2);
   const args = rest[0] === '--' ? rest.slice(1) : rest.filter((a, i) => !(a === '--' && i === rest.indexOf('--')));
   return ctx.shell.execute(quoteArgsForShell(['npx', initializerPackage(spec), ...args]),
-    (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+    (o) => { ctx.stdout += o.replace(/\r\n/g, '\n'); }, (e) => { ctx.stderr += e.replace(/\r\n/g, '\n'); }, false, scriptTerminal(ctx), true);
 }
 
 async function npmInit(ctx: CommandContext): Promise<number> {

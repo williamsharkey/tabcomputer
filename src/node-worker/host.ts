@@ -61,7 +61,8 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
         // fs.watch in the guest: the filesystem's changes (every process's writes) go to it
         if (watching || !kernel.fs) return;
         watching = true;
-        const off = kernel.fs.onChange((event, path, newPath, detail) => toGuest({ type: 'node-guest-fs', event, path, newPath, detail }));
+        // (with when it happened: it reaches the guest later than the guest's own reads see it)
+        const off = kernel.fs.onChange((event, path, newPath, detail) => toGuest({ type: 'node-guest-fs', event, path, newPath, detail: { ...detail, at: Date.now() } }));
         proc.onTerminate(off);
         return;
       }
@@ -82,7 +83,7 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
             return tw;
           }, {
             dataSize: 1 << 20,
-            startData: { pageOrigin: getShiroOrigin(), nodeThread: { file: m.file, eval: m.eval, workerData: m.workerData, argv: m.argv, threadId: m.threadId } },
+            startData: { pageOrigin: getShiroOrigin(), nodeThread: { file: m.file, eval: m.eval, workerData: m.workerData, argv: m.argv, env: m.env, threadId: m.threadId } },
           });
         } catch (e: any) {
           ev('error', { message: String(e?.message ?? e) });

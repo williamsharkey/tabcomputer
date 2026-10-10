@@ -270,10 +270,11 @@ function fsError(code: string, message: string): Error {
  * whether it was made through an open file (fd: the kernel's descriptors,
  * which report their own close; otherwise a write is a whole file, written
  * and closed), and for 'delete', 'rename' and 'attrib', whether it is a
- * directory (dir), when known.
+ * directory (dir), when known. `at`: when the change happened (Date.now()),
+ * where it reaches the listener later (a node guest's relay).
  */
 export type FSChangeEvent = 'write' | 'delete' | 'mkdir' | 'rename' | 'attrib';
-export interface FSChangeDetail { created?: boolean; dir?: boolean; fd?: boolean }
+export interface FSChangeDetail { created?: boolean; dir?: boolean; fd?: boolean; at?: number }
 export type FSChangeListener = (event: FSChangeEvent, path: string, newPath?: string, detail?: FSChangeDetail) => void;
 
 /**

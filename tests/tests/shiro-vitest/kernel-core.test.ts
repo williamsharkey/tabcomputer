@@ -1354,6 +1354,11 @@ describe('worker guests over the SAB channel', () => {
     expect(kernel.engineLock(p.pid)!.heldMs).toBe(0); // a new acquire
     expect(text(`/proc/${p.pid}/task/${p.pid}/wchan`)).toBe('futex_wait_queue');
     expect(kernel.threadStates(p.pid).map((s) => [s.tid, s.state, s.waitKind])).toEqual([[p.pid, 'S', 'engine'], [tid, 'R', '']]);
+    // as Blink hands it now: a 16-byte copy of the struct, at address 0
+    const copy = new SharedArrayBuffer(16);
+    new Int32Array(copy).set([tid, 0, 7, 0]);
+    p.data.engine = { memory: { buffer: copy }, gilAddr: 0 };
+    expect(kernel.engineLock(p.pid)).toMatchObject({ holder: tid, waiters: 0, acquires: 7 });
     kernel.kill(p.pid, A.SIGKILL);
     await p.wait();
   });

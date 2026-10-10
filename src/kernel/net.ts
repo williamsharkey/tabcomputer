@@ -390,7 +390,10 @@ class RelayPeer implements StreamPeer {
     // The relay URL may carry a sign-in token: keep only origin and path
     let url = '';
     try { const u = new URL(this.ws.url); url = u.origin + u.pathname; } catch { /* not a URL */ }
-    return { kind: 'relay', readyState: this.ws.readyState, bufferedAmount: this.ws.bufferedAmount, unacked: this.unacked, ackEvery: this.stack.config.ackEvery, draining: !!this.drainTimer, url };
+    // inflight/stalled/windowFull: the relay window's state, where the kernel tracks it (perf-kernel, #19)
+    const self = this as any;
+    return { kind: 'relay', readyState: this.ws.readyState, bufferedAmount: this.ws.bufferedAmount, unacked: this.unacked, ackEvery: this.stack.config.ackEvery, draining: !!this.drainTimer, url,
+      inflight: self.inflight, stalled: self.stalled, windowFull: self.windowFull };
   }
   // WebSocket has no drain event: watch bufferedAmount while data is queued so
   // writers blocked on SNDBUF and POLLOUT waiters wake up.

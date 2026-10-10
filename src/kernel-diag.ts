@@ -30,6 +30,21 @@ function optional<T>(get: () => T): T | undefined {
   try { return get() ?? undefined; } catch { return undefined; }
 }
 
+/**
+ * A blocked thread's fd (read, write, accept, connect, epoll_wait), and an
+ * epoll_wait's interest list, joined to those fds' state: a thread in
+ * epoll_wait on a socket with rxLen > 0 is data waiting that nobody was told
+ * about (tabcomputer#19).
+ */
+function withBlockedOn(threads: any[] | undefined, fds: Record<string, unknown>[]): any[] | undefined {
+  if (!Array.isArray(threads)) return threads;
+  const byFd = new Map(fds.map((f) => [f.fd as number, f]));
+  return threads.map((t) => {
+    const blockedOn = [t.fd, ...(t.fds ?? [])].filter((n) => typeof n === 'number' && byFd.has(n)).map((n) => byFd.get(n));
+    return blockedOn.length ? { ...t, blockedOn } : t;
+  });
+}
+
 function fdInfo(file: any): Record<string, unknown> {
   const out: Record<string, unknown> = { kind: file?.kind };
   try {
@@ -69,7 +84,7 @@ export function kernelDiagnostics(q: KernelDiagQuery = {}): Record<string, unkno
       pendingSignals: [...(p.pendingSignals ?? [])], deferredSignals: [...(p.deferredSignals ?? [])],
       tids: [...(p.tids ?? [])],
       // Per-thread state and the engine lock, once the kernel has them (perf-kernel's #19 work)
-      threads: optional(() => k.threadStates?.(p.pid)),
+      threads: optional(() => withBlockedOn(k.threadStates?.(p.pid), fds)),
       engineLock: optional(() => k.engineLock?.(p.pid)),
       ageMs: now - p.startTime,
       fds,

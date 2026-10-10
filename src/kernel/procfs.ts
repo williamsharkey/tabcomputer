@@ -167,7 +167,7 @@ export class ProcFs {
     if (path === '/proc') {
       return {
         type: 'dir', list: () => {
-          const names = new Set([...this.fsNames(), 'self', 'thread-self', 'sysvipc', ...this.live().map((p) => String(p.pid))]);
+          const names = new Set([...this.fsNames(), 'self', 'thread-self', 'sysvipc', 'net', ...this.live().map((p) => String(p.pid))]);
           // the names, then the pids in order (procps lists them as readdir returns them)
           const pids = [...names].filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(a) - Number(b));
           return [...[...names].filter((n) => !/^\d+$/.test(n)), ...pids];
@@ -183,7 +183,13 @@ export class ProcFs {
     }
     if (/^\d+$/.test(head)) {
       const p = this.kernel.procs.get(Number(head));
-      if (!p) return undefined;
+      if (!p) {
+        // A thread's tid names it too, as on Linux (not listed in /proc)
+        const tid = Number(head);
+        const owner = [...this.kernel.procs.values()].find((q) => q.tids.has(tid) || q.threads.has(tid));
+        if (!owner) return undefined;
+        return parts.length === 1 ? { type: 'dir', list: () => PID_ENTRIES } : this.threadNode(proc, owner, tid, parts.slice(1));
+      }
       return parts.length === 1 ? { type: 'dir', list: () => PID_ENTRIES } : this.pidNode(proc, p, parts.slice(1));
     }
     if (head === 'sysvipc') {
@@ -191,6 +197,14 @@ export class ProcFs {
       if (parts.length === 2 && (parts[1] === 'shm' || parts[1] === 'sem' || parts[1] === 'msg')) {
         const which = parts[1];
         return { type: 'file', text: () => this.sysvipcText(which) };
+      }
+      return undefined;
+    }
+    if (head === 'net') {
+      if (parts.length === 1) return { type: 'dir', list: () => ['tcp', 'tcp6'] };
+      if (parts.length === 2 && (parts[1] === 'tcp' || parts[1] === 'tcp6')) {
+        const v6 = parts[1] === 'tcp6';
+        return { type: 'file', text: () => this.netTcpText(v6) };
       }
       return undefined;
     }
@@ -209,6 +223,77 @@ export class ProcFs {
     return undefined;
   }
 
+  /**
+   * /proc/net/tcp and tcp6 as Linux prints them: every TCP socket some
+   * process holds that is bound, listening or connected, its addresses in
+   * hex (each 32-bit word in host order), state, queues, owner uid and inode
+   * (the N of socket:[N] in /proc/PID/fd), so ss/netstat-style readers can
+   * map inodes to endpoints.
+   */
+  private netTcpText(v6: boolean): string {
+    const family = v6 ? A.AF_INET6 : A.AF_INET;
+    const seen = new Set<number>();
+    const rows: string[] = [];
+    for (const p of this.live()) {
+      for (const [, f] of p.fds.entries()) {
+        const s = f as OpenFile & { ino?: number; domain?: number; type?: number; netInfo?: () => NetInfo };
+        if (f.kind !== 'socket' || !s.netInfo || s.domain !== family || (s.type ?? A.SOCK_STREAM) !== A.SOCK_STREAM) continue;
+        if (seen.has(s.ino ?? 0)) continue;
+        seen.add(s.ino ?? 0);
+        const n = s.netInfo();
+        const st = TCP_STATES[n.state];
+        if (!st) continue;
+        const sl = String(rows.length).padStart(4) + ':';
+        const addr = (a: SockAddrLike | null) => `${hexAddr(a?.address ?? '', v6)}:${hex(a?.port ?? 0, 4)}`;
+        rows.push(`${sl} ${addr(n.local)} ${addr(n.remote)} ${st} ${hex(n.txQueue, 8)}:${hex(n.rxQueue, 8)} 00:00000000 00000000 ${String(p.uid ?? 0).padStart(5)} ${'0'.padStart(8)} ${s.ino ?? 0} 1 0000000000000000 100 0 0 10 0`);
+      }
+    }
+    const head = v6
+      ? '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+      : '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+    return [head, ...rows].join('\n') + '\n';
+  }
+
+  /** /proc/PID/task/TID/...: the thread's own stat, status, syscall and wchan; the rest are its process's */
+  private threadNode(caller: Process, p: Process, tid: number, rest: string[]): Node | undefined {
+    if (rest.length === 1) {
+      switch (rest[0]) {
+        case 'stat': return { type: 'file', text: () => this.pidStat(p, tid) };
+        case 'status': return { type: 'file', text: () => this.pidStatus(p, tid) };
+        case 'syscall': return { type: 'file', text: () => threadSyscallText(p, tid) };
+        case 'wchan': return { type: 'file', text: () => threadWchanText(p, tid) };
+        case 'task': return undefined;
+      }
+    }
+    return rest[0] === 'task' ? undefined : this.pidNode(caller, p, rest);
+  }
+
+  /** Each thread's state (kernel.threadStates): what /proc/PID/task/TID shows */
+  threadStates(p: Process): { tid: number; state: string; nr: number; args: number[]; sinceMs: number; syscalls: number }[] {
+    const now = Date.now();
+    return threadIds(p).map((tid) => {
+      const t = p.threads.get(tid);
+      const busy = !!t && t.nr >= 0;
+      return { tid, state: this.threadLetter(p, tid), nr: busy ? t!.nr : -1, args: busy ? Array.from(t!.args).slice(0, 6) : [], sinceMs: busy ? now - t!.since : 0, syscalls: t?.syscalls ?? 0 };
+    });
+  }
+
+  /**
+   * A thread's state letter: blocked in a syscall for 2 ms or more, or (with
+   * the engine's lock word) waiting for another thread's engine lock, is S;
+   * the main thread with no record of its own is its process's.
+   */
+  private threadLetter(p: Process, tid: number): string {
+    if (p.state === 'zombie') return 'Z';
+    if (p.state === 'stopped') return 'T';
+    const t = p.threads.get(tid);
+    if (t && t.nr >= 0) return Date.now() - t.since >= 2 ? 'S' : 'R';
+    const lock = engineLock(p);
+    if (lock && lock.holder !== 0 && lock.holder !== tid) return 'S';
+    if (tid === p.pid && (!t || !t.syscalls)) return this.stateLetter(p);
+    return 'R';
+  }
+
   private pidNode(caller: Process, p: Process, rest: string[]): Node | undefined {
     const [name, sub] = rest;
     if (rest.length === 2 && name === 'fd') {
@@ -221,13 +306,17 @@ export class ProcFs {
       if (!/^\d+$/.test(sub) || !f) return undefined;
       return { type: 'file', text: () => fdInfo(f, p.fds.getCloexec(Number(sub)) ?? false) };
     }
-    if (rest.length === 2 && name === 'task' && sub === String(p.pid)) return { type: 'dir', list: () => PID_ENTRIES.filter((e) => e !== 'task') };
-    if (rest.length === 3 && name === 'task' && sub === String(p.pid)) return this.pidNode(caller, p, rest.slice(2));
+    if (rest.length >= 2 && name === 'task') {
+      const tid = Number(sub);
+      if (!/^\d+$/.test(sub) || !threadIds(p).includes(tid)) return undefined;
+      if (rest.length === 2) return { type: 'dir', list: () => PID_ENTRIES.filter((e) => e !== 'task') };
+      return this.threadNode(caller, p, tid, rest.slice(2));
+    }
     if (rest.length !== 1) return undefined;
     switch (name) {
       case 'fd':
       case 'fdinfo': return { type: 'dir', list: () => p.fds.entries().map(([fd]) => String(fd)) };
-      case 'task': return { type: 'dir', list: () => [String(p.pid)] };
+      case 'task': return { type: 'dir', list: () => threadIds(p).map(String) };
       case 'cwd': return { type: 'link', target: () => p.cwd };
       // A runner can name the program the process reports as itself (a WASI package's "self")
       // Linux gives the resolved path: glibc's ld.so expands $ORIGIN from it, and a
@@ -298,21 +387,21 @@ export class ProcFs {
     return { nr: encodeDev(136, t.pty.index), tpgid: t.pty.fgPgrp || -1 };
   }
 
-  private pidStat(p: Process): string {
+  private pidStat(p: Process, tid?: number): string {
     const now = Date.now();
     const ticks = (ms: number) => Math.floor(ms / (1000 / HZ));
     const cpu = ticks(ProcFs.cpuMs(p, now));
     const { nr, tpgid } = this.ttyOf(p);
     const f = [
-      p.pid, `(${p.comm.slice(0, 15)})`, this.stateLetter(p), p.ppid, p.pgid, p.sid, nr, tpgid,
-      0x400000, 0, 0, 0, 0, cpu, 0, 0, 0, 20, 0, 1 + p.tids.size, 0, ticks(p.startTime - bootMs),
+      tid ?? p.pid, `(${p.comm.slice(0, 15)})`, tid !== undefined ? this.threadLetter(p, tid) : this.stateLetter(p), p.ppid, p.pgid, p.sid, nr, tpgid,
+      0x400000, 0, 0, 0, 0, cpu, 0, 0, 0, 20, 0, threadIds(p).length, 0, ticks(p.startTime - bootMs),
       0, 0, '18446744073709551615', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     return f.join(' ') + '\n';
   }
 
-  private pidStatus(p: Process): string {
-    const st = this.stateLetter(p);
+  private pidStatus(p: Process, tid?: number): string {
+    const st = tid !== undefined ? this.threadLetter(p, tid) : this.stateLetter(p);
     const names: Record<string, string> = { R: 'R (running)', S: 'S (sleeping)', T: 'T (stopped)', Z: 'Z (zombie)' };
     const pending = [...p.pendingSignals].reduce((m, s) => m | (1n << BigInt(s - 1)), 0n);
     const blocked = [...p.sigmask].reduce((m, s) => m | (1n << BigInt(s - 1)), 0n);
@@ -321,12 +410,14 @@ export class ProcFs {
     const hex = (n: bigint) => n.toString(16).padStart(16, '0');
     return [
       `Name:\t${p.comm.slice(0, 15)}`, `Umask:\t${p.umask.toString(8).padStart(4, '0')}`, `State:\t${names[st]}`,
-      `Tgid:\t${p.pid}`, 'Ngid:\t0', `Pid:\t${p.pid}`, `PPid:\t${p.ppid}`, 'TracerPid:\t0',
+      `Tgid:\t${p.pid}`, 'Ngid:\t0', `Pid:\t${tid ?? p.pid}`, `PPid:\t${p.ppid}`, 'TracerPid:\t0',
       `Uid:\t${p.ruid ?? p.uid}\t${p.uid}\t${p.suid ?? p.uid}\t${p.uid}`, `Gid:\t${p.rgid ?? p.gid}\t${p.gid}\t${p.sgid ?? p.gid}\t${p.gid}`,
       `FDSize:\t${Math.max(64, p.fds.size)}`, `Groups:\t${(p.groups ?? [p.gid]).join(' ')}`,
-      'VmPeak:\t       0 kB', 'VmSize:\t       0 kB', 'VmRSS:\t       0 kB', `Threads:\t${1 + p.tids.size}`,
+      'VmPeak:\t       0 kB', 'VmSize:\t       0 kB', 'VmRSS:\t       0 kB', `Threads:\t${threadIds(p).length}`,
       `SigPnd:\t${hex(0n)}`, `ShdPnd:\t${hex(pending)}`, `SigBlk:\t${hex(blocked)}`, `SigIgn:\t${hex(ignored)}`, `SigCgt:\t${hex(caught)}`,
       `Cpus_allowed_list:\t0-${this.ncpu() - 1}`, 'voluntary_ctxt_switches:\t0', 'nonvoluntary_ctxt_switches:\t0',
+      // The engine's lock (Blink's GIL): which thread runs guest code, when the engine says
+      ...(p.data.engine ? [`EngineLock:\t${engineLockText(p)}`] : []),
     ].join('\n') + '\n';
   }
 
@@ -390,7 +481,7 @@ export class ProcFs {
   fsNode(path: string): { dir: string[] } | { text: string } | { bytes: Uint8Array } | { link: string } | undefined {
     if (path === '/proc') return undefined; // (the FileSystem lists /proc itself)
     const head = path.slice(6).split('/')[0];
-    const p = /^\d+$/.test(head) ? this.kernel.procs.get(Number(head)) : this.kernel.init;
+    const p = /^\d+$/.test(head) ? this.kernel.processOfTid(Number(head)) : this.kernel.init;
     if (!p || head === 'self' || head === 'thread-self') return undefined;
     const n = this.node(p, path);
     if (!n) return undefined;
@@ -449,7 +540,7 @@ export class ProcFs {
   private ownsPrefix(path: string): boolean {
     const head = path.slice(6).split('/')[0];
     // (a pid that isn't a kernel process may be an in-page shell's: the FileSystem's /proc)
-    return (/^\d+$/.test(head) && this.kernel.procs.has(Number(head))) || head === 'self' || head === 'thread-self';
+    return (/^\d+$/.test(head) && !!this.kernel.processOfTid(Number(head))) || head === 'self' || head === 'thread-self';
   }
 }
 
@@ -488,7 +579,77 @@ const VMSTAT_KEYS = [
 const PID_ENTRIES = ['cmdline', 'comm', 'cwd', 'environ', 'exe', 'fd', 'fdinfo', 'io', 'mounts', 'root', 'stat', 'statm', 'status', 'syscall', 'task', 'wchan'];
 
 export function wchanText(p: Process): string {
-  return p.calls.length || p.engineSleeps ? 'do_syscall_64' : '0';
+  const c = p.calls[0];
+  if (c) return wchanName(p, c.nr, c.args);
+  return p.engineSleeps ? 'futex_wait_queue' : '0';
+}
+
+/** Where Linux would show a task blocked in syscall `nr` waiting (its wchan), roughly */
+function wchanName(p: Process, nr: number, args: ArrayLike<number>): string {
+  const byNr: Record<number, string> = {
+    7: 'do_poll', 271: 'do_poll', 23: 'do_select', 270: 'do_select', 232: 'ep_poll', 281: 'ep_poll', 441: 'ep_poll',
+    202: 'futex_wait_queue', 35: 'hrtimer_nanosleep', 230: 'hrtimer_nanosleep', 61: 'do_wait', 247: 'do_wait',
+    34: 'sigsuspend', 130: 'sigsuspend', 128: 'do_sigtimedwait', 43: 'inet_csk_accept', 288: 'inet_csk_accept',
+    42: 'inet_wait_for_connect', 70: 'do_msgrcv', 65: 'do_semtimedop', 220: 'do_semtimedop', 73: 'flock_lock_inode_wait',
+  };
+  if (byNr[nr]) return byNr[nr];
+  // reads and writes: by what the fd is
+  if (nr === 0 || nr === 1 || nr === 17 || nr === 18 || nr === 19 || nr === 20 || nr === 44 || nr === 45 || nr === 46 || nr === 47) {
+    const kind = p.fds.get(args[0] ?? -1)?.kind;
+    const write = nr === 1 || nr === 18 || nr === 20 || nr === 44 || nr === 46;
+    if (kind === 'pipe') return write ? 'pipe_write' : 'pipe_read';
+    if (kind === 'socket') return write ? 'sk_stream_wait_memory' : 'wait_woken';
+    if (kind === 'pty') return write ? 'n_tty_write' : 'n_tty_read';
+  }
+  return 'do_syscall_64';
+}
+
+/** The ids of a process's threads: the main thread (the pid), then the others in order */
+export function threadIds(p: Process): number[] {
+  const ids = new Set<number>([p.pid, ...p.tids, ...p.threads.keys()]);
+  return [p.pid, ...[...ids].filter((t) => t !== p.pid).sort((a, b) => a - b)];
+}
+
+/** /proc/PID/task/TID/syscall: the call that thread is in, or "running" */
+export function threadSyscallText(p: Process, tid: number): string {
+  if (p.state === 'zombie') return 'running\n';
+  const t = p.threads.get(tid);
+  if (t && t.nr >= 0) {
+    const a = Array.from({ length: 6 }, (_, i) => '0x' + ((t.args[i] ?? 0) >>> 0).toString(16));
+    return `${t.nr} ${a.join(' ')} 0x0 0x0\n`;
+  }
+  return tid === p.pid && !t?.syscalls ? syscallText(p) : 'running\n';
+}
+
+/** /proc/PID/task/TID/wchan */
+export function threadWchanText(p: Process, tid: number): string {
+  if (p.state === 'zombie') return '0';
+  const t = p.threads.get(tid);
+  if (t && t.nr >= 0) return wchanName(p, t.nr, t.args);
+  const lock = engineLock(p);
+  if (lock && lock.holder !== 0 && lock.holder !== tid) return 'futex_wait_queue';
+  return tid === p.pid && !t?.syscalls ? wchanText(p) : '0';
+}
+
+/**
+ * The engine's lock word (Blink's GIL, perf-blink's patch 0126): the engine
+ * hands the kernel `proc.data.engine = { memory, gilAddr }` and the lock's
+ * state is four i32 at gilAddr: holder tid (0: nobody), waiters, acquires.
+ */
+export function engineLock(p: Process): { holder: number; waiters: number; acquires: number } | null {
+  const e = p.data.engine as { memory?: { buffer: ArrayBufferLike }; gilAddr?: number } | undefined;
+  if (!e?.memory || !e.gilAddr) return null;
+  try {
+    // (the buffer changes when the memory grows: take it each time)
+    const w = new Int32Array(e.memory.buffer, e.gilAddr, 4);
+    return { holder: Atomics.load(w, 0), waiters: Atomics.load(w, 1), acquires: Atomics.load(w, 2) >>> 0 };
+  } catch { return null; }
+}
+
+function engineLockText(p: Process): string {
+  const l = engineLock(p);
+  if (!l) return 'n/a';
+  return `${l.holder ? `held by ${l.holder}` : 'free'} (waiters ${l.waiters}, acquires ${l.acquires})`;
 }
 
 export function syscallText(p: Process): string {
@@ -515,6 +676,38 @@ function fdInfo(f: OpenFile, cloexec: boolean): string {
   return t;
 }
 const fnv = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x1000193); return h; };
+
+interface SockAddrLike { address: string; port: number }
+interface NetInfo { state: string; local: SockAddrLike | null; remote: SockAddrLike | null; rxQueue: number; txQueue: number }
+/** Linux's TCP states (include/net/tcp_states.h); unbound sockets aren't listed */
+const TCP_STATES: Record<string, string> = { connected: '01', connecting: '02', closed: '07', bound: '07', listening: '0A' };
+const hex = (n: number, w: number) => (n >>> 0).toString(16).toUpperCase().padStart(w, '0');
+/** An address as /proc/net prints it: its bytes as 32-bit words, each in host (little-endian) order */
+export function hexAddr(address: string, v6: boolean): string {
+  const bytes = v6 ? ipv6Bytes(address) : ipv4Bytes(address);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 4) for (let j = 3; j >= 0; j--) out += bytes[i + j].toString(16).toUpperCase().padStart(2, '0');
+  return out;
+}
+function ipv4Bytes(a: string): number[] {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  return m ? [1, 2, 3, 4].map((i) => Number(m[i]) & 255) : [0, 0, 0, 0];
+}
+function ipv6Bytes(a: string): number[] {
+  const out = new Array<number>(16).fill(0);
+  if (!a || a === '::') return out;
+  let s = a.replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  // a dotted IPv4 tail (::ffff:1.2.3.4) is two groups
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (v4) { const b = ipv4Bytes(v4[1]); s = s.slice(0, v4.index) + ((b[0] << 8) | b[1]).toString(16) + ':' + ((b[2] << 8) | b[3]).toString(16); }
+  if (!s.includes(':')) return out;
+  const [hd, tl] = s.includes('::') ? s.split('::') : [s, undefined];
+  const h = hd ? hd.split(':') : [];
+  const t = tl !== undefined && tl ? tl.split(':') : [];
+  const groups = tl === undefined ? h : [...h, ...new Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+  groups.slice(0, 8).forEach((g, i) => { const v = parseInt(g || '0', 16) || 0; out[i * 2] = (v >> 8) & 255; out[i * 2 + 1] = v & 255; });
+  return out;
+}
 
 /** What /proc/PID/fd/N points at. */
 export function fdTarget(f: OpenFile): string {

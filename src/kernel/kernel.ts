@@ -13,7 +13,7 @@ import type { Shell } from '../shell';
 import type { Command, CommandContext } from '../commands/index';
 import { KernelStdio, execLazyStdin } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
-import { ProcFs, bootMs, fdTarget, syscallText, wchanText } from './procfs';
+import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText } from './procfs';
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
@@ -985,8 +985,24 @@ export class Kernel {
   processOfTid(tid: number): Process | undefined {
     const p = this.procs.get(tid);
     if (p) return p;
-    for (const q of this.procs.values()) if (q.tids.has(tid)) return q;
+    for (const q of this.procs.values()) if (q.tids.has(tid) || q.threads.has(tid)) return q;
     return undefined;
+  }
+
+  /**
+   * What each thread of `pid` is doing (#19 diag; /proc/PID/task/TID shows
+   * the same): state letter, the syscall in progress with its args and how
+   * long it has been in it, and its call count. Empty if there's no such process.
+   */
+  threadStates(pid: number): { tid: number; state: string; nr: number; args: number[]; sinceMs: number; syscalls: number }[] {
+    const p = this.procs.get(pid);
+    return p ? this.procfs.threadStates(p) : [];
+  }
+
+  /** The engine's lock (Blink's GIL) for `pid`: holder tid (0: free), waiters, acquires; null if the engine doesn't report one */
+  engineLock(pid: number): { holder: number; waiters: number; acquires: number } | null {
+    const p = this.procs.get(pid);
+    return p ? engineLock(p) : null;
   }
 
   /** A new thread id for an extra thread of `proc` (worker-host attachThread). */

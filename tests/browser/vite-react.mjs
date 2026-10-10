@@ -224,6 +224,9 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(e.message + (process.env.VERBOSE ? ' @ ' + (e.stack || '').split('\n').slice(1, 6).join(' | ') : '')));
 const consoleErrors = [];
 const responses = [];
+// DUMP_DEPS: the optimized dependencies as the page got them (vite may write them again since)
+const depBodies = new Map();
+if (process.env.DUMP_DEPS) context.on('response', (r) => { if (/\/\.vite\/deps\//.test(r.url())) r.text().then((t) => depBodies.set(`${depBodies.size}_${r.url()}`, t), () => {}); });
 page.on('response', (r) => { if (!/localhost:5299\/(assets|$)/.test(r.url())) responses.push(`${r.status()} ${r.headers()['content-type'] ?? ''} ${r.url().slice(0, 150)}`); });
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 300)); });
 let failed = false;
@@ -326,6 +329,10 @@ try {
 } catch (e) {
   failed = true;
   console.log(`FAIL ${String(e.message).replace(/\n/g, '\n  ')}`);
+  if (process.env.DUMP_DEPS) for (const [u, body] of depBodies) {
+    (await import('node:fs')).writeFileSync(`${process.env.DUMP_DEPS}/served_${u.replace(/^.*\//, '').replace(/[^\w.=-]/g, '_')}`, body);
+    console.log(`  saved as served: ${u}`);
+  }
   if (process.env.DUMP_DEPS) for (const m of new Set(String(e.message).match(/node_modules\/\.vite\/deps\/[\w.-]+\.js/g) ?? [])) {
     const r = await side(page, `ls -la ~/app/${m} ~/app/node_modules/.vite/deps | head -50; cat ~/app/${m}`).catch((x) => ({ out: String(x) }));
     (await import('node:fs')).writeFileSync(`${process.env.DUMP_DEPS}/${m.replace(/\//g, '_')}`, r.out);

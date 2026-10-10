@@ -939,9 +939,9 @@ export function createFsModule(deps: FsDeps): any {
       // O_CREAT|O_EXCL ('wx') on an existing file, or a missing file without O_CREAT, fail
       if (fl.create && fl.excl && exists) throw fsError('EEXIST', `EEXIST: file already exists, open '${p}'`, 'open', String(p));
       if (!fl.create && exists === false) throw fsError('ENOENT', `ENOENT: no such file or directory, open '${p}'`, 'open', String(p));
-      const fd = 100 + Math.floor(Math.random() * 9900);
       // Store mapping for writeSync/readSync/closeSync ('w' truncated, 'a' appends, 'r' reads)
       (globalThis as any).__shiroFds = (globalThis as any).__shiroFds || {};
+      const fd = nextFd((globalThis as any).__shiroFds);
       const f = fl.append ? 'a' : fl.write ? (fl.trunc ? 'w' : 'r+') : 'r';
       (globalThis as any).__shiroFds[fd] = { path: resolved, flags: f, offset: 0 };
       if (fl.trunc || (fl.create && !exists)) {
@@ -1861,4 +1861,18 @@ export function createFsPromisesModule(deps: FsDeps): any {
     watch: (p: any, opts?: any) => createWatchApi({ ctx, fileCache, getBuiltinModule, trackAsync: deps.trackAsync, atExit: deps.atExit }).promisesWatch(p, opts),
     constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024, O_NONBLOCK: 2048, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960 },
   };
+}
+
+/**
+ * A free fd number for openSync: the next one up that no file has open. A
+ * random pick (100-9999) gave two files open at once the same fd now and then:
+ * esbuild, which keeps many open, read one file's bytes as another's and the
+ * other as empty (Astro's optimized aria-query broke the dev toolbar)
+ */
+function nextFd(open: Record<number, unknown>): number {
+  const g = globalThis as { __shiroNextFd?: number };
+  let fd = g.__shiroNextFd ?? 100;
+  while (open[fd]) fd = fd >= 999_999 ? 100 : fd + 1;
+  g.__shiroNextFd = fd >= 999_999 ? 100 : fd + 1;
+  return fd;
 }

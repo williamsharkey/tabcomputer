@@ -821,6 +821,17 @@ instantiate(new Uint8Array(0), {}).then(() => console.log('compiled'));
     }
   }, 60_000);
 
+  it('files open at once have fds of their own, each reading its own file (esbuild keeps many open)', async () => {
+    expect(await node(`const fs = require('fs');
+fs.mkdirSync('/home/user/m/many', { recursive: true });
+for (let i = 0; i < 300; i++) fs.writeFileSync('/home/user/m/many/f' + i, 'file ' + i);
+const fds = [];
+for (let i = 0; i < 300; i++) fds.push(fs.openSync('/home/user/m/many/f' + i, 'r'));
+const wrong = fds.filter((fd, i) => fs.readFileSync(fd, 'utf8') !== 'file ' + i).length;
+for (const fd of fds) fs.closeSync(fd);
+console.log(new Set(fds).size, wrong);`)).toBe('300 0\n');
+  }, 60_000);
+
   it("a node child's stdio are live pipes: the parent talks to it while it runs (esbuild's service)", async () => {
     // The child answers each line as it comes, from fs.read(0) (as Go does), with raw bytes on fd 1
     await fs.writeFile('/home/user/m/echo-child.js', `const fs = require('fs');

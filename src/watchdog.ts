@@ -101,7 +101,11 @@ const memSeries: [number, number][] = [];
 const active = new Map<number, ActiveCommand>();
 let activeSeq = 0;
 const recent: string[] = [];
+// Lines that finished lately: a stall is noticed on the next heartbeat, after
+// the command that froze the page may already have returned
+const ended: { line: string; started: number; ended: number }[] = [];
 let workerAlive = false;
+let watchWorker: Worker | null = null;
 let previousWedge: WedgeRecord | null | undefined;
 
 const clip = (s: string) => (s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…' : s);
@@ -120,7 +124,17 @@ export function activeCommands(now = Date.now()): { line: string; ms: number; de
     .map((c) => ({ line: c.line, ms: now - c.started, depth: c.depth }));
 }
 
-const activeLines = () => activeCommands().slice(0, 4).map((c) => `${Math.round(c.ms / 1000)}s ${c.line.slice(0, 120)}`);
+/** What ran during the last `windowMs`: in flight now, then lines that ended within it (innermost first) */
+const activeLines = (windowMs = 0) => {
+  const now = Date.now();
+  const lines = activeCommands(now).slice(0, 4).map((c) => `${Math.round(c.ms / 1000)}s ${c.line.slice(0, 120)}`);
+  for (let i = ended.length - 1; i >= 0 && lines.length < 6; i--) {
+    const e = ended[i];
+    if (e.ended < now - windowMs) break;
+    lines.push(`ended after ${Math.round((e.ended - e.started) / 1000)}s ${e.line.slice(0, 120)}`);
+  }
+  return lines;
+};
 
 /**
  * Called by Shell.execute around every command line. `depth` 0 is a line
@@ -134,6 +148,9 @@ export function commandStarted(line: string, depth: number): number {
     recordEvent({ t: Date.now(), kind: 'cmd', text: line });
     recent.push(clip(line).slice(0, 160));
     if (recent.length > 10) recent.shift();
+    // A command that freezes the page in its first task never reaches a
+    // heartbeat: give the worker the snapshot that names it now
+    try { watchWorker?.postMessage({ snap: snapshot() }); } catch { /* worker gone */ }
   }
   return id;
 }
@@ -142,6 +159,8 @@ export function commandEnded(id: number, status?: number): void {
   const c = active.get(id);
   if (!c) return;
   active.delete(id);
+  ended.push({ line: c.line, started: c.started, ended: Date.now() });
+  if (ended.length > 32) ended.shift();
   if (c.depth === 0) {
     const ms = Date.now() - c.started;
     // Short successful top-level commands only add noise next to their start
@@ -177,7 +196,7 @@ export function noteLag(lag: number, now = Date.now()): void {
   lagRing.push([now, lag]);
   prune(lagRing, now);
   if (lag >= LAG_RECORD_MS) {
-    recordEvent({ t: now, kind: lag >= STALL_MS ? 'stall' : 'lag', ms: Math.round(lag), active: activeLines() });
+    recordEvent({ t: now, kind: lag >= STALL_MS ? 'stall' : 'lag', ms: Math.round(lag), active: activeLines(lag + TICK_MS) });
   }
 }
 
@@ -187,7 +206,7 @@ export function noteLongTask(ms: number, now = Date.now(), text?: string, kind: 
     taskRing.push([now, ms]);
     prune(taskRing, now);
   }
-  if (ms >= LONGTASK_RECORD_MS) recordEvent({ t: now, kind, ms: Math.round(ms), text, active: activeLines() });
+  if (ms >= LONGTASK_RECORD_MS) recordEvent({ t: now, kind, ms: Math.round(ms), text, active: activeLines(Math.max(0, Date.now() - now)) });
 }
 
 function readSaved(): { pageStart: number; events: WatchdogEvent[] } | null {
@@ -268,7 +287,7 @@ export function formatDiagnostics(d: Diagnostics): string {
 
 export function clearWatchdog(): void {
   events.length = 0; lagRing.length = 0; taskRing.length = 0; memSeries.length = 0;
-  taskCount = taskMs = taskMax = 0; lastLag = 0; dropped = 0; recent.length = 0;
+  taskCount = taskMs = taskMax = 0; lastLag = 0; dropped = 0; recent.length = 0; ended.length = 0;
   dirty = true;
 }
 
@@ -405,7 +424,7 @@ function install(): void {
 
   try {
     const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
-    worker = new Worker(url);
+    worker = watchWorker = new Worker(url);
     URL.revokeObjectURL(url);
     workerAlive = true;
     worker.onmessage = (e) => {

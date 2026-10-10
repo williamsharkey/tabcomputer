@@ -29,6 +29,14 @@ describe('freeze watchdog', () => {
     expect(activeCommands()).toEqual([]);
   });
 
+  it('a stall names a command that froze the page and returned before the heartbeat', () => {
+    const id = commandStarted("js-eval 'busy 4s'", 0);
+    commandEnded(id, 0);
+    noteLag(STALL_MS + 2000);
+    const stall = diagnostics({ kind: 'stall' }).events[0];
+    expect(stall.active!.join('\n')).toContain("js-eval 'busy 4s'");
+  });
+
   it('counts long tasks and records only the long ones', () => {
     noteLongTask(60);
     noteLongTask(900, Date.now(), 'cli.js');

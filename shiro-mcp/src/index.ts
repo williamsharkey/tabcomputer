@@ -16,6 +16,13 @@ import { createInterface } from "readline";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
+import { createSocket } from "dgram";
+import { lookup } from "dns/promises";
+import { randomFillSync, webcrypto } from "crypto";
+import { RelayChannel, type RelayInfo } from "./relay.js";
+
+// WebCrypto for the relay on Node 18 (global from Node 19)
+if (!(globalThis as any).crypto) (globalThis as any).crypto = webcrypto;
 
 // Handle --install flag before loading WebRTC (which is slow)
 if (process.argv.includes("--install") || process.argv.includes("install")) {
@@ -88,6 +95,33 @@ import { PeerConnection } from "node-datachannel";
 
 const SIGNALING_URL = process.env.TABCOMPUTER_SIGNALING_URL || "https://shiro.computer";
 
+// auto: WebRTC when UDP reaches a STUN server, else the tab's HTTPS relay (and
+// the relay after a WebRTC connection fails). webrtc / relay: only that one.
+const TRANSPORT = (process.env.TABCOMPUTER_TRANSPORT || "auto").toLowerCase();
+
+// Node's fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 (Node 22.21+, 24+)
+if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
+  console.error("[shiro-mcp] HTTPS_PROXY is set but Node's fetch won't use it; run with NODE_USE_ENV_PROXY=1");
+}
+
+/** Does UDP reach a STUN server? (One binding request; no answer in time = no.) */
+async function udpWorks(timeoutMs = 2500): Promise<boolean> {
+  let address: string;
+  try { ({ address } = await lookup("stun.l.google.com", { family: 4 })); } catch { return false; }
+  return new Promise((resolve) => {
+    const sock = createSocket("udp4");
+    const done = (ok: boolean) => { clearTimeout(timer); try { sock.close(); } catch {} resolve(ok); };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    sock.on("message", () => done(true));
+    sock.on("error", () => done(false));
+    const req = Buffer.alloc(20);
+    req.writeUInt16BE(0x0001, 0);      // Binding Request
+    req.writeUInt32BE(0x2112a442, 4);  // magic cookie
+    randomFillSync(req, 8, 12);        // transaction id
+    sock.send(req, 19302, address, (err) => { if (err) done(false); });
+  });
+}
+
 // MCP Protocol types
 interface MCPRequest {
   jsonrpc: "2.0";
@@ -108,6 +142,7 @@ interface RemoteConnection {
   code: string;
   pc: any;
   dc: any;
+  transport: "webrtc" | "relay";
   status: "connecting" | "connected" | "disconnected";
   pendingRequests: Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>;
   requestCounter: number;
@@ -350,13 +385,59 @@ async function attemptReconnect(code: string) {
   setTimeout(reconnect, 2000);
 }
 
+/** A message from the tab, over either transport */
+function handleIncoming(connection: RemoteConnection, msg: string | Buffer) {
+  try {
+    const data = typeof msg === "string" ? msg : msg.toString();
+    const response = JSON.parse(data);
+
+    // Handle console error notifications pushed from Shiro (no requestId)
+    if (response.type === "console_error") {
+      consoleErrors.push({
+        timestamp: Date.now(),
+        message: response.message,
+        source: response.source,
+        line: response.line
+      });
+      return;
+    }
+
+    // Handle user messages from the Shiro panel input
+    if (response.type === "user_message") {
+      userMessages.push({
+        timestamp: Date.now(),
+        message: response.message
+      });
+      return;
+    }
+
+    // Ignore hello_ack (no requestId expected)
+    if (response.type === "hello_ack") return;
+
+    const { requestId, ...result } = response;
+
+    if (requestId && connection.pendingRequests.has(requestId)) {
+      const { resolve, reject } = connection.pendingRequests.get(requestId)!;
+      connection.pendingRequests.delete(requestId);
+
+      if (result.type === "error") {
+        reject(new Error(result.error));
+      } else {
+        resolve(result);
+      }
+    }
+  } catch (e) {
+    console.error("[shiro-mcp] Parse error:", e);
+  }
+}
+
 async function connectShiro(code: string): Promise<string> {
   // Clean up existing connection if any
   if (activeConnection) {
     console.error(`[shiro-mcp] Disconnecting previous session (${activeConnection.code})`);
     try {
       if (activeConnection.dc) activeConnection.dc.close();
-      activeConnection.pc.close();
+      activeConnection.pc?.close();
     } catch {
       // Ignore close errors
     }
@@ -372,8 +453,94 @@ async function connectShiro(code: string): Promise<string> {
   if (!offerRes.ok) {
     throw new Error(`Code not found: ${code}`);
   }
+  const offerData = await offerRes.json();
 
-  const { offer, candidates } = await offerRes.json();
+  let mode = TRANSPORT;
+  if (mode === "auto") {
+    mode = offerData.relay && !(await udpWorks()) ? "relay" : "webrtc";
+    if (mode === "relay") console.error("[shiro-mcp] No UDP here (STUN unreachable); using the HTTPS relay");
+  }
+  if (mode === "relay") {
+    if (!offerData.relay) throw new Error("This tab doesn't offer the HTTPS relay (update tabcomputer, or `remote start --relay`)");
+    return connectRelay(code, offerData.relay);
+  }
+  try {
+    return await connectWebRTC(code, offerData);
+  } catch (e) {
+    if (TRANSPORT !== "auto" || !offerData.relay) throw e;
+    // The tab registers the code again once its side of WebRTC fails; answer
+    // that new offer with the relay
+    console.error(`[shiro-mcp] WebRTC failed (${(e as Error).message}); trying the HTTPS relay`);
+    try { (activeConnection as RemoteConnection | null)?.pc?.close(); } catch {}
+    activeConnection = null;
+    const next = await waitForNewOffer(code, offerData.relay.id, 60000);
+    if (!next?.relay) throw e;
+    return connectRelay(code, next.relay);
+  }
+}
+
+/** Wait for the tab to register `code` again with a different relay mailbox */
+async function waitForNewOffer(code: string, oldId: string, timeoutMs: number): Promise<any | null> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    try {
+      const res = await fetch(`${SIGNALING_URL}/offer/${code}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.relay && data.relay.id !== oldId) return data;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}
+
+/** Talk to the tab through the signaling server's HTTPS mailbox (src/remote-relay.ts) */
+async function connectRelay(code: string, info: RelayInfo): Promise<string> {
+  const answerRes = await fetch(`${SIGNALING_URL}/answer/${code}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answer: { type: "relay", v: 1 }, candidates: [] })
+  });
+  if (!answerRes.ok) throw new Error("Failed to send answer");
+
+  const relay = new RelayChannel({ base: SIGNALING_URL, info, code, as: "peer", log: (m) => console.error(`[shiro-mcp] ${m}`) });
+  const connection: RemoteConnection = {
+    code,
+    pc: null,
+    // node-datachannel's shape; an intentional close doesn't start a reconnect
+    dc: { sendMessage: (m: string) => relay.send(m), close: () => { relay.onclose = null; relay.close(); } },
+    transport: "relay",
+    status: "connecting",
+    pendingRequests: new Map(),
+    requestCounter: 0
+  };
+  activeConnection = connection;
+  relay.onmessage = (ev) => handleIncoming(connection, ev.data);
+  relay.onclose = () => {
+    console.error("[shiro-mcp] Disconnected (relay)");
+    connection.status = "disconnected";
+    for (const p of connection.pendingRequests.values()) p.reject(new Error("Disconnected"));
+    connection.pendingRequests.clear();
+    attemptReconnect(connection.code);
+  };
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Relay timed out")), 30000);
+    relay.onopen = () => { clearTimeout(timer); resolve(); };
+  });
+  connection.status = "connected";
+  relay.send(JSON.stringify({ type: "hello", name: "shiro-mcp" }));
+  // The tab starts polling within its answer poll interval (5 s); a ping
+  // confirms it is there before tools are used
+  await sendCommand({ type: "ping" }).catch(() => {
+    throw new Error("The tab didn't answer over the relay (is the page frozen, or an older tabcomputer?)");
+  });
+  console.error("[shiro-mcp] Connected over the HTTPS relay");
+  return `Connected to Shiro (${code}, HTTPS relay)`;
+}
+
+async function connectWebRTC(code: string, offerData: any): Promise<string> {
+  const { offer, candidates } = offerData;
 
   // node-datachannel PeerConnection
   const pc = new PeerConnection("shiro-mcp", {
@@ -384,6 +551,7 @@ async function connectShiro(code: string): Promise<string> {
     code,
     pc,
     dc: null,
+    transport: "webrtc",
     status: "connecting",
     pendingRequests: new Map(),
     requestCounter: 0
@@ -415,50 +583,7 @@ async function connectShiro(code: string): Promise<string> {
       attemptReconnect(connection.code);
     });
 
-    dc.onMessage((msg: string | Buffer) => {
-      try {
-        const data = typeof msg === "string" ? msg : msg.toString();
-        const response = JSON.parse(data);
-
-        // Handle console error notifications pushed from Shiro (no requestId)
-        if (response.type === "console_error") {
-          consoleErrors.push({
-            timestamp: Date.now(),
-            message: response.message,
-            source: response.source,
-            line: response.line
-          });
-          return;
-        }
-
-        // Handle user messages from the Shiro panel input
-        if (response.type === "user_message") {
-          userMessages.push({
-            timestamp: Date.now(),
-            message: response.message
-          });
-          return;
-        }
-
-        // Ignore hello_ack (no requestId expected)
-        if (response.type === "hello_ack") return;
-
-        const { requestId, ...result } = response;
-
-        if (requestId && connection.pendingRequests.has(requestId)) {
-          const { resolve, reject } = connection.pendingRequests.get(requestId)!;
-          connection.pendingRequests.delete(requestId);
-
-          if (result.type === "error") {
-            reject(new Error(result.error));
-          } else {
-            resolve(result);
-          }
-        }
-      } catch (e) {
-        console.error("[shiro-mcp] Parse error:", e);
-      }
-    });
+    dc.onMessage((msg: string | Buffer) => handleIncoming(connection, msg));
   });
 
   // Set remote description (the offer from Shiro)
@@ -499,7 +624,7 @@ async function connectShiro(code: string): Promise<string> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Connection timed out")), 30000);
+    const timeout = setTimeout(() => { clearInterval(check); reject(new Error("Connection timed out")); }, 30000);
     const check = setInterval(() => {
       if (connection.status === "connected") {
         clearTimeout(timeout);
@@ -509,14 +634,14 @@ async function connectShiro(code: string): Promise<string> {
     }, 100);
   });
 
-  return `Connected to Shiro (${code})`;
+  return `Connected to Shiro (${code}, WebRTC)`;
 }
 
 function disconnectShiro(): string {
   if (!activeConnection) return "Not connected";
   try {
     if (activeConnection.dc) activeConnection.dc.close();
-    activeConnection.pc.close();
+    activeConnection.pc?.close();
   } catch {
     // Ignore close errors
   }
@@ -574,7 +699,8 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       return {
         connected: activeConnection.status === "connected",
         code: activeConnection.code,
-        status: activeConnection.status
+        status: activeConnection.status,
+        transport: activeConnection.transport
       };
 
     case "exec": {

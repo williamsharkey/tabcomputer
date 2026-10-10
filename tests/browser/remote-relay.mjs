@@ -1,0 +1,117 @@
+// `remote start` over the HTTPS relay, and the freeze watchdog, in Chromium.
+// Needs a build, a running server and a built shiro-mcp:
+//   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
+//   (cd shiro-mcp && npm ci && npm run build)
+//   node tests/browser/remote-relay.mjs [http://localhost:5299/]
+// 1. `remote start` in the page offers a relay mailbox; shiro-mcp (forced to
+//    the relay, as in a container without UDP) connects, runs exec and diag.
+// 2. A 4 s freeze shows up in diag as a stall, with the command that froze.
+// 3. A page frozen for good and then closed leaves a wedge record that the next
+//    load reports (`watchdog --prev`, previousWedge).
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const require = createRequire(import.meta.url);
+let chromium;
+try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+
+const base = process.argv[2] || 'http://localhost:5299/';
+const origin = new URL(base).origin;
+const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const mcpPath = fileURLToPath(new URL('../../shiro-mcp/dist/index.js', import.meta.url));
+const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
+const context = await browser.newContext();
+let failures = 0;
+const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failures++; };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function boot() {
+  const page = await context.newPage();
+  page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+  await page.goto(base);
+  await page.waitForFunction(() => window.__tabcomputer?.shell, null, { timeout: 90000 });
+  return page;
+}
+const sh = (page, cmd) => page.evaluate(async (cmd) => {
+  let out = '';
+  const s = window.__checkShell ??= Object.assign(window.__tabcomputer.shell.fork(), { terminal: null });
+  const code = await s.execute(cmd, (x) => { out += x; }, (x) => { out += x; });
+  return { code, out: out.replace(/\r\n/g, '\n') };
+}, cmd);
+
+// shiro-mcp over stdio
+function startMcp() {
+  const mcp = spawn(process.execPath, [mcpPath], {
+    env: { ...process.env, TABCOMPUTER_SIGNALING_URL: origin, TABCOMPUTER_TRANSPORT: 'relay' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (process.env.SHOW_MCP) mcp.stderr.on('data', (d) => process.stdout.write(`[mcp] ${d}`));
+  let buf = '';
+  const waiters = new Map();
+  mcp.stdout.on('data', (d) => {
+    buf += d;
+    for (let i; (i = buf.indexOf('\n')) >= 0;) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1);
+      try { const r = JSON.parse(line); waiters.get(r.id)?.(r); } catch { /* not JSON-RPC */ }
+    }
+  });
+  let id = 0;
+  const call = (method, params) => new Promise((resolve) => {
+    const n = ++id; waiters.set(n, resolve);
+    mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: n, method, params }) + '\n');
+  });
+  const tool = async (name, args = {}) => {
+    const r = await call('tools/call', { name, arguments: args });
+    const text = r.result?.content?.[0]?.text ?? '';
+    if (r.error || r.result?.isError) throw new Error(r.error?.message || text);
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  return { mcp, call, tool };
+}
+
+// 1. Relay connection
+const page = await boot();
+await sh(page, 'remote start');
+const code = await page.evaluate(() => localStorage.getItem('tabcomputer-remote-code'));
+check(!!code, 'remote start registered a code');
+await wait(6000); // ICE gathering (up to 5 s) before the offer is posted
+const offer = await (await fetch(`${origin}/offer/${code}`)).json();
+check(offer.relay && /^[a-f0-9]{32}$/.test(offer.relay.id), 'the offer names a relay mailbox');
+
+const { mcp, call, tool } = startMcp();
+await call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'remote-relay-check', version: '0' } });
+const connected = await tool('connect', { code }).catch((e) => `ERR ${e.message}`);
+check(/HTTPS relay/.test(String(connected)), `shiro-mcp connected over the relay (${connected})`);
+const ex = await tool('exec', { command: 'echo relay-$((6*7))' }).catch((e) => ({ stdout: `ERR ${e.message}` }));
+check(ex.stdout?.replace(/\r\n/g, '\n') === 'relay-42\n', `exec runs in the tab (${JSON.stringify(ex.stdout)})`);
+check(/HTTPS relay/.test((await sh(page, 'remote status')).out), 'remote status says HTTPS relay');
+
+// 2. A freeze shows up as a stall with the command that caused it
+await sh(page, `js-eval 'const t = Date.now(); while (Date.now() - t < 4000) {}'`);
+await wait(1200);
+const diag = await tool('diag', { kind: 'stall,note' }).catch((e) => ({ error: e.message }));
+const stall = diag.events?.find((e) => e.kind === 'stall');
+check(stall && stall.ms >= 3000, `diag shows the stall (${stall?.ms} ms)`);
+check(stall?.active?.some((a) => a.includes('js-eval')), `…with the command in flight (${stall?.active?.[0]})`);
+check(diag.events?.some((e) => e.kind === 'note' && /worker saw the page frozen/.test(e.text)), 'the worker saw the freeze too');
+check(typeof diag.lag?.maxMs1m === 'number' && Array.isArray(diag.procs), 'diag has lag and the process table');
+mcp.kill();
+
+// 3. Frozen for good, then closed: the next load reports it
+page.evaluate(() => window.__tabcomputer.shell.execute(`js-eval 'for (;;) {}'`, () => {})).catch(() => {});
+await wait(6000); // the worker writes the record after 3 s without a heartbeat
+const cdp = await browser.newBrowserCDPSession();
+const { targetInfos } = await cdp.send('Target.getTargets');
+for (const t of targetInfos) if (t.type === 'page') await cdp.send('Target.closeTarget', { targetId: t.targetId }).catch(() => {});
+await cdp.detach().catch(() => {});
+const next = await boot();
+await wait(1000);
+const prev = JSON.parse((await sh(next, 'watchdog --json -k wedge')).out);
+check(prev.previousWedge && prev.previousWedge.seenAt - prev.previousWedge.since >= 3000, `the next load found the wedge record (${prev.previousWedge ? Math.round((prev.previousWedge.seenAt - prev.previousWedge.since) / 1000) + 's' : 'none'})`);
+check(prev.previousWedge?.snapshot?.active?.some((a) => a.line.includes('for (;;)')), `…naming what was running (${prev.previousWedge?.snapshot?.active?.[0]?.line})`);
+check((await sh(next, 'watchdog --prev -n 400')).out.includes('js-eval'), 'watchdog --prev shows the previous load\'s commands');
+await sh(next, 'remote stop');
+
+await browser.close();
+console.log(failures ? `${failures} FAILED` : 'all ok');
+process.exit(failures ? 1 : 0);

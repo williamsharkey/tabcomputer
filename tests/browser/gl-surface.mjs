@@ -34,17 +34,24 @@ try {
   const info = await page.evaluate(() => {
     const { server, rootless } = window.__shiroX;
     const top = rootless.windows().find((w) => w.mapped);
-    const s = server.glSurface(top.id);
+    // the window that shows: a toplevel is clipped by its children (Xt puts a widget over all of it)
+    let leaf = server.winOrNull(top.id);
+    for (;;) {
+      const kids = leaf.children.filter((k) => k.mapped && k.cls !== 2).sort((a, b) => b.width * b.height - a.width * a.height);
+      if (!kids.length) break;
+      leaf = kids[0];
+    }
+    const s = server.glSurface(leaf.id);
     window.__glTest = s;
     const ctx = s.canvas.getContext('2d');
     ctx.fillStyle = '#ff00ff';
     ctx.fillRect(0, 0, s.width, s.height);
     const r = s.canvas.getBoundingClientRect();
     const body = s.canvas.parentElement.getBoundingClientRect();
-    return { id: top.id, w: s.width, h: s.height, visible: s.visible, rect: { x: r.x, y: r.y, w: r.width, h: r.height }, body: { x: body.x, y: body.y, w: body.width, h: body.height }, dpr: devicePixelRatio };
+    return { id: leaf.id, ox: s.x / devicePixelRatio, oy: s.y / devicePixelRatio, w: s.width, h: s.height, visible: s.visible, rect: { x: r.x, y: r.y, w: r.width, h: r.height }, body: { x: body.x, y: body.y, w: body.width, h: body.height }, dpr: devicePixelRatio };
   });
   check(info.visible, `surface for 0x${info.id.toString(16)} is visible (${info.w}×${info.h})`);
-  check(Math.abs(info.rect.x - info.body.x) < 1 && Math.abs(info.rect.y - info.body.y) < 1, `canvas at the content origin (${info.rect.x},${info.rect.y} vs body ${info.body.x},${info.body.y})`);
+  check(Math.abs(info.rect.x - info.body.x - info.ox) < 1 && Math.abs(info.rect.y - info.body.y - info.oy) < 1, `canvas at the window's place (${info.rect.x},${info.rect.y}; body ${info.body.x},${info.body.y} + ${info.ox},${info.oy})`);
   check(Math.abs(info.rect.w - info.w / info.dpr) < 1 && Math.abs(info.rect.h - info.h / info.dpr) < 1, `canvas is the window's size (${info.rect.w}×${info.rect.h} CSS px)`);
 
   const pixel = async (x, y) => {

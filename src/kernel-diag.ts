@@ -25,6 +25,11 @@ export interface KernelDiagQuery {
 const hexArgs = (args: ArrayLike<number> | undefined) =>
   Array.from(args ?? []).slice(0, 4).map((a) => '0x' + (Number(a) >>> 0).toString(16));
 
+/** A newer kernel's accessor: its value, undefined without it (or if it throws) */
+function optional<T>(get: () => T): T | undefined {
+  try { return get() ?? undefined; } catch { return undefined; }
+}
+
 function fdInfo(file: any): Record<string, unknown> {
   const out: Record<string, unknown> = { kind: file?.kind };
   try {
@@ -63,6 +68,9 @@ export function kernelDiagnostics(q: KernelDiagQuery = {}): Record<string, unkno
       engineSleeps: p.engineSleeps, engineSleepMs: p.engineSleeps ? now - p.engineSleepSince : 0,
       pendingSignals: [...(p.pendingSignals ?? [])], deferredSignals: [...(p.deferredSignals ?? [])],
       tids: [...(p.tids ?? [])],
+      // Per-thread state and the engine lock, once the kernel has them (perf-kernel's #19 work)
+      threads: optional(() => k.threadStates?.(p.pid)),
+      engineLock: optional(() => k.engineLock?.(p.pid)),
       ageMs: now - p.startTime,
       fds,
     });

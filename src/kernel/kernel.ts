@@ -13,7 +13,7 @@ import type { Shell } from '../shell';
 import type { Command, CommandContext } from '../commands/index';
 import { KernelStdio, execLazyStdin } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
-import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText } from './procfs';
+import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText, type ThreadState } from './procfs';
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
@@ -28,6 +28,7 @@ import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
 import type { PtyFile } from './pty';
 import { LockTable, F_RDLCK, F_WRLCK, F_UNLCK } from './locks';
 import { Process, abortReason } from './process';
+import { PidFdFile } from './pidfd';
 import { SysvShm } from './sysvshm';
 import { SysvSem } from './sysvsem';
 import { SysvMsg } from './sysvmsg';
@@ -985,7 +986,9 @@ export class Kernel {
   processOfTid(tid: number): Process | undefined {
     const p = this.procs.get(tid);
     if (p) return p;
-    for (const q of this.procs.values()) if (q.tids.has(tid) || q.threads.has(tid)) return q;
+    for (const q of this.procs.values()) {
+      if (q.tids.has(tid) || q.threads.has(tid) || (q.data.engineThreads as Set<number> | undefined)?.has(tid)) return q;
+    }
     return undefined;
   }
 
@@ -994,13 +997,13 @@ export class Kernel {
    * the same): state letter, the syscall in progress with its args and how
    * long it has been in it, and its call count. Empty if there's no such process.
    */
-  threadStates(pid: number): { tid: number; state: string; nr: number; args: number[]; sinceMs: number; syscalls: number }[] {
+  threadStates(pid: number): ThreadState[] {
     const p = this.procs.get(pid);
     return p ? this.procfs.threadStates(p) : [];
   }
 
   /** The engine's lock (Blink's GIL) for `pid`: holder tid (0: free), waiters, acquires; null if the engine doesn't report one */
-  engineLock(pid: number): { holder: number; waiters: number; acquires: number } | null {
+  engineLock(pid: number): { holder: number; waiters: number; acquires: number; heldMs: number } | null {
     const p = this.procs.get(pid);
     return p ? engineLock(p) : null;
   }
@@ -2345,6 +2348,23 @@ export class Kernel {
           const flags = nr === A.SYS_eventfd2 ? args[1] : 0;
           if (flags & ~(A.O_NONBLOCK | A.O_CLOEXEC | A.EFD_SEMAPHORE)) return -A.EINVAL;
           return fds.alloc(new EventFile(args[0], A.O_RDWR | (flags & A.O_NONBLOCK), !!(flags & A.EFD_SEMAPHORE)), 0, !!(flags & A.O_CLOEXEC));
+        }
+        case A.SYS_pidfd_open: {
+          // (pid, flags): always close-on-exec
+          const pid = args[0] | 0;
+          if (args[1] & ~(A.O_NONBLOCK | A.PIDFD_THREAD) || pid <= 0) return -A.EINVAL;
+          const target = args[1] & A.PIDFD_THREAD ? this.processOfTid(pid) : this.procs.get(pid);
+          if (!target) return -A.ESRCH;
+          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK)), 0, true);
+        }
+        case A.SYS_pidfd_send_signal: {
+          // (pidfd, sig, siginfo, flags)
+          if (args[3]) return -A.EINVAL;
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          if (!(f instanceof PidFdFile)) return -A.EBADF;
+          if (f.exited) return -A.ESRCH;
+          return this.kill(f.target.pid, args[1], proc);
         }
         case A.SYS_signalfd:
         case A.SYS_signalfd4: {

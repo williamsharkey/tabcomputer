@@ -190,6 +190,13 @@ export interface KernelRunResult {
   stderr: string;
 }
 
+/** 1 or 2 when `path` names the caller's own stdout or stderr (/dev/stderr, /dev/fd/2, /proc/self/fd/2), else 0 */
+function stdStream(path: string): 0 | 1 | 2 {
+  const m = /^\/(?:dev\/(?:std(out|err)|fd\/([12]))|proc\/self\/fd\/([12]))$/.exec(path);
+  if (!m) return 0;
+  return m[1] === 'out' || m[2] === '1' || m[3] === '1' ? 1 : 2;
+}
+
 async function kernelFor(shell: Shell): Promise<Kernel> {
   const { kernelForContext } = await import('./wasi/run-command');
   const { attachKernelTty } = await import('./kernel/pty');
@@ -222,8 +229,14 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     const f = await kernel.open(probe, to.path, A.O_WRONLY | A.O_CREAT | (to.append ? A.O_APPEND : A.O_TRUNC), 0o666);
     return typeof f === 'number' ? `${to.path}: ${f === -A.EISDIR ? 'Is a directory' : f === -A.ENOENT ? 'No such file or directory' : 'Permission denied'}` : f;
   };
-  const toFile = opts.stdoutTo ? await openOut(opts.stdoutTo) : undefined;
-  const errFile = opts.stderrTo && opts.stderrTo !== 'stdout' ? await openOut(opts.stderrTo) : undefined;
+  // `>&2`, `> /dev/stderr`, `2> /dev/stdout`: the job's own stdout or stderr, not a path
+  // to open (the probe process opening it has no fds 1 and 2: ENOENT)
+  const outStd = opts.stdoutTo ? stdStream(opts.stdoutTo.path) : 0;
+  const errStd = opts.stderrTo && opts.stderrTo !== 'stdout' ? stdStream(opts.stderrTo.path) : 0;
+  const toFile = opts.stdoutTo && !outStd ? await openOut(opts.stdoutTo) : undefined;
+  // (`2> f > /dev/stderr`: the caller passes the same target for both, one open file)
+  const errFile = opts.stderrTo && opts.stderrTo !== 'stdout' && !errStd
+    ? (opts.stderrTo === opts.stdoutTo ? toFile : await openOut(opts.stderrTo)) : undefined;
   for (const f of [toFile, errFile]) {
     if (typeof f === 'string') {
       opts.writeStderr(`sh: ${f}\n`);
@@ -234,13 +247,17 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     }
   }
   const stdin0: OpenFile = opts.stdin !== undefined ? new BufferFile(opts.stdin, A.O_RDONLY) : (slave ?? hostFd(0) ?? new BufferFile('', A.O_RDONLY));
-  const lastOut: OpenFile = (toFile as OpenFile | undefined) ?? (opts.captureStdout
+  const defaultOut = (): OpenFile => opts.captureStdout
     ? new SinkFile((t) => { stdout += t; })
-    : slave ?? hostFd(1) ?? new SinkFile((t) => opts.writeStdout(t)));
-  const errOut: OpenFile = (opts.stderrTo === 'stdout' ? lastOut : errFile as OpenFile | undefined)
-    ?? (opts.stderrSink ? new SinkFile(opts.stderrSink) : undefined) ?? (opts.captureStderr
+    : slave ?? hostFd(1) ?? new SinkFile((t) => opts.writeStdout(t));
+  const defaultErr = (): OpenFile => (opts.stderrSink ? new SinkFile(opts.stderrSink) : undefined) ?? (opts.captureStderr
     ? new SinkFile((t) => { stderr += t; })
     : slave ?? hostFd(2) ?? new SinkFile((t) => opts.writeStderr(t)));
+  const stdErrFile = errFile as OpenFile | undefined;
+  // (/dev/stdout and /dev/stderr here are the job's own streams: the caller has turned
+  // `> f 2> /dev/stdout` into 2>&1)
+  const lastOut: OpenFile = (toFile as OpenFile | undefined) ?? (outStd === 2 ? defaultErr() : defaultOut());
+  const errOut: OpenFile = opts.stderrTo === 'stdout' ? lastOut : stdErrFile ?? (errStd === 1 ? defaultOut() : defaultErr());
 
   // The shell's internal variables (__PIPE_STDIN: piped input being read) aren't the program's
   const env = Object.fromEntries(Object.entries(opts.env).filter(([k]) => !k.startsWith('__')));

@@ -5,6 +5,7 @@
  */
 import type { Runner } from '../kernel/kernel';
 import { executeElfFromBytes, X86Killed } from './runtime';
+import { watchdogCheckpoint } from '../watchdog';
 
 const enc = new TextEncoder();
 
@@ -29,7 +30,7 @@ export function x86Runner(elf: Uint8Array, argv0: string): Runner {
         writeStdout: writer(1),
         writeStderr: writer(2),
         signal: abort.signal,
-        checkpoint: () => proc.waitWhileStopped(),
+        checkpoint: () => { watchdogCheckpoint(); return proc.waitWhileStopped(); },
         readStdin: async (n) => {
           await pending;
           const f = proc.fds.get(0);

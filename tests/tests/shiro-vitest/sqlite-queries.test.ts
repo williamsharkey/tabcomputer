@@ -50,9 +50,9 @@ describe('SQLite Queries', () => {
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // sql.js CDN load fails in test env — error message should mention sql.js
+      // :memory:, and no query: the interactive shell, which needs a terminal
       expect(code).toBe(1);
-      expect(ctx.stderr).toContain('sql.js');
+      expect(ctx.stderr).toBe('sqlite3: interactive mode requires a terminal\n');
     });
 
     it('should accept :memory: as database path', async () => {
@@ -62,20 +62,20 @@ describe('SQLite Queries', () => {
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // WASM load fails in test — verify it attempted to load
-      expect(code).toBe(1);
-      expect(ctx.stderr).toContain('sql.js');
+      expect([code, ctx.stderr]).toEqual([0, '']);
+      expect(ctx.stdout).toMatch(/(^|\n)1\n$/);
     });
 
     it('should accept a file path as database path', async () => {
       const { sqlite3Cmd } = await import('@shiro/commands/sqlite');
       const ctx = {
-        args: ['/tmp/test.db', 'SELECT 1;'],
+        args: ['/tmp/created.db', 'CREATE TABLE t(x);'],
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      expect(code).toBe(1);
-      expect(ctx.stderr).toContain('sql.js');
+      expect([code, ctx.stderr]).toEqual([0, '']);
+      // the database file is written
+      expect((await fs.readFile('/tmp/created.db') as Uint8Array).length).toBeGreaterThan(0);
     });
 
     it('should join multiple query args into one query', async () => {
@@ -86,8 +86,8 @@ describe('SQLite Queries', () => {
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // Still fails at WASM load, but verifies arg joining path is reached
-      expect(code).toBe(1);
+      expect(code).toBe(0);
+      expect(ctx.stdout).toMatch(/(^|\n)2\n$/);
     });
   });
 
@@ -228,8 +228,9 @@ describe('SQLite Queries', () => {
         fs, cwd: '/tmp', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // sql.js load will fail in test, but path resolution should be attempted
-      expect(code).toBe(1);
+      expect(code).toBe(0);
+      // resolved against the cwd
+      expect(await fs.exists('/tmp/mydb.sqlite')).toBe(true);
     });
   });
 
@@ -313,29 +314,27 @@ describe('SQLite Queries', () => {
       }
     });
 
-    it('should handle WASM load failure gracefully', async () => {
+    it('reports an SQL error with exit 1 instead of throwing', async () => {
       const { sqlite3Cmd } = await import('@shiro/commands/sqlite');
       const ctx = {
-        args: [':memory:', 'SELECT 1;'],
+        args: [':memory:', 'SELECTT 1;'],
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // In test env, CDN is unavailable — should not throw, should return exit code 1
       expect(code).toBe(1);
-      expect(ctx.stderr).toContain('failed to load sql.js');
+      expect(ctx.stderr).toMatch(/^Error: .*syntax error/);
     });
 
     it('should require terminal for interactive mode', async () => {
       const { sqlite3Cmd } = await import('@shiro/commands/sqlite');
-      // Scenario: sql.js loads but no terminal and no query (interactive mode)
-      // In test env, sql.js won't load, so we just verify the error path
+      // no terminal and no query: the interactive shell can't start
       const ctx = {
         args: [':memory:'],
         fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
       };
       const code = await sqlite3Cmd.exec(ctx);
-      // Will fail at WASM load before reaching terminal check
       expect(code).toBe(1);
+      expect(ctx.stderr).toBe('sqlite3: interactive mode requires a terminal\n');
     });
   });
 
@@ -379,17 +378,12 @@ describe('SQLite Queries', () => {
   // ─── Source code validation ────────────────────────────────────
 
   describe('source code structure', () => {
-    it('should use jsdelivr CDN for sql.js', async () => {
+    it('loads the bundled sql.js and its .wasm from our own origin, not a CDN', async () => {
       const sqliteSource = await import('@shiro/commands/sqlite?raw');
       const src = typeof sqliteSource === 'string' ? sqliteSource : sqliteSource.default;
-      expect(src).toContain('cdn.jsdelivr.net/npm/sql.js');
-    });
-
-    it('should use UMD loading (not ESM import)', async () => {
-      const sqliteSource = await import('@shiro/commands/sqlite?raw');
-      const src = typeof sqliteSource === 'string' ? sqliteSource : sqliteSource.default;
-      expect(src).toContain("new Function('module', 'exports', code)");
-      expect(src).not.toContain('await import(');
+      expect(src).toContain("import('sql.js')");
+      expect(src).toContain("import('sql.js/dist/sql-wasm.wasm?url')");
+      expect(src).not.toMatch(/cdn\.jsdelivr\.net|unpkg\.com|cdnjs/);
     });
 
     it('should format results with pipe-separated columns', async () => {

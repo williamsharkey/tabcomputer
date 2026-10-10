@@ -106,6 +106,8 @@ export const zipCmd: Command = {
             await addPath(resolved + '/' + child, name + '/' + child);
           }
         }
+      } else if (stat.isFIFO?.()) {
+        ctx.stderr += `zip warning: ignoring FIFO (Named Pipe) - use -FI to read: ${name}\n`; // (Info-ZIP's wording)
       } else {
         const data = await ctx.fs.readFile(resolved);
         const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);

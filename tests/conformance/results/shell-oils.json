@@ -666,7 +666,7 @@
    ]
   },
   "alias": {
-   "pass": 36,
+   "pass": 37,
    "total": 48,
    "failures": [
     {
@@ -708,10 +708,6 @@
     {
      "i": 36,
      "name": "alias for left paren"
-    },
-    {
-     "i": 39,
-     "name": "here doc inside alias"
     },
     {
      "i": 40,
@@ -1647,14 +1643,9 @@
    ]
   },
   "blog-other1": {
-   "pass": 3,
+   "pass": 4,
    "total": 4,
-   "failures": [
-    {
-     "i": 5,
-     "name": "` on its own line"
-    }
-   ]
+   "failures": []
   },
   "nix-idioms": {
    "pass": 4,

@@ -11,6 +11,7 @@ describe('LazyTextMap (node in the page)', () => {
   async function tree() {
     const fs = new FileSystem();
     await fs.init();
+    await fs.holdSmallContent(); // as node in the page does (execution.ts)
     await fs.mkdir('/tmp/lz/node_modules/pkg', { recursive: true });
     await fs.writeFile('/tmp/lz/node_modules/pkg/index.js', 'module.exports = 1;\n');
     await fs.writeFile('/tmp/lz/node_modules/pkg/big.js', 'x'.repeat(9 << 20)); // evictable size

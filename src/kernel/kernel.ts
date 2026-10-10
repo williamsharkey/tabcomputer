@@ -1207,7 +1207,7 @@ export class Kernel {
       }
       if (own.node.type === 'symlink') return flags & A.O_NOFOLLOW ? -A.ELOOP : undefined;
       if ((flags & A.O_CREAT) && (flags & A.O_EXCL)) return -A.EEXIST;
-      if (own.node.type !== 'file' || own.node.lazy || own.node.special) return undefined;
+      if (own.node.type !== 'file' || own.node.lazy || own.node.evicted || own.node.special) return undefined;
       if (flags & A.O_DIRECTORY) return -A.ENOTDIR;
       if (ownerDenies(proc, own.node.mode, flags)) return -A.EACCES;
       const file = new RegularFile(openInodeSync(fs, own.path, own.node), statusFlags);
@@ -1219,7 +1219,7 @@ export class Kernel {
     if (hit === null) return -A.ENOENT;
     if (hit.node.type === 'dir') return canWrite(flags) ? -A.EISDIR : new DirFile(fs, hit.path, statusFlags);
     if (flags & A.O_DIRECTORY) return -A.ENOTDIR;
-    if (hit.node.type !== 'file' || hit.node.lazy || hit.node.special) return undefined; // lazy: open() fetches it; FIFOs block
+    if (hit.node.type !== 'file' || hit.node.lazy || hit.node.evicted || hit.node.special) return undefined; // lazy, evicted: open() reads it; FIFOs block
     return new RegularFile(openInodeSync(fs, hit.path, hit.node), statusFlags);
   }
 

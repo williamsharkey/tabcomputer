@@ -26,6 +26,19 @@ async function sh(cmd: string) {
 }
 
 describe("rg with Claude Code's flags", () => {
+  it("--version and -V answer as ripgrep's do: Claude Code's first-use probe needs 'ripgrep ' (#57)", async () => {
+    for (const cmd of ['rg --version', 'rg -V', 'rg --hidden --version']) {
+      const r = await sh(cmd);
+      // (the probe: code === 0 && stdout.startsWith("ripgrep "))
+      expect(r.code, cmd).toBe(0);
+      expect(r.out.startsWith('ripgrep '), `${cmd}: ${r.out}`).toBe(true);
+    }
+    // a -V that is a pattern still searches
+    await fs.writeFile('/tmp/rg44/v.txt', 'a -V b\n');
+    expect((await sh('rg -e -V v.txt')).out).toBe('v.txt:1:a -V b\n');
+    expect((await sh('rg -- -V v.txt')).out).toBe('v.txt:1:a -V b\n'); // (after --, the first word is the pattern)
+  });
+
   it('--null: a switch, a NUL after each path (-l, -c -H, --files)', async () => {
     const l = await sh("rg --hidden --glob '!.git' --max-columns 500 -l --null doctor A.md");
     expect(l.out).toBe('A.md\0');

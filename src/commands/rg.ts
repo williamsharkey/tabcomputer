@@ -7,6 +7,9 @@ import { decodeBytes } from '../utils/byte-text';
  * Claude Code's Grep tool depends on this. Searches recursively by default.
  * Supports the most common ripgrep flags that Claude Code actually uses.
  */
+/** The ripgrep release whose flags and output this follows (what `rg --version` reports) */
+export const RG_VERSION = '14.1.1';
+
 export const rgCmd: Command = {
   name: 'rg',
   description: 'Recursively search for a pattern in files (ripgrep)',
@@ -64,10 +67,22 @@ export const rgCmd: Command = {
       kotlin: ['.kt', '.kts'],
     };
 
+    // As ripgrep's: Claude Code's first-use probe takes rg as working only if
+    // `rg --version` exits 0 and its output starts with "ripgrep " (#57). The
+    // generic `rg (tabcomputer) 0.1.0` (help-flags.ts) turned its Grep and Glob off.
+    // (not a pattern or value that reads -V: `rg -e -V`, `rg -- -V file`)
+    const flagArgs = ctx.args.indexOf('--') >= 0 ? ctx.args.slice(0, ctx.args.indexOf('--')) : ctx.args;
+    const takesValue = new Set(['-e', '--regexp', '-g', '--glob', '-t', '--type', '-m', '--max-count', '-A', '-B', '-C', '-M', '--max-columns', '--sort', '-j', '--threads']);
+    if (flagArgs.some((a, k) => (a === '--version' || a === '-V') && !takesValue.has(flagArgs[k - 1]))) {
+      ctx.stdout += `ripgrep ${RG_VERSION} (tabcomputer built-in)\n`;
+      return 0;
+    }
+
     let i = 0;
     while (i < ctx.args.length) {
       const arg = ctx.args[i];
-      if (arg === '--') { i++; while (i < ctx.args.length) paths.push(ctx.args[i++]); break; }
+      // (after --: the pattern, unless -e gave one, then paths, as in ripgrep: `rg -- -V file`)
+      if (arg === '--') { i++; while (i < ctx.args.length) { const a = ctx.args[i++]; if (!pattern && !listFiles) pattern = a; else paths.push(a); } break; }
       if (arg === '-i' || arg === '--ignore-case') { ignoreCase = true; }
       else if (arg === '-v' || arg === '--invert-match') { invertMatch = true; }
       else if (arg === '-n' || arg === '--line-number') { lineNumbers = true; lineNumbersGiven = true; }

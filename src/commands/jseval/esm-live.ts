@@ -136,7 +136,9 @@ function liveBindings(src: string, general: boolean): string {
     if (/\bfrom\s*['"]$/.test(m[0])) continue;
     // (general) a list with the default export is the transform's: its default is the exports
     // object itself (tinyrainbow's `export { b as default, … }`, which vitest imports as `c`)
-    if (general && /(?:^|[\s,])(?:default|[\w$]+\s+as\s+default)\s*(?:,|$)/.test(m[1])) {
+    // (and one with an item that isn't `name` or `name as name`: `e as "module.exports"`)
+    if (general && (/(?:^|[\s,])(?:default|[\w$]+\s+as\s+default)\s*(?:,|$)/.test(m[1])
+      || m[1].split(',').some((t) => t.trim() && !/^[\w$]+(?:\s+as\s+[\w$]+)?$/.test(t.trim())))) {
       keep.push([m.index!, m.index! + m[0].length]);
       // (the transform exports these locals by name: an import among them stays a copy)
       for (const item of m[1].split(',')) { const n = /^\s*([\w$]+)/.exec(item)?.[1]; if (n) locals.delete(n); }

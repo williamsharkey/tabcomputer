@@ -1888,7 +1888,9 @@ describe('ES module transform: minified imports, and import text in strings left
     expect(out).toContain('const i = __shiro_require("node:util"); let {styleText: a} = __shiro_require("node:util");');
     expect(out).toContain('__shiro_require("./side.js");');
     expect(out).toContain("`import react from '@vitejs/plugin-react'\nexport default defineConfig({})`");
-    expect(out).toContain('__shiro_module.exports.x = tpl; __shiro_module.exports.e = e;');
+    // (an export list is live: getters, tabcomputer#35)
+    expect(out).toContain('"x": { get() { try { return tpl; }');
+    expect(out).toContain('"e": { get() { try { return e; }');
     expect(out).toContain('__shiro_module.exports = 1;');
     expect(out).toContain('__shiro_module.exports["module.exports"] = e;');
   });

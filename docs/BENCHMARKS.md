@@ -404,6 +404,9 @@ onboarding done, a local stand-in for api.anthropic.com). Kernel profiler
   writes (~40 bytes to the pty, the rest 8-byte eventfd wakeups between Bun's threads),
   openat/newfstatat of `~/.claude.json` and `~/.claude/ide`.
 
+The hooks cost nothing measurable while no profiler is attached: `node bench/ab.mjs
+a748c014 360b37b4 --suites kernel,x86 --rounds 6 --quick` gives all 32 metrics "same".
+
 ### go_nethttp +30%: patch 0053's emulator, not the kernel (unix/bench)
 
 Measured on machine `cfad8fbf4994`, which this session moved to: Xeon

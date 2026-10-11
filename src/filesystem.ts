@@ -2112,28 +2112,32 @@ export class FileSystem {
    */
   private _canonDirs = new Map<string, string>();
 
-  private _lookupWalk(path: string, follow: boolean): { path: string; node: FSNode } | null | undefined {
+  private _lookupWalk(path: string, follow: boolean, hops = { n: 0 }): { path: string; node: FSNode } | null | undefined {
     // Symlinks in directory components are followed, as _canon does
     const parts = path.split('/').filter(Boolean);
     let cur = '';
-    let hops = 0;
     for (let i = 0; i < parts.length; i++) {
       if (parts[i] === '.' || parts[i] === '..') { cur = this.resolvePath(`${cur}/${parts[i]}`, '/'); continue; }
-      let next = `${cur}/${parts[i]}`;
+      const next = `${cur}/${parts[i]}`;
       const last = i === parts.length - 1;
-      for (;;) {
-        const node = this._getCached(next);
-        if (!node) return node; // missing (null) or unknown here (undefined)
-        if (node.type !== 'symlink' || (last && !follow)) {
-          if (last) return { path: next, node };
-          if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
-          break;
-        }
-        if (++hops > 40) return undefined;
-        const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
-        next = target.startsWith('/') ? this.resolvePath(target, '/') : this.resolvePath(target, cur || '/');
+      const node = this._getCached(next);
+      if (!node) return node; // missing (null) or unknown here (undefined)
+      if (node.type !== 'symlink' || (last && !follow)) {
+        if (last) return { path: next, node };
+        if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
+        cur = next;
+        continue;
       }
-      cur = next;
+      if (++hops.n > 40) return undefined;
+      const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
+      // The target is walked like any path: relative to this link's own directory, and
+      // through the links in it. (Each hop's relative target was taken from the first
+      // link's directory: /usr/lib/…/libblas.so.3 → /etc/alternatives/… → blas/libblas.so.3
+      // → libblas.so.3.12.1 looked for /usr/lib/…/libblas.so.3.12.1, ENOENT)
+      const to = this._lookupWalk(target.startsWith('/') ? target : `${cur}/${target}`, true, hops);
+      if (!to || last) return to;
+      if (to.node.type !== 'dir') return undefined;
+      cur = to.path === '/' ? '' : to.path;
     }
     const root = this._getCached('/');
     return root ? { path: '/', node: root } : root;

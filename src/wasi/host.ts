@@ -146,8 +146,17 @@ export function installWasmLoader(kernel: Kernel): void {
   });
 }
 
-/** The WASIX calls Shiro's process shim for wasi-libc programs uses (scripts/pkgbuild/compat/wasi-proc.c). */
-const SHIM_WASIX = new Set(['proc_spawn3', 'proc_join', 'fd_pipe', 'fd_dup', 'getcwd']);
+/**
+ * The WASIX calls Shiro's shims for wasi-libc programs use: processes
+ * (scripts/pkgbuild/compat/wasi-proc.c) and sockets (wasi-sock.c). A program
+ * importing only these is still a wasi-libc one (python3, #70).
+ */
+export const SHIM_WASIX = new Set([
+  'proc_spawn3', 'proc_join', 'proc_signal', 'fd_pipe', 'fd_dup', 'getcwd',
+  'sock_open', 'sock_connect', 'sock_bind', 'sock_listen', 'sock_accept_v2', 'sock_addr_local', 'sock_addr_peer',
+  'sock_send_to', 'sock_recv_from', 'sock_set_opt_flag', 'sock_set_opt_time', 'sock_set_opt_size',
+  'sock_get_opt_flag', 'sock_get_opt_size', 'resolve',
+]);
 
 /**
  * "/usr", "/home", ...: preopened by name for a spawned WASM program, as
@@ -156,10 +165,14 @@ const SHIM_WASIX = new Set(['proc_spawn3', 'proc_join', 'fd_pipe', 'fd_dup', 'ge
  * libc matches "/", and dash's strips the wrong prefix when several match);
  * wasi-libc programs that only use the process shim's calls still get them.
  */
+/** A WASIX libc (its calls beyond the shims'): one that matches a "/" preopen itself */
+export function usesWasixLibc(imports: { module: string; name: string }[]): boolean {
+  return imports.some(i => i.module === 'wasix_32v1' && !SHIM_WASIX.has(i.name));
+}
+
 async function childPreopens(kernel: Kernel, module: WebAssembly.Module): Promise<string[]> {
-  const wasixLibc = WebAssembly.Module.imports(module).some(i => i.module === 'wasix_32v1' && !SHIM_WASIX.has(i.name));
   const fs = kernel.fs;
-  if (wasixLibc || !fs) return [];
+  if (usesWasixLibc(WebAssembly.Module.imports(module)) || !fs) return [];
   const out: string[] = [];
   try {
     for (const name of await fs.readdir('/')) {

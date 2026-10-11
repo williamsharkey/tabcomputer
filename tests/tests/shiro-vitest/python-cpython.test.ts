@@ -156,6 +156,13 @@ describe('python3 (CPython WASI package)', () => {
     expect(e).toEqual({ out: '', err: '', exitCode: 0 });
   }, 60_000);
 
+  it('runs by its path too: the stdlib under /usr is preopened (#70)', async () => {
+    // (it imports the socket shim's WASIX calls, which made it look like a WASIX-libc program)
+    const r = await sh(shell, `cd /tmp && /usr/lib/pkg/python3/bin/python3.wasm -c 'import encodings, json; print(json.dumps([1]))'`);
+    expect(r.err).toBe('');
+    expect(r.out).toBe('[1]\n');
+  }, 60_000);
+
   it('subprocess runs programs (os.posix_spawn over WASIX)', async () => {
     const r = await sh(shell, `cd /tmp && python3 -c '
 import subprocess, os

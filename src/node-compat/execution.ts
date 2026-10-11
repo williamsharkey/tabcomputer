@@ -523,6 +523,9 @@ export async function executeNodeScript(
     // Create require function for the entry script
     Object.assign(fakeModule, { id: '.', filename: entryFilename, loaded: false, children: [] });
     (requireModule as any).setMain(fakeModule);
+    // In require.cache as node has it: an import cycle back to the script gets
+    // this module, not a second copy of it run again
+    if (scriptPath && !moduleCache.has(scriptPath)) moduleCache.set(scriptPath, fakeModule);
     const entryRequire = (requireModule as any).makeRequire(entryDirname, fakeModule);
 
     // Dynamic import() shim

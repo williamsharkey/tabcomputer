@@ -295,3 +295,28 @@ describe('Localhost fetch routing through virtual servers', () => {
     expect(ctx.stdout).toMatch(/got:|error:expected/);
   });
 });
+
+describe('Node Runtime: options before the script, and the entry module in a cycle', () => {
+  let shell: Shell;
+  let fs: FileSystem;
+
+  beforeEach(async () => {
+    ({ shell, fs } = await createTestShell());
+    await fs.mkdir('/tmp/nopt', { recursive: true });
+  });
+
+  it('takes node options as options, not the script (vitest forks `--conditions node`)', async () => {
+    await fs.writeFile('/tmp/nopt/p.js', 'console.log("ran", JSON.stringify(process.execArgv), process.argv.slice(2).join(","));\n');
+    const ctx = createCtx(shell, fs, ['--no-warnings', '--conditions', 'node', '--max-old-space-size=100', '/tmp/nopt/p.js', '-x', 'y']);
+    expect(await nodeCmd.exec(ctx)).toBe(0);
+    expect(ctx.stdout).toBe('ran ["--no-warnings","--conditions","node","--max-old-space-size=100"] -x,y\n');
+  });
+
+  it('runs the entry module once when an import cycle comes back to it', async () => {
+    await fs.writeFile('/tmp/nopt/c.mjs', "import { y as yy } from './d.mjs';\nexport const y = 1;\nconsole.log('c ran');\n");
+    await fs.writeFile('/tmp/nopt/d.mjs', "export { y } from './c.mjs';\n");
+    const ctx = createCtx(shell, fs, ['/tmp/nopt/c.mjs']);
+    expect(await nodeCmd.exec(ctx)).toBe(0);
+    expect(ctx.stdout).toBe('c ran\n');
+  });
+});

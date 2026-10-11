@@ -7,7 +7,7 @@
 import { SCRIPT_TIMER_NAMES } from './page-globals';
 import type { CommandContext } from '../commands/index';
 import { patchPackageSource } from './source-patches';
-import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
+import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
 import { carryAsyncContext, carriesAsyncContext } from './async-context';
 import { ProcessExitError } from '../commands/jseval/utils';
 import { BrowserBuildFailure } from './browser-packages';
@@ -474,7 +474,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       }
       // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
       transformedContent = transformESModules(transformedContent,
-        carriesAsyncContext(content) ? carryAsyncContext : undefined);
+        carriesAsyncContext(content) ? carryAsyncContext : undefined, esmLive(ctx.env));
 
       const modImportMeta = {
         url: `file://${resolved}`,

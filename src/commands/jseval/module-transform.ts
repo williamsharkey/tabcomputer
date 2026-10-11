@@ -1053,13 +1053,15 @@ export function rewriteFunctionImport(src: string): string {
  * `pass`: run on the result with its code mask, where the transform has one
  * (carryAsyncContext: a second scan of Claude Code's 13 MB cli.js cost each
  * launch ~150 ms and 13 MB)
+ * `live`: any ES module's named imports and exports are live bindings
+ * (tabcomputer#35), for a process with TABCOMPUTER_ESM_LIVE=1 (esmLive). Off by
+ * default: it made astro dev ~0.8 s slower to start and astro build ~0.9 s slower.
  */
-export function transformESModules(src: string, pass?: MaskedPass): string {
+export function transformESModules(src: string, pass?: MaskedPass, live = false): string {
   src = rewriteFunctionImport(src);
   // esbuild code-split chunks need live import bindings (see esm-live.ts)
   if (isEsbuildChunk(src)) src = liveEsbuildChunk(stripShebang(src));
-  // and any ES module's named imports and export lists (tabcomputer#35)
-  else if (src.length <= 500000 && LIVE_CANDIDATE.test(src)) src = liveModule(stripShebang(src));
+  else if (live && src.length <= 500000 && LIVE_CANDIDATE.test(src)) src = liveModule(stripShebang(src));
   // Fast path for large bundled files (>500KB)
   if (src.length > 500000) {
     const cache = pass ? passedBundleCache : bundleCache;
@@ -1297,4 +1299,7 @@ export function transformESModules(src: string, pass?: MaskedPass): string {
 }
 
 /** A module with a named import, an export list or an exported declaration (what liveModule changes) */
+/** Whether a process with this environment loads ES modules with live bindings (transformESModules' `live`) */
+export const esmLive = (env: Record<string, string | undefined> | undefined): boolean => env?.TABCOMPUTER_ESM_LIVE === '1';
+
 const LIVE_CANDIDATE = /(?<![\w$.])(?:import\s*\{[^}]*\}\s*from\s*['"]|export\s*(?:\{|(?:async\s+)?(?:function|class|let|const|var)\b))/;

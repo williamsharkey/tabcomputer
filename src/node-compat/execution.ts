@@ -11,7 +11,7 @@ import type { CommandContext } from '../commands/index';
 import { iframeServer } from '../iframe-server';
 import { sha256sync, sha1sync, fnvHash } from '../commands/jseval/crypto';
 import { ProcessExitError } from '../commands/jseval/utils';
-import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
+import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
 import type { SharedState } from './types';
 import { createFakeBuffer } from './buffer';
 import { asyncContext, carryAsyncContext, carriesAsyncContext } from './async-context';
@@ -493,7 +493,7 @@ export async function executeNodeScript(
       if (scriptPath && (scriptPath.endsWith('.tsx') || scriptPath.endsWith('.jsx'))) {
         transformedCode = transformJSX(transformedCode);
       }
-      transformedCode = transformESModules(transformedCode);
+      transformedCode = transformESModules(transformedCode, undefined, esmLive(ctx.env));
       // spawnSync/execSync results are read right away: await them where the script can
       // (added after the transform, so the AsyncLocalStorage rewrite can't use its code mask)
       transformedCode = awaitSyncCalls(transformedCode);

@@ -1882,13 +1882,13 @@ describe('ES module transform: minified imports, and import text in strings left
   it('rewrites import{a as b}from"x", import t from"y", import i,{s as a}from"z", and keeps template text', () => {
     const src = 'import{createRequire as e}from"node:module";import t from"node:fs";import i,{styleText as a}from"node:util";import"./side.js";'
       + 'const tpl=`import react from \'@vitejs/plugin-react\'\nexport default defineConfig({})`;export{tpl as x,e};export{e as "module.exports"};export default 1;';
-    const out = transformESModules(src);
+    const out = transformESModules(src, undefined, true);
     expect(out).toContain('let {createRequire: e} = __shiro_require("node:module");');
     expect(out).toContain('const t = __shiro_require("node:fs");');
     expect(out).toContain('const i = __shiro_require("node:util"); let {styleText: a} = __shiro_require("node:util");');
     expect(out).toContain('__shiro_require("./side.js");');
     expect(out).toContain("`import react from '@vitejs/plugin-react'\nexport default defineConfig({})`");
-    // (an export list is live: getters, tabcomputer#35)
+    // (live, TABCOMPUTER_ESM_LIVE=1: an export list is getters, tabcomputer#35)
     expect(out).toContain('"x": { get() { try { return tpl; }');
     expect(out).toContain('"e": { get() { try { return e; }');
     expect(out).toContain('__shiro_module.exports = 1;');
@@ -1896,7 +1896,7 @@ describe('ES module transform: minified imports, and import text in strings left
   });
 });
 
-describe('live ES module bindings (tabcomputer#35)', () => {
+describe('live ES module bindings (tabcomputer#35, TABCOMPUTER_ESM_LIVE=1)', () => {
   it("an import reads the module's binding now, not a copy made while it was still loading; the entry runs once", async () => {
     const { fs, shell } = await createTestShell();
     await fs.mkdir('/home/user/lb', { recursive: true });
@@ -1905,33 +1905,46 @@ describe('live ES module bindings (tabcomputer#35)', () => {
     await w('main.mjs', `import { x } from './a.mjs'; console.log('main x =', x);`);
     await w('a.mjs', `import { useLater } from './b.mjs'; const x = 'X'; export { x }; console.log('a: b says', useLater());`);
     await w('b.mjs', `import { x } from './a.mjs'; export function useLater() { return 'later ' + x; }`);
-    expect((await sh(shell, 'cd /home/user/lb && node main.mjs')).out).toBe('a: b says later X\nmain x = X\n');
+    expect((await sh(shell, 'cd /home/user/lb && TABCOMPUTER_ESM_LIVE=1 node main.mjs')).out).toBe('a: b says later X\nmain x = X\n');
     await w('c.mjs', `import { y as yy } from './d.mjs'; export const y = 1; console.log('c ok', typeof yy);`);
     await w('d.mjs', `export { y } from './c.mjs';`);
-    expect((await sh(shell, 'cd /home/user/lb && node c.mjs')).out).toBe('c ok number\n');
+    expect((await sh(shell, 'cd /home/user/lb && TABCOMPUTER_ESM_LIVE=1 node c.mjs')).out).toBe('c ok number\n');
     await w('live.mjs', `import { n, inc } from './n.mjs';\nimport * as ns from './n.mjs';\nconsole.log(n); inc(); console.log(n, ns.n);\n`);
     await w('n.mjs', `export let n = 1;\nexport function inc() { n++; }\n`);
-    expect((await sh(shell, 'cd /home/user/lb && node live.mjs')).out).toBe('1\n2 2\n');
+    expect((await sh(shell, 'cd /home/user/lb && TABCOMPUTER_ESM_LIVE=1 node live.mjs')).out).toBe('1\n2 2\n');
+  });
+
+  it('without it, imports are copies made at import time, and the entry still runs once', async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/lc', { recursive: true });
+    const w = (p: string, t: string) => fs.writeFile('/home/user/lc/' + p, t);
+    await w('c.mjs', `import { y as yy } from './d.mjs'; export const y = 1; console.log('c ok', typeof yy);`);
+    await w('d.mjs', `export { y } from './c.mjs';`);
+    expect((await sh(shell, 'cd /home/user/lc && node c.mjs')).out).toBe('c ok undefined\n');
+    await w('live.mjs', `import { n, inc } from './n.mjs';\nconsole.log(n); inc(); console.log(n);\n`);
+    await w('n.mjs', `export let n = 1;\nexport function inc() { n++; }\n`);
+    expect((await sh(shell, 'cd /home/user/lc && node live.mjs')).out).toBe('1\n1\n');
   });
 
   it("what the pass can't take stays a copy, and the code stays valid", () => {
-    const compile = (src: string) => new (Object.getPrototypeOf(async function () {}).constructor)('__shiro_module', '__shiro_require', 'require', 'module', 'exports', '__dynamic_import', '__import_meta', transformESModules(src));
+    const live = (src: string) => transformESModules(src, undefined, true);
+    const compile = (src: string) => new (Object.getPrototypeOf(async function () {}).constructor)('__shiro_module', '__shiro_require', 'require', 'module', 'exports', '__dynamic_import', '__import_meta', live(src));
     // a method parameter named like an import (vitest's `getFullName(test, separator)`)
     expect(() => compile(`import { separator } from './u.js';\nclass R { getFullName(test, separator) { return separator; } }\nexport { R };\n`)).not.toThrow();
     // a node: builtin's import, beside a live one of the same name elsewhere
     expect(() => compile(`import { isBuiltin } from './m.js';\nimport { createRequire, isBuiltin as isBuiltin$1 } from 'node:module';\nexport const f = () => isBuiltin;\n`)).not.toThrow();
     // `{ default as x }`, a list with the default export, a quoted export name, a byte order mark
     expect(() => compile(`import { default as d2 } from './d.js';\nimport { other } from './o.js';\nexport { other, d2 as default };\n`)).not.toThrow();
-    const out = transformESModules(`\ufeffimport { e } from './e.js';\nexport { e as "module.exports" };\nfor (const { e } of []) e;\n`);
+    const out = live(`\ufeffimport { e } from './e.js';\nexport { e as "module.exports" };\nfor (const { e } of []) e;\n`);
     expect(out).toContain('__shiro_module.exports["module.exports"] = e;');
     expect(() => compile(`\ufeffimport { e } from './e.js';\nexport { e as "module.exports" };\n`)).not.toThrow();
     // an identifier starting with "import" isn't an import (Astro's middleware vite plugin)
-    expect(transformESModules("import { n } from './n.js';\nlet importsRaw = '';\nimportsRaw += `import { x } from '${n(1)}';`;\nexport { importsRaw };\n")).not.toContain('__shiro_require("${');
+    expect(live("import { n } from './n.js';\nlet importsRaw = '';\nimportsRaw += `import { x } from '${n(1)}';`;\nexport { importsRaw };\n")).not.toContain('__shiro_require("${');
     // a name both imported and re-exported (micromark-util-subtokenize's SpliceBuffer)
     expect(() => compile(`import { S } from './s.js';\nexport { S } from './s.js';\nexport const f = () => new S();\n`)).not.toThrow();
-    expect(transformESModules(`import { S } from './s.js';\nexport { S } from './s.js';\n`)).not.toContain('__shiro_live0.S }');
+    expect(live(`import { S } from './s.js';\nexport { S } from './s.js';\n`)).not.toContain('__shiro_live0.S }');
     // a top-level await of an imported function is still top-level await (a sync compile refuses it)
-    expect(transformESModules(`import { peer } from './p.js';\nconst { V } = await peer('x');\nexport { V };\n`)).toContain('await __shiro_live0.peer(');
+    expect(live(`import { peer } from './p.js';\nconst { V } = await peer('x');\nexport { V };\n`)).toContain('await __shiro_live0.peer(');
   });
 });
 

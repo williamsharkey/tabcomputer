@@ -68,12 +68,18 @@ export function withHelpFlags(cmd: Command): Command {
       }
       // Its own answer when it has one (git --version, cc --help, ...)
       const out0 = ctx.stdout.length, err0 = ctx.stderr.length;
+      // (into ctx, not streamed out: a complaint is replaced below)
+      const { streamStdout, streamStderr } = ctx;
+      ctx.streamStdout = ctx.streamStderr = undefined;
       let code: number;
       try {
         code = await exec(ctx);
       } catch (e) {
         if (e instanceof NeedStdin) throw e; // execLazyStdin's signal: it runs the command again with stdin
         code = 1; // the flag taken for a file that isn't there, ...
+      } finally {
+        ctx.streamStdout = streamStdout;
+        ctx.streamStderr = streamStderr;
       }
       const said = ctx.stdout.slice(out0) + ctx.stderr.slice(err0);
       if (code === 0 && said.trim() && !COMPLAINT.test(said)) return 0;

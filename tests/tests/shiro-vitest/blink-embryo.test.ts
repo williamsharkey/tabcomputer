@@ -66,6 +66,44 @@ describe('Blink fork children the engine never started', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(b.state).toBe('zombie');
   });
+
+  it("a hosted child that exec'd gets its signals in its own worker, not the instance it left", async () => {
+    const kernel = new Kernel({ registerWithProcessTable: false });
+    const nvim = kernel.spawn({ path: 'nvim', cwd: '/', run: () => new Promise<number>(() => {}) });
+    const posted: any[] = [];
+    let send: (m: unknown) => void = () => {};
+    const w: any = { postMessage: (m: any) => posted.push(m), onMessage: (cb: any) => { send = cb; }, onError() {}, terminate() {} };
+    wireWorker(nvim, w, kernel, []);
+    const signal = (p: { data: Record<string, unknown> }, sig: number) => (p.data.onSignal as (s: number) => void)(sig);
+    const forPid = (pid: number) => posted.filter((m) => m.pid === pid).map((m) => m.type);
+
+    // nvim vforks its --embed child, which signals go to here while it runs in this instance
+    const a = kernel.vfork(nvim);
+    send({ type: 'blink-hosted', pid: a.pid });
+    signal(a, A.SIGCHLD);
+    expect(forPid(a.pid)).toEqual(['blink-signal']);
+    // then it execs (starting in its own worker): a SIGCHLD from its :terminal shell is its own
+    // worker's to take, and its System here ends
+    posted.length = 0;
+    a.data.execed = true;
+    signal(a, A.SIGCHLD);
+    signal(a, A.SIGCHLD);
+    expect(forPid(a.pid)).toEqual(['blink-reap']);
+    await kernel.exit(a, 0);
+    expect(forPid(a.pid)).toEqual(['blink-reap']);
+
+    // its exec reached the kernel first (its calls take its direct channel)
+    posted.length = 0;
+    const b = kernel.vfork(nvim);
+    b.data.execed = true;
+    send({ type: 'blink-hosted', pid: b.pid });
+    signal(b, A.SIGCHLD);
+    expect(forPid(b.pid)).toEqual(['blink-reap']);
+    // and a crash of this instance no longer takes it down
+    send({ type: 'blink-abort', text: 'aborted: ' });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(b.state).toBe('running');
+  });
 });
 
 function W(code: number) { return (code & 0xff) << 8; }

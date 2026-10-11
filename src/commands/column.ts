@@ -4,8 +4,9 @@
  *   column [-t] [-s SEPS] [-o SEP] [-n] [-x] [-c WIDTH] [FILE...]
  *
  * -t makes a table: each line split at the separator characters (blanks
- * by default; adjacent ones count once unless -n), every column but the
- * last padded to its widest cell, joined by -o (two spaces). Without -t,
+ * by default; adjacent blanks count once unless -n), every column but the
+ * last padded to its widest cell, joined by -o (two spaces); an explicit
+ * separator keeps empty cells. Without -t,
  * the input lines are filled into as many tab-aligned columns as fit the
  * width: down the columns first, across with -x.
  */
@@ -67,14 +68,15 @@ export const column: Command = {
       const escape = (s: string) => s.replace(/[\\\]^-]/g, '\\$&');
       const split = seps === undefined
         ? (l: string) => l.trim().split(keepEmpty ? /[ \t]/ : /[ \t]+/)
-        : (l: string) => {
-            const cells = l.split(new RegExp(`[${escape(seps!)}]`));
-            return keepEmpty ? cells : cells.filter((c, k) => c !== '' || k === 0);
-          };
+        // (an explicit separator keeps empty cells: `a,,b` is three, as util-linux 2.39)
+        : (l: string) => l.split(new RegExp(`[${escape(seps!)}]`));
       const rows = lines.map(split);
       const widths: number[] = [];
       for (const r of rows) r.forEach((c, k) => { widths[k] = Math.max(widths[k] ?? 0, [...c].length); });
-      ctx.stdout += rows.map((r) => r.map((c, k) => (k === r.length - 1 ? c : c + ' '.repeat(widths[k] - [...c].length))).join(outSep)).join('\n') + '\n';
+      // every cell but the table's last column is padded and followed by the separator,
+      // also in a row that ends early
+      const last = widths.length - 1;
+      ctx.stdout += rows.map((r) => r.map((c, k) => (k === last ? c : c + ' '.repeat(widths[k] - [...c].length) + outSep)).join('')).join('\n') + '\n';
       return 0;
     }
 

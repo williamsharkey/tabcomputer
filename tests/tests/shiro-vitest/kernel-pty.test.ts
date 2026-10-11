@@ -270,26 +270,58 @@ describe('kernel pty: packet mode and the controlling tty (screen)', () => {
     expect(await readStr(slave)).toBe('y');
     kernel.kill(proc.pid, A.SIGKILL);
   });
-});
 
-describe('kernel pty: stat of /dev/tty', () => {
-  it('is the c 5,0 node, with no controlling tty and after a hangup', async () => {
+  it('F_GETFL and fdinfo leave out open-only flags (O_NOCTTY); stat("/dev/tty") finds the node with no terminal to open', async () => {
     const { fs, shell } = await createTestShell();
     const kernel = new Kernel({ fs, shell, registerWithProcessTable: false });
     attachKernelTty(kernel);
-    const lone = kernel.spawn({ path: 'daemon', fds: {}, setsid: true, run: () => new Promise<number>(() => {}) } as any);
-    expect(await kernel.open(lone, '/dev/tty', A.O_RDWR)).toBe(-6); // ENXIO: no controlling tty to open
-    const st = await kernel.statPath(lone, '/dev/tty');
-    expect(typeof st).not.toBe('number');
-    expect((st as A.KStat).mode & A.S_IFMT).toBe(A.S_IFCHR);
-    expect((st as A.KStat).rdev).toBe(5 << 8);
+    const { pty, slave } = openpty({ jc: jobControl });
+    const proc = kernel.spawn({ path: 'tui', fds: { 0: slave, 1: slave, 2: slave }, setsid: true, run: () => new Promise<number>(() => {}) } as any);
+    proc.ctty = slave;
+    const data = new Uint8Array(256);
+    const path = (s: string) => { const b = enc.encode(s); data.set(b); return b.length; };
+    const fd = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, path('/dev/tty'), A.O_RDWR | A.O_NONBLOCK | A.O_NOCTTY, 0, 0, 0], data);
+    expect(fd).toBeGreaterThanOrEqual(0);
+    // (the description is opened O_NOCTTY inside too: neither shows)
+    expect(await kernel.syscall(proc, A.SYS_fcntl, [fd, A.F_GETFL, 0, 0, 0, 0], data)).toBe(A.O_RDWR | A.O_NONBLOCK);
+    const tmp = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, path('/tmp/getfl'), A.O_WRONLY | A.O_CREAT | A.O_TRUNC | A.O_EXCL | A.O_APPEND, 0o644, 0, 0], data);
+    expect(await kernel.syscall(proc, A.SYS_fcntl, [tmp, A.F_GETFL, 0, 0, 0, 0], data)).toBe(A.O_WRONLY | A.O_APPEND);
+    const info = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, path(`/proc/self/fdinfo/${fd}`), A.O_RDONLY, 0, 0, 0], data);
+    const n = await kernel.syscall(proc, A.SYS_read, [info, 256, 0, 0, 0, 0], data);
+    expect(dec.decode(data.subarray(0, n))).toContain(`flags:\t0${(A.O_RDWR | A.O_NONBLOCK).toString(8)}\n`);
+
+    const statTty = async (p: typeof proc) => {
+      const r = await kernel.syscall(p, A.SYS_stat, [path('/dev/tty'), 0, 0, 0, 0, 0], data);
+      const dv = new DataView(data.buffer, data.byteOffset);
+      return { r, mode: dv.getUint32(24, true), gid: dv.getUint32(32, true), rdev: dv.getUint32(40, true) };
+    };
+    expect((await statTty(proc)).r).toBe(0);
+    // the terminal closes: opening /dev/tty is EIO, stat still finds the node (Linux: crw-rw-rw- root tty 5,0)
+    await pty.master.close();
+    expect(await kernel.open(proc, '/dev/tty', A.O_RDWR)).toBe(-A.EIO);
+    expect(await statTty(proc)).toEqual({ r: 0, mode: A.S_IFCHR | 0o666, gid: 5, rdev: (5 << 8) | 0 });
+    // without a controlling terminal: open ENXIO, stat the node
+    const lone = kernel.spawn({ path: 'daemon', setsid: true, fds: {}, run: () => new Promise<number>(() => {}) } as any);
+    expect(await kernel.open(lone, '/dev/tty', A.O_RDWR)).toBe(-A.ENXIO);
+    expect((await statTty(lone)).rdev).toBe(5 << 8);
+    kernel.kill(proc.pid, A.SIGKILL);
+    kernel.kill(lone.pid, A.SIGKILL);
+  });
+});
+
+describe('kernel pty: stat of /dev/tty', () => {
+  it('finds the c 5,0 node after a hangup too', async () => {
+    const { fs, shell } = await createTestShell();
+    const kernel = new Kernel({ fs, shell, registerWithProcessTable: false });
+    attachKernelTty(kernel);
     const { pty, slave } = openpty({ jc: jobControl });
     const proc = kernel.spawn({ path: 'sh', fds: { 0: slave }, setsid: true, run: () => new Promise<number>(() => {}) } as any);
     proc.ctty = slave;
     await pty.master.close(); // the terminal went away
     expect(await kernel.open(proc, '/dev/tty', A.O_RDWR)).toBe(-A.EIO);
-    expect(((await kernel.statPath(proc, '/dev/tty')) as A.KStat).rdev).toBe(5 << 8);
-    kernel.kill(lone.pid, A.SIGKILL);
+    const st = await kernel.statPath(proc, '/dev/tty') as A.KStat;
+    expect(st.mode & A.S_IFMT).toBe(A.S_IFCHR);
+    expect(st.rdev).toBe(5 << 8);
     kernel.kill(proc.pid, A.SIGKILL);
   });
 });

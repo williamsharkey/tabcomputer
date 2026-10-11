@@ -13,9 +13,11 @@ const REPO = 'https://github.com/williamsharkey/tabcomputer/blob/main/docs';
  * with the docs: they are claims a visitor will check.
  */
 const STATUS = [
-  { label: 'Debian 13 top-500 packages', value: '496/500', note: 'install with apt and run (popcon ranks 1–500)', doc: 'DEBIAN_SCORE.md' },
+  { label: 'Debian 13 top-2000 packages', value: '1846/2000', note: 'install with apt and run (popcon ranks 1–2000; 100 aren\'t in trixie, 51 not scored yet)', doc: 'DEBIAN_SCORE.md' },
   { label: 'LTP syscall tests, x86-64', value: '431/534', note: 'pass under the x86-64 engine (the scored set grew from 322; 285 of those pass)', doc: 'CONFORMANCE.md' },
   { label: 'Open POSIX Test Suite, x86-64', value: '1428/1448', note: 'pass under the x86-64 engine', doc: 'CONFORMANCE.md' },
+  { label: 'Debian GUI apps', value: '37/38', note: 'open a desktop window and take keyboard input (GIMP, Inkscape, LibreOffice Writer, Firefox, ...)', doc: 'GUI_SCORE.md' },
+  { label: 'Coding-agent CLIs', value: '5/7', note: 'reach their vendor\'s API: Claude Code, Codex, Grok Build, Gemini CLI, aider', doc: 'COMPAT.md' },
 ];
 
 export function open(ctx: AppContext): DesktopWindow {
@@ -34,6 +36,9 @@ export function open(ctx: AppContext): DesktopWindow {
       <div class="sd-card">
         ${STATUS.map(s => `<div class="sd-row"><span class="sd-grow">${s.label}<div class="sd-small sd-muted">${s.note} · <a class="sd-link" href="${REPO}/${s.doc}" target="_blank" rel="noopener">${s.doc}</a></div></span><b style="font-variant-numeric:tabular-nums">${s.value}</b></div>`).join('')}
       </div>
+      <h3>What it is</h3>
+      <p class="sd-small sd-muted" style="line-height:1.6">A desktop with windows and a dock, an x86-64 engine that runs unmodified Linux
+        programs, Debian 13 with its own apt and dpkg, Debian's GUI apps as desktop windows, and coding agents such as Claude Code, all in this tab.</p>
       <h3>What's real</h3>
       <p class="sd-small sd-muted" style="line-height:1.6">A Unix kernel written for the browser: processes, file descriptors, pipes, ptys,
         signals, job control and sockets. Programs are real binaries: WebAssembly (WASI/WASIX) builds, and unmodified x86-64 Linux programs, including
@@ -46,8 +51,8 @@ export function open(ctx: AppContext): DesktopWindow {
         Graphical Linux apps draw through an X server inside the page.</p>
       <h3>Not here</h3>
       <p class="sd-small sd-muted" style="line-height:1.6">Hardware devices, kernel modules, and any access to your own machine: the browser's
-        sandbox holds everything. Not yet: file watching (inotify), a D-Bus session bus. x86-64 programs start
-        slowly. Some programs still fail; the scoreboards list which and why.</p>
+        sandbox holds everything. x86-64 programs start slowly: a GUI app
+        takes seconds to its first window, and Firefox minutes. Some programs still fail; the scoreboards list which and why.</p>
       <h3>This tab</h3>
       <div class="sd-card sd-small">
         <div class="sd-row"><span class="sd-grow sd-muted">Kernel processes</span><span data-k="procs">${kernel.procs.size}</span></div>
@@ -58,6 +63,7 @@ export function open(ctx: AppContext): DesktopWindow {
       <div class="sd-row" style="margin-top:14px;gap:14px;border:0">
         <a class="sd-link" href="${REPO}/DESKTOP.md" target="_blank" rel="noopener">Desktop &amp; /dom</a>
         <a class="sd-link" href="${REPO}/DEBIAN.md" target="_blank" rel="noopener">Debian</a>
+        <a class="sd-link" href="${REPO}/GUI.md" target="_blank" rel="noopener">GUI apps</a>
         <a class="sd-link" href="${REPO}/CONFORMANCE.md" target="_blank" rel="noopener">Conformance</a>
         <a class="sd-link" href="${REPO}/BENCHMARKS.md" target="_blank" rel="noopener">Benchmarks</a>
       </div>

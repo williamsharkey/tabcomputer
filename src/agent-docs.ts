@@ -164,8 +164,8 @@ ${bootSection(ctx, name)}
 
 - Real Debian: \`debian install\` streams in Debian 13, then \`sudo apt update\` (about
   45 s) and \`sudo apt install -y NAME\` (Debian's own apt and dpkg, x86-64 in the
-  emulator: about a minute for a small package, python3 about 4 minutes). 496 of
-  popcon's top 500 packages pass a smoke test.
+  emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
+  popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\`
   or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
@@ -238,8 +238,8 @@ ${bootSection(ctx, name)}
 
 ## Source
 
-${name} is open source: ${source}. The source is not checked out on this
-machine; \`git clone --depth 1 ${source}\` if you need to read it. Its docs/
+${name} is open source: ${source}. \`hotswap checkout\` puts this build's own
+source in ~/tabcomputer (below); \`git clone --depth 1 ${source}\` gets the latest. Its docs/
 folder has the details and the measured scoreboards. Where things live:
 
 - the shell: \`src/shell.ts\` and \`src/shell-*.ts\` (some builtins, like \`eval\`,
@@ -252,14 +252,28 @@ folder has the details and the measured scoreboards. Where things live:
   patches in \`vendor/blink/patches/\`; Debian mode: \`src/debian/\`
 - prebuilt packages: \`src/pkg-index.json\`, recipes in \`scripts/pkgbuild/\`
 
-To change ${name} itself from here, without a reload: \`hotswap checkout\` puts
-this build's own source (src/, the vitest suites) in ~/tabcomputer. Edit it, then
-\`hotswap apply src/shell.ts\` swaps the change into this running tab. It
-reverts by itself after 90 s unless you run \`hotswap confirm\`, so a broken
-shell fixes itself. \`hotswap test shell-posix\` runs a suite here, and
-\`hotswap push BRANCH -m MSG\` pushes the changes as a new branch of
-williamsharkey/tabcomputer (your own \`gh auth login\` account; never main).
-~/tabcomputer/docs/HOTSWAP.md says what can and can't be swapped.
+## Changing ${name} from here
+
+You can change ${name}'s own code in this running tab, without a reload (a
+reload would end your session). The loop:
+
+    hotswap checkout && cd ~/tabcomputer   # this build's source (src/, the suites)
+    hotswap watch -d                       # once: each save under src/ is swapped in
+    # edit src/shell.ts (or any module) with your usual tools, then:
+    hotswap watch --wait                   # one line per save: what changed, or the build error
+    hotswap test --changed                 # the suites that import what you changed
+    hotswap confirm                        # keep it; otherwise it reverts 90 s after the last save
+    hotswap push BRANCH -m MSG             # a new branch of williamsharkey/tabcomputer (never main)
+
+- A save is live about half a second later. A save that doesn't build changes
+  nothing. A swap that breaks things undoes itself: by the TTL, or, if the page
+  froze, when it runs again. \`hotswap revert --all\` undoes everything now.
+- Classes and registry commands are patched in place, so existing shells run
+  the new methods. A changed free function isn't, for modules that already
+  imported it; \`--wait\` says so. ~/tabcomputer/docs/HOTSWAP.md has the details, and
+  ~/tabcomputer/docs/DEVELOP_IN_TAB.md walks through it, up to reporting a fix.
+- \`hotswap test\` runs vitest suites in this tab; their node:fs is an
+  in-memory copy of the checkout. \`hotswap push\` uses your own \`gh auth login\`.
 
 ## Known issues
 

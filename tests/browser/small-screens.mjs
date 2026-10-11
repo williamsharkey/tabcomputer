@@ -35,6 +35,13 @@ const SIZES = [
   { name: 'w600', phone: true, viewport: { width: 600, height: 900 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
   { name: 'ipad-mini', phone: false, ...devices['iPad Mini'] },
   { name: 'ipad-landscape', phone: false, ...devices['iPad (gen 7) landscape'] },
+  // Android: Chrome's user agent and viewports (a 360-wide phone is the narrowest common one)
+  { name: 'pixel-7', phone: true, ...devices['Pixel 7'] },
+  { name: 'pixel-7-landscape', phone: true, ...devices['Pixel 7 landscape'] },
+  { name: 'galaxy-s8', phone: true, ...devices['Galaxy S8'] },
+  // (upright it is 640 wide, a phone's layout here, as w600)
+  { name: 'galaxy-tab-s9', phone: true, ...devices['Galaxy Tab S9'] },
+  { name: 'galaxy-tab-s9-landscape', phone: false, ...devices['Galaxy Tab S9 landscape'] },
 ];
 
 /** What's outside the viewport, and the page's sideways scroll */

@@ -6,24 +6,15 @@
 
 import type { Command, CommandContext } from './index';
 import { gunzipDetailed, GzipError } from './compress/gzip-codec';
+import { pipeBytes } from '../utils/stream-bytes';
+import { gunzipDetailedAsync } from './compress/gunzip-async';
 import { concatBytes, latin1, outputString, stdinBytes, unmangle } from './compress/bytes';
 
 export { gunzip, gunzipDetailed, GzipError } from './compress/gzip-codec';
 
 /** gzip-compress bytes (CompressionStream's default level) */
 export async function gzipCompress(data: Uint8Array): Promise<Uint8Array> {
-  const cs = new CompressionStream('gzip');
-  const writer = cs.writable.getWriter();
-  writer.write(data as any).catch(() => {});
-  writer.close().catch(() => {});
-  const reader = cs.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  return concatBytes(chunks.length ? chunks : [new Uint8Array(0)]);
+  return pipeBytes(data, new CompressionStream('gzip'));
 }
 
 type Mode = 'compress' | 'decompress' | 'test';
@@ -187,7 +178,7 @@ async function runGzip(ctx: CommandContext, prog: string, defaultMode: Mode, def
     let result;
     try {
       try {
-        result = gunzipDetailed(input);
+        result = await gunzipDetailedAsync(input);
       } catch (e) {
         const fixed = isStdin ? null : unmangle(input);
         if (!fixed) throw e;

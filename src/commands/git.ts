@@ -714,6 +714,8 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             ]);
           } catch (cloneErr: any) {
             await undo();
+            // isomorphic-git reads the pack back for the checkout and gets null when that read fails (#43)
+            if (/null \(reading 'slice'\)/.test(String(cloneErr?.message))) cloneErr = new Error('could not read the downloaded pack back (browser storage or memory full?)');
             const httpStatus = cloneErr?.data?.statusCode;
             // The full git is there: it gets a clone the built-in couldn't do (not one refused for credentials)
             if (asFullGit && httpStatus !== 401 && httpStatus !== 403) {

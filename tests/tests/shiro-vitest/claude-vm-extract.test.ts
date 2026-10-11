@@ -7,6 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { transform } from 'esbuild';
 import { adaptModule, toCommonJS, launcherSource } from '@shiro/claude-vm/extract';
+import { PRETRANSFORMED } from '@shiro/node-compat/require';
+import { createTestShell, run } from './helpers';
 
 const esbuild = { transform: (code: string, opts: object) => transform(code, opts as any) };
 
@@ -44,5 +46,18 @@ describe('claude --vm: the extracted modules', () => {
     expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("import('./cli.js')"));
     // (spelled out: node-compat's transform drops a shorthand `Buffer` property)
     expect(l).toContain('Buffer: Buffer');
+  });
+
+  it('a module transformed ahead (PRETRANSFORMED) loads as it is; others get node-compat\'s transforms', async () => {
+    // (an await in a module that names AsyncLocalStorage is rewritten to carry its stores)
+    const body = 'const { AsyncLocalStorage } = require("async_hooks"); async function f() { await 1 } module.exports = String(f);';
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/tmp/pre', { recursive: true });
+    await fs.writeFile('/tmp/pre/ahead.js', PRETRANSFORMED + body);
+    await fs.writeFile('/tmp/pre/plain.js', body);
+    const r = await run(shell, `node -e "console.log(JSON.stringify([require('/tmp/pre/ahead.js'), require('/tmp/pre/plain.js')]))"`);
+    const [ahead, plain] = JSON.parse(r.output.trim().split('\n').pop()!);
+    expect(ahead).toBe('async function f() { await 1 }');
+    expect(plain).toContain('__shiroAls');
   });
 });

@@ -17,7 +17,7 @@ import { zstdDecodeAll } from '../commands/compress/zstd-codec';
 
 export const VM_CACHE = '.cache/tabcomputer/claude-vm';
 /** Bumped when the layout written here changes: an older extraction is redone */
-export const VM_LAYOUT = 6;
+export const VM_LAYOUT = 7;
 
 export interface VmFs {
   readFile(path: string, enc?: string): Promise<any>;
@@ -110,9 +110,25 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 export interface VmLayout { dir: string; launcher: string; sha256: string; extracted: boolean }
 
+/** Where stage 1 has the bundle's own directory; stage 2 puts the real one there */
+const ROOT_TOKEN = '/__tabcomputer_vm_root__';
+
+const buildKey = (): string => {
+  const sha = typeof __BUILD_SHA__ === 'string' && __BUILD_SHA__ ? __BUILD_SHA__ : 'dev';
+  let h = 0x811c9dc5;
+  for (const c of `${sha}:${VM_LAYOUT}`) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16).padStart(8, '0');
+};
+
 /**
- * The extracted layout for the binary at `binPath`, extracting it first if
- * needed. `say` reports progress (extraction takes a while once).
+ * The layout for the binary at `binPath`, made first if needed, in two stages
+ * under ~/.cache/tabcomputer/claude-vm/<sha256>/:
+ *   cjs/          once per Claude Code version: the bundle's files, its ES
+ *                 modules as CommonJS (toCommonJS: esbuild, the slow part)
+ *   nc-<build>/   once per tabcomputer build: what runs. node-compat's own
+ *                 transforms are done here, not at every launch (64 MB of
+ *                 code: ~4 s a start), and the files say so (PRETRANSFORMED)
+ * `say` reports progress.
  */
 export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, say: (s: string) => void = () => {}): Promise<VmLayout> {
   const root = `${home}/${VM_CACHE}`;
@@ -128,37 +144,66 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     bin = await fs.readFile(binPath) as Uint8Array;
     sha = await sha256Hex(bin);
   }
-  const dir = `${root}/${sha}`;
+  const base = `${root}/${sha}`;
+  const cjs = `${base}/cjs`;
+  const dir = `${base}/nc-${buildKey()}`;
   const launcher = `${dir}/vm-main.mjs`;
+  const made = new Set<string>();
+  const mkdirOnce = async (d: string) => { if (!made.has(d)) { made.add(d); await fs.mkdir(d, { recursive: true }); } };
+  const readText = async (p: string) => { try { return await fs.readFile(p, 'utf8') as string; } catch { return null; } };
   let extracted = false;
-  let done: string | null = null;
-  try { done = await fs.readFile(`${dir}/complete`, 'utf8'); } catch { /* not yet */ }
-  if (done?.trim() !== String(VM_LAYOUT)) {
+
+  // Stage 1: the bundle out of the binary, as CommonJS
+  if ((await readText(`${cjs}/complete`))?.trim() !== String(VM_LAYOUT)) {
     say('claude --vm: extracting Claude Code\'s JavaScript from the native build (once per version)...\n');
     bin ??= await fs.readFile(binPath) as Uint8Array;
     const graph = parseBunGraph(bin);
     const dec = new TextDecoder();
-    const made = new Set<string>();
-    const assets: Record<string, number> = {};
-    const mkdirOnce = async (d: string) => { if (!made.has(d)) { made.add(d); await fs.mkdir(d, { recursive: true }); } };
+    const files: { rel: string; loader: number }[] = [];
     const { withEsbuild } = await import('../commands/build');
-    let done = 0;
+    let n = 0;
     const jsCount = graph.modules.filter((m) => m.loader === BunLoader.js).length;
-    await withEsbuild(async (esbuild) => { for (const m of graph.modules) {
-      if (!m.name.startsWith(BUNFS)) continue;
-      const rel = m.name.slice(BUNFS.length);
-      const path = `${dir}/${m === graph.entry ? 'cli.js' : rel}`;
-      await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
-      if (m.loader !== BunLoader.js) assets[path] = m.loader;
-      if (m.loader === BunLoader.js) {
-        await fs.writeFile(path, await toCommonJS(esbuild as any, adaptModule(dec.decode(m.contents), dir)));
-        if (++done % 500 === 0) say(`  ${done}/${jsCount} modules\n`);
+    await withEsbuild(async (esbuild) => {
+      for (const m of graph.modules) {
+        if (!m.name.startsWith(BUNFS)) continue;
+        const rel = m === graph.entry ? 'cli.js' : m.name.slice(BUNFS.length);
+        const path = `${cjs}/${rel}`;
+        await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
+        files.push({ rel, loader: m.loader });
+        if (m.loader === BunLoader.js) {
+          await fs.writeFile(path, await toCommonJS(esbuild as any, adaptModule(dec.decode(m.contents), ROOT_TOKEN)));
+          if (++n % 500 === 0) say(`  ${n}/${jsCount} modules\n`);
+        }
+        // zstd assets (skills, docs; the code checks the magic, not the name) stored
+        // decompressed: node's sync reads find text in its cache, and no zstd at run time
+        else if (isZstd(m.contents)) await fs.writeFile(path, zstdDecodeAll(m.contents));
+        else await fs.writeFile(path, m.contents.slice());
       }
-      // zstd assets (skills, docs; the code checks the magic, not the name) stored
-      // decompressed: node's sync reads find text in its cache, and no zstd at run time
-      else if (isZstd(m.contents)) await fs.writeFile(path, zstdDecodeAll(m.contents));
-      else await fs.writeFile(path, m.contents.slice());
-    } });
+    });
+    await fs.writeFile(`${cjs}/files.json`, JSON.stringify(files));
+    await fs.writeFile(`${cjs}/complete`, String(VM_LAYOUT));
+    extracted = true;
+  }
+
+  // Stage 2: what runs, transformed for this build's node
+  if ((await readText(`${dir}/complete`))?.trim() !== String(VM_LAYOUT)) {
+    say('claude --vm: preparing Claude Code for this tabcomputer build...\n');
+    const files: { rel: string; loader: number }[] = JSON.parse((await readText(`${cjs}/files.json`)) ?? '[]');
+    const [{ transformESModules }, { carryAsyncContext, carriesAsyncContext }, { PRETRANSFORMED }] = await Promise.all([
+      import('../commands/jseval/module-transform'), import('../node-compat/async-context'), import('../node-compat/require'),
+    ]);
+    const assets: Record<string, number> = {};
+    for (const f of files) {
+      const path = `${dir}/${f.rel}`;
+      await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
+      if (f.loader === BunLoader.js) {
+        const code = ((await readText(`${cjs}/${f.rel}`)) ?? '').split(ROOT_TOKEN + '/').join(dir + '/');
+        await fs.writeFile(path, PRETRANSFORMED + transformESModules(code, carriesAsyncContext(code) ? carryAsyncContext : undefined));
+      } else {
+        assets[path] = f.loader;
+        await fs.writeFile(path, await fs.readFile(`${cjs}/${f.rel}`) as Uint8Array);
+      }
+    }
     await mkdirOnce(`${dir}/node_modules/ws`);
     await fs.writeFile(`${dir}/node_modules/ws/index.js`, wsShimSource());
     await fs.writeFile(`${dir}/node_modules/ws/package.json`, JSON.stringify({ name: 'ws', main: 'index.js' }));
@@ -166,7 +211,10 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     await fs.writeFile(`${dir}/bun-assets.json`, JSON.stringify(assets));
     await fs.writeFile(launcher, launcherSource());
     await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
-    extracted = true;
+    // an earlier build's tree is no longer used
+    for (const name of await (fs as any).readdir?.(base).catch?.(() => []) ?? []) {
+      if (name.startsWith('nc-') && `${base}/${name}` !== dir) await (fs as any).rm?.(`${base}/${name}`, { recursive: true, force: true }).catch?.(() => {});
+    }
   }
   index[binPath] = { size: st.size, mtime, sha256: sha };
   await fs.mkdir(root, { recursive: true });

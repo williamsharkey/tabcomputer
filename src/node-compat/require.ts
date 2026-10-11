@@ -474,16 +474,17 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     const nestedRequire = makeRequire(modDir, mod);
 
     try {
-      // Transform TypeScript/JSX/ESM syntax to CommonJS
-      let transformedContent = patchPackageSource(resolved, content);
-      if (resolved.endsWith('.ts') || resolved.endsWith('.tsx')) {
+      // Transform TypeScript/JSX/ESM syntax to CommonJS (unless that was done ahead: claude --vm's tree)
+      const ahead = content.startsWith(PRETRANSFORMED);
+      let transformedContent = ahead ? content : patchPackageSource(resolved, content);
+      if (!ahead && (resolved.endsWith('.ts') || resolved.endsWith('.tsx'))) {
         transformedContent = transformTS(transformedContent);
       }
-      if (resolved.endsWith('.tsx') || resolved.endsWith('.jsx')) {
+      if (!ahead && (resolved.endsWith('.tsx') || resolved.endsWith('.jsx'))) {
         transformedContent = transformJSX(transformedContent);
       }
       // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
-      transformedContent = transformESModules(transformedContent,
+      if (!ahead) transformedContent = transformESModules(transformedContent,
         carriesAsyncContext(content) ? carryAsyncContext : undefined, esmLive(ctx.env));
 
       const modImportMeta = {
@@ -696,6 +697,13 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
 /** Thrown out of a module body that has to wait for an import (see requireModule) */
 const NEEDS_WAIT = new Error('(waits for an import)');
 const IMPORT_CALL = /__shiro_require\((['"])([^'"\n]+)\1\)/g;
+
+/**
+ * The first line of a module whose transforms (ES modules, async context) were
+ * done ahead by this build (claude --vm's tree, src/claude-vm/extract.ts): it
+ * loads as it is.
+ */
+export const PRETRANSFORMED = '/*tabcomputer: node-compat transformed*/\n';
 
 export function compileAsyncModule(AsyncFn: any, params: string[], body: string): (...a: any[]) => Promise<any> {
   const awaited = body.replace(/__shiro_require\((['"])((?:\.\.?)?\/[^'"\n]*)\1\)/g, '(await __shiro_require_ready($1$2$1))');

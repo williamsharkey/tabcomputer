@@ -18,6 +18,8 @@ export interface GuestWorker {
   onError(cb: (err: unknown) => void): void;
   /** Called when the worker's script ends on its own (Node reports this; browsers don't). */
   onExit?(cb: (code: number) => void): void;
+  /** The underlying Worker (diagnostics, tests) */
+  native?: unknown;
 }
 
 /** Adapter for a browser Worker. */
@@ -35,6 +37,13 @@ export interface WorkerRunnerOptions {
   dataSize?: number;
   /** Extra fields for the start message (module URL, wasm bytes, ...). */
   startData?: Record<string, unknown>;
+  /**
+   * The wait status a worker error ends the process with (an engine's crash:
+   * a signal, e.g. SIGSEGV). Default: exit status 1 after printing it.
+   */
+  crashStatus?: (err: unknown) => number;
+  /** The wait status when the worker ends without the guest exiting (Node's 'exit'). Default: the worker's exit code. */
+  vanishedStatus?: number;
 }
 
 /** A Runner that starts `createWorker()` as the process. */
@@ -45,7 +54,10 @@ export function workerRunner(createWorker: (proc: Process) => GuestWorker, opts:
     const worker = createWorker(proc);
     proc.data.worker = worker;
     proc.data.channel = channel;
+    // the kernel ended this image (exit, or an exec whose next image runs elsewhere)
+    let ended = false;
     proc.onTerminate(() => {
+      ended = true;
       channel.stop();
       try { void worker.terminate(); } catch { /* already gone */ }
       // (a zombie waiting to be reaped doesn't keep the worker and its channel)
@@ -55,12 +67,17 @@ export function workerRunner(createWorker: (proc: Process) => GuestWorker, opts:
     });
     const wake = serve(channel, worker);
     worker.onError(err => {
-      if (proc.exiting) return;
+      if (proc.exiting || ended) return;
       const msg = (err as Error)?.message ?? String(err);
       kernel.reportFatal(proc, msg);
-      void kernel.writeAll(proc, 2, new TextEncoder().encode(`${proc.comm}: ${msg}\n`)).finally(() => resolve(1));
+      const status = opts.crashStatus?.(err);
+      void kernel.writeAll(proc, 2, new TextEncoder().encode(`${proc.comm}: ${msg}\n`))
+        .finally(() => (status === undefined ? resolve(1) : void kernel.exit(proc, status)));
     });
-    worker.onExit?.(code => resolve(code));
+    worker.onExit?.(code => {
+      if (opts.vanishedStatus !== undefined && !ended && !proc.exiting) void kernel.exit(proc, opts.vanishedStatus);
+      else resolve(code);
+    });
     const start: GuestStartMessage = {
       type: 'shiro-start', sab, pid: proc.pid, argv: proc.argv, env: proc.env, cwd: proc.cwd, wake,
       ...(opts.startData ?? {}),

@@ -2547,7 +2547,8 @@ export class Kernel {
         }
         case A.SYS_exit:
         case A.SYS_exit_group:
-          await this.exit(proc, A.W_EXITCODE(args[0]));
+          // (an engine that crashed reports its exit: the guest dies of the crash's signal)
+          await this.exit(proc, typeof proc.data.crashSignal === 'number' ? proc.data.crashSignal : A.W_EXITCODE(args[0]));
           return 0;
         case A.SYS_wait4: {
           // WNOHANG, WUNTRACED, WCONTINUED, WNOWAIT (waitid comes through here), __WNOTHREAD/__WALL/__WCLONE

@@ -4,6 +4,17 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/perf-kernel)** — behavior fix: a Blink engine that dies ends its processes with a signal.
+  - A worker error ends the guest with SIGSEGV (a wasm trap, any engine error)
+    or SIGABRT (an abort), instead of exit status 1; a worker that ends without
+    the kernel ending it (Node's 'exit') with SIGKILL. The children it hosted
+    (same-instance fork) die of the same signal.
+  - `blink-abort`: the guest's exit_group that follows ends it with SIGABRT
+    (`proc.data.crashSignal`); if none comes within a second (an abort in
+    another engine thread, or one that wedges), the kernel ends it with SIGABRT.
+    A fork child that died in Blink before exec used to stay running, and its
+    parent's wait4 hung.
+
 - **2026-10-11 (unix/perf-kernel)** — behavior fixes.
   - F_GETFL and /proc/PID/fdinfo leave out open-only flags (O_CREAT, O_EXCL,
     O_NOCTTY, O_TRUNC: `O_OPEN_ONLY`), as Linux does. A /dev/tty description

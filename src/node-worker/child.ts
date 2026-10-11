@@ -27,6 +27,8 @@ export interface ChildOptions {
    * sets it. Its bytes as they arrive, then null when it closes.
    */
   ipc?: (b: Uint8Array | null) => void;
+  /** The IPC channel's serialization (fork()'s option): NODE_CHANNEL_SERIALIZATION_MODE */
+  serialization?: 'json' | 'advanced';
   /**
    * Run this argv itself rather than `sh -c CMD` (a forked node: the shell
    * would start it with stdio of its own, not the IPC channel's fd 3)
@@ -105,9 +107,10 @@ function start(sys: GuestSys, cmd: string, opts: ChildOptions): Running | number
     sys.fcntl(ipcFd, A.F_SETFD, A.FD_CLOEXEC);
     sys.fcntl(ipcFd, A.F_SETFL, A.O_NONBLOCK);
     fds.push([3, ipcChild]);
-    const chan = { NODE_CHANNEL_FD: '3', NODE_CHANNEL_SERIALIZATION_MODE: 'json' };
+    const mode = opts.serialization === 'advanced' ? 'advanced' : 'json';
+    const chan = { NODE_CHANNEL_FD: '3', NODE_CHANNEL_SERIALIZATION_MODE: mode };
     if (env) env = { ...env, ...chan };
-    else if (!opts.argv) cmd = `export NODE_CHANNEL_FD=3 NODE_CHANNEL_SERIALIZATION_MODE=json; ${cmd}`;
+    else if (!opts.argv) cmd = `export NODE_CHANNEL_FD=3 NODE_CHANNEL_SERIALIZATION_MODE=${mode}; ${cmd}`;
   }
   const argv = opts.argv ?? ['sh', '-c', cmd];
   const pid = sys.spawn(argv[0], argv, {

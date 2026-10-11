@@ -7,7 +7,7 @@
 import { SCRIPT_TIMER_NAMES } from './page-globals';
 import type { CommandContext } from '../commands/index';
 import { patchPackageSource } from './source-patches';
-import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
+import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
 import { carryAsyncContext, carriesAsyncContext } from './async-context';
 import { ProcessExitError } from '../commands/jseval/utils';
 import { BrowserBuildFailure } from './browser-packages';
@@ -63,6 +63,10 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
   const waitsOn = new Map<string, string>();
   // The file the last _requireModule call loaded or found in the cache
   let lastResolved = '';
+  // What a request from a directory resolved to, as node's Module._pathCache: a bare name
+  // walks up node_modules, each miss a stat (a syscall in a guest), and live ES modules
+  // (TABCOMPUTER_ESM_LIVE) resolve each import more than once. Only found files are kept.
+  const resolutions = new Map<string, string>();
 
   /**
    * An ES module with top-level await runs as an async function, so require()
@@ -162,10 +166,14 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     }
 
     let resolved = modPath;
+    const resolutionKey = fromDir + '\0' + modPath;
+    const known = resolutions.get(resolutionKey);
 
+    if (known !== undefined && (moduleCache.has(known) || fileCache.has(known))) {
+      resolved = known;
     // Handle Node.js package #imports (subpath imports)
     // e.g., chalk uses `import x from '#ansi-styles'` which maps via package.json "imports"
-    if (modPath.startsWith('#')) {
+    } else if (modPath.startsWith('#')) {
       let lookupDir = fromDir;
       while (lookupDir) {
         const pkgJsonPath = `${lookupDir}/package.json`;
@@ -223,7 +231,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
 
         // Handle npm GitHub tarball extraction which creates nested structure
         // e.g., node_modules/busboy/mscdex-busboy-9aadb7a/package.json
-        if (!fileCache.has(pkgPath)) {
+        // (only where that package's directory is there: each scan reads every cached path)
+        if (!fileCache.has(pkgPath) && (ctx.fs.isDirCached?.(pkgDir) ?? true)) {
           const nestedPkg = [...fileCache.keys()].find(
             k => k.startsWith(pkgDir + '/') && k.endsWith('/package.json') && k.split('/').length === pkgDir.split('/').length + 2
           );
@@ -426,6 +435,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       }
     }
 
+    if (resolved !== known && (moduleCache.has(resolved) || fileCache.has(resolved))) resolutions.set(resolutionKey, resolved);
     if (resolveOnly) {
       if (fileCache.has(resolved) || moduleCache.has(resolved) || isFile(resolved)) return resolved;
       const err: any = new Error(`Cannot find module '${modPath}'`);
@@ -474,7 +484,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       }
       // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
       transformedContent = transformESModules(transformedContent,
-        carriesAsyncContext(content) ? carryAsyncContext : undefined);
+        carriesAsyncContext(content) ? carryAsyncContext : undefined, esmLive(ctx.env));
 
       const modImportMeta = {
         url: `file://${resolved}`,
@@ -612,6 +622,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       try { resolved = req.resolve(spec); } catch { return; }
       loading.get(resolved)?.push(fn);
     };
+    req.live = liveExports;
+    req.settle = settleExports;
     req.resolve = (request: string, opts?: { paths?: string[] }) => {
       const dirs = opts?.paths?.length ? opts.paths : [fromDir];
       let last: any;
@@ -652,7 +664,22 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     '.node': (_mod, filename) => { throw Object.assign(new Error(`Cannot load native addon ${filename}`), { code: 'ERR_DLOPEN_FAILED' }); },
   };
   (requireModule as any).extensions = extensions;
-  (requireModule as any).setMain = (m: any) => { mainModule = m; };
+  // The entry is a module too: one that imports it back (a cycle through it) gets it, not a
+  // second run of it (vitest's entry ran twice), and re-reads its exports once it has run
+  (requireModule as any).setMain = (m: any) => {
+    mainModule = m;
+    if (typeof m?.filename === 'string' && m.filename.startsWith('/') && !moduleCache.has(m.filename)) {
+      moduleCache.set(m.filename, m);
+      loading.set(m.filename, []);
+    }
+  };
+  (requireModule as any).mainLoaded = () => {
+    const f = mainModule?.filename;
+    const fns = loading.get(f) ?? [];
+    loading.delete(f);
+    if (mainModule) mainModule.loaded = true;
+    for (const fn of fns) { try { fn(mainModule.exports); } catch { /* a const it can't reassign */ } }
+  };
 
   return Object.assign(requireModule, { ready: requireReady });
 }
@@ -754,4 +781,33 @@ export function esmNamespace(exp: any): any {
       ? { value: k === 'default' ? exp : exp[k], enumerable: true, configurable: true, writable: false }
       : undefined,
   });
+}
+
+/**
+ * An ES module's exports as live bindings (esm-live.ts, TABCOMPUTER_ESM_LIVE=1): each a getter
+ * reading the module's variable (undefined while it can't be read yet), and a setter that
+ * keeps it live for the same value (the transform's own copy at the module's end) and
+ * replaces it with another.
+ */
+function liveExports(exports: any, thunks: Record<string, () => unknown>): void {
+  const props: PropertyDescriptorMap = {};
+  for (const name of Object.keys(thunks)) {
+    const read = thunks[name];
+    props[name] = {
+      get() { try { return read(); } catch { return undefined; } },
+      set(v) {
+        let c; try { c = read(); } catch { /* not yet */ }
+        if (v !== c) Object.defineProperty(this, name, { value: v, writable: true, enumerable: true, configurable: true });
+      },
+      enumerable: true, configurable: true,
+    };
+  }
+  Object.defineProperties(exports, props);
+}
+
+/** Exports whose values can't change any more, as plain properties (esm-live.ts's settled) */
+function settleExports(exports: any, values: Record<string, unknown>): void {
+  const props: PropertyDescriptorMap = {};
+  for (const name of Object.keys(values)) props[name] = { value: values[name], writable: true, enumerable: true, configurable: true };
+  Object.defineProperties(exports, props);
 }

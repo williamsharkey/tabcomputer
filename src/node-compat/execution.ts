@@ -11,7 +11,7 @@ import type { CommandContext } from '../commands/index';
 import { iframeServer } from '../iframe-server';
 import { sha256sync, sha1sync, fnvHash } from '../commands/jseval/crypto';
 import { ProcessExitError } from '../commands/jseval/utils';
-import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
+import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
 import type { SharedState } from './types';
 import { createFakeBuffer } from './buffer';
 import { asyncContext, carryAsyncContext, carriesAsyncContext } from './async-context';
@@ -35,6 +35,7 @@ import { createUtilModule } from './modules/util';
 import { createFsModule, createFsPromisesModule } from './modules/fs';
 import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
 import { createWasiModule } from './modules/wasi';
+import { createTestModule } from './modules/test-runner';
 import { createStreamModule } from './modules/stream';
 import { createCryptoModule } from './modules/crypto';
 import { createProcessGlobal, WORKER_ONLY_GLOBALS, createProcessFunction } from './process-global';
@@ -130,7 +131,7 @@ export async function executeNodeScript(
   const _baseST = PAGE_SET_TIMEOUT;
   const _baseCT = PAGE_CLEAR_TIMEOUT;
 
-  const { activity, trackAsync, trackModule } = createActivity();
+  const { activity, trackAsync, trackModule, trackResponse } = createActivity();
   // Cleanup for resources a script holds until it ends (fs watchers)
   const exitHooks: (() => void)[] = [];
   const atExit = (fn: () => void) => { exitHooks.push(fn); };
@@ -223,7 +224,7 @@ export async function executeNodeScript(
     // As a kernel guest (node-worker), files come from blocking syscalls as they're needed
     const guest = nodeGuestOf(ctx);
     // A forked guest: its channel to the parent (process.send / 'message')
-    const ipcAlive = guest?.ipc ? attachProcessIpc(fakeProcess, guest.ipc, processEvents) : () => false;
+    const ipcAlive = guest?.ipc ? attachProcessIpc(fakeProcess, guest.ipc, processEvents, guest.ipcAdvanced) : () => false;
     const { fileCache, fileMtimes, moduleCache, tickSyncOps } = createFileCache(guest?.readText, guest ? (p) => !!(ctx.fs as any).isDirCached?.(p) : undefined, guest ? undefined : ctx.fs);
 
     // Pre-load environment (the page's: files into the cache, Claude's bootstrap)
@@ -315,12 +316,16 @@ export async function executeNodeScript(
         case 'node:fs/promises': return trackModule(createFsPromisesModule({ ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir, trackAsync, atExit }));
         case 'wasi':
         case 'node:wasi': return createWasiModule({ guest, exit: (code) => fakeProcess.exit(code) as never });
+        case 'node:test': return createTestModule({
+          getProcess: () => fakeProcess, trackAsync, inspect: (v, o) => getBuiltinModule('util').inspect(v, o),
+          assert: () => getBuiltinModule('assert'), childProcess: () => getBuiltinModule('child_process'),
+        });
         case 'child_process':
         case 'node:child_process': return createChildProcessModule({ ctx, fileCache, fileMtimes, pendingPromises, FakeBuffer, getProcess: () => fakeProcess, guest });
         case 'os':
         case 'node:os': return createOsModule(ctx);
         case 'util':
-        case 'node:util': return createUtilModule();
+        case 'node:util': return createUtilModule(() => fakeProcess);
         case 'events':
         case 'node:events': return createEventsModule();
         case 'url':
@@ -391,7 +396,9 @@ export async function executeNodeScript(
         const target = options?.eval ? String(filename)
           : filename.startsWith('file://') ? decodeURIComponent(new URL(filename).pathname) : ctx.fs.resolvePath(String(filename), ctx.cwd);
         const env = options?.env && typeof options.env === 'object' ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : undefined;
-        const h = guest.startThread(target, { threadId: worker.threadId, eval: !!options?.eval, workerData: options?.workerData, argv: options?.argv?.map(String), env }, {
+        const h = guest.startThread(target, { threadId: worker.threadId, eval: !!options?.eval, workerData: options?.workerData, argv: options?.argv?.map(String), env, stdout: !!options?.stdout, stderr: !!options?.stderr }, {
+          stdout: (b) => worker.stdout?._push(b),
+          stderr: (b) => worker.stderr?._push(b),
           online: () => worker.emit('online'),
           message: (v) => { if (!worker._exited) worker.emit('message', v); },
           error: (e) => {
@@ -437,9 +444,18 @@ export async function executeNodeScript(
       // `new Worker(f, { env })`: the worker's process.env (SvelteKit's build tells its forked steps so)
       const workerEnv = options?.env && typeof options.env === 'object'
         ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : null;
-      const workerProcess = workerEnv ? new Proxy(fakeProcess, { get: (t, k) => k === 'env' ? workerEnv : Reflect.get(t, k) }) : fakeProcess;
+      // `{ stdout: true }` / `{ stderr: true }`: what it writes is worker.stdout's / worker.stderr's
+      const enc = new TextEncoder();
+      const streamTo = (s: any, own: any) => s && new Proxy(own, { get: (t, k) => k === 'write'
+        ? (d: any, ...rest: any[]) => { s._push(typeof d === 'string' ? enc.encode(d) : d); const cb = rest.find((a) => typeof a === 'function'); if (cb) queueMicrotask(cb); return true; }
+        : Reflect.get(t, k) });
+      const workerOut = options?.stdout ? streamTo(worker.stdout, fakeProcess.stdout) : null;
+      const workerErr = options?.stderr ? streamTo(worker.stderr, fakeProcess.stderr) : null;
+      const workerProcess = workerEnv || workerOut || workerErr ? new Proxy(fakeProcess, {
+        get: (t, k) => k === 'env' && workerEnv ? workerEnv : k === 'stdout' && workerOut ? workerOut : k === 'stderr' && workerErr ? workerErr : Reflect.get(t, k),
+      }) : fakeProcess;
       const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT
-        : workerEnv && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
+        : workerProcess !== fakeProcess && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
       const workerRequire = createRequireFunction({
         ctx, fileCache, fileMtimes, moduleCache: new Map(), pendingPromises, processEvents,
         getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess: workerProcess, FakeBuffer,
@@ -461,8 +477,9 @@ export async function executeNodeScript(
 
     // A script that reads piped stdin synchronously (fs.readFileSync(0), '/dev/stdin',
     // fs.readSync(0)) can't wait for a live stream: load it before the script runs
-    // (a guest's stdin is one too; a spawned child in the page leaves its live one be)
-    if ((!ctx.stdinStream || (ctx as any).nodeGuest) && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
+    // (a spawned child in the page leaves its live one be; a guest blocks in readFileSync(0)
+    // instead, so it starts at once: one that only mentioned it waited for stdin to close)
+    if ((!ctx.stdinStream || ((ctx as any).nodeGuest && !nodeGuestOf(ctx)?.readStdinSync)) && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
       await fakeProcess.stdin?.__fd0?.fill();
     }
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
@@ -482,7 +499,7 @@ export async function executeNodeScript(
       if (scriptPath && (scriptPath.endsWith('.tsx') || scriptPath.endsWith('.jsx'))) {
         transformedCode = transformJSX(transformedCode);
       }
-      transformedCode = transformESModules(transformedCode);
+      transformedCode = transformESModules(transformedCode, undefined, esmLive(ctx.env));
       // spawnSync/execSync results are read right away: await them where the script can
       // (added after the transform, so the AsyncLocalStorage rewrite can't use its code mask)
       transformedCode = awaitSyncCalls(transformedCode);
@@ -606,7 +623,8 @@ export async function executeNodeScript(
 
     // A kernel guest routes too (its own servers on localhost), wherever it runs
     if (corsProxyOrigin || nodeGuestOf(ctx)) {
-      globalThis.fetch = _st.installedFetch = (input: RequestInfo | URL, init?: RequestInit) => trackAsync(routedFetch(input, init));
+      // (its body reads count as activity too, not just the headers: #50)
+      globalThis.fetch = _st.installedFetch = (input: RequestInfo | URL, init?: RequestInit) => trackAsync(routedFetch(input, init).then(trackResponse));
       const routedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         let url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
         if (isBlocked(url)) return Promise.resolve(new Response('{}', { status: 200 }));
@@ -900,6 +918,7 @@ export async function executeNodeScript(
         ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...workerOnly.map(() => undefined)),
         timeoutPromise,
       ]);
+      (requireModule as any).mainLoaded?.();
     } catch (e: any) {
       if (e instanceof ProcessExitError) {
         _st.exitCode = e.code;

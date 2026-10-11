@@ -581,7 +581,21 @@ export function createFsModule(deps: FsDeps): any {
       // stdin (fd 0, /dev/stdin): what has arrived; a script that reads it so gets it loaded first (execution.ts)
       const fd0 = ((p as unknown) === 0 && !(globalThis as any).__shiroFds?.[0]) || p === '/dev/stdin' ? deps.getProcess?.()?.stdin?.__fd0 : null;
       if (fd0) {
-        const bytes = deps.FakeBuffer.from(fd0.takeAll());
+        let all: Uint8Array = fd0.takeAll();
+        // A guest reads the rest to EOF now, as node does, so nothing needs reading before
+        // the script starts (a script that only mentions readFileSync(0) waited for stdin to close)
+        const readStdin = nodeGuestOf(deps.ctx)?.readStdinSync;
+        if (readStdin) {
+          const parts: Uint8Array[] = [all];
+          const buf = new Uint8Array(65536);
+          for (let n; (n = readStdin(buf)) > 0;) parts.push(buf.slice(0, n));
+          if (parts.length > 1) {
+            all = new Uint8Array(parts.reduce((a, b) => a + b.length, 0));
+            let off = 0;
+            for (const b of parts) { all.set(b, off); off += b.length; }
+          }
+        }
+        const bytes = deps.FakeBuffer.from(all);
         const enc = typeof opts === 'string' ? opts : opts?.encoding;
         return enc ? bytes.toString(enc) : bytes;
       }
@@ -941,6 +955,15 @@ export function createFsModule(deps: FsDeps): any {
     // File descriptor based sync operations (minimal stubs for CLI compatibility)
     openSync: (p: string, flags?: string | number, mode?: any) => {
       const resolved = real(p);
+      // The terminal: what has been typed, not a file's bytes. Ink drains it with
+      // open("/dev/tty", O_RDONLY|O_NONBLOCK) and readSync until EAGAIN or 0 when
+      // Claude Code exits; reading the device as a file waited for a key (/exit hung)
+      if (resolved === '/dev/tty') {
+        (globalThis as any).__shiroFds = (globalThis as any).__shiroFds || {};
+        const fd = nextFd((globalThis as any).__shiroFds);
+        (globalThis as any).__shiroFds[fd] = { path: resolved, flags: 'r+', offset: 0, tty: true };
+        return fd;
+      }
       const fl = parseOpenFlags(flags);
       const exists = existsNow(resolved);
       // O_CREAT|O_EXCL ('wx') on an existing file, or a missing file without O_CREAT, fail
@@ -969,8 +992,10 @@ export function createFsModule(deps: FsDeps): any {
     },
     writeSync: (fd: number, data: string | Uint8Array) => {
       const fdInfo = (globalThis as any).__shiroFds?.[fd];
-      // fds 1 and 2: the process's stdout and stderr (Go's runtime writes them so: esbuild)
-      if (!fdInfo && (fd === 1 || fd === 2)) {
+      // fds 1 and 2: the process's stdout and stderr (Go's runtime writes them so: esbuild);
+      // /dev/tty: the terminal, as stdout
+      if (fdInfo?.tty || (!fdInfo && (fd === 1 || fd === 2))) {
+        if (fdInfo?.tty) fd = 1;
         const proc = deps.getProcess?.();
         const bytes = typeof data === 'string' ? data : toBytes(data) ?? new Uint8Array(0);
         (fd === 1 ? proc?.stdout : proc?.stderr)?.write(bytes);
@@ -994,15 +1019,24 @@ export function createFsModule(deps: FsDeps): any {
     },
     readSync: (fd: number, buf: Uint8Array, offset?: number, length?: number, position?: number) => {
       const fdInfo = (globalThis as any).__shiroFds?.[fd];
-      if (!fdInfo && fd === 0) {
-        // stdin: what has arrived; a pipe with nothing yet is EAGAIN, as a nonblocking one
+      if ((!fdInfo && fd === 0) || fdInfo?.tty) {
+        // stdin (or /dev/tty, the terminal it reads): what has arrived; a pipe with
+        // nothing yet is EAGAIN, as a nonblocking one
         const fd0 = deps.getProcess?.()?.stdin?.__fd0;
         if (!fd0) return 0;
         const off = typeof offset === 'object' && offset ? (offset as any).offset ?? 0 : offset ?? 0;
         const len = typeof offset === 'object' && offset ? (offset as any).length ?? buf.length - off : length ?? buf.length - off;
         const n = fd0.tryRead(buf, off, len);
-        if (n === null) throw fsError('EAGAIN', 'EAGAIN: resource temporarily unavailable, read', 'read');
-        return n;
+        if (n !== null) return n;
+        // A guest blocks until bytes come, as node's read of a pipe does (nothing is read
+        // before the script starts); not while process.stdin takes them as a stream, nor
+        // for /dev/tty (drained until EAGAIN)
+        const readStdin = nodeGuestOf(deps.ctx)?.readStdinSync;
+        if (readStdin && !fd0.flowing && !fdInfo?.tty) {
+          const got = readStdin(buf.subarray(off, off + len));
+          if (got >= 0) return got;
+        }
+        throw fsError('EAGAIN', 'EAGAIN: resource temporarily unavailable, read', 'read');
       }
       if (!fdInfo) return 0;
       const bytes = currentBytes(fdInfo.path) ?? new Uint8Array(0);

@@ -31,6 +31,9 @@ const INSTALL_TIMEOUT_S = Number(opt('--timeout', '2400'));
 // --tag NAME: a variant run (its own results and report), e.g. with --env
 // BLINK_SAME_INSTANCE_FORK=1 (extra environment for every command, comma-separated)
 const TAG = opt('--tag', '');
+// --engine NOTE: rows scored now ran on an engine other than the committed one
+// (a local Blink build with a fix not yet in main); the report lists them under it
+const ENGINE = opt('--engine', '');
 const EXTRA_ENV = Object.fromEntries(opt('--env', '').split(',').filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
 const OUT_DIR = join(ROOT, '.debian-build/score' + (TAG ? '-' + TAG : ''));
 const RESULTS = join(OUT_DIR, 'results.json');
@@ -336,7 +339,7 @@ async function scoreBatch(m, batch, onResult) {
   let broken = false;
   for (const { p, info } of batch) {
     const t0 = Date.now();
-    const r = { name: p.name, rank: p.rank, version: info?.version, installMs: timing.get(p.name) ?? 0, already: before.has(p.name), at: new Date().toISOString() };
+    const r = { name: p.name, rank: p.rank, version: info?.version, installMs: timing.get(p.name) ?? 0, already: before.has(p.name), at: new Date().toISOString(), ...(ENGINE && { engine: ENGINE }) };
     if (!after.has(p.name)) {
       const log = logs.get(p.name) ?? '';
       Object.assign(r, { result: 'fail', stage: 'install', category: categorize(log), error: firstError(log) });
@@ -398,6 +401,13 @@ async function main() {
             await m.close();
             m = null;
           }
+          // recover()'s forced purge can take a dependency from an installed package
+          // (sgml-base from xml-core): then every install fails on "Unmet dependencies"
+          if (m && (await m.run('apt-get check -q >/dev/null 2>&1')).code) {
+            log('apt-get check fails (unmet dependencies); new machine');
+            await m.close();
+            m = null;
+          }
           m ??= await newMachine(base, log);
           const broken = await scoreBatch(m, batch, (r) => {
             results[r.name] = r;
@@ -452,6 +462,7 @@ function report() {
     '| --- | --- | --- |',
     ...Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, n]) => `| ${c} | ${n} | ${CAT_MEANING[c] ?? ''} |`),
     '',
+    ...engineLines(rows),
     '## Packages',
     '',
     '| # | Package | Version | Result | How / failure | Install |',
@@ -461,6 +472,15 @@ function report() {
   ];
   writeFileSync(REPORT, lines.join('\n'));
   console.log(`wrote ${REPORT}: ${pass.length} pass / ${scored.length} scored / ${rows.length} total`);
+}
+
+/** "## Engines": the rows scored on an engine other than the committed one (--engine), by engine. */
+function engineLines(rows) {
+  const by = new Map();
+  for (const r of rows) if (r.engine && (r.result === 'pass' || r.result === 'fail')) by.set(r.engine, [...(by.get(r.engine) ?? []), r.rank]);
+  if (!by.size) return [];
+  return ['## Engines', '', 'Rows scored on an engine other than the one committed at the time (score.mjs --engine):', '',
+    ...[...by].map(([e, ranks]) => `- ${e.replace(/\n/g, ' ')}: ranks ${ranks.sort((a, b) => a - b).join(', ')}`), ''];
 }
 
 const CAT_MEANING = {

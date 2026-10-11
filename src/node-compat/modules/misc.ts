@@ -325,6 +325,40 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         }
       }
 
+      /**
+       * worker.stdout / worker.stderr: what the worker writes, with { stdout: true } /
+       * { stderr: true } (else it goes to this process's own). A readable's surface:
+       * 'data', pipe()/unpipe() (vitest 4's threads pool pipes them to its logger), 'end'
+       */
+      function workerStream(owner: any) {
+        const s: any = makeEmitter({ readable: true });
+        const piped = new Map<any, Function>();
+        s._push = (chunk: Uint8Array) => { const b = deps.FakeBuffer.from(chunk); s.emit('data', s._enc ? b.toString(s._enc) : b); };
+        s._end = () => { if (s.readable) { s.readable = false; s.emit('end'); s.emit('close'); } };
+        s.setEncoding = (enc: string) => { s._enc = enc; return s; };
+        s.pipe = (dest: any) => {
+          if (!dest || piped.has(dest)) return dest;
+          const onData = (d: unknown) => { dest.write?.(d); };
+          piped.set(dest, onData);
+          s.on('data', onData);
+          return dest;
+        };
+        s.unpipe = (dest?: any) => {
+          for (const [d, f] of [...piped]) if (!dest || d === dest) { s.off('data', f); piped.delete(d); }
+          return s;
+        };
+        s.pause = s.resume = s.read = () => s;
+        s.destroy = () => { s._end(); return s; };
+        s[Symbol.asyncIterator] = async function* () {
+          const q: unknown[] = []; let done = false; let wake: (() => void) | null = null;
+          s.on('data', (d: unknown) => { q.push(d); wake?.(); });
+          s.on('end', () => { done = true; wake?.(); });
+          while (!done || q.length) { if (q.length) yield q.shift(); else await new Promise<void>((r) => { wake = r; }); wake = null; }
+        };
+        owner.on('exit', () => s._end());
+        return s;
+      }
+
       let nextThreadId = 1;
       class Worker {
         threadId = nextThreadId++;
@@ -332,8 +366,13 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         _toWorker?: (value: any) => void;
         _terminate?: () => void;
         _exited = false;
+        stdout: any;
+        stderr: any;
+        stdin: null = null;
         constructor(filename: string | URL, options?: any) {
           makeEmitter(this);
+          this.stdout = workerStream(this);
+          this.stderr = workerStream(this);
           if (deps.startWorker) {
             deps.startWorker(String(filename), options ?? {}, this);
             return;

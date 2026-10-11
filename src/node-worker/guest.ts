@@ -89,6 +89,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     fs.requestChanges = () => post({ type: 'node-guest-watch' });
     fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.detail);
     const stdinTTY = isatty(sys, 0);
+    /** fd 0 when it is not the terminal: one reader for process.stdin and the sync reads (pipeStdin) */
+    let stdin: ReturnType<typeof pipeStdin> | undefined;
     const stdoutTTY = isatty(sys, 1);
     // Networking over socket syscalls; servers listen on kernel ports (the page previews them)
     const net = new GuestNetStack(sys);
@@ -97,7 +99,14 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     rejection = null;
     installWorkerHandlers();
     // A worker_threads thread of a node process (host.ts started it with attachThread)
-    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number } | undefined;
+    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number; stdout?: boolean; stderr?: boolean } | undefined;
+    // A thread's output to its Worker's worker.stdout/stderr (`new Worker(f, { stdout: true })`:
+    // vitest 4's threads pool) instead of this process's fds 1 and 2
+    const enc = new TextEncoder();
+    const toWorker = (kind: 'stdout' | 'stderr') => (b: Uint8Array | string) => post({ type: 'node-thread-out', kind, value: typeof b === 'string' ? enc.encode(b) : b });
+    const out1 = nodeThread?.stdout ? toWorker('stdout') : (b: Uint8Array | string) => { sys.write(1, b); };
+    const out2 = nodeThread?.stderr ? toWorker('stderr') : (b: Uint8Array | string) => { sys.write(2, b); };
+    const ttyOut = stdoutTTY && !nodeThread?.stdout;
     const hooks: NodeGuestHooks = {
       readText(path) {
         const b = fs.readRaw(path);
@@ -107,7 +116,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       // a child may change the tree: fs forgets the directories it knew
       runChildSync: (cmd, opts) => { try { return runChildSync(sys, cmd, opts); } finally { fs.invalidate(); } },
       runChild: (cmd, opts) => runChild(sys, cmd, opts).finally(() => fs.invalidate()),
-      writeOut: (fd, s) => { sys.write(fd, s); },
+      writeOut: (fd, s) => { (fd === 1 ? out1 : fd === 2 ? out2 : (b: string) => { sys.write(fd, b); })(s); },
       netStack: net,
       busy: () => net.busy,
       ids: { pid: sys.getpid(), ppid: sys.getppid() },
@@ -123,18 +132,20 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         runSync,
         ProcExit,
       },
-      ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)) } : {}),
+      ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)), ipcAdvanced: start.env.NODE_CHANNEL_SERIALIZATION_MODE === 'advanced' } : {}),
       onUnhandledRejection: (fn) => { rejection = fn; },
       page: {
         clipboard: (text) => post({ type: 'node-guest-clipboard', text }),
         preview: (port) => { if (stdoutTTY) post({ type: 'node-guest-listen', port }); },
       },
-      ...(stdinTTY ? { ttyStdin: (on: ConstructorParameters<typeof GuestTtyStdin>[1]) => new GuestTtyStdin(sys, on) } : {}),
+      ...(stdinTTY ? { ttyStdin: (on: ConstructorParameters<typeof GuestTtyStdin>[1]) => new GuestTtyStdin(sys, on) } : {
+        readStdinSync: (buf: Uint8Array) => (stdin ??= pipeStdin(sys)).readSync(buf),
+      }),
       // worker_threads: a thread of this process, a guest of its own; messages go by way of the page
       startThread(file, opts, events) {
         const id = ++lastThread;
         threadEvents.set(id, events);
-        post({ type: 'node-guest-thread', id, file, eval: !!opts.eval, workerData: opts.workerData, argv: opts.argv ?? [], env: opts.env, threadId: opts.threadId });
+        post({ type: 'node-guest-thread', id, file, eval: !!opts.eval, workerData: opts.workerData, argv: opts.argv ?? [], env: opts.env, threadId: opts.threadId, stdout: !!opts.stdout, stderr: !!opts.stderr });
         return {
           post: (value) => post({ type: 'node-guest-thread-post', id, value }),
           terminate: () => post({ type: 'node-guest-thread-kill', id }),
@@ -166,13 +177,13 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       stdout: '',
       stderr: '',
       shell,
-      stdoutIsTTY: stdoutTTY,
+      stdoutIsTTY: ttyOut,
       // (fd 2 a file or pipe while fd 1 is the tty: `node x.js 2> err` wrote on the screen)
-      stderrIsTTY: isatty(sys, 2),
+      stderrIsTTY: !nodeThread?.stderr && isatty(sys, 2),
       stdinIsTTY: stdinTTY,
-      terminal: stdoutTTY ? terminalFacade(sys, stdinTTY) : undefined,
+      terminal: ttyOut ? terminalFacade(sys, stdinTTY) : undefined,
       // Not a terminal: fds 1 and 2 take what's written as written (bytes stay bytes: esbuild's protocol)
-      ...(stdoutTTY ? {} : { stdoutBytes: (b: Uint8Array) => { sys.write(1, b); }, stderrBytes: (b: Uint8Array) => { sys.write(2, b); } }),
+      ...(ttyOut ? {} : { stdoutBytes: out1, stderrBytes: out2 }),
       nodeGuest: hooks,
     };
     // stdin: read when the program asks for it (a pipe until its end); a thread's is the main thread's
@@ -185,7 +196,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       // `node --help` answer without reading it)
       if (programFromStdin(start.argv.slice(1))) ctx.stdin = await ctx.readStdin();
       // else bytes as they arrive (a parent that talks to this node while it runs: esbuild's service)
-      else ctx.stdinStream = pipeStdin(sys);
+      else ctx.stdinStream = stdin ??= pipeStdin(sys);
     }
     const { runNode } = await import('../commands/jseval/node-run');
     let status: number;
@@ -196,11 +207,11 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       ctx.stderr += `node: ${e?.stack ?? e}\n`;
       status = 1;
     }
-    if (ctx.stdout) sys.write(1, ctx.stdout);
+    if (ctx.stdout) out1(ctx.stdout);
     if (nodeThread) {
       // A thread's uncaught error is its Worker's 'error' event; its exit ends only the thread
       if (status !== 0 && ctx.stderr) post({ type: 'node-thread-out', kind: 'error', value: { message: ctx.stderr.trim() } });
-      else if (ctx.stderr) sys.write(2, ctx.stderr);
+      else if (ctx.stderr) out2(ctx.stderr);
       post({ type: 'node-thread-out', kind: 'exit', value: status }); // after its messages (the kernel's exit can overtake them)
       sys.exitThread(status);
     }
@@ -262,23 +273,55 @@ function guestIpc(sys: GuestSys, fd: number): GuestIpc {
 }
 
 /** fd 0 (a pipe or a file) as node-compat's live stdin: read when poll says so, from timers */
-function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null> } {
-  const buf = new Uint8Array(65536);
+/**
+ * fd 0 as it arrives, for process.stdin and fs.read(0) (a LiveStdin reads it through
+ * `read`), and fs.readFileSync(0)/readSync(0) (`readSync`, which blocks). What the pump
+ * has read waits in `arrived` until one of them takes it, so a sync read never misses
+ * bytes the pump read but hasn't delivered yet.
+ */
+function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null>; readSync(buf: Uint8Array): number } {
+  const arrived: Uint8Array[] = [];
+  let eof = false;
+  const take = (buf: Uint8Array): number => {
+    let n = 0;
+    while (n < buf.length && arrived.length) {
+      const c = arrived[0];
+      const k = Math.min(buf.length - n, c.length);
+      buf.set(c.subarray(0, k), n);
+      n += k;
+      if (k === c.length) arrived.shift(); else arrived[0] = c.subarray(k);
+    }
+    return n;
+  };
   return {
-    read: () => new Promise((resolve) => {
+    read: () => new Promise<void>((resolve) => {
+      if (arrived.length || eof) { resolve(); return; }
       let idle = 0;
       const tick = () => {
         const { ready } = sys.poll([{ fd: 0, events: A.POLLIN }], 0);
         if (ready > 0) {
+          const buf = new Uint8Array(65536);
           const n = sys.read(0, buf);
-          if (n !== -A.EAGAIN && n !== -A.EINTR) { resolve(n > 0 ? buf.slice(0, n) : null); return; }
+          if (n !== -A.EAGAIN && n !== -A.EINTR) { if (n > 0) arrived.push(buf.slice(0, n)); else eof = true; resolve(); return; }
         }
         // nothing yet: back off (0, 1, 2 ... 20 ms; the Worker's timer, not the program's)
         idle = Math.min(20, idle + 1);
         workerTimeout(tick, idle);
       };
       tick();
-    }),
+    // (an empty chunk when a sync read took what had come: the reader asks again)
+    }).then(() => (arrived.length ? arrived.shift()! : eof ? null : new Uint8Array(0))),
+    readSync: (buf) => {
+      if (arrived.length) return take(buf);
+      if (eof) return 0;
+      for (;;) {
+        const n = sys.read(0, buf);
+        if (n === -A.EAGAIN) { sys.poll([{ fd: 0, events: A.POLLIN }], -1); continue; }
+        if (n === -A.EINTR) continue;
+        if (n === 0) eof = true;
+        return n;
+      }
+    },
   };
 }
 

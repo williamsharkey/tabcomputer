@@ -1,6 +1,6 @@
 // node ff-url.mjs URL 'ENV=1 ENV2=1' 'firefox args' ['prep shell cmd']: Firefox ESR started from the shell with that
 // environment and arguments; notes when it exits before a window, then dmesg, the log, and a screenshot.
-// MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
+// CONSOLE=regex prints matching page console messages. MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 const require = createRequire('/opt/node-tools/node_modules/');
@@ -9,6 +9,8 @@ const [url, envs = '', extra = '', prep = ''] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox'] });
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 await page.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-tour', '1'); localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
+// CONSOLE=regex prints matching page console messages (the engine's own stderr, e.g. BLINK_WJIT_DEBUG, lands there)
+if (process.env.CONSOLE) { const re = new RegExp(process.env.CONSOLE); page.on('console', (m) => { if (re.test(m.text())) console.log('[console] ' + m.text()); }); }
 await page.goto(url + '?ui=desktop');
 await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 120000 });
 const sh = (cmd) => page.evaluate(async (cmd) => {
@@ -34,7 +36,7 @@ if (process.env.MAPS) { // where libxul is mapped in the parent (for BLINK_WJIT_
   log('maps\n' + (await sh("for p in $(pgrep -f 'firefox-esr/firefox-esr'); do echo pid $p; grep libxul /proc/$p/maps; done")).out);
 }
 const isFx = () => page.evaluate(() => window.__tabcomputer.desktop.windows().some((w) => w.surface && /Firefox/.test(w.title)));
-const alive = async () => Number((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
+const alive = async () => Number((await sh('ps -eo args 2>&1 | grep -v grep | grep -c ^/usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
 for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await page.waitForTimeout(5000); }
 log(`window: ${await isFx()}`);
 if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
@@ -46,6 +48,6 @@ if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
 }
 console.log('--- dmesg ---\n' + (await sh('dmesg 2>&1 | tail -25')).out);
 console.log('--- ps ---\n' + (await sh('ps -eo pid,ppid,stat,args 2>&1 | grep -i firefox | grep -v grep')).out);
-console.log('--- log ---\n' + (await sh('tail -300 /tmp/ff.log | cat -v | cut -c1-300')).out);
+console.log('--- log ---\n' + (await sh(`tail -${process.env.LOGTAIL || 300} /tmp/ff.log | cat -v | cut -c1-300`)).out);
 await page.screenshot({ path: process.env.SHOT });
 await browser.close();

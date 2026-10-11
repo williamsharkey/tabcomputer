@@ -40,6 +40,7 @@ const ECHO_GAP_MS = 150;
 const ECHO_BURST = 'zyxwvutsrq';
 const SETTLE_MS = 20000; // before the steady-state echo series
 const TURN_LIMIT_MS = 180000;
+const EXIT_LIMIT_MS = 120000;
 const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
@@ -152,20 +153,32 @@ const startClaude = (h, cmd, limitMs) => guarded(h, 'claude start', () => h.eval
 }, [cmd, limitMs, PROMPT_RE.source]));
 
 /** Types `keys` one at a time, waiting for each echo; [{ parsed, frame }]. */
-const echoKeys = (h, keys, gapMs, limitMs) => h.eval(async ([keys, gapMs, limitMs]) => {
+const echoKeys = (h, keys, gapMs, limitMs, profile = false) => h.eval(async ([keys, gapMs, limitMs, profile]) => {
   const { until, screen, echoed } = window.__cn;
+  // the kernel's pty trace (Build 975+) times each key's stages: pty input → the guest's read
+  // (readMs) → its first write back (firstWriteMs); feature-detected
+  const kernel = window.__tabcomputer.kernel;
+  const prof = profile && typeof kernel?.startProfile === 'function';
+  if (prof) kernel.startProfile();
+  const stages = () => {
+    if (!prof) return null;
+    const keys = (kernel.stopProfile()?.keys ?? []).filter((k) => k.readMs >= 0);
+    // echoMs (newer builds): the read → the first write holding the key's bytes, i.e. the echo
+    // itself; firstWriteMs: → the first write of any kind
+    return keys.map((k) => ({ read: k.readMs, compute: k.echoMs >= 0 ? k.echoMs : k.firstWriteMs, exact: k.echoMs >= 0 }));
+  };
   const out = [];
   let typed = '';
   for (const k of keys) {
     typed += k;
     const want = typed;
     const r = await until(k, (s) => echoed(s, want), limitMs);
-    if (!r) return { out, error: `no echo of ${JSON.stringify(want)} in ${limitMs} ms: ${screen().slice(-600)}` };
+    if (!r) { stages(); return { out, error: `no echo of ${JSON.stringify(want)} in ${limitMs} ms: ${screen().slice(-600)}` }; }
     out.push(r);
     await new Promise((res) => setTimeout(res, gapMs));
   }
-  return { out };
-}, [keys, gapMs, limitMs]);
+  return { out, stages: stages() };
+}, [keys, gapMs, limitMs, profile]);
 
 /** Clears Claude's input line: Ctrl-U until the input line no longer starts with `typed`. */
 const clearInput = (h, typed) => h.eval(async (typed) => {
@@ -173,17 +186,41 @@ const clearInput = (h, typed) => h.eval(async (typed) => {
   await until('\x15', (s) => !echoed(s, typed.slice(0, 1)), 10000);
 }, typed);
 
+const sideSh = (h, cmd) => h.eval(async (c) => { const sh = window.__tabcomputer.shell.fork(); sh.terminal = null; let o = ''; const code = await sh.execute(c, (x) => { o += x; }, (x) => { o += x; }); return { code, out: o }; }, cmd);
+
+/** The shell's prompt (`user@tabcomputer:~/w$`) on the screen's last non-empty line. */
+const SHELL_PROMPT = /^[\w.-]+@[\w.-]+:[^\n]*[$#] ?$/;
+
+/**
+ * /exit (its Enter on its own: text and CR in one input are a paste), then the shell's prompt
+ * on the last line; a marker the shell prints confirms it reads input again (typed only then:
+ * typed earlier, Claude would take it). { ms } from the Enter to the prompt, or { hung,
+ * recovered } when Claude didn't exit within EXIT_LIMIT_MS: then its process is killed from a
+ * side shell, and `recovered` says whether the shell came back.
+ */
 async function exitClaude(h) {
-  // Ctrl-C twice exits from an empty prompt; then wait for the shell
-  await h.eval(async () => {
+  const shellBack = (limit, key = '') => h.eval(async ([limit, re, key]) => {
     const { until, T } = window.__cn;
-    T.input('\x03', true);
-    await new Promise((r) => setTimeout(r, 400));
-    T.input('\x03', true);
-    await until('', () => T.buffer.active.type === 'normal', 30000);
+    const P = new RegExp(re);
+    const last = (s) => s.split('\n').filter((l) => l.trim()).pop() ?? '';
+    const p = await until(key, (s) => T.buffer.active.type === 'normal' && P.test(last(s)), limit);
+    if (!p) return null;
+    return await until('echo @@cn-$((6*7))\r', (s) => /^@@cn-42$/m.test(s), 30000) ? p.parsed : null;
+  }, [limit, SHELL_PROMPT.source, key]);
+  await h.eval(async () => {
+    const { T } = window.__cn;
+    T.input('\x15', true);
+    await new Promise((r) => setTimeout(r, 300));
+    T.input('/exit', true);
     await new Promise((r) => setTimeout(r, 500));
-    await until('echo @@cn-exit\r', (s) => /^@@cn-exit$/m.test(s), 30000);
   });
+  const ms = await shellBack(EXIT_LIMIT_MS, '\r');
+  if (ms != null) return { ms };
+  const ps = (await sideSh(h, 'ps -ef')).out;
+  const pids = ps.split('\n').filter((l) => /claude-code\/cli\.js|claude|ld-musl/.test(l)).map((l) => l.trim().split(/\s+/)[0]).filter((x) => /^\d+$/.test(x));
+  h.log(`    claude did not exit within ${EXIT_LIMIT_MS / 1000} s of /exit; processes:\n${ps.trimEnd()}\n    screen: ${(await h.eval(() => window.__cn.screen())).split('\n').filter((l) => l.trim()).slice(-4).join(' | ').slice(-300)}`);
+  if (pids.length) await sideSh(h, `kill -9 ${pids.join(' ')}`);
+  return { hung: true, recovered: (await shellBack(30000)) != null };
 }
 
 async function round(h, add, mock, { cold, build }) {
@@ -204,9 +241,16 @@ async function round(h, add, mock, { cold, build }) {
     await clearInput(h, ECHO_KEYS[0]);
     // steady state: after the startup work (MCP, hooks, the first render passes) is done
     await h.page.waitForTimeout(SETTLE_MS);
-    const e = await guarded(h, 'echo', () => echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000));
+    const e = await guarded(h, 'echo', () => echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000, true));
     if (e.error) throw new Error(e.error);
     for (const r of e.out) { add('echo', r.parsed); add('echo.frame', r.frame); }
+    // one trace entry per key typed: the rest of each echo is the write → xterm → the match
+    if (e.stages?.length === e.out.length) {
+      e.stages.forEach((st, i) => {
+        add('echo.stage.read', st.read); add('echo.stage.compute', st.compute); add('echo.stage.exact', st.exact ? 1 : 0);
+        add('echo.stage.render', e.out[i].parsed - st.read - st.compute);
+      });
+    } else if (e.stages) h.log(`    echo stages: ${e.stages.length} traced keys for ${e.out.length} typed; not recorded`);
     await clearInput(h, ECHO_KEYS);
     await h.page.waitForTimeout(500);
     // a burst: every key in one go (fast typing), first key → the last one echoed
@@ -231,7 +275,12 @@ async function round(h, add, mock, { cold, build }) {
     await h.eval(() => window.__cn.T.input('\x1b', true)); // Esc: stop a turn still running
     await h.page.waitForTimeout(1000);
   }
-  await exitClaude(h);
+  const ex = await exitClaude(h);
+  if (!ex.hung) add(`exit.${tag}`, ex.ms);
+  else {
+    add(`exit_hung.${tag}`, 1);
+    if (!ex.recovered) throw new Error(`claude --${build} was still running ${EXIT_LIMIT_MS / 1000} s after /exit, and kill -9 did not give the shell back: the rest of the round is skipped`);
+  }
 }
 
 /** The same binary natively in a pty on this machine: { start: {first, prompt}, echo: [ms] } per round. */
@@ -265,6 +314,8 @@ function percentiles(h, name, xs, notes) {
 const BUILDS = {
   native: { what: '`claude --native` (linux-x64-musl in Blink)', needs: ['claude-native', 'ld-musl-x86_64.so.1'] },
   npm: { what: '`claude --npm` (the pinned JS build on tabcomputer\'s node; installed before the round)', needs: [] },
+  // the native build's own JavaScript, extracted from the binary, on the page's engine (no x86)
+  vm: { what: '`claude --vm` (the native build\'s JavaScript on the page\'s engine; extracted before the round)', needs: ['claude-native'] },
 };
 
 /** `rounds` fresh profiles of one build: a cold and a warm launch each; samples as claude_<build>.*. */
@@ -279,13 +330,20 @@ async function measureBuild(h, build, mock, rounds) {
       await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());
       for (const ev of ['crash', 'close', 'popup', 'dialog']) h.page.on(ev, (x) => h.log(`    page ${ev}${x?.url ? `: ${x.url()}` : ''}${x?.message ? `: ${x.message()}` : ''}`));
       h.page.on('framenavigated', (f) => { if (f === h.page.mainFrame()) h.log(`    page navigated: ${f.url()}`); });
-      if (build === 'native') {
+      if (build === 'native' || build === 'vm') {
         await h.eval(async () => {
           await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
           await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
         });
         await h.sh('chmod +x ~/.local/bin/claude /lib/ld-musl-x86_64.so.1');
-      } else {
+      }
+      if (build === 'vm') {
+        // the one-time extraction of the binary's JavaScript, timed on its own; the rounds start after it
+        const r = await h.eval(() => window.__bench.shLimit('claude --vm --version > /tmp/cn.out 2>&1', 600000));
+        const out = (await h.sh('cat /tmp/cn.out')).out;
+        if (r.code !== 0 || !/\d+\.\d+\.\d+/.test(out)) throw new Error(`claude --vm --version: exit ${r.code}: ${out.slice(-300)}`);
+        add('extract', r.ms);
+      } else if (build === 'npm') {
         // installed first (workload.claude_npm.first measures that), so cold is the first launch, not the install
         const r = await h.eval(() => window.__bench.shLimit('claude --npm --version > /tmp/cn.out 2>&1', 300000));
         if (r.code !== 0) throw new Error(`claude --npm --version: exit ${r.code}: ${(await h.sh('cat /tmp/cn.out')).out.slice(-200)}`);
@@ -299,6 +357,7 @@ async function measureBuild(h, build, mock, rounds) {
   }
   const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`${pre}.${key}`, R[key], unit, { notes }); };
   const B = `${BUILDS[build].what} in a fresh profile, mock model`;
+  S('extract', 'ms', 'first `claude --vm --version` in the profile: reading the JavaScript out of the binary, then the version (untimed in the rounds)');
   S('start.cold.first_screen', 'ms', `${B}: Enter → Claude's first output in the terminal buffer`);
   S('start.cold.prompt', 'ms', `${B}: Enter → the idle input prompt in the buffer`);
   S('start.cold.prompt.frame', 'ms', 'same, to the end of the frame that paints it');
@@ -310,9 +369,20 @@ async function measureBuild(h, build, mock, rounds) {
   S('echo.first.frame', 'ms', 'same, painted');
   percentiles(h, `${pre}.echo`, R.echo, `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
   percentiles(h, `${pre}.echo.frame`, R['echo.frame'], 'key → the painted frame showing it');
+  percentiles(h, `${pre}.echo.stage.read`, R['echo.stage.read'], "stage 1 of the same keys (kernel pty trace, Build 975+): pty input → Claude's read of it");
+  const exact = R['echo.stage.exact']?.every((x) => x === 1);
+  percentiles(h, `${pre}.echo.stage.compute`, R['echo.stage.compute'], exact
+    ? "stage 2: that read → the pty write holding the key (the echo; the trace's echoMs)"
+    : "stage 2: that read → Claude's first write to the pty (the trace's firstWriteMs; builds before echoMs)");
+  percentiles(h, `${pre}.echo.stage.render`, R['echo.stage.render'], 'stage 3: the rest of the echo, from that first write to the input line matched (xterm parse, and any later writes when the first one was not the echo)');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');
+  S('exit.cold', 'ms', '`/exit` Enter → the shell runs the next command (after the turn)');
+  S('exit.warm', 'ms', 'same, second launch (no turn)');
+  for (const t of ['cold', 'warm']) {
+    if (R[`exit_hung.${t}`]) h.sample(`${pre}.exit_hung.${t}`, R[`exit_hung.${t}`], 'count', { notes: `rounds where claude was still running ${EXIT_LIMIT_MS / 1000} s after /exit (killed to go on)` });
+  }
 }
 
 export async function run(h) {

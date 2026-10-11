@@ -1,94 +1,135 @@
+/**
+ * git tag: list (-l patterns, -n[N], --sort, --contains, --points-at), create
+ * (lightweight, or annotated with -a/-m/-F; -f to move one), delete (-d).
+ * The tagger is the committer git would use (GIT_COMMITTER_*, user.name).
+ */
 import git from './git-cached';
 import { CommandContext } from './index';
-import { activeProfile } from '../profile';
+import { resolveSpec } from './git-plumbing';
 
-export async function gitTagHandler(ctx: CommandContext, fs: any, dir: string): Promise<number> {
-  let deleteMode = false;
-  let listPattern = '';
-  let listMode = false;
-  let annotated = false;
-  let message = '';
+export interface TagIdent { name: string; email: string; timestamp?: number; timezoneOffset?: number }
+
+/** git's version sort (v:refname): digit runs compare as numbers */
+function versionCompare(a: string, b: string): number {
+  const re = /(\d+)|(\D+)/g;
+  const pa = a.match(re) ?? [], pb = b.match(re) ?? [];
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const x = pa[i], y = pb[i];
+    if (/^\d/.test(x) && /^\d/.test(y)) { const d = Number(x) - Number(y); if (d) return d; }
+    else if (x !== y) return x < y ? -1 : 1;
+  }
+  return pa.length - pb.length;
+}
+
+export async function gitTagHandler(ctx: CommandContext, fs: any, dir: string, ident: () => Promise<TagIdent>): Promise<number> {
+  let del = false, list = false, annotated = false, force = false, lines = 0;
+  let message: string | null = null, sort = '', contains: string | null = null, pointsAt: string | null = null;
   const positional: string[] = [];
-
-  for (let i = 1; i < ctx.args.length; i++) {
-    const a = ctx.args[i];
-    if (a === '-d' || a === '--delete') deleteMode = true;
+  const args = ctx.args;
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-d' || a === '--delete') del = true;
     else if (a === '-a' || a === '--annotate') annotated = true;
-    else if (a === '-m' && ctx.args[i + 1] !== undefined) { message = ctx.args[++i]; annotated = true; }
-    else if (a === '-l' || a === '--list') {
-      listMode = true;
-      if (ctx.args[i + 1] && !ctx.args[i + 1].startsWith('-')) {
-        listPattern = ctx.args[++i];
-      }
-    }
+    else if (a === '-f' || a === '--force') force = true;
+    else if (a === '-l' || a === '--list') list = true;
+    else if (a === '-m' || a === '--message') { message = (message ? message + '\n\n' : '') + (args[++i] ?? ''); annotated = true; }
+    else if (a.startsWith('--message=')) { message = a.slice(10); annotated = true; }
+    else if (a.startsWith('-m') && a.length > 2) { message = a.slice(2); annotated = true; }
+    else if (a === '-F' || a === '--file') { const f = args[++i] ?? ''; message = f === '-' ? ctx.stdin : await ctx.fs.readFile(ctx.fs.resolvePath(f, ctx.cwd), 'utf8') as string; annotated = true; }
+    else if (/^-n\d*$/.test(a)) { lines = a.length > 2 ? Number(a.slice(2)) : 1; list = true; }
+    else if (a.startsWith('--sort=')) sort = a.slice(7);
+    else if (a === '--contains') { contains = args[i + 1] && !args[i + 1].startsWith('-') ? args[++i] : 'HEAD'; list = true; }
+    else if (a.startsWith('--contains=')) { contains = a.slice(11); list = true; }
+    else if (a === '--points-at') { pointsAt = args[i + 1] && !args[i + 1].startsWith('-') ? args[++i] : 'HEAD'; list = true; }
+    else if (a.startsWith('--points-at=')) { pointsAt = a.slice(12); list = true; }
     else if (!a.startsWith('-')) positional.push(a);
   }
 
-  // Delete mode
-  if (deleteMode) {
-    if (positional.length === 0) {
-      ctx.stderr = 'fatal: tag name required\n';
-      return 1;
+  if (del) {
+    if (!positional.length) { ctx.stderr = 'fatal: tag name required\n'; return 128; }
+    const tags = await git.listTags({ fs, dir });
+    let status = 0;
+    for (const name of positional) {
+      if (!tags.includes(name)) { ctx.stderr += `error: tag '${name}' not found.\n`; status = 1; continue; }
+      const oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${name}` });
+      await git.deleteTag({ fs, dir, ref: name });
+      ctx.stdout += `Deleted tag '${name}' (was ${oid.slice(0, 7)})\n`;
     }
-    for (const tagName of positional) {
-      try {
-        await git.deleteTag({ fs, dir, ref: tagName });
-        ctx.stdout += `Deleted tag '${tagName}'\n`;
-      } catch (e: any) {
-        ctx.stderr += `error: tag '${tagName}' not found: ${e.message}\n`;
-        return 1;
-      }
-    }
-    return 0;
+    return status;
   }
 
-  // Create mode: git tag <name> [ref]
-  if (positional.length > 0 && !listMode) {
-    const tagName = positional[0];
-    const ref = positional[1] || 'HEAD';
-    let oid: string;
-    try {
-      oid = await git.resolveRef({ fs, dir, ref });
-    } catch {
-      try {
-        oid = await git.expandOid({ fs, dir, oid: ref });
-      } catch {
-        ctx.stderr = `fatal: bad revision '${ref}'\n`;
-        return 128;
+  if (positional.length && !list) {
+    const [name, ref = 'HEAD'] = positional;
+    if (!(await git.listTags({ fs, dir })).includes(name) || force) {
+      let oid: string;
+      try { oid = await resolveSpec(fs, dir, ref); }
+      catch { ctx.stderr = `fatal: Failed to resolve '${ref}' as a valid ref.\n`; return 128; }
+      if (annotated) {
+        if (message === null) { ctx.stderr = 'fatal: no tag message given (use -m or -F)\n'; return 128; }
+        const who = await ident();
+        const type = (await git.readObject({ fs, dir, oid, format: 'content' })).type;
+        const tagOid = await git.writeTag({
+          fs, dir, tag: {
+            object: oid, type: type as 'commit', tag: name,
+            tagger: { name: who.name, email: who.email, timestamp: who.timestamp ?? Math.floor(Date.now() / 1000), timezoneOffset: who.timezoneOffset ?? new Date().getTimezoneOffset() },
+            message: message.replace(/\n*$/, ''), // (isomorphic-git adds the newline)
+          },
+        });
+        await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value: tagOid, force: true });
+      } else {
+        await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value: oid, force: true });
       }
+      return 0;
     }
-    if (annotated) {
-      if (!message) {
-        ctx.stderr = 'fatal: no tag message specified (use -m)\n';
-        return 1;
-      }
-      const tagOid = await git.writeTag({
-        fs, dir, tag: {
-          object: oid,
-          type: 'commit',
-          tag: tagName,
-          tagger: { name: 'user', email: `user@${activeProfile().hostname}.local`, timestamp: Math.floor(Date.now() / 1000), timezoneOffset: 0 },
-          message,
-        },
-      });
-      // Write the ref to point to the annotated tag object
-      await git.writeRef({ fs, dir, ref: `refs/tags/${tagName}`, value: tagOid, force: false });
-    } else {
-      await git.tag({ fs, dir, ref: tagName, object: oid });
-    }
-    ctx.stdout = '';
-    return 0;
+    ctx.stderr = `fatal: tag '${name}' already exists\n`;
+    return 128;
   }
 
-  // List mode (default)
-  const tags = await git.listTags({ fs, dir });
-  if (listPattern) {
-    const re = new RegExp('^' + listPattern.replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+  // list: by name (or --sort), the patterns given, each with -n's message lines
+  let tags = await git.listTags({ fs, dir });
+  if (positional.length) {
+    const res = positional.map((p) => new RegExp('^' + p.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$'));
+    tags = tags.filter((t) => res.some((re) => re.test(t)));
+  }
+  const peeled = async (t: string) => {
+    let oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${t}` });
+    for (let i = 0; i < 10; i++) {
+      const o = await git.readObject({ fs, dir, oid }).catch(() => null);
+      if (o?.type !== 'tag') break;
+      oid = (o.object as any).object;
+    }
+    return oid;
+  };
+  if (pointsAt) {
+    const want = await resolveSpec(fs, dir, pointsAt).catch(() => null);
+    const keep: string[] = [];
+    for (const t of tags) if (await peeled(t) === want || await git.resolveRef({ fs, dir, ref: `refs/tags/${t}` }) === want) keep.push(t);
+    tags = keep;
+  }
+  if (contains) {
+    let want: string;
+    try { want = await resolveSpec(fs, dir, contains); } catch { ctx.stderr = `error: malformed object name ${contains}\n`; return 129; }
+    const keep: string[] = [];
     for (const t of tags) {
-      if (re.test(t)) ctx.stdout += t + '\n';
+      const c = await peeled(t);
+      if (c === want || await git.isDescendent({ fs, dir, oid: c, ancestor: want, depth: -1 }).catch(() => false)) keep.push(t);
     }
-  } else {
-    for (const t of tags) ctx.stdout += t + '\n';
+    tags = keep;
+  }
+  const desc = sort.startsWith('-');
+  const key = sort.replace(/^-/, '');
+  tags.sort(key === 'v:refname' || key === 'version:refname' ? versionCompare : (a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (desc) tags.reverse();
+  for (const t of tags) {
+    if (!lines) { ctx.stdout += t + '\n'; continue; }
+    // -n: the tag's message, or the commit's for a lightweight tag
+    const oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${t}` });
+    const o = await git.readObject({ fs, dir, oid }).catch(() => null);
+    let msg = '';
+    if (o?.type === 'tag') msg = (o.object as any).message ?? '';
+    else if (o?.type === 'commit') msg = (o.object as any).message ?? '';
+    const body = msg.replace(/\n+$/, '').split('\n').slice(0, lines);
+    ctx.stdout += `${t.padEnd(15)} ${body.join('\n    ')}\n`;
   }
   return 0;
 }

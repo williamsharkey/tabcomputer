@@ -275,6 +275,9 @@ reload would end your session). The loop:
   ~/tabcomputer/docs/DEVELOP_IN_TAB.md walks through it, up to reporting a fix.
 - \`hotswap test\` runs vitest suites in this tab; their node:fs is an
   in-memory copy of the checkout. \`hotswap push\` uses your own \`gh auth login\`.
+- Commits to ${name}'s repository end with the plain trailer
+  \`Co-Authored-By: Claude <noreply@anthropic.com>\`: no model names or versions
+  in commit messages, branch names or code.
 
 ## Known issues
 

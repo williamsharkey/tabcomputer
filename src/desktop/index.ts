@@ -851,7 +851,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       };
       // A load after one that froze doesn't restore (a session that freezes on restore can't loop)
       const restore = !session.length ? Promise.resolve(null) : previousLoadWedge(400).then((wedge) => {
-        if (!wedge) return restoreSession(wm, session, { openTerminal, run: runCmd });
+        if (!wedge) return restoreSession(wm, session, { openTerminal, run: runCmd, writeFile: (path, text) => deps.fs.writeFile(path, text) });
         term.writeOutput('\x1b[2mThe last load of this tab froze: its windows were not reopened (safe-mode reset-layout forgets them).\x1b[0m\r\n');
         return null;
       });

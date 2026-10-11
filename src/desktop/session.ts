@@ -6,8 +6,9 @@
  * - Terminal windows: every tab with its working directory, the exported
  *   variables it changed, a program's title and its last 2000 lines of
  *   scrollback (restored as text, then a dim "— restored after reload —").
- *   A line still running at the reload is printed ("was running: …") and
- *   offered on the prompt, typed but not run, except known-safe long-runners
+ *   A line still running at the reload is offered on the prompt, typed but
+ *   not run (a long one as `source /tmp/restore-N.sh`, the script holding it;
+ *   claude as `claude --continue`), except known-safe long-runners
  *   (RESTARTABLE: servers) and Claude Code / Codex, which resume their own
  *   session (agent-resume.ts: `claude --resume ID`) by themselves.
  * - Files, Settings, Activity, About: their folder or pane.
@@ -161,19 +162,34 @@ export function place(w: DesktopWindow, s: SavedWindow, wa: Geometry): void {
   else if (s.state === 'minimized') w.minimize();
 }
 
-/** What to do with a restored tab's command: resume the agent, run a known-safe server again, or offer the line */
-export function followUp(st: TabState, agent: ResumeCommand | null): { note: string; run?: string; offer?: string } {
-  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}: ${agent.line}`, run: agent.line };
+/** The longest command offered on the prompt as it is; a longer one is offered from a file */
+export const OFFER_MAX = 72;
+
+/**
+ * What to do with a restored tab's command: resume the agent, run a known-safe server again, or
+ * offer a line on the prompt (typed, not run). The note under the scrollback is one short line;
+ * a long command isn't echoed: it goes in a script (`file`, /tmp/restore-N.sh) and the offer is
+ * `source` of it. Claude Code that couldn't be resumed by its session id is offered `claude --continue`.
+ */
+export function followUp(st: TabState, agent: ResumeCommand | null, n = 1): { note: string; run?: string; offer?: string; file?: { path: string; text: string } } {
+  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}`, run: agent.line };
   if (!st.running) return { note: RESTORED_NOTE };
   const line = st.running.trim();
-  if (RESTARTABLE.some((r) => r.test(line))) return { note: `${RESTORED_NOTE}\r\nwas running, started again: ${line}`, run: line };
-  return { note: `${RESTORED_NOTE}\r\nwas running: ${line}  (Enter runs it again)`, offer: line };
+  const short = line.length <= OFFER_MAX && !line.includes('\n');
+  if (RESTARTABLE.some((r) => r.test(line))) return { note: short ? `${RESTORED_NOTE}\r\nstarted again: ${line}` : `${RESTORED_NOTE}\r\nstarted again`, run: line };
+  // (one whose session another tab resumes (st.agent, deduped) is offered plainly, not that session again)
+  if (!st.agent && /^(clear\s*(;|&&)\s*)?claude(\s|$)/.test(line)) return { note: RESTORED_NOTE, offer: 'claude --continue' };
+  if (short) return { note: RESTORED_NOTE, offer: line };
+  const path = `/tmp/restore-${n}.sh`;
+  return { note: RESTORED_NOTE, offer: `source ${path}`, file: { path, text: `# Running in this terminal at the reload (${new Date().toLocaleString()}):\n${line}\n` } };
 }
 
 export interface RestoreDeps {
   openTerminal: (o: { cwd?: string; title?: string }) => DesktopWindow | null;
   /** Run a command line in a shell of its own (windows a command opens) */
   run?: (cmd: string, cwd: string) => void;
+  /** Write a file (a long command offered from /tmp/restore-N.sh) */
+  writeFile?: (path: string, text: string) => Promise<void>;
 }
 
 /**
@@ -187,7 +203,15 @@ export async function restoreSession(wm: WindowManager, saved: SavedWindow[], de
   // what each tab does after its screen is back; no agent session resumed twice
   const agents = agentResume.dedupe(saved.flatMap((s) => (s.tabs ?? []).map((t) => t.agent ?? null)));
   let k = 0;
-  const follow = saved.map((s) => (s.tabs ?? []).map((t) => followUp(t, agents[k++] ?? null)));
+  let n = 0;
+  const follow = saved.map((s) => (s.tabs ?? []).map((t) => {
+    const f = followUp(t, agents[k++] ?? null, n + 1);
+    if (f.file) n++;
+    // (no way to write the script: the note says what ran, the line is left alone)
+    if (f.file && !d.writeFile) return { note: `${RESTORED_NOTE}\r\nwas running: ${t.running!.trim().split('\n')[0].slice(0, OFFER_MAX)}…` };
+    return f;
+  }));
+  await Promise.all(follow.flat().map((f) => (f.file ? d.writeFile!(f.file.path, f.file.text).catch(() => {}) : undefined)));
   for (const [wi, s] of saved.entries()) {
     let w: DesktopWindow | null = null;
     try {

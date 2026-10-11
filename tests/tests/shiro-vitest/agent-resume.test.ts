@@ -12,6 +12,8 @@ const env = { HOME: '/home/user' };
 describe('agent session restore: which lines run an agent', () => {
   it('interactive claude and codex runs, not one-shots, subcommands or compound lines', () => {
     expect(agentOf('claude')?.agent).toBe('claude');
+    expect(agentOf('clear; claude "a first prompt"')?.argv).toEqual(['claude', 'a first prompt']);
+    expect(agentOf('clear && claude --vm')?.argv).toEqual(['claude', '--vm']);
     expect(agentOf('CLAUDE_NATIVE=0 claude --model opus')?.argv).toEqual(['claude', '--model', 'opus']);
     expect(agentOf('/home/user/.local/bin/claude')?.agent).toBe('claude');
     expect(agentOf("claude --npm 'fix the tests'")?.argv).toEqual(['claude', '--npm', 'fix the tests']);

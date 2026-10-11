@@ -17,7 +17,7 @@ import { zstdDecodeAll } from '../commands/compress/zstd-codec';
 
 export const VM_CACHE = '.cache/tabcomputer/claude-vm';
 /** Bumped when the layout written here changes: an older extraction is redone */
-export const VM_LAYOUT = 7;
+export const VM_LAYOUT = 8;
 
 export interface VmFs {
   readFile(path: string, enc?: string): Promise<any>;
@@ -63,7 +63,7 @@ export function launcherSource(): string {
     "const { createBun } = await require('tabcomputer:claude-vm').load();",
     "const assets = JSON.parse(require('fs').readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
     "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js' });",
-    "await import('./cli.js');",
+    "require('./bundle.js');",
     '',
   ].join('\n');
 }
@@ -99,6 +99,50 @@ module.exports.WebSocket = WebSocket;
 module.exports.WebSocketServer = module.exports.Server = WebSocketServer;
 module.exports.default = WebSocket;
 `;
+}
+
+/**
+ * bundle.js: every module of the tree as a function in one table, with a
+ * CommonJS loader over it, in one file. One read and one compile instead of
+ * 2345 (a start read each through the kernel); anything outside the table
+ * (node's builtins, ws, the assets) is the process's own require.
+ */
+export function bundleHeader(dir: string): string {
+  return `const __vmMods = Object.create(null), __vmCache = Object.create(null), __vmOuter = require;
+const __vmDir = (p) => p.slice(0, p.lastIndexOf('/')) || '/';
+const __vmKey = (from, id) => {
+  if (typeof id !== 'string') return null;
+  let p = id.startsWith('/') ? id : id.startsWith('./') || id.startsWith('../') ? require('path').resolve(from, id) : null;
+  if (p === null) return null;
+  return __vmMods[p] ? p : __vmMods[p + '.js'] ? p + '.js' : null;
+};
+const __vmRequire = (from) => {
+  const r = (id) => {
+    const key = __vmKey(from, id);
+    if (key === null) return __vmOuter(id);
+    let m = __vmCache[key];
+    if (m) return m.exports;
+    m = __vmCache[key] = { exports: {}, id: key, filename: key, loaded: false, children: [] };
+    const dir = __vmDir(key);
+    __vmMods[key].call(m.exports, m, m.exports, __vmRequire(dir), key, dir, __vmImport(dir));
+    m.loaded = true;
+    return m.exports;
+  };
+  r.resolve = (id) => __vmKey(from, id) ?? __vmOuter.resolve(id);
+  r.cache = __vmCache;
+  return r;
+};
+// import(): the module's exports, as Bun's ES modules give their namespace
+const __vmImport = (from) => (id) => Promise.resolve().then(() => {
+  const e = __vmRequire(from)(String(id).replace(/^file:\\/\\//, ''));
+  return e && (e.__esModule || typeof e !== 'object') ? (e.__esModule ? e : { default: e }) : Object.assign({ default: e }, e);
+});
+`;
+}
+
+/** One module of bundle.js */
+export function bundleEntry(path: string, code: string): string {
+  return `__vmMods[${JSON.stringify(path)}] = function (module, exports, require, __filename, __dirname, __dynamic_import) {\n${code}\n};\n`;
 }
 
 const isZstd = (b: Uint8Array) => b.length >= 4 && b[0] === 0x28 && b[1] === 0xb5 && b[2] === 0x2f && b[3] === 0xfd;
@@ -193,12 +237,15 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
       import('../commands/jseval/module-transform'), import('../node-compat/async-context'), import('../node-compat/require'),
     ]);
     const assets: Record<string, number> = {};
+    const bundle: string[] = [PRETRANSFORMED, bundleHeader(dir)];
     for (const f of files) {
       const path = `${dir}/${f.rel}`;
       await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
       if (f.loader === BunLoader.js) {
         const code = ((await readText(`${cjs}/${f.rel}`)) ?? '').split(ROOT_TOKEN + '/').join(dir + '/');
-        await fs.writeFile(path, PRETRANSFORMED + transformESModules(code, carriesAsyncContext(code) ? carryAsyncContext : undefined));
+        const done = transformESModules(code, carriesAsyncContext(code) ? carryAsyncContext : undefined);
+        await fs.writeFile(path, PRETRANSFORMED + done);
+        bundle.push(bundleEntry(path, done));
       } else {
         assets[path] = f.loader;
         await fs.writeFile(path, await fs.readFile(`${cjs}/${f.rel}`) as Uint8Array);
@@ -209,6 +256,8 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     await fs.writeFile(`${dir}/node_modules/ws/package.json`, JSON.stringify({ name: 'ws', main: 'index.js' }));
     await fs.writeFile(`${dir}/package.json`, JSON.stringify({ type: 'commonjs' }));
     await fs.writeFile(`${dir}/bun-assets.json`, JSON.stringify(assets));
+    bundle.push(`__vmRequire(${JSON.stringify(dir)})(${JSON.stringify(dir + '/cli.js')});\n`);
+    await fs.writeFile(`${dir}/bundle.js`, bundle.join(''));
     await fs.writeFile(launcher, launcherSource());
     await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
     // an earlier build's tree is no longer used

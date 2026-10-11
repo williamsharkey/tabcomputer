@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { transform } from 'esbuild';
-import { adaptModule, toCommonJS, launcherSource } from '@shiro/claude-vm/extract';
+import { adaptModule, toCommonJS, launcherSource, bundleHeader, bundleEntry } from '@shiro/claude-vm/extract';
 import { PRETRANSFORMED } from '@shiro/node-compat/require';
 import { createTestShell, run } from './helpers';
 
@@ -43,7 +43,7 @@ describe('claude --vm: the extracted modules', () => {
 
   it('the launcher sets the process\'s Bun before Claude Code\'s entry runs', () => {
     const l = launcherSource();
-    expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("import('./cli.js')"));
+    expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("require('./bundle.js')"));
     // (spelled out: node-compat's transform drops a shorthand `Buffer` property)
     expect(l).toContain('Buffer: Buffer');
   });
@@ -59,5 +59,20 @@ describe('claude --vm: the extracted modules', () => {
     const [ahead, plain] = JSON.parse(r.output.trim().split('\n').pop()!);
     expect(ahead).toBe('async function f() { await 1 }');
     expect(plain).toContain('__shiroAls');
+  });
+
+  it('bundle.js: modules from one table, cycles as CommonJS, import() as exports, the rest from the process', async () => {
+    const dir = '/vm';
+    const src = bundleHeader(dir)
+      + bundleEntry('/vm/a.js', 'const b = require("/vm/b.js"); exports.a = 1; exports.fromB = () => b.b; exports.os = require("os").name;')
+      + bundleEntry('/vm/b.js', 'const a = require("/vm/a.js"); exports.b = 2; exports.seenA = () => a.a;')
+      + bundleEntry('/vm/c.js', 'module.exports = __dynamic_import("./b.js").then((ns) => ns.b);')
+      + 'module.exports = [__vmRequire("/vm")("/vm/a.js"), __vmRequire("/vm")("/vm/b.js"), __vmRequire("/vm")("/vm/c.js")];';
+    const module = { exports: {} as any };
+    const outer = Object.assign((id: string) => { if (id === 'os') return { name: 'fake-os' }; if (id === 'path') return require('path'); throw new Error('no ' + id); }, { resolve: (id: string) => id });
+    new Function('module', 'exports', 'require', src)(module, module.exports, outer);
+    const [a, b, c] = module.exports;
+    expect([a.a, a.fromB(), b.seenA(), a.os]).toEqual([1, 2, 1, 'fake-os']);
+    expect(await c).toBe(2);
   });
 });

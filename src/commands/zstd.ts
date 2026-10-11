@@ -1,10 +1,11 @@
 /**
  * zstd / unzstd / zstdcat — Zstandard decompression (see compress/zstd-codec.ts).
- * Compression is not implemented.
+ * Compression writes valid frames in stored (raw) blocks: correct for every
+ * decoder, but not smaller (zstdEncodeRaw).
  */
 
 import type { Command } from './index';
-import { zstdDecodeAll, ZstdError } from './compress/zstd-codec';
+import { zstdDecodeAll, zstdEncodeRaw, ZstdError } from './compress/zstd-codec';
 import { runDecompressor, type DecoderCli } from './compress/decompress-cli';
 
 export { ZstdError } from './compress/zstd-codec';
@@ -23,6 +24,7 @@ const ZSTD_CLI: DecoderCli = {
   suffixes: [['.zst', ''], ['.tzst', '.tar'], ['.zstd', '']],
   keepByDefault: true,
   decode: (d) => ({ data: zstdDecompress(d) }),
+  encode: zstdEncodeRaw,
   describe(e) {
     if (!(e instanceof ZstdError)) return null;
     switch (e.kind) {
@@ -39,7 +41,7 @@ const ZSTD_CLI: DecoderCli = {
 
 export const zstdCmd: Command = {
   name: 'zstd',
-  description: 'Decompress Zstandard files (compression not implemented)',
+  description: 'Zstandard files (compression in stored blocks)',
   exec: (ctx) => runDecompressor(ctx, ZSTD_CLI, { decompress: false, toStdout: false }),
 };
 

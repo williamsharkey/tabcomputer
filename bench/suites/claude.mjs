@@ -314,6 +314,8 @@ function percentiles(h, name, xs, notes) {
 const BUILDS = {
   native: { what: '`claude --native` (linux-x64-musl in Blink)', needs: ['claude-native', 'ld-musl-x86_64.so.1'] },
   npm: { what: '`claude --npm` (the pinned JS build on tabcomputer\'s node; installed before the round)', needs: [] },
+  // the native build's own JavaScript, extracted from the binary, on the page's engine (no x86)
+  vm: { what: '`claude --vm` (the native build\'s JavaScript on the page\'s engine; extracted before the round)', needs: ['claude-native'] },
 };
 
 /** `rounds` fresh profiles of one build: a cold and a warm launch each; samples as claude_<build>.*. */
@@ -328,13 +330,20 @@ async function measureBuild(h, build, mock, rounds) {
       await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());
       for (const ev of ['crash', 'close', 'popup', 'dialog']) h.page.on(ev, (x) => h.log(`    page ${ev}${x?.url ? `: ${x.url()}` : ''}${x?.message ? `: ${x.message()}` : ''}`));
       h.page.on('framenavigated', (f) => { if (f === h.page.mainFrame()) h.log(`    page navigated: ${f.url()}`); });
-      if (build === 'native') {
+      if (build === 'native' || build === 'vm') {
         await h.eval(async () => {
           await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
           await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
         });
         await h.sh('chmod +x ~/.local/bin/claude /lib/ld-musl-x86_64.so.1');
-      } else {
+      }
+      if (build === 'vm') {
+        // the one-time extraction of the binary's JavaScript, timed on its own; the rounds start after it
+        const r = await h.eval(() => window.__bench.shLimit('claude --vm --version > /tmp/cn.out 2>&1', 600000));
+        const out = (await h.sh('cat /tmp/cn.out')).out;
+        if (r.code !== 0 || !/\d+\.\d+\.\d+/.test(out)) throw new Error(`claude --vm --version: exit ${r.code}: ${out.slice(-300)}`);
+        add('extract', r.ms);
+      } else if (build === 'npm') {
         // installed first (workload.claude_npm.first measures that), so cold is the first launch, not the install
         const r = await h.eval(() => window.__bench.shLimit('claude --npm --version > /tmp/cn.out 2>&1', 300000));
         if (r.code !== 0) throw new Error(`claude --npm --version: exit ${r.code}: ${(await h.sh('cat /tmp/cn.out')).out.slice(-200)}`);
@@ -348,6 +357,7 @@ async function measureBuild(h, build, mock, rounds) {
   }
   const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`${pre}.${key}`, R[key], unit, { notes }); };
   const B = `${BUILDS[build].what} in a fresh profile, mock model`;
+  S('extract', 'ms', 'first `claude --vm --version` in the profile: reading the JavaScript out of the binary, then the version (untimed in the rounds)');
   S('start.cold.first_screen', 'ms', `${B}: Enter → Claude's first output in the terminal buffer`);
   S('start.cold.prompt', 'ms', `${B}: Enter → the idle input prompt in the buffer`);
   S('start.cold.prompt.frame', 'ms', 'same, to the end of the frame that paints it');

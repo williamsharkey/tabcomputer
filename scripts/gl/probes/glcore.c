@@ -3,7 +3,8 @@
  * parts Blender's GPU module uses first: a 3.3 core context
  * (glXCreateContextAttribsARB), shaders with in/out interface blocks and a
  * uniform block, the uniform block queries, an instanced draw with a vertex
- * attribute divisor, primitive restart, glReadPixels. Prints one line per
+ * attribute divisor, primitive restart, a texture buffer (samplerBuffer,
+ * texelFetch past the first 4096 texels), glReadPixels. Prints one line per
  * check; tests/browser/gl-apps.mjs --app glcore runs it in the page.
  */
 #include <dlfcn.h>
@@ -48,6 +49,9 @@ typedef unsigned long GLXPbuffer;
 #define GL_UNIFORM_BLOCK_INDEX 0x8A3A
 #define GL_PRIMITIVE_RESTART 0x8F9D
 #define GL_VERSION 0x1F02
+#define GL_TEXTURE_BUFFER 0x8C2A
+#define GL_RGBA32F 0x8814
+#define GL_TEXTURE0 0x84C0
 
 static const char *vs =
   "#version 330 core\n"
@@ -63,8 +67,9 @@ static const char *vs =
 static const char *fs =
   "#version 330 core\n"
   "in VertexOut { flat vec4 color; vec2 uv; } vin;\n"
+  "uniform samplerBuffer weights;\n" /* a texture buffer: element 4100 (the second 4096-wide row here) is 1, the rest 0 */
   "out vec4 frag;\n"
-  "void main() { frag = vin.color + vec4(0.0 * vin.uv, 0.0, 0.0); }\n";
+  "void main() { frag = vin.color * texelFetch(weights, 4100) + vec4(0.0 * vin.uv, 0.0, 0.0) + 0.0 * float(textureSize(weights)); }\n";
 
 int main(void) {
   void *gl = dlopen("libGL.so.1", RTLD_NOW | RTLD_GLOBAL);
@@ -113,6 +118,12 @@ int main(void) {
   P(void, glPrimitiveRestartIndex, unsigned);
   P(void, glFinish, void);
   P(unsigned, glGetError, void);
+  P(void, glGenTextures, int, unsigned *);
+  P(void, glBindTexture, unsigned, unsigned);
+  P(void, glActiveTexture, unsigned);
+  P(void, glTexBuffer, unsigned, unsigned, unsigned);
+  P(int, glGetUniformLocation, unsigned, const char *);
+  P(void, glUniform1i, int, int);
 
   Display *dpy = XOpenDisplay(NULL);
   if (!dpy) { fprintf(stderr, "no display\n"); return 1; }
@@ -184,10 +195,17 @@ int main(void) {
   glEnableVertexAttribArray(1); glVertexAttribPointer(1, 2, GL_FLOAT, 0, 0, 0); glVertexAttribDivisor(1, 1);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, b[3]); glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof index, index, GL_STATIC_DRAW);
   glEnable(GL_PRIMITIVE_RESTART); glPrimitiveRestartIndex(0xffff);
+  /* the texture buffer: 4101 vec4s, the last one (1, 1, 1, 1) */
+  static float weights[4101 * 4];
+  for (int i = 0; i < 4; i++) weights[4100 * 4 + i] = 1;
+  unsigned tb, tex;
+  glGenBuffers(1, &tb); glBindBuffer(GL_TEXTURE_BUFFER, tb); glBufferData(GL_TEXTURE_BUFFER, sizeof weights, weights, GL_STATIC_DRAW);
+  glGenTextures(1, &tex); glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_BUFFER, tex); glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, tb);
   glViewport(0, 0, 32, 32);
   glClearColor(1, 0, 0, 1);
   glClear(GL_COLOR_BUFFER_BIT);
   glUseProgram(prog);
+  glUniform1i(glGetUniformLocation(prog, "weights"), 3);
   glDrawElementsInstanced(GL_TRIANGLE_STRIP, 7, GL_UNSIGNED_SHORT, 0, 2);
   glFinish();
   /* each instance covers a 16x16 square: x 0..15 and 16..31 (scale 0.5, offsets ±0.5), y 8..23 */

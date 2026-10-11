@@ -11,8 +11,9 @@ out VertexOut_Iface {
   vec2 corners[2];
 } interp;
 
-out Extra_Iface {
+out Extra_Iface_ {
   noperspective float lineDist;
+  float _roughness;
 };
 
 void main() {
@@ -21,5 +22,6 @@ void main() {
   interp.corners[0] = pos.xy;
   interp.corners[1] = pos.yx;
   lineDist = pos.z;
+  _roughness = 0.5;
   gl_Position = ModelViewProjectionMatrix * vec4(pos, 1.0);
 }

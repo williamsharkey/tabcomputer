@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { execSync } from 'child_process';
 import type { Plugin } from 'vite';
 import { moduleState } from './src/hotswap/state';
+import { NOT_LIVE } from './src/hotswap/live';
 
 /**
  * The live module map for hot-swapping (src/hotswap/, docs/HOTSWAP.md): every
@@ -29,6 +30,7 @@ export function hotswapLiveModules(root: string): Plugin {
       if (id.includes('?') || id.includes('\0')) return null;
       if (!id.startsWith(srcDir) || !/\.(ts|tsx|js|mjs)$/.test(id) || id.endsWith('.d.ts')) return null;
       const key = path.relative(root, id).split(path.sep).join('/');
+      if (NOT_LIVE.test(key)) return null;
       let extra = `import * as __tcLiveSelf from ${JSON.stringify(id)};\n` +
         `(globalThis.__tabcomputerLive ??= new Map()).set(${JSON.stringify(key)}, __tcLiveSelf);\n`;
       LIVE_DEPS.forEach((dep, i) => {
@@ -62,6 +64,7 @@ export function hotswapLiveModules(root: string): Plugin {
         const r = await this.resolve(m[2], id);
         if (!r || r.external || r.id.includes('?') || !r.id.startsWith(srcDir)) continue;
         const lazyKey = path.relative(root, r.id).split(path.sep).join('/');
+        if (NOT_LIVE.test(lazyKey)) continue;
         extra += `(globalThis.__tabcomputerLiveLoaders ??= new Map()).set(${JSON.stringify(lazyKey)}, () => import(${JSON.stringify(m[2])}));\n`;
       }
       return {
@@ -73,9 +76,9 @@ export function hotswapLiveModules(root: string): Plugin {
 }
 
 /** What `hotswap checkout` gets: the source of this build (src/hotswap/source.ts) */
+// The suites' fixtures are in too (about 200 KB gzipped), for `hotswap test`'s node:fs
 const SOURCE_DIRS = ['src', 'profiles', 'tests/tests/shiro-vitest'];
 const SOURCE_FILES = ['tsconfig.json', 'package.json', 'build-number.txt', 'vite.config.ts', 'vite-plugin-hotswap.ts', 'AGENTS.md', 'CLAUDE.md', 'docs/HOTSWAP.md'];
-const SOURCE_SKIP = /^tests\/tests\/shiro-vitest\/fixtures\//;
 
 /** The tarball's name for a build ('' sha: outside a git checkout) */
 export function sourceTarName(sha: string): string {
@@ -132,7 +135,7 @@ export function hotswapSource(root: string, sha: string): Plugin {
       } catch {
         return; // not a git checkout: no source tarball
       }
-      const files = listed.filter((f) => (SOURCE_FILES.includes(f) || SOURCE_DIRS.some((d) => f.startsWith(d + '/'))) && !SOURCE_SKIP.test(f))
+      const files = listed.filter((f) => (SOURCE_FILES.includes(f) || SOURCE_DIRS.some((d) => f.startsWith(d + '/'))))
         .filter((f) => fs.existsSync(path.join(root, f)) && fs.statSync(path.join(root, f)).isFile())
         .sort();
       const entries: [string, Buffer][] = files.map((f) => [f, fs.readFileSync(path.join(root, f))]);

@@ -8,7 +8,7 @@ import { evaluateBundle, hotswap, type ModuleReport, type SwapRecord } from '../
  * an auto-revert unless confirmed (docs/HOTSWAP.md).
  */
 
-const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/shiro)
+const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/tabcomputer)
        hotswap apply [--root DIR] [--ttl 90s | --no-ttl] [--fresh-state] FILE...
        hotswap build [--root DIR] FILE...   build and report, swap nothing
        hotswap confirm [--persist] [ID]     keep pending swaps (stop their TTL)
@@ -264,8 +264,18 @@ const home = (ctx: CommandContext) => ctx.env['HOME'] || '/home/user';
 async function checkout(ctx: CommandContext, args: string[]): Promise<number> {
   const force = args.includes('--force');
   const dirArg = args.find((a) => !a.startsWith('-'));
-  const dir = ctx.fs.resolvePath(dirArg ? dirArg.replace(/^~(?=\/|$)/, home(ctx)) : `${home(ctx)}/shiro`, ctx.cwd);
-  const { checkoutSource } = await import('../hotswap/source');
+  const dir = ctx.fs.resolvePath(dirArg ? dirArg.replace(/^~(?=\/|$)/, home(ctx)) : `${home(ctx)}/tabcomputer`, ctx.cwd);
+  const { checkoutSource, readManifest } = await import('../hotswap/source');
+  // Tabs from before the default was ~/tabcomputer have their checkout in ~/shiro: keep using it
+  if (!dirArg && !force) {
+    const old = `${home(ctx)}/shiro`;
+    const exists = async (p: string) => { try { await ctx.fs.stat(p); return true; } catch { return false; } };
+    if (!(await exists(dir)) && await exists(`${old}/.hotswap-source.json`)) {
+      const m = await readManifest(ctx.fs as any, old).catch(() => null);
+      ctx.stdout += `using the existing checkout in ${old}${m ? ` (build ${m.build})` : ''}; 'hotswap checkout ~/tabcomputer' makes a new one\n`;
+      return 0;
+    }
+  }
   try {
     const m = await checkoutSource(ctx.fs as any, dir, { force });
     ctx.stdout += `checked out build ${m.build} (${m.sha ? m.sha.slice(0, 12) : 'no commit'}), ${Object.keys(m.files).length} files, in ${dir}\n`;

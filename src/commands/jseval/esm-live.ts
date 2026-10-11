@@ -76,7 +76,8 @@ export function liveModule(src: string): string {
   return liveBindings(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src, true);
 }
 
-const STATIC_IMPORT = /(?<![\w$.])import\s*(?:[\w$*{][^;'"()]*?\bfrom\s*)?(['"])([^'"\n]+)\1/g;
+// (`import` the keyword: not the start of Astro's `importsRaw += \`import … from '${…}'\``)
+const STATIC_IMPORT = /(?<![\w$.])import(?![\w$])\s*(?:[\w$*{][^;'"()]*?\bfrom\s*)?(['"])([^'"\n]+)\1/g;
 
 function liveBindings(src: string, general: boolean): string {
   const mask = codeMask(src);
@@ -128,6 +129,9 @@ function liveBindings(src: string, general: boolean): string {
     const from = /^\s*from\s*(['"])([^'"\n]+)\1/.exec(src.slice(m.index! + m[0].length));
     if (from) {
       if (general) {
+        // (the statement is the transform's, its names untouched: micromark-util-subtokenize
+        // both imports SpliceBuffer and re-exports it)
+        keep.push([m.index!, m.index! + m[0].length + from[0].length]);
         const idx = modules.push(from[2]) - 1;
         for (const item of m[1].split(',')) {
           const as = /^\s*([\w$]+)(?:\s+as\s+([\w$]+))?\s*$/.exec(item);

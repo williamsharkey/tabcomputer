@@ -35,6 +35,7 @@ import { createUtilModule } from './modules/util';
 import { createFsModule, createFsPromisesModule } from './modules/fs';
 import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
 import { createWasiModule } from './modules/wasi';
+import { createTestModule } from './modules/test-runner';
 import { createStreamModule } from './modules/stream';
 import { createCryptoModule } from './modules/crypto';
 import { createProcessGlobal, WORKER_ONLY_GLOBALS, createProcessFunction } from './process-global';
@@ -315,12 +316,16 @@ export async function executeNodeScript(
         case 'node:fs/promises': return trackModule(createFsPromisesModule({ ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir, trackAsync, atExit }));
         case 'wasi':
         case 'node:wasi': return createWasiModule({ guest, exit: (code) => fakeProcess.exit(code) as never });
+        case 'node:test': return createTestModule({
+          getProcess: () => fakeProcess, trackAsync, inspect: (v, o) => getBuiltinModule('util').inspect(v, o),
+          assert: () => getBuiltinModule('assert'), childProcess: () => getBuiltinModule('child_process'),
+        });
         case 'child_process':
         case 'node:child_process': return createChildProcessModule({ ctx, fileCache, fileMtimes, pendingPromises, FakeBuffer, getProcess: () => fakeProcess, guest });
         case 'os':
         case 'node:os': return createOsModule(ctx);
         case 'util':
-        case 'node:util': return createUtilModule();
+        case 'node:util': return createUtilModule(() => fakeProcess);
         case 'events':
         case 'node:events': return createEventsModule();
         case 'url':

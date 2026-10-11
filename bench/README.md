@@ -89,6 +89,18 @@ Isolated only, each from a fresh profile, time and RSS peak:
   its own, from server.mjs's mirror disk cache (warm after the machine's
   first run).
 
+- An interactive `claude --npm` session typed at the terminal (installed
+  first): start to its prompt (the external CLAUDE.md import dialog
+  answered with Enter), 3 turns, 10 s idle, Ctrl-C twice. The model is a
+  local Messages API the harness starts on this machine's address
+  (`ANTHROPIC_BASE_URL`; streamed mock replies, no credentials).
+  `workflow.claude_session_lag.{p50,p99,max}` is the lateness of a 500 ms
+  heartbeat in the page during the session (the watchdog's measure, every
+  tick kept); `.longtasks_per_min`, `.longtask_ms_per_min` and `.stalls` come
+  from the watchdog's counters and events (`watchdog --json`), so a change
+  that freezes the page during agent work shows up as numbers.
+  `workflow.claude_session.start` / `.turn` are the prompt and reply times.
+
 The builds (`workflow.vite.build`, `workflow.go.run_first`/`run_warm`,
 `workflow.go.build_a`, `workflow.apt.update`/`install_hello`) also record
 `.user` and `.sys`: host CPU seconds of the whole Chromium tree (browser,

@@ -4,6 +4,16 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/perf-kernel)** — additive: per-socket SO_SNDBUF / SO_RCVBUF (KSocket: AF_UNIX and loopback/relay TCP).
+  - setsockopt(SO_SNDBUF, v) sets max(min(v, wmem_max) * 2, 4608), as Linux
+    does; SO_RCVBUF the same with rmem_max and 2304; SO_SNDBUFFORCE (32) and
+    SO_RCVBUFFORCE (33) skip the max (up to 64 MiB). getsockopt returns the
+    doubled value. wmem_max/rmem_max are 8 MiB (`/proc/sys/net/core/*`), so a
+    socket can queue 16 MiB. The default stays the stack's 256 KiB.
+  - An AF_UNIX write blocks (POLLOUT clears) at the writer's own send buffer;
+    raising it wakes a blocked writer. A datagram larger than it is EMSGSIZE.
+    accept() connections start with the listener's sizes.
+
 - **2026-10-11 (unix/perf-kernel)** — behavior fix: a Blink engine that dies ends its processes with a signal.
   - A worker error ends the guest with SIGSEGV (a wasm trap, any engine error)
     or SIGABRT (an abort), instead of exit status 1; a worker that ends without

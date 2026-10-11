@@ -18,7 +18,7 @@ export const ownPages = true;
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', '.cache', 'blinkprof');
 // exported, and through `sudo -E`: tabcomputer's sudo drops a plain prefix (and `sudo env X=…`)
 const VARS = 'SHIRO_BLINK_PROFILE=/tmp/prof/%p.txt SHIRO_BLINK_PROFILE_REGIONS=100000 SHIRO_BLINK_PROFILE_TOP=5000';
-const PROF = `export ${VARS} LD_DEBUG=files LD_DEBUG_OUTPUT=/tmp/prof/ld DEBIAN_FRONTEND=noninteractive;`;
+const PROF = `export ${VARS} LD_DEBUG=files LD_DEBUG_OUTPUT=/tmp/prof/ld DEBIAN_FRONTEND=noninteractive PATH=$PATH:/usr/sbin:/sbin;`;
 const APT = 'sudo -E apt-get';
 const LIBS = ['/usr/lib/x86_64-linux-gnu/libz.so.1', '/usr/lib/x86_64-linux-gnu/liblzma.so.5', '/usr/lib/x86_64-linux-gnu/libc.so.6', '/lib/ld-musl-x86_64.so.1'];
 
@@ -92,8 +92,9 @@ export async function run(h) {
     const t0 = Date.now();
     await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && export ${VARS}; ANTHROPIC_API_KEY=sk-ant-api03-bench-not-a-real-key-000000000000000000000000 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
     for (;;) {
-      const files = (await h.sh('ls /tmp/prof 2>/dev/null')).out;
-      if (/^\d+\.txt\s*$/m.test(files)) break;
+      // Claude's prompt on screen: its profile was written at that first terminal read
+      const screen = await h.eval(() => { const b = window.__tabcomputer.terminal.term.buffer.active; const r = []; for (let y = b.viewportY; y < b.viewportY + 40; y++) r.push(b.getLine(y)?.translateToString(true) ?? ''); return r.join('\n'); });
+      if (/for shortcuts|\? for|shift\+tab to cycle/.test(screen)) break;
       if (Date.now() - t0 > 600000) throw new Error('no profile from claude in 600 s');
       await h.page.waitForTimeout(500);
     }

@@ -1,0 +1,75 @@
+From 6bf19c3878da35eadcb65e5a6dc43bb0ee748c04 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 22:51:46 +0000
+Subject: [PATCH] Shiro: the GIL's holder, waiters and acquisitions in a struct
+ the page reads
+
+/proc/PID/status's EngineLock line (tabcomputer#19, native Claude freezes):
+which guest thread holds the lock, by the tid its gettid returns (0:
+nobody), how many wait, and how many times it was taken. Plain stores in
+the wasm memory at shiro_gil_state(), which host.mjs hands the page with
+the memory.
+---
+ blink/gil.c | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/blink/gil.c b/blink/gil.c
+index d3adfae..3a911b1 100644
+--- a/blink/gil.c
++++ b/blink/gil.c
+@@ -12,6 +12,7 @@
+ 
+ #include "blink/assert.h"
+ #include "blink/atomic.h"
++#include "blink/machine.h"
+ 
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
+@@ -25,9 +26,26 @@ static pthread_mutex_t g_gil_lock = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_cond_t g_gil_cond = PTHREAD_COND_INITIALIZER;
+ static unsigned long g_gil_next;      // next ticket to hand out
+ static unsigned long g_gil_serving;   // ticket allowed to run
+-static _Atomic(int) g_gil_waiters;
+ static _Thread_local bool t_gil_held;
+ 
++// Who holds the lock, for the page (/proc/PID/status's EngineLock line):
++// the holder's tid (what its gettid returns; 0: nobody), how many threads
++// wait, and how many times it was taken. The page reads it in the wasm
++// memory at shiro_gil_state(); plain stores, no call out.
++struct ShiroGilState {
++  _Atomic(int) holder;
++  _Atomic(int) waiters;
++  _Atomic(unsigned) acquires;
++  int pad;
++};
++static struct ShiroGilState g_gil_state;
++#define g_gil_waiters g_gil_state.waiters
++#ifdef __EMSCRIPTEN__
++EMSCRIPTEN_KEEPALIVE void *shiro_gil_state(void) {
++  return &g_gil_state;
++}
++#endif
++
+ void GilInit(void) {
+   const char *s = getenv("BLINK_GIL");
+ #ifdef __EMSCRIPTEN__
+@@ -62,6 +80,8 @@ void GilAcquire(void) {
+   pthread_mutex_unlock(&g_gil_lock);
+   atomic_fetch_sub(&g_gil_waiters, 1);
+   t_gil_held = true;
++  atomic_store_explicit(&g_gil_state.holder, g_machine ? g_machine->tid : -1, memory_order_relaxed);
++  atomic_fetch_add_explicit(&g_gil_state.acquires, 1, memory_order_relaxed);
+ #ifdef __EMSCRIPTEN__
+   if (t0) ShiroProfGil(true, t0);  // SHIRO_BLINK_PROFILE: time held, time waited
+ #endif
+@@ -76,6 +96,7 @@ void GilRelease(void) {
+   if (g_shiro_prof) ShiroProfGil(false, 0);
+ #endif
+   t_gil_held = false;
++  atomic_store_explicit(&g_gil_state.holder, 0, memory_order_relaxed);
+   pthread_mutex_lock(&g_gil_lock);
+   ++g_gil_serving;
+   pthread_cond_broadcast(&g_gil_cond);
+-- 
+2.43.0
+

@@ -133,6 +133,7 @@ async function openInIframe(ctx: CommandContext, port: number, path: string = '/
       width: '36em',
       height: '24em',
       container: document.body,
+      appId: 'serve', appName: 'Server',
       onBecome: (p) => {
         const info = activeServers.get(p);
         const dir = info?.directory || '/tmp';

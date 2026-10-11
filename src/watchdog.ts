@@ -135,6 +135,11 @@ export async function frozenLastTimeNotice(href: string, waitMs = 300): Promise<
   ];
 }
 
+/** The previous load's wedge record (it froze with this tab open), or null; waits at most `waitMs` for the read */
+export function previousLoadWedge(waitMs = 300): Promise<WedgeRecord | null> {
+  return Promise.race([wedgeRead, new Promise<null>((r) => setTimeout(() => r(null), waitMs))]);
+}
+
 const clip = (s: string) => (s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…' : s);
 
 export function recordEvent(e: WatchdogEvent): void {

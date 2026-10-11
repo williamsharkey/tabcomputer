@@ -52,6 +52,7 @@ export function spawnInWindow(
   const win = createServerWindow({
     mode: 'terminal',
     title: title || (command ? `[${proc.pid}] ${command.split(/\s/)[0]}` : `[${proc.pid}] terminal`),
+    appId: 'spawn', appName: 'Spawn',
     width: splitPort ? '64em' : '48em',
     height: '28em',
     onClose: doClose,

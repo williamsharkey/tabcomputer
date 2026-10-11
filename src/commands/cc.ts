@@ -1,4 +1,5 @@
 import { Command, CommandContext } from './index';
+import { fillRandom } from '../utils/random-fill';
 
 /**
  * cc/gcc: Real C compiler using xcc/wcc (C → WebAssembly)
@@ -413,7 +414,7 @@ export class WasiRT {
       },
       random_get(buf: number, len: number) {
         w.sync();
-        crypto.getRandomValues(new Uint8Array(w.memory.buffer, buf, len));
+        fillRandom(new Uint8Array(w.memory.buffer, buf, len)); // (any length: #46)
         return E.OK;
       },
       // Stubs for unused WASI syscalls

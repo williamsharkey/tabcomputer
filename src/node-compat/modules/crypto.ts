@@ -11,6 +11,16 @@ export interface CryptoDeps {
 }
 
 import { sha512sync, sha384sync, md5sync, hmacSync } from '../../utils/hashes';
+import { fillRandom } from '../../utils/random-fill';
+
+/** randomFill's bytes: `size` bytes from `offset` (in bytes) of buf, checked as Node does */
+function randomRange(buf: ArrayBufferView | ArrayBuffer, offset = 0, size?: number): Uint8Array {
+  const all = ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : new Uint8Array(buf);
+  if (!Number.isInteger(offset) || offset < 0 || offset > all.length) throw new RangeError(`The value of "offset" is out of range. It must be >= 0 && <= ${all.length}. Received ${offset}`);
+  const n = size ?? all.length - offset;
+  if (!Number.isInteger(n) || n < 0 || offset + n > all.length) throw new RangeError(`The value of "size" is out of range. It must be >= 0 && <= ${all.length - offset}. Received ${size}`);
+  return all.subarray(offset, offset + n);
+}
 
 export function createCryptoModule(deps: CryptoDeps): any {
   const { sha256sync, sha1sync, FakeBuffer } = deps;
@@ -61,8 +71,11 @@ export function createCryptoModule(deps: CryptoDeps): any {
 
   return {
     randomBytes: (n: number, cb?: Function) => {
-      const bytes = new Uint8Array(n);
-      crypto.getRandomValues(bytes);
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 0x7fffffff) {
+        throw new RangeError(`The value of "size" is out of range. It must be >= 0 && <= 2147483647. Received ${n}`);
+      }
+      // (any size, as Node: getRandomValues alone stops at 64 KiB, #46)
+      const bytes = fillRandom(new Uint8Array(n));
       Object.setPrototypeOf(bytes, FakeBuffer.prototype);
       if (cb) { setTimeout(() => cb(null, bytes), 0); return; }
       return bytes;
@@ -77,7 +90,17 @@ export function createCryptoModule(deps: CryptoDeps): any {
     randomUUID: () => crypto.randomUUID(),
     // (vite makes its dev server's WebSocket token with it)
     getRandomValues: <T extends ArrayBufferView>(a: T): T => crypto.getRandomValues(a as any) as T,
-    randomFillSync: (buf: Uint8Array) => { crypto.getRandomValues(buf); return buf; },
+    // (webcrypto's getRandomValues keeps its 64 KiB limit, as in Node; these don't have one)
+    randomFillSync: (buf: ArrayBufferView | ArrayBuffer, offset?: number, size?: number) => {
+      fillRandom(randomRange(buf, offset, size));
+      return buf;
+    },
+    randomFill: (buf: ArrayBufferView | ArrayBuffer, ...rest: any[]) => {
+      const cb = rest.pop();
+      if (typeof cb !== 'function') throw new TypeError('The "callback" argument must be of type function');
+      const range = randomRange(buf, rest[0], rest[1]);
+      setTimeout(() => { fillRandom(range); cb(null, buf); }, 0);
+    },
     timingSafeEqual: (a: Uint8Array, b: Uint8Array) => {
       if (a.length !== b.length) throw new RangeError('Input buffers must have the same byte length');
       let result = 0;

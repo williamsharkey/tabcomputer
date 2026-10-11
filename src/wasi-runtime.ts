@@ -13,6 +13,7 @@
 
 import type { FileSystem } from './filesystem';
 import { makePreview0Imports } from './wasi-preview0';
+import { fillRandom } from './utils/random-fill';
 
 // ── WASI errno constants ─────────────────────────────────────────────
 
@@ -1078,8 +1079,8 @@ export class WasiRT {
   // ── random ─────────────────────────────────────────────────────────
 
   private random_get(bufPtr: number, bufLen: number): number {
-    const buf = new Uint8Array(this.memory.buffer, bufPtr, bufLen);
-    crypto.getRandomValues(buf);
+    // (any length, shared memory too: #46)
+    fillRandom(new Uint8Array(this.memory.buffer, bufPtr, bufLen));
     return WASI_ESUCCESS;
   }
 

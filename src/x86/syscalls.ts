@@ -16,6 +16,7 @@ import { retain, release, type OpenFile } from '../kernel/fd';
 import { EpollFile } from '../kernel/epoll';
 import { activeProfile, unameRelease, UNAME_VERSION } from '../profile';
 import { memoryInfo } from '../utils/sysinfo';
+import { fillRandom } from '../utils/random-fill';
 
 // Linux error codes (negated — syscalls return -ERRNO)
 const ENOENT = 2;
@@ -749,7 +750,7 @@ export class LinuxSyscalls {
   private sysGetrandom(buf: bigint, buflen: bigint, flags: bigint): bigint {
     const len = Number(buflen);
     const bytes = new Uint8Array(len);
-    crypto.getRandomValues(bytes);
+    fillRandom(bytes); // (getrandom takes any length: #46)
     this.mem.writeBytes(buf, bytes);
     return BigInt(len);
   }

@@ -2496,6 +2496,78 @@
    "size": 66065440,
    "toolkit": "gtk2"
   },
+  "glxgears": {
+   "bin": "/usr/bin/glxgears",
+   "closureSize": 56878300,
+   "description": "OpenGL gears demo, with glxinfo (mesa-utils)",
+   "dropped": [
+    "gcc-12-base",
+    "libwayland-egl1",
+    "libwayland-client0",
+    "libffi8",
+    "libglx-mesa0",
+    "libgl1-mesa-dri",
+    "zlib1g",
+    "libzstd1",
+    "libxcb-dri3-0",
+    "libstdc++6",
+    "libsensors5",
+    "libsensors-config",
+    "libllvm15",
+    "libz3-4",
+    "libxml2",
+    "liblzma5",
+    "libicu72",
+    "libtinfo6",
+    "libedit2",
+    "libglapi-mesa",
+    "libexpat1",
+    "libelf1",
+    "libdrm2",
+    "libdrm-common",
+    "libdrm-radeon1",
+    "libdrm-nouveau2",
+    "libdrm-intel1",
+    "libpciaccess0",
+    "libdrm-amdgpu1",
+    "libxxf86vm1",
+    "libxext6",
+    "libxshmfence1",
+    "libxfixes3",
+    "libxcb-xfixes0",
+    "libxcb-sync1",
+    "libxcb-shm0",
+    "libxcb-randr0",
+    "libxcb-present0",
+    "libxcb-glx0",
+    "libxcb-dri2-0",
+    "libx11-xcb1",
+    "libegl-mesa0",
+    "libwayland-server0",
+    "libgbm1"
+   ],
+   "packages": [
+    "mesa-utils",
+    "mesa-utils-bin",
+    "libx11-6",
+    "libx11-data",
+    "libxcb1",
+    "libxdmcp6",
+    "libc6",
+    "libgcc-s1",
+    "libbsd0",
+    "libmd0",
+    "libxau6",
+    "libgles2",
+    "libglvnd0",
+    "libgl1",
+    "libglx0",
+    "libegl1"
+   ],
+   "pkg": "mesa-utils",
+   "size": 5430896,
+   "toolkit": "gl"
+  },
   "gnumeric": {
    "bin": "/usr/bin/gnumeric",
    "closureSize": 73052680,
@@ -8143,6 +8215,12 @@
    "size": 92992,
    "version": "3.1-20221030-2"
   },
+  "libegl1": {
+   "filename": "pool/main/libg/libglvnd/libegl1_1.6.0-1_amd64.deb",
+   "sha256": "fe4d8b39f6e6fe1a32ab1efd85893553eaa9cf3866aa668ccf355f585b37d523",
+   "size": 33652,
+   "version": "1.6.0-1"
+  },
   "libelf1": {
    "filename": "pool/main/e/elfutils/libelf1_0.188-2.1_amd64.deb",
    "sha256": "619add379c606b3ac6c1a175853b918e6939598a83d8ebadf3bdfd50d10b3c8c",
@@ -8484,6 +8562,12 @@
    "sha256": "2db5b13a6b7f4042f9a417ad7fa4338b6c47528dc64d7f89cfd5e53d07d76bc4",
    "size": 35900,
    "version": "22.3.6-1+deb12u2"
+  },
+  "libgles2": {
+   "filename": "pool/main/libg/libglvnd/libgles2_1.6.0-1_amd64.deb",
+   "sha256": "07b2f51b8aa3c8d6d928133cd46087bd8793d0d67c203f09fc289d45a2cf5f47",
+   "size": 16828,
+   "version": "1.6.0-1"
   },
   "libglib2.0-0": {
    "filename": "pool/main/g/glib2.0/libglib2.0-0_2.74.6-2+deb12u9_amd64.deb",
@@ -11130,6 +11214,18 @@
    "sha256": "aaa46dcb3b39948ae2e0fdb72cfcb2f48c0b59f19785a3da8045c05eb19955dd",
    "size": 26136,
    "version": "10.0.0"
+  },
+  "mesa-utils": {
+   "filename": "pool/main/m/mesa-demos/mesa-utils_8.5.0-1_amd64.deb",
+   "sha256": "d2561f7bd04918a3394e2e811d3eb4e7816e9b227c9bb9f9c6e338cf4f27e485",
+   "size": 954892,
+   "version": "8.5.0-1"
+  },
+  "mesa-utils-bin": {
+   "filename": "pool/main/m/mesa-demos/mesa-utils-bin_8.5.0-1_amd64.deb",
+   "sha256": "f692be831b458f442715b73ebefed6b3b2a9275d559bf2c648a628c4c80398a7",
+   "size": 53280,
+   "version": "8.5.0-1"
   },
   "mousepad": {
    "filename": "pool/main/m/mousepad/mousepad_0.5.10-2_amd64.deb",

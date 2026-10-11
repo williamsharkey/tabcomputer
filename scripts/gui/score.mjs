@@ -36,7 +36,7 @@ const APPS = [
   ['mousepad', 'Editors & viewers'], ['gedit', 'Editors & viewers'], ['l3afpad', 'Editors & viewers'],
   ['evince', 'Editors & viewers'], ['eog', 'Editors & viewers'], ['ristretto', 'Editors & viewers'], ['gpicview', 'Editors & viewers'],
   ['geany', 'Editors & viewers'], ['zathura', 'Editors & viewers'],
-  ['gimp', 'Graphics'], ['inkscape', 'Graphics'], ['krita', 'Graphics'], ['blender', 'Graphics'], ['shotwell', 'Graphics'], ['simple-scan', 'Graphics'],
+  ['gimp', 'Graphics'], ['inkscape', 'Graphics'], ['krita', 'Graphics'], ['blender', 'Graphics'], ['glxgears', 'Graphics'], ['shotwell', 'Graphics'], ['simple-scan', 'Graphics'],
   ['pcmanfm', 'Desktop'], ['thunar', 'Desktop'], ['xterm', 'Desktop'], ['galculator', 'Desktop'],
   ['gnumeric', 'Office'], ['abiword', 'Office'], ['libreoffice-writer', 'Office'], ['xournalpp', 'Office'],
   ['firefox-esr', 'Internet & media'], ['netsurf', 'Internet & media'], ['dillo', 'Internet & media'],

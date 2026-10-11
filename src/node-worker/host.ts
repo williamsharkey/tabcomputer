@@ -63,7 +63,7 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
         if (watching || !kernel.fs) return;
         watching = true;
         // (with when it happened: it reaches the guest later than the guest's own reads see it)
-        const off = kernel.fs.onChange((event, path, newPath, detail) => toGuest({ type: 'node-guest-fs', event, path, newPath, detail: { ...detail, at: Date.now() } }));
+        const off = kernel.fs.onChange((event, path, newPath, detail) => toGuest({ type: 'node-guest-fs', event, path, newPath, detail: { ...detail, at: performance.timeOrigin + performance.now() } }));
         proc.onTerminate(off);
         return;
       }

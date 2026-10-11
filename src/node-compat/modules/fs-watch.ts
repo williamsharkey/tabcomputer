@@ -121,7 +121,9 @@ export function createWatchApi(deps: WatchDeps) {
     // watched it, then heard the file's creation from the directory's watcher (chokidar
     // hands a directory's events to its files' watchers) and reported a 'change' (Astro
     // took it for a settings edit and restarted)
-    const since = Date.now();
+    // (to the microsecond, as the page stamps `at`: chokidar watches a file it saw created
+    // within the same millisecond, and that creation's write then passed for a new change)
+    const since = performance.timeOrigin + performance.now();
     let lastEvent = '', lastPath = '', lastHeard = 0;
     if (!dirWatch) fileWatchSince.set(target, Math.max(fileWatchSince.get(target) ?? 0, since));
     const off = ctx.fs.onChange((event, path, newPath, detail) => {
@@ -133,7 +135,7 @@ export function createWatchApi(deps: WatchDeps) {
       // write: Astro took the second 'change' of its .astro/settings.json, after the one its
       // preferences.set() expected, for a settings edit, and restarted)
       if (at !== undefined && event === lastEvent && path === lastPath && at <= lastHeard) return;
-      lastEvent = event; lastPath = path; lastHeard = Date.now();
+      lastEvent = event; lastPath = path; lastHeard = performance.timeOrigin + performance.now();
       for (const [p, gone] of [[path, event === 'delete' || event === 'rename'], [newPath, false]] as [string | undefined, boolean][]) {
         if (!p) continue;
         const name = nameFor(p);

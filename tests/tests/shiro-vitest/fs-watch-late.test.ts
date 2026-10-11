@@ -5,6 +5,8 @@ import { createWatchApi } from '@shiro/node-compat/modules/fs-watch';
 
 // A node guest hears the page's filesystem changes later than its own reads see them
 // (they are relayed): a change from before a watch began is already in what the watcher read.
+// Changes are stamped with the page's wall-clock time to the microsecond.
+const now = () => performance.timeOrigin + performance.now();
 describe('fs.watch and changes relayed late', () => {
   it("drops a change older than the watch, and a directory's change older than the file's own watch", async () => {
     const listeners = new Set<(event: string, path: string, newPath?: string, detail?: { at?: number }) => void>();
@@ -21,12 +23,12 @@ describe('fs.watch and changes relayed late', () => {
     const seen: string[] = [];
     const dir = api.watch('/d', (t: string, n: string) => seen.push(`dir ${t} ${n}`));
     await new Promise((r) => setTimeout(r, 5));
-    const before = Date.now() - 1;
+    const before = now() - 1;
     const file = api.watch('/d/f.json', (t: string, n: string) => seen.push(`file ${t} ${n}`));
     fire('write', '/d/f.json', before); // (the write the file's watcher already read)
     await new Promise((r) => setTimeout(r, 5));
     expect(seen).toEqual([]);
-    fire('write', '/d/f.json', Date.now());
+    fire('write', '/d/f.json', now());
     fire('write', '/d/f.json'); // (no time: the page's own, in order)
     await new Promise((r) => setTimeout(r, 5));
     expect(seen).toEqual(['dir change f.json', 'file change f.json', 'dir change f.json', 'file change f.json']);
@@ -34,14 +36,22 @@ describe('fs.watch and changes relayed late', () => {
     // event with the next (Astro restarted on writeFileSync's second 'change' of
     // .astro/settings.json); one made after that counts
     seen.length = 0;
-    const t = Date.now();
+    const t = now();
     fire('write', '/d/f.json', t);
     fire('write', '/d/f.json', t);
     await new Promise((r) => setTimeout(r, 10));
-    fire('write', '/d/f.json', Date.now());
+    fire('write', '/d/f.json', now());
     await new Promise((r) => setTimeout(r, 5));
     expect(seen).toEqual(['dir change f.json', 'file change f.json', 'dir change f.json', 'file change f.json']);
-    dir.close(); file.close();
+    // A write earlier in the millisecond the file's own watch began (chokidar watching a file it
+    // saw created) is in what it read; with whole milliseconds it passed for a new change
+    seen.length = 0;
+    const t1 = now();
+    const fresh = api.watch('/d/f.json', (t: string, n: string) => seen.push(`fresh ${t} ${n}`));
+    fire('write', '/d/f.json', t1);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen.filter((s) => s.startsWith('fresh'))).toEqual([]);
+    dir.close(); file.close(); fresh.close();
   });
 });
 

@@ -2,6 +2,7 @@ import { Command, CommandContext } from './index';
 import { quoteArgsForShell } from '../shell';
 import { extractTarGzToFS, type FileSystemWriter } from '../utils/tar-utils';
 import { buildTree, binDirOf, binEntries, WASM_ALTERNATES, type BuildResult, type PackageMetadata, type TreeNode, type Wanted } from './npm-tree';
+import { saveSpec, updateLockfile, dropFromLockfile, serializeLockfile, type Lockfile } from './npm-lock';
 
 /**
  * npm: Browser-native package manager for Node.js packages
@@ -449,11 +450,10 @@ async function npmInstall(ctx: CommandContext): Promise<number> {
   // Check for global flag and save-dev
   const isGlobal = ctx.args.includes('-g') || ctx.args.includes('--global');
   const saveDev = ctx.args.includes('-D') || ctx.args.includes('--save-dev');
+  const saveExact = ctx.args.includes('-E') || ctx.args.includes('--save-exact');
 
-  // Filter out flags, including -g/--global, -D/--save-dev
-  const packagesToInstall = ctx.args.slice(1).filter(arg =>
-    !arg.startsWith('--') && arg !== '-g' && arg !== '-D'
-  );
+  // Filter out flags (-g, -D, -E, --save-dev, ...): the rest are package specs
+  const packagesToInstall = ctx.args.slice(1).filter(arg => !arg.startsWith('-'));
 
   if (isGlobal) {
     return await npmInstallGlobal(ctx, packagesToInstall);
@@ -477,6 +477,7 @@ async function npmInstall(ctx: CommandContext): Promise<number> {
   }
 
   let depsToResolve: Record<string, string> = {};
+  const targetSection = saveDev ? 'devDependencies' : 'dependencies';
 
   if (packagesToInstall.length === 0) {
     // Install all dependencies from package.json
@@ -488,10 +489,7 @@ async function npmInstall(ctx: CommandContext): Promise<number> {
     depsToResolve = allDeps;
     ctx.stdout += 'Installing dependencies...\n';
   } else {
-    // Install specific packages
-    const targetSection = saveDev ? 'devDependencies' : 'dependencies';
-    if (!pkg[targetSection]) pkg[targetSection] = {};
-
+    // Install specific packages (saved in package.json once resolved: the installed version, #59)
     for (const spec of packagesToInstall) {
       let name: string, version: string;
       if (spec.startsWith('@')) {
@@ -514,21 +512,48 @@ async function npmInstall(ctx: CommandContext): Promise<number> {
       }
 
       depsToResolve[name] = version;
-      pkg[targetSection]![name] = version === 'latest' ? '*' : version;
     }
-
-    // Save updated package.json
-    await ctx.fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
     ctx.stdout += 'Installing packages...\n';
   }
 
   const t0 = Date.now();
   const tree = await resolveTree(ctx, Object.entries(depsToResolve).map(([name, range]) => ({ name, range })));
+  if (packagesToInstall.length) {
+    // As npm: `^<installed version>` for a bare name, a tag or a version, the
+    // range itself when ^version wouldn't fit inside it (npm-lock.ts saveSpec)
+    if (!pkg[targetSection]) pkg[targetSection] = {};
+    for (const [name, requested] of Object.entries(depsToResolve)) {
+      const got = tree.root.resolved.get(name);
+      if (!got) continue; // (not resolved: not saved)
+      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.*))?$/.exec(requested);
+      pkg[targetSection]![name] = alias ? `npm:${alias[1]}@${saveSpec(alias[2] ?? '', got.version, { exact: saveExact })}`
+        : saveSpec(requested === 'latest' ? '' : requested, got.version, { exact: saveExact });
+      // (one section only, as npm moves it)
+      delete pkg[saveDev ? 'dependencies' : 'devDependencies']?.[name];
+    }
+    await ctx.fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+  }
   const { added, failed } = await installTree(ctx, ctx.cwd, tree, { ignoreScripts: await ignoreScripts(ctx) });
   ctx.stdout += `\nadded ${added} package(s), ${tree.nodes.length} in the tree, in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`;
   if (failed || (tree.warnings.length && tree.nodes.length === 0)) return 1;
+  await writeLockfile(ctx, pkg, tree);
   ctx.stdout += 'Packages installed successfully.\n';
   return 0;
+}
+
+/** package-lock.json beside package.json, with what this install put in node_modules (npm-lock.ts) */
+async function writeLockfile(ctx: CommandContext, pkg: PackageJson, tree: BuildResult): Promise<void> {
+  const lockPath = ctx.fs.resolvePath('package-lock.json', ctx.cwd);
+  let existing: Lockfile | null = null;
+  try {
+    const old = JSON.parse(await ctx.fs.readFile(lockPath, 'utf8') as string);
+    if (old && typeof old.packages === 'object') existing = old;
+  } catch { /* none yet (or unreadable: written fresh) */ }
+  try {
+    await ctx.fs.writeFile(lockPath, serializeLockfile(updateLockfile(existing, pkg, tree)));
+  } catch (e: any) {
+    ctx.stderr += `npm warn could not write package-lock.json: ${e?.message ?? e}\n`;
+  }
 }
 
 /**
@@ -797,6 +822,12 @@ async function npmUninstall(ctx: CommandContext): Promise<number> {
 
   // Save package.json
   await ctx.fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+  // ...and the lockfile, without them (#59)
+  const lockPath = ctx.fs.resolvePath('package-lock.json', ctx.cwd);
+  try {
+    const lock = JSON.parse(await ctx.fs.readFile(lockPath, 'utf8') as string) as Lockfile;
+    if (lock && typeof lock.packages === 'object') await ctx.fs.writeFile(lockPath, serializeLockfile(dropFromLockfile(lock, pkg, packagesToRemove)));
+  } catch { /* no lockfile */ }
 
   return 0;
 }

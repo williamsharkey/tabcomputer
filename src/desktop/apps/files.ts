@@ -3,7 +3,9 @@
  * /dom). Double-click a folder to enter it, a file to open it (text in an
  * editor window, images in a viewer). Inside a git repository it shows the
  * branch, ahead/behind and each entry's status (gitstatus.ts), and offers
- * New Branch Folder; Clone… is always there (gitsheets.ts).
+ * New Branch Folder; Clone… is always there (gitsheets.ts). Repositories
+ * (~/src) always opens, with New Repository, Clone from URL and your GitHub
+ * repositories above the listing (githome-ui.ts).
  */
 
 import type { AppContext } from '../index';
@@ -23,6 +25,8 @@ const PLACES: { label: string; path: string }[] = [
   { label: 'Temporary', path: '/tmp' },
   { label: 'Page (/dom)', path: '/dom' },
 ];
+
+const SRC = '/home/user/src';
 
 const IMAGE_EXT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
 
@@ -59,7 +63,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
           <button class="sd-btn" data-act="clone" title="Clone a GitHub repository into ~/src">Clone…</button>
           <button class="sd-btn" data-act="term" title="Open a terminal here">Terminal here</button>
         </div>
-        <div class="sd-scroll"><table class="sd-table"><thead><tr>
+        <div class="sd-scroll"><div class="sd-files-repos" hidden></div><table class="sd-table"><thead><tr>
           <th>Name</th><th class="sd-num">Size</th><th>Modified</th></tr></thead><tbody></tbody></table>
           <div class="sd-empty sd-muted sd-small" style="padding:18px;display:none"></div>
         </div>
@@ -110,21 +114,53 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
 
   async function go(path: string, push = true): Promise<void> {
     path = fs.resolvePath(path, cwd);
+    let error: string | null = null;
     try {
+      // Repositories (~/src) is always there, empty until something is cloned or made
+      if (path === SRC && !(await fs.exists(path).catch(() => false))) await fs.mkdir(path, { recursive: true });
       const st = await fs.stat(path);
       if (!st.isDirectory()) { void openFile(path); return; }
       entries = await list(path);
     } catch (e) {
-      empty.style.display = '';
-      empty.textContent = `Can't open ${path}: ${(e as Error)?.message ?? e}`;
-      return;
+      // Shown in place of the listing, with the folder it was for (Back returns)
+      error = `Can't open ${path}: ${(e as Error)?.message ?? e}`;
+      entries = [];
     }
     if (push && path !== cwd) history.push(cwd);
     cwd = path;
     selected = null;
     if (!repo || !cwd.startsWith(repo.root)) gitState = null;
     render();
-    void refreshGit();
+    if (error) { empty.textContent = error; empty.classList.add('sd-files-error'); empty.setAttribute('role', 'alert'); }
+    updateReposPanel();
+    if (!error) void refreshGit();
+  }
+
+  // ── Repositories (~/src): new, clone, and your GitHub repositories (githome-ui.ts) ──
+  const reposHost = root.querySelector<HTMLElement>('.sd-files-repos')!;
+  let reposCleanup: (() => void) | null = null;
+  let reposLoading = false;
+  function updateReposPanel(): void {
+    const show = cwd === SRC;
+    reposHost.hidden = !show;
+    // (the panel has its own Clone from URL: the toolbar's would be the same button twice)
+    const toolbarClone = root.querySelector<HTMLElement>('[data-act=clone]');
+    if (toolbarClone) toolbarClone.hidden = show;
+    if (!show) { reposCleanup?.(); reposCleanup = null; return; }
+    if (reposCleanup || reposLoading) return;
+    reposLoading = true;
+    void import('../githome-ui').then((ui) => {
+      reposLoading = false;
+      if (cwd !== SRC || reposCleanup) return;
+      reposCleanup = ui.mountRepoPanel(reposHost, {
+        ctx,
+        // Open goes into the folder here; Git opens it in the Git app
+        openLocal: (p) => void go(p),
+        altLabel: 'Git',
+        openAlt: (p) => void wm.openApp('git', { dir: p, newWindow: true }),
+        cloned: (p) => void go(p),
+      });
+    }, (e) => { reposLoading = false; console.warn('[files] repositories panel', e); });
   }
 
   function render(): void {
@@ -135,7 +171,9 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     for (const p of placeBtns) p.b.classList.toggle('sd-active', p.path === cwd);
     tbody.textContent = '';
     empty.style.display = entries.length ? 'none' : '';
-    empty.textContent = entries.length ? '' : 'This folder is empty.';
+    empty.textContent = entries.length ? '' : cwd === SRC ? 'No repositories on this computer yet: make a new one, or clone one.' : 'This folder is empty.';
+    empty.classList.remove('sd-files-error');
+    empty.removeAttribute('role');
     const frag = document.createDocumentFragment();
     for (const e of entries.slice(0, 2000)) {
       const tr = document.createElement('tr');
@@ -275,7 +313,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     if (parent !== cwd || refresh) return;
     refresh = setTimeout(() => { refresh = null; void go(cwd, false); }, 250);
   });
-  win.on('close', off);
+  win.on('close', () => { off(); reposCleanup?.(); });
   (win as { content?: unknown }).content = { navigate: (a: Record<string, unknown>) => { if (typeof a.path === 'string') void go(a.path); }, path: () => cwd };
   void go(start, false);
   return win;

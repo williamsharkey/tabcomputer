@@ -75,7 +75,8 @@ const CODEX_KEEP: Record<string, boolean> = {
 
 /** The agent a command line runs interactively, its argv (from the command), or null. */
 export function agentOf(line: string): { agent: AgentId; argv: string[] } | null {
-  const words = simpleWords(line.trim());
+  // (`clear; claude …`, `clear && claude …`: the clear doesn't matter to what runs)
+  const words = simpleWords(line.trim().replace(/^clear\s*(;|&&)\s*/, ''));
   if (!words) return null;
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
   const name = words[0]?.slice(words[0].lastIndexOf('/') + 1);

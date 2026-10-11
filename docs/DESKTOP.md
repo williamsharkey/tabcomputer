@@ -120,8 +120,10 @@ destroyed), and the next Terminal window adopts it again.
   - Terminal windows: every tab with its working directory, the exported
     variables it changed (secrets never stored), a program's title and its
     last 2000 lines of scrollback, then a dim "— restored after reload —".
-    A line still running at the reload is printed ("was running: …") and
-    typed on the prompt, not run. Known-safe servers (`RESTARTABLE`: `serve`,
+    A line still running at the reload is typed on the prompt, not run,
+    under that one note: as it was when short, else as `source
+    /tmp/restore-N.sh` (the script holds the line, `cat` shows it), and
+    `claude --continue` for a claude whose session wasn't found. Known-safe servers (`RESTARTABLE`: `serve`,
     `npm run dev`, `vite`, `python -m http.server`) start again, and Claude
     Code or Codex resume their own session (`agent-resume.ts`).
   - Files (its folder), Settings (its pane), Activity, About.
@@ -244,7 +246,7 @@ say first what they need (an API key or a sign-in); Codex runs with
 
 ## Git
 
-- **Clone…** (Files' toolbar, File → Clone Repository…, the Git app): owner/repo
+- **Clone…** (Files' toolbar, File → Clone Repository…, Clone from URL… in the Git app's home): owner/repo
   or a GitHub URL into `~/src/OWNER/REPO`, in a Terminal window
   (`src/desktop/gitsheets.ts`). Signed in to GitHub, real git (installed
   with `pkg install git` on first use) makes a partial clone
@@ -264,12 +266,66 @@ say first what they need (an API key or a sign-in); Codex runs with
   and recomputes when the filesystem reports a change in the repository
   (debounced): nothing polls. Branch folders (worktrees) show their branch
   only.
+- **The Git app's home** (`src/desktop/githome-ui.ts`, data and rows in
+  `src/desktop/github-home.ts`): opened without a repository (dock, menu,
+  spotlight) or with the ‹ Home button of a repository's toolbar, it never
+  asks you to type anything first.
+  - Signed out: **Sign in with GitHub** runs the device flow in place (the
+    code, Copy Code, Open GitHub, then polling) and switches to the signed-in
+    home without a reload. The token is the network sign-in's
+    (`tabcomputer_github_token`), so git and gh use it too, and the git
+    identity is filled in as `gh auth login` does.
+  - Signed in: avatar and login; **Your repositories** (`GET /user/repos?sort=pushed`,
+    50 a page, Show More) with owner/name, Private/Fork badges, description,
+    language, stars and last push, a filter box, All/Public/Private and sort
+    by last push, name or stars. A repository already on this computer
+    (matched by its `origin` URL) has **Open** (and Files); any other has
+    **Clone**, which clones with one click into `~/src/NAME` (`~/src/OWNER/NAME`
+    when that's taken) in a shell of its own with the sign-in in its
+    environment (`cloneScript`, so private repositories work), shows git's
+    progress line in the row, then opens the repository; a failed clone
+    says why and offers the same command in a Terminal. **Notifications**
+    (`GET /notifications?all=true`, unread first; a click opens the issue or
+    pull request on github.com in a new tab and marks it read), **Your pull
+    requests** and **Assigned to you** (`/search/issues`, open ones).
+  - Always: **On this computer**, the repositories in `~/src/*`,
+    `~/src/*/*`, `~/*` and the recently opened ones (localStorage
+    `tabcomputer_git_recent`), with branch and changed-file count; New
+    Repository… and Clone from URL… (the sheet above) as secondary actions.
+  - It calls api.github.com directly (CORS allows `Authorization: Bearer`),
+    falling back to the same-origin `/api/github` proxy when that request
+    can't be made. The lists are cached in localStorage
+    (`tabcomputer_git_home`, tagged with a hash of the token, never the
+    token) for an instant first paint and refreshed in the background;
+    placeholder rows keep the layout still while loading. A 401 signs out
+    with "Your GitHub sign-in has expired or was revoked"; a rate limit (with
+    its reset time) or no connection keeps the lists on screen with a
+    notice and Try again. All windows share one model, and signing in or
+    out anywhere else (the network sheet, another tab) shows at once.
+- **New Repository…** (Git's home, Files' Repositories): a name, `git init`
+  in `~/src/NAME` on `main`, optionally a README and first commit (the
+  author from `~/.gitconfig`), and signed in, the same repository created on
+  GitHub (`POST /user/repos`, Private or Public) and set as `origin`; Push
+  from the Git app publishes it.
 - **The Git app** (`src/desktop/apps/git.ts`): staged, changed and untracked
   files with stage/unstage (one or all), the selected file's diff against the
   last commit, commit (staged files, or everything with "Stage All &
   Commit"; the author from git config), branches (switch, new, new branch
   folder) and the log. Pull and Push open a Terminal running git there. For
   a branch folder it offers a Terminal and the main folder.
+- **Files' Repositories** (`~/src`, the Places item): always opens, making
+  `~/src` if it isn't there yet. Above the listing: New Repository…, Clone
+  from URL…, and your GitHub repositories (the same picker as Git's home,
+  eight at a time; Sign in with GitHub when signed out; Hide GitHub
+  collapses it). In Files, **Open** goes into the repository's folder and
+  **Git** opens it in the Git app; a finished clone opens its folder. The
+  listing below keeps its branch tags. A folder Files can't open shows the
+  error in place of the listing (Back returns).
+- `tests/browser/git-home.mjs` checks all of this against a stubbed
+  api.github.com and device flow (signed out, the code, signed in, filter,
+  Open and Home, Files' Repositories on a fresh computer, a 401, 360 px wide);
+  `--shots DIR` saves the pictures. Unit tests:
+  `tests/tests/shiro-vitest/desktop-githome.test.ts`.
 - `tests/browser/dev-tools.mjs` checks the dock, the first install (Vim),
   badges, stage and commit, and a branch folder; `--shots` writes
   docs/screenshots/dev-*.png. Unit tests:

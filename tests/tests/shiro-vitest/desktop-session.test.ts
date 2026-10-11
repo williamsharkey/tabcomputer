@@ -71,7 +71,16 @@ describe('session restore: the pieces', () => {
     const offered = followUp({ cwd: '/', running: 'rm -rf build && make' }, null);
     expect(offered.offer).toBe('rm -rf build && make');
     expect(offered.run).toBeUndefined();
-    expect(offered.note).toContain('was running: rm -rf build && make');
+    expect(offered.note).toBe(RESTORED_NOTE);
+    // a long line isn't echoed: it is offered from a script holding it
+    const long = 'clear; ' + 'x'.repeat(200);
+    const filed = followUp({ cwd: '/', running: long }, null, 3);
+    expect(filed.offer).toBe('source /tmp/restore-3.sh');
+    expect(filed.file!.path).toBe('/tmp/restore-3.sh');
+    expect(filed.file!.text).toContain(long + '\n');
+    expect(filed.note).toBe(RESTORED_NOTE);
+    // claude whose session wasn't captured: --continue, not its first prompt again
+    expect(followUp({ cwd: '/', running: 'clear; claude "a long first prompt"' }, null).offer).toBe('claude --continue');
     expect(followUp({ cwd: '/', running: 'npm run dev' }, null).run).toBe('npm run dev');
     expect(followUp({ cwd: '/', running: 'serve ./site 8080' }, null).run).toBe('serve ./site 8080');
     const agent = { agent: 'claude' as const, sessionId: 'abc', argv: ['claude', '--resume', 'abc'], line: 'claude --resume abc', cwd: '/home/user/p' };
@@ -136,7 +145,7 @@ describe('session restore: save and restore', () => {
     expect(opened).toEqual([{ cwd: '/home/user/p', title: 'Claude' }]);
     // the main terminal: its command offered, typed but not run
     expect(mainView.restored.typed).toEqual(['make test']);
-    expect(mainView.restored.notes[0]).toContain('was running: make test');
+    expect(mainView.restored.notes[0]).toBe(s.RESTORED_NOTE);
     // the agent's session resumes once; the second tab had the same session (dedupe): its line is only offered
     expect(claudeView!.restored.typed).toEqual(['claude --resume S1\r', 'claude']);
     expect(ran).toEqual(['mdview n.md', 'gui gimp']);

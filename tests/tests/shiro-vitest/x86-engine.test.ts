@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, onTestFinished, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -222,6 +222,17 @@ const fionbioBin = join(out, 'fionbio');
 const haveFionbio = tryBuild('gcc', ['-static', '-O1', '-o', fionbioBin, 'fionbio.c']);
 const fuzzBin = join(out, 'jitfuzz');
 const haveFuzz = tryBuild('gcc', ['-static', '-O1', '-o', fuzzBin, 'jitfuzz.c']);
+// alufuzz.c is generated (1.5 MB of C): every ALU form, wjit's category 0
+const aluBin = join(out, 'alufuzz');
+const haveAlu = (() => {
+  try {
+    writeFileSync(join(out, 'alufuzz.c'), execFileSync('python3', [join(FIX, 'alufuzz.py')], { maxBuffer: 64 << 20 }));
+    execFileSync('gcc', ['-static', '-O1', '-o', aluBin, join(out, 'alufuzz.c')], { stdio: 'pipe', timeout: 120_000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // signalfd needs Blink to forward signalfd/signalfd4 and the signal mask to the kernel (a patch named for it)
 const signalfdBin = join(out, 'signalfd');
@@ -475,6 +486,19 @@ describe.skipIf(!haveJit || !haveFuzz)('Blink engine: wasm JIT', () => {
     expect(jit.output.split('\n').length).toBeGreaterThan(100);
     expect(jit.output).toBe(interp.output);
   }, 120_000);
+
+  it.skipIf(!haveAlu)('runs every ALU form like the interpreter and the host CPU (alufuzz)', async () => {
+    // add/or/adc/sbb/and/sub/xor/cmp in each width as reg, reg<-mem, mem<-reg, imm8, imm32 and mem<-imm, with the flags
+    // dead, pushed, or consumed by a fused jcc: one checksum line per form (5360), each run hot enough to compile
+    const { shell } = await setup(readFileSync(aluBin));
+    const jit = await run(shell, './prog 300');
+    const interp = await run(shell, 'BLINK_WJIT=0 ./prog 300');
+    expect(jit.exitCode).toBe(0);
+    const lines = (s: string) => s.replace(/\r/g, '').trim().split('\n');
+    expect(lines(jit.output).length).toBe(5360);
+    expect(lines(jit.output)).toEqual(lines(interp.output));
+    if (process.arch === 'x64') expect(lines(jit.output)).toEqual(lines(execFileSync(aluBin, ['300']).toString()));
+  }, 600_000);
 
   it('sees code rewritten after mprotect, in RWX pages and after munmap', async () => {
     const { shell } = await setup(readFileSync(jitBin));

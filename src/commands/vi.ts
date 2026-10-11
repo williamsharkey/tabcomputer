@@ -1,4 +1,5 @@
 import { Command, CommandContext } from './index';
+import { ExSession, ExError, newBuffer, type ExHost, type ExResult } from './ex-engine';
 
 /**
  * vi: Minimal vi-like text editor for the terminal
@@ -60,42 +61,112 @@ export const viCmd: Command = {
   description: 'Minimal vi-like text editor',
 
   async exec(ctx: CommandContext): Promise<number> {
-    if (ctx.args.length === 0) {
-      ctx.stderr += 'Usage: vi <file>\n';
+    // vim's options: -c CMD and +CMD (run after loading), +N, -e/-E (ex mode:
+    // commands from stdin), -s (silent, with -e), and the ones that change nothing here
+    const cmds: string[] = [];
+    let exMode = false, silent = false;
+    const files: string[] = [];
+    const args = ctx.args;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === '--') { files.push(...args.slice(i + 1)); break; }
+      if (a === '-c' || a === '--cmd') { cmds.push(args[++i] ?? ''); continue; }
+      if (a.startsWith('+')) { cmds.push(a === '+' ? '$' : a.slice(1)); continue; } // +N, +/pat, +cmd
+      if (a === '-u' || a === '-U' || a === '-T' || a === '-i' || a === '-w' || a === '-W' || a === '-S' || a === '-t' || a === '-q') { i++; continue; }
+      if (a.startsWith('--')) continue; // --clean, --noplugin, --not-a-term, ...
+      if (a.startsWith('-') && a.length > 1) {
+        for (let k = 1; k < a.length; k++) {
+          const ch = a[k];
+          if (ch === 'e' || ch === 'E') exMode = true;
+          else if (ch === 's') silent = true;
+          else if (ch === 'c') { cmds.push(a.slice(k + 1) || (args[++i] ?? '')); break; } // -sc CMD
+        }
+        continue;
+      }
+      files.push(a);
+    }
+    if (ctx.args[0] === undefined && !ctx.terminal) {
+      ctx.stderr += 'Usage: vi [file]\n';
       return 1;
     }
 
-    // Check if terminal is available for interactive mode
+    const filename = files[0] ?? '';
+    const filepath = filename ? ctx.fs.resolvePath(filename, ctx.cwd) : '';
+    const readText = async (path: string) => { try { return await ctx.fs.readFile(path, 'utf8') as string; } catch { return null; } };
+    const initial = filepath ? await readText(filepath) : null;
+    const buf = newBuffer(filename, filepath, initial);
+    if (exMode) buf.cur = buf.lines.length - 1; // ex starts on the last line
+
+    const script = exMode ? (ctx.readStdin ? await ctx.readStdin() : ctx.stdin ?? '').split('\n') : [];
+    let scriptAt = 0;
+    const host: ExHost = {
+      readFile: readText,
+      writeFile: async (path, text, append) => {
+        const old = append ? (await readText(path)) ?? '' : '';
+        await ctx.fs.writeFile(path, old + text);
+      },
+      resolve: (p) => ctx.fs.resolvePath(p, ctx.cwd),
+      print: (t) => { ctx.stdout += t; },
+      message: (t) => { if (!silent) ctx.stdout += t; },
+      run: ctx.shell ? async (cmd, input) => {
+        const tmp = `/tmp/.vi-filter-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+        await ctx.fs.writeFile(tmp, input);
+        let out = '';
+        await ctx.shell!.execute(`{ ${cmd}\n} < ${tmp}`, (o: string) => { out += o.replace(/\r\n/g, '\n'); }, (e: string) => { ctx.stderr += e.replace(/\r\n/g, '\n'); });
+        await ctx.fs.unlink(tmp).catch(() => {});
+        return out;
+      } : undefined,
+      nextLine: () => (scriptAt < script.length ? script[scriptAt++] : null),
+    };
+    const session = new ExSession(buf, host);
+    let failed = false;
+    const runEx = async (line: string): Promise<ExResult> => {
+      try { return await session.run(line); }
+      catch (e) {
+        if (!(e instanceof ExError)) throw e;
+        failed = true;
+        if (!silent) ctx.stderr += e.message + '\n';
+        return { quit: false };
+      }
+    };
+
+    for (const c of cmds) {
+      const r = await runEx(c);
+      if (r.quit) return r.code || (exMode && failed ? 1 : 0);
+    }
+    if (exMode) {
+      // the script on stdin, a command a line; its end quits without writing
+      while (scriptAt < script.length) {
+        const line = script[scriptAt++];
+        if (scriptAt === script.length && line === '') break;
+        const r = await runEx(line);
+        if (r.quit) return r.code || (failed ? 1 : 0);
+      }
+      return failed ? 1 : 0;
+    }
+
     if (!ctx.terminal) {
+      if (cmds.length) {
+        // what vim does when its commands leave it running with no terminal to read
+        ctx.stderr += 'Vim: Error reading input, exiting...\n';
+        return 1;
+      }
       ctx.stderr += 'vi: terminal not available for interactive editing\n';
-      ctx.stderr += 'Use ed for line-based editing, or cat > file << EOF for file creation.\n';
+      ctx.stderr += 'Run its commands instead: vi -c \'%s/old/new/g\' -c wq FILE, or ex -s FILE with commands on stdin (vi -es).\n';
       return 1;
     }
 
-    const filename = ctx.args[0];
-    const filepath = ctx.fs.resolvePath(filename, ctx.cwd);
-
-    // Read file or create new
-    let initialContent = '';
-    let fileExists = false;
-    try {
-      initialContent = await ctx.fs.readFile(filepath, 'utf8') as string;
-      fileExists = true;
-    } catch {
-      // New file
-      initialContent = '';
-    }
-
+    const fileExists = initial !== null;
     const state: EditorState = {
-      lines: initialContent ? initialContent.split('\n') : [''],
-      cursorRow: 0,
+      lines: buf.lines.map((l) => l.t),
+      cursorRow: exMode ? buf.cur : Math.max(0, Math.min(buf.cur, buf.lines.length - 1)),
       cursorCol: 0,
       mode: 'normal',
       commandBuffer: '',
       lastKey: '',
-      modified: false,
+      modified: buf.modified,
       scrollOffset: 0,
-      message: fileExists ? `"${filename}" ${initialContent.split('\n').length} lines` : `"${filename}" [New File]`,
+      message: !filename ? '' : fileExists ? `"${filename}" ${buf.lines.length}L, ${initial!.length}B` : `"${filename}" [New]`,
       searchPattern: '',
       searchBuffer: '',
     };
@@ -451,41 +522,25 @@ export const viCmd: Command = {
         if (key === 'Enter' || key === '\r' || key === '\n') {
           // Execute command
           const cmd = state.commandBuffer.trim();
-
-          if (cmd === 'w') {
-            // Write file
-            const content = state.lines.join('\n');
-            await ctx.fs.writeFile(filepath, content);
-            state.modified = false;
-            state.message = `"${filename}" ${state.lines.length} lines written`;
-          } else if (cmd === 'q') {
-            // Quit
-            if (state.modified) {
-              state.message = 'No write since last change (use :q! to override)';
-            } else {
-              running = false;
-              cleanup();
-              resolve(0);
-              return;
-            }
-          } else if (cmd === 'q!') {
-            // Quit without saving
+          // the editor's lines into the ex buffer, the command, and back
+          const before = state.lines.join('\n');
+          if (before !== buf.lines.map((l) => l.t).join('\n')) { buf.lines = state.lines.map((t) => ({ t })); buf.empty = false; }
+          buf.cur = state.cursorRow;
+          buf.modified = state.modified;
+          let r: ExResult = { quit: false };
+          try { r = await session.run(cmd); }
+          catch (e) { state.message = e instanceof Error ? e.message : String(e); }
+          state.lines = buf.lines.map((l) => l.t);
+          state.cursorRow = Math.max(0, Math.min(buf.cur, state.lines.length - 1));
+          state.cursorCol = Math.min(state.cursorCol, Math.max(0, state.lines[state.cursorRow].length - 1));
+          state.modified = buf.modified;
+          if (r.quit) {
             running = false;
             cleanup();
-            resolve(0);
+            resolve(r.code);
             return;
-          } else if (cmd === 'wq' || cmd === 'x') {
-            // Write and quit
-            const content = state.lines.join('\n');
-            await ctx.fs.writeFile(filepath, content);
-            running = false;
-            cleanup();
-            resolve(0);
-            return;
-          } else {
-            state.message = `Not an editor command: ${cmd}`;
           }
-
+          if (!state.message && /^(w|wr|wri|writ|write|up|update)!?(\s|$)/.test(cmd)) state.message = `"${buf.name}" ${state.lines.length}L written`;
           state.mode = 'normal';
           state.commandBuffer = '';
         } else if (key === 'Backspace' || key === '\x7f') {

@@ -34,13 +34,13 @@ describe('Demo 1: Full App Platform Flow', () => {
   it('npm init creates valid package.json', async () => {
     const { output, exitCode } = await run(shell, 'npm init');
     expect(exitCode).toBe(0);
-    expect(output).toContain('Created package.json');
+    expect(output).toContain(`Wrote to ${dir}/package.json:`);
 
     const raw = await fs.readFile(`${dir}/package.json`, 'utf8');
     const pkg = JSON.parse(raw);
     expect(pkg.version).toBe('1.0.0');
     expect(pkg.scripts).toBeDefined();
-    expect(pkg.dependencies).toBeDefined();
+    expect(pkg.license).toBe('ISC');
   });
 
   it('npm init is idempotent', async () => {

@@ -40,16 +40,16 @@ describe("rg with Claude Code's flags", () => {
     expect(events.map((e) => e.type)).toEqual(['begin', 'match', 'match', 'end', 'summary']);
     expect(events[1].data).toMatchObject({ path: { text: 'A.md' }, lines: { text: '- `doctor` here\n' }, line_number: 4, submatches: [{ match: { text: 'doctor' }, start: 3, end: 9 }] });
     expect(events[2].data.submatches).toHaveLength(2);
-    expect(events[4].data).toMatchObject({ matches: 3, matched_lines: 2, searches_with_match: 1 });
+    expect(events[4].data.stats).toMatchObject({ matches: 3, matched_lines: 2, searches_with_match: 1 });
   });
 
   it('-U --multiline-dotall: a match across lines', async () => {
-    expect((await sh("rg -U --multiline-dotall -n 'Orient.*?doctor' A.md")).out).toBe('A.md:2:Orient yourself\nA.md:3:\nA.md:4:- `doctor` here\n');
+    expect((await sh("rg -U --multiline-dotall -n 'Orient.*?doctor' A.md")).out).toBe('2:Orient yourself\n3:\n4:- `doctor` here\n');
     expect((await sh("rg -U -n 'Orient.*doctor' A.md; echo rc=$?")).out).toBe('rc=1\n');
   });
 
   it('-m: at most N matching lines', async () => {
-    expect((await sh('rg -m 1 -n doctor A.md')).out).toBe('A.md:4:- `doctor` here\n');
+    expect((await sh('rg -m 1 -n doctor A.md')).out).toBe('4:- `doctor` here\n');
   });
 
   it('a binary file is skipped, a big one without being read whole', async () => {

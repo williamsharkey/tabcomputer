@@ -8,7 +8,9 @@
 # os.posix_spawn/waitpid/pipe/dup/kill, sockets and getaddrinfo work over
 # the kernel's WASIX calls, and with OpenSSL 3.5 for _ssl/hashlib
 # (OPENSSLDIR=/etc/ssl: the ca-certificates package's cert.pem). subprocess
-# runs on os.posix_spawn (compat/python3-wasi-subprocess.patch).
+# runs on os.posix_spawn (compat/python3-wasi-subprocess.patch);
+# socketserver's ThreadingMixIn (http.server) handles a request inline when
+# no thread can start (compat/python3-wasi-socketserver.patch).
 # Needs a native toolchain for the build python.
 . "$(dirname "$0")/common.sh"
 PYVER=3.13.7
@@ -30,6 +32,7 @@ tar xzf "$OPENSSL" -C "$B"
 SRC="$B/Python-$PYVER"
 JOBS=$(nproc)
 patch -d "$SRC" -p1 < "$COMPAT_DIR/python3-wasi-subprocess.patch"
+patch -d "$SRC" -p1 < "$COMPAT_DIR/python3-wasi-socketserver.patch"
 
 # zlib and sqlite as static wasm libraries
 ( cd "$B/zlib-1.3.1" && CFLAGS=-O2 CHOST=wasm32 ./configure --static --prefix="$B/deps" >/dev/null && make -j"$JOBS" libz.a >/dev/null && make install >/dev/null )

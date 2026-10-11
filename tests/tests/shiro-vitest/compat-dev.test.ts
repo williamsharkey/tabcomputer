@@ -1895,8 +1895,9 @@ describe('ES module transform: minified imports, and import text in strings left
     expect(out).toContain('__shiro_require("./side.js");');
     expect(out).toContain("`import react from '@vitejs/plugin-react'\nexport default defineConfig({})`");
     // (live, TABCOMPUTER_ESM_LIVE=1: an export list is getters, tabcomputer#35)
-    expect(out).toContain('"x": { get() { try { return tpl; }');
-    expect(out).toContain('"e": { get() { try { return e; }');
+    expect(out).toContain('__shiro_require.live(__shiro_module.exports, {');
+    expect(out).toContain('"x": () => tpl');
+    expect(out).toContain('"e": () => e');
     expect(out).toContain('__shiro_module.exports = 1;');
     expect(out).toContain('__shiro_module.exports["module.exports"] = e;');
   });
@@ -1918,6 +1919,21 @@ describe('live ES module bindings (tabcomputer#35, TABCOMPUTER_ESM_LIVE=1)', () 
     await w('live.mjs', `import { n, inc } from './n.mjs';\nimport * as ns from './n.mjs';\nconsole.log(n); inc(); console.log(n, ns.n);\n`);
     await w('n.mjs', `export let n = 1;\nexport function inc() { n++; }\n`);
     expect((await sh(shell, 'cd /home/user/lb && TABCOMPUTER_ESM_LIVE=1 node live.mjs')).out).toBe('1\n2 2\n');
+  });
+
+  it("exports that can't change any more become plain values once the module has run; the rest stay live", async () => {
+    const live = (src: string) => transformESModules(src, undefined, true);
+    const out = live(`import { dep } from './d.js';\nexport const a = 1;\nexport function f() { return dep; }\nexport class C {}\nexport let n = 1;\nexport function g() {}\ng = () => 2;\nconst h = 3, k = 4;\nexport { h, k, dep };\nexport function inc() { n++; }\n`);
+    const tail = out.slice(out.lastIndexOf(';try { __shiro_require.settle('));
+    // (const, function and class nothing assigns; not a let, a reassigned function, a list's later name, an import)
+    for (const name of ['a', 'f', 'C', 'h', 'inc']) expect(tail).toContain(`"${name}": ${name}`);
+    for (const name of ['n', 'g', 'k', 'dep']) expect(tail).not.toContain(`"${name}": `);
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/ls', { recursive: true });
+    const w = (p: string, t: string) => fs.writeFile('/home/user/ls/' + p, t);
+    await w('m.mjs', `import { f, g, n, inc, a } from './e.mjs';\nimport * as ns from './e.mjs';\nconsole.log(f(), g(), n, a); inc(); console.log(n, ns.n, Object.getOwnPropertyDescriptor(ns, 'a')?.value);\n`);
+    await w('e.mjs', `export const a = 'A';\nexport function f() { return 'f'; }\nexport function g() { return 'g1'; }\ng = () => 'g2';\nexport let n = 1;\nexport function inc() { n++; }\n`);
+    expect((await sh(shell, 'cd /home/user/ls && TABCOMPUTER_ESM_LIVE=1 node m.mjs')).out).toBe('f g2 1 A\n2 2 A\n');
   });
 
   it('without it, imports are copies made at import time, and the entry still runs once', async () => {

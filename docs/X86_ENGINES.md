@@ -1054,6 +1054,15 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
      (siginfo values 100 101 101 102 102 …). The listening channel used to
      take each one at once and hid it.
 
+   A hosted fork child's calls get their reply even while it exits
+   (`KernelChannel.finish`): the instance that runs it goes on, and the
+   child's thread waits for its exit_group's reply to end itself. A
+   request that got no reply (an exiting process's) isn't served again:
+   the page served the child's exit_group back to back (over a million
+   times in 4 s), so the next children's `blink-hosted` and signals waited
+   behind it and kill() missed children in pause() (LTP pause01).
+   Test: fixtures/x86/zombiekill.c.
+
    Numbered from 0600 at the integration coordinator's request (the new
    unix/perf-blink owner renumbers). Tests: x86-engine's siginfo,
    aio-sigqueue, sigwake and shmobj fixtures, with direct channels on.

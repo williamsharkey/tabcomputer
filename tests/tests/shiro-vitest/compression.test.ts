@@ -119,11 +119,21 @@ describe('Compression Suite', () => {
       expect(() => zstdDecompress(new Uint8Array([0x28]))).toThrow();
     });
 
-    it('zstd command refuses to compress', async () => {
+    it('zstd compresses into stored blocks every decoder reads (mkinitramfs: cpio | zstd -q -9 -T0)', async () => {
+      const { zstdEncodeRaw, zstdDecodeAll } = await import('@shiro/commands/compress/zstd-codec');
+      // python3 zstandard 0.25 decompresses this frame to 'hello\n' (checked when written)
+      expect(Buffer.from(zstdEncodeRaw(new TextEncoder().encode('hello\n'))).toString('hex'))
+        .toBe('28b52ffdc438060000000000000031000068656c6c6f0a5388bd91');
+      for (const n of [0, 1, 131072, 131073, 300000]) {
+        const data = new Uint8Array(n).map((_, i) => (i * 7 + (i >> 9)) & 0xff);
+        expect(zstdDecodeAll(zstdEncodeRaw(data))).toEqual(data);
+      }
       await fs.writeFile('/home/user/test.txt', 'content');
-      const { exitCode, output } = await run(shell, 'zstd test.txt');
-      expect(exitCode).toBe(1);
-      expect(output).toContain('decompress only');
+      expect((await run(shell, 'zstd -q test.txt')).exitCode).toBe(0);
+      expect(await fs.exists('/home/user/test.txt')).toBe(true); // zstd keeps its input
+      expect((await run(shell, 'zstd -dc test.txt.zst')).output).toBe('content');
+      const r = await run(shell, "printf 'abc\\n' | zstd -q -9 -T0 | zstd -dc");
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('abc\n');
     });
 
     it('unzstd is alias for zstd -d', async () => {

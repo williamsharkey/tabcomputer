@@ -611,6 +611,36 @@ function decodeFrame(b: Uint8Array, p: number, out: Out): number {
 const isZstdMagic = (b: Uint8Array, p: number) => b[p] === 0x28 && b[p + 1] === 0xb5 && b[p + 2] === 0x2f && b[p + 3] === 0xfd;
 const isSkippable = (b: Uint8Array, p: number) => (b[p] & 0xf0) === 0x50 && b[p + 1] === 0x2a && b[p + 2] === 0x4d && b[p + 3] === 0x18;
 
+
+/**
+ * A zstd frame holding `data` in raw (stored) blocks, with its content size
+ * and XXH64 checksum: valid for every decoder, not smaller than the input.
+ * Enough for programs that only need zstd output to exist (mkinitramfs's
+ * COMPRESS=zstd when Debian's zstd isn't installed; its modules are xz already).
+ */
+export function zstdEncodeRaw(data: Uint8Array): Uint8Array {
+  const BLOCK = 128 << 10;
+  const blocks = Math.max(1, Math.ceil(data.length / BLOCK));
+  // magic, descriptor (8-byte content size, checksum), window byte (128 KiB), size, blocks, checksum
+  const out = new Uint8Array(4 + 1 + 1 + 8 + blocks * 3 + data.length + 4);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, 0xfd2fb528, true);
+  out[4] = 0xc4; // Frame_Content_Size_flag 3 (8 bytes), Content_Checksum_flag
+  out[5] = 7 << 3; // Window_Log 10 + 7 = 17
+  dv.setUint32(6, data.length >>> 0, true);
+  dv.setUint32(10, Math.floor(data.length / 2 ** 32), true);
+  let p = 14;
+  for (let b = 0; b < blocks; b++) {
+    const start = b * BLOCK, n = Math.min(BLOCK, data.length - start);
+    const header = (n << 3) | (b === blocks - 1 ? 1 : 0); // Block_Type 0: raw
+    out[p] = header & 0xff; out[p + 1] = (header >>> 8) & 0xff; out[p + 2] = (header >>> 16) & 0xff;
+    out.set(data.subarray(start, start + n), p + 3);
+    p += 3 + n;
+  }
+  dv.setUint32(p, xxh64Low32(data, 0, data.length), true);
+  return out;
+}
+
 /** Decode all frames (zstd and skippable) in the input */
 export function zstdDecodeAll(b: Uint8Array): Uint8Array {
   const out = new Out(b.length * 4);

@@ -35,21 +35,21 @@ describe('rg reads stdin when given no path', () => {
   });
 
   it('a terminal, /dev/null or a path given: the files', async () => {
-    expect((await sh('rg needle')).out).toBe('a.txt:1:needle in file\n');
-    expect((await sh('rg needle < /dev/null')).out).toBe('a.txt:1:needle in file\n');
-    expect((await sh('echo needle | rg needle a.txt')).out).toBe('a.txt:1:needle in file\n');
+    expect((await sh('rg needle')).out).toBe('a.txt:needle in file\n');
+    expect((await sh('rg needle < /dev/null')).out).toBe('a.txt:needle in file\n');
+    expect((await sh('echo needle | rg needle a.txt')).out).toBe('needle in file\n');
   });
 
   it('in a script run with no stdin', async () => {
     await sh("printf 'rg needle\\n' > /tmp/rg23.sh");
-    expect((await sh('bash /tmp/rg23.sh')).out).toBe('a.txt:1:needle in file\n');
+    expect((await sh('bash /tmp/rg23.sh')).out).toBe('a.txt:needle in file\n');
   });
 });
 
 describe('rg walks', () => {
   it('skip a FIFO (search and --files)', async () => {
     await sh('mkfifo p.fifo');
-    expect((await sh('rg needle; echo st=$?')).out).toBe('a.txt:1:needle in file\nst=0\n');
+    expect((await sh('rg needle; echo st=$?')).out).toBe('a.txt:needle in file\nst=0\n');
     expect((await sh('rg --files')).out).toBe('a.txt\n');
   });
 

@@ -45,7 +45,7 @@ const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
 /** Claude's config: onboarding done, the key approved, ~/w trusted (no dialogs at start; a new one fails the round). */
-const claudeJson = (home, cwd) => JSON.stringify({
+export const claudeJson = (home, cwd) => JSON.stringify({
   hasCompletedOnboarding: true, theme: 'dark', lastOnboardingVersion: '9.9.9',
   customApiKeyResponses: { approved: [FAKE_KEY.slice(-20)], rejected: [] },
   projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, allowedTools: [] } },

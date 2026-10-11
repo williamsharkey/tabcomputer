@@ -11,6 +11,8 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { claudeJson } from './claude.mjs';
+import { FAKE_KEY } from '../lib/mockmodel.mjs';
 
 export const name = 'blinkprof';
 export const ownPages = true;
@@ -83,6 +85,10 @@ export async function run(h) {
   });
   await h.try('blinkprof.claude', '', async () => {
     if (!h.fixtures['claude-native']) { h.skip('blinkprof.claude', '', 'no native Claude fixture'); return; }
+    await h.page?.context().close().catch(() => {});
+    await h.boot({ path: '/?ui=terminal' });
+    // onboarding done, the key approved, ~/w trusted: no dialogs before the prompt
+    await h.eval((json) => window.__bench.writeFile('/home/user/.claude.json', json), claudeJson('/home/user', '/home/user/w'));
     await h.eval(async () => {
       await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
       await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
@@ -90,7 +96,7 @@ export async function run(h) {
     // the profile is written when Claude first reads its terminal (its prompt is up), and at exit
     await h.sh('rm -rf /tmp/prof && mkdir -p /tmp/prof && mkdir -p ~/w');
     const t0 = Date.now();
-    await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && export ${VARS}; ANTHROPIC_API_KEY=sk-ant-api03-bench-not-a-real-key-000000000000000000000000 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
+    await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && export ${VARS}; ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
     for (;;) {
       // Claude's prompt on screen: its profile was written at that first terminal read
       const screen = await h.eval(() => { const b = window.__tabcomputer.terminal.term.buffer.active; const r = []; for (let y = b.viewportY; y < b.viewportY + 40; y++) r.push(b.getLine(y)?.translateToString(true) ?? ''); return r.join('\n'); });

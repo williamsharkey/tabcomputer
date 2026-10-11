@@ -744,9 +744,15 @@ export class FileSystem {
     return this.virtualProviders.some((vp) => vp.handles(path));
   }
 
-  /** st_ino of the node at canonical `path` (see FSNode.ino); the node is normally cached (just stat'ed). */
+  /**
+   * st_ino of the node at canonical `path` (see FSNode.ino); the node is normally cached (just stat'ed).
+   * A node whose bytes left memory keeps its number in `_meta`, and a linked file's name in `_links`:
+   * without them stat and fstat disagreed once the content cache had swept (GNU cp: "skipping file …,
+   * as it was replaced while being copied", in mkinitramfs's thousands of modules).
+   */
   inoOf(path: string): number {
-    return this.cache.get(path)?.ino ?? pathIno(path);
+    const node = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
+    return node?.ino ?? this._links.get(path) ?? pathIno(path);
   }
 
   /** Give the node at canonical `path` inode number `ino` (link(), which copies, makes the copy share its source's). */
@@ -1988,7 +1994,14 @@ export class FileSystem {
 
   /** st_nlink of the cached node at canonical `path`. */
   nlinkOf(path: string): number {
-    return this.cache.get(path)?.nlink ?? 1;
+    // As inoOf: a swept node is in _meta, a swept hard link only in _links (count its names there)
+    const node = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
+    if (node?.nlink !== undefined) return node.nlink;
+    const ino = node ? undefined : this._links.get(path);
+    if (ino === undefined) return 1;
+    let n = 0;
+    for (const v of this._links.values()) if (v === ino) n++;
+    return Math.max(1, n);
   }
 
   /** All names of the file at canonical `path` (just `path` without links). */

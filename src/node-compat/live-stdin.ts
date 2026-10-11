@@ -26,6 +26,9 @@ export class LiveStdin {
 
   constructor(private stream: StdinStream, private keepAlive: (p: Promise<unknown>) => void) {}
 
+  /** Whether a flowing consumer (process.stdin 'data') takes the chunks */
+  get flowing(): boolean { return this.onChunk !== null; }
+
   /** Every chunk to `onChunk` as it arrives, then null at EOF */
   flow(onChunk: (b: Uint8Array | null) => void): void {
     this.onChunk = onChunk;

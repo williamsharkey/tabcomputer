@@ -581,7 +581,21 @@ export function createFsModule(deps: FsDeps): any {
       // stdin (fd 0, /dev/stdin): what has arrived; a script that reads it so gets it loaded first (execution.ts)
       const fd0 = ((p as unknown) === 0 && !(globalThis as any).__shiroFds?.[0]) || p === '/dev/stdin' ? deps.getProcess?.()?.stdin?.__fd0 : null;
       if (fd0) {
-        const bytes = deps.FakeBuffer.from(fd0.takeAll());
+        let all: Uint8Array = fd0.takeAll();
+        // A guest reads the rest to EOF now, as node does, so nothing needs reading before
+        // the script starts (a script that only mentions readFileSync(0) waited for stdin to close)
+        const readStdin = nodeGuestOf(deps.ctx)?.readStdinSync;
+        if (readStdin) {
+          const parts: Uint8Array[] = [all];
+          const buf = new Uint8Array(65536);
+          for (let n; (n = readStdin(buf)) > 0;) parts.push(buf.slice(0, n));
+          if (parts.length > 1) {
+            all = new Uint8Array(parts.reduce((a, b) => a + b.length, 0));
+            let off = 0;
+            for (const b of parts) { all.set(b, off); off += b.length; }
+          }
+        }
+        const bytes = deps.FakeBuffer.from(all);
         const enc = typeof opts === 'string' ? opts : opts?.encoding;
         return enc ? bytes.toString(enc) : bytes;
       }
@@ -1001,8 +1015,15 @@ export function createFsModule(deps: FsDeps): any {
         const off = typeof offset === 'object' && offset ? (offset as any).offset ?? 0 : offset ?? 0;
         const len = typeof offset === 'object' && offset ? (offset as any).length ?? buf.length - off : length ?? buf.length - off;
         const n = fd0.tryRead(buf, off, len);
-        if (n === null) throw fsError('EAGAIN', 'EAGAIN: resource temporarily unavailable, read', 'read');
-        return n;
+        if (n !== null) return n;
+        // A guest blocks until bytes come, as node's read of a pipe does (nothing is read
+        // before the script starts); not while process.stdin takes them as a stream
+        const readStdin = nodeGuestOf(deps.ctx)?.readStdinSync;
+        if (readStdin && !fd0.flowing) {
+          const got = readStdin(buf.subarray(off, off + len));
+          if (got >= 0) return got;
+        }
+        throw fsError('EAGAIN', 'EAGAIN: resource temporarily unavailable, read', 'read');
       }
       if (!fdInfo) return 0;
       const bytes = currentBytes(fdInfo.path) ?? new Uint8Array(0);

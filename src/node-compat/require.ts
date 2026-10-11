@@ -612,6 +612,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       try { resolved = req.resolve(spec); } catch { return; }
       loading.get(resolved)?.push(fn);
     };
+    req.live = liveExports;
+    req.settle = settleExports;
     req.resolve = (request: string, opts?: { paths?: string[] }) => {
       const dirs = opts?.paths?.length ? opts.paths : [fromDir];
       let last: any;
@@ -769,4 +771,33 @@ export function esmNamespace(exp: any): any {
       ? { value: k === 'default' ? exp : exp[k], enumerable: true, configurable: true, writable: false }
       : undefined,
   });
+}
+
+/**
+ * An ES module's exports as live bindings (esm-live.ts, TABCOMPUTER_ESM_LIVE=1): each a getter
+ * reading the module's variable (undefined while it can't be read yet), and a setter that
+ * keeps it live for the same value (the transform's own copy at the module's end) and
+ * replaces it with another.
+ */
+function liveExports(exports: any, thunks: Record<string, () => unknown>): void {
+  const props: PropertyDescriptorMap = {};
+  for (const name of Object.keys(thunks)) {
+    const read = thunks[name];
+    props[name] = {
+      get() { try { return read(); } catch { return undefined; } },
+      set(v) {
+        let c; try { c = read(); } catch { /* not yet */ }
+        if (v !== c) Object.defineProperty(this, name, { value: v, writable: true, enumerable: true, configurable: true });
+      },
+      enumerable: true, configurable: true,
+    };
+  }
+  Object.defineProperties(exports, props);
+}
+
+/** Exports whose values can't change any more, as plain properties (esm-live.ts's settled) */
+function settleExports(exports: any, values: Record<string, unknown>): void {
+  const props: PropertyDescriptorMap = {};
+  for (const name of Object.keys(values)) props[name] = { value: values[name], writable: true, enumerable: true, configurable: true };
+  Object.defineProperties(exports, props);
 }

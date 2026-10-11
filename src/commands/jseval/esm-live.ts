@@ -118,8 +118,7 @@ function settled(src: string, inCode: (i: number) => boolean, settle: [string, s
   }
   const ok = settle.filter(([, local]) => !imports.has(local) && constLike.has(local) && !changing.has(local));
   if (!ok.length) return '';
-  const props = ok.map(([name, local]) => `${JSON.stringify(name)}: { value: ${local}, writable: true, enumerable: true, configurable: true }`);
-  return `\n;try { Object.defineProperties(__shiro_module.exports, {${props.join(', ')}}); } catch {}\n`;
+  return `\n;try { __shiro_require.settle(__shiro_module.exports, {${ok.map(([name, local]) => `${JSON.stringify(name)}: ${local}`).join(', ')}}); } catch {}\n`;
 }
 
 export function liveEsbuildChunk(src: string): string {
@@ -178,7 +177,9 @@ function liveBindings(src: string, general: boolean): string {
   }
   /** An export's getter: in general mode an uninitialized one reads undefined, and setting the same value keeps it live */
   const getter = (name: string, value: string) => general
-    ? `${JSON.stringify(name)}: { get() { try { return ${value}; } catch { return undefined; } }, set(v) { let c; try { c = ${value}; } catch {} if (v !== c) Object.defineProperty(this, ${JSON.stringify(name)}, { value: v, writable: true, enumerable: true, configurable: true }); }, enumerable: true, configurable: true }`
+    // (require.ts's live(): a thunk per export, not a descriptor each, which were ~250 bytes
+    // an export that the transform and the parser then went through again)
+    ? `${JSON.stringify(name)}: () => ${value}`
     : `${JSON.stringify(name)}: { get: () => ${value}, set(v) { Object.defineProperty(this, ${JSON.stringify(name)}, { value: v, writable: true, enumerable: true, configurable: true }); }, enumerable: true, configurable: true }`;
 
   // Local export lists become getters; the statements are removed
@@ -252,7 +253,9 @@ function liveBindings(src: string, general: boolean): string {
   // object, which is its live namespace even while its body is still
   // running. `(__shiro_require)(…)` is not rewritten to wait for that body
   // (compileAsyncModule); the import statements themselves still wait.
-  let header = (getters.length ? `Object.defineProperties(__shiro_module.exports, {${getters.join(', ')}}); ` : '');
+  let header = !getters.length ? ''
+    : general ? `__shiro_require.live(__shiro_module.exports, {${getters.join(', ')}}); `
+    : `Object.defineProperties(__shiro_module.exports, {${getters.join(', ')}}); `;
   if (!general) {
     header += modules.length ? 'var ' + modules.map((m, k) => `__shiro_live${k} = (__shiro_require)(${JSON.stringify(m)})`).join(', ') + ';' : '';
   } else {

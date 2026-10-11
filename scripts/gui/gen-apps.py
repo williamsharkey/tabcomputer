@@ -40,7 +40,7 @@ APPS = {
     'thunderbird': (['thunderbird'], ['/usr/lib/thunderbird/thunderbird'], ['usr/lib/thunderbird/*.so', 'usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Mail client (GTK3)', 'gtk3'),
     'pidgin': (['pidgin'], ['/usr/bin/pidgin'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Instant messaging (GTK2)', 'gtk2'),
     'hexchat': (['hexchat'], ['/usr/bin/hexchat'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'IRC client (GTK2)', 'gtk2'),
-    'audacious': (['audacious', 'audacious-plugins'], ['/usr/bin/audacious'], ['usr/lib/x86_64-linux-gnu/audacious/General/qtui.so', 'usr/lib/x86_64-linux-gnu/audacious/Output/filewriter.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/platforms/libqxcb.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/imageformats/*.so'], [], 'Music player (Qt5)', 'qt5'),
+    'audacious': (['audacious', 'audacious-plugins'], ['/usr/bin/audacious'], ['usr/lib/x86_64-linux-gnu/audacious/General/qtui.so', 'usr/lib/x86_64-linux-gnu/audacious/Output/alsa.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/platforms/libqxcb.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/imageformats/*.so'], [], 'Music player (Qt5)', 'qt5'),
     'shotwell': (['shotwell'], ['/usr/bin/shotwell'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Photo manager (GTK3)', 'gtk3'),
     'simple-scan': (['simple-scan'], ['/usr/bin/simple-scan'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Document scanner (GTK3)', 'gtk3'),
     'xournalpp': (['xournalpp'], ['/usr/bin/xournalpp'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Handwritten notes and PDF annotation (GTK3)', 'gtk3'),
@@ -94,6 +94,8 @@ APPS = {
     # its resources live in an SQLite database: Qt's SQLite driver (a plugin, so not in the ELF closure)
     'krita': (['krita', 'libqt5sql5-sqlite'], ['/usr/bin/krita'], ['usr/lib/x86_64-linux-gnu/qt5/plugins/platforms/libqxcb.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/imageformats/*.so',
               'usr/lib/x86_64-linux-gnu/qt5/plugins/sqldrivers/libqsqlite.so',
+              # Qt's GLX integration: Krita's OpenGL probe asserts when Qt has no GL at all (it gets glshiro's)
+              'usr/lib/x86_64-linux-gnu/qt5/plugins/xcbglintegrations/libqxcb-glx-integration.so',
               # its color engine (LittleCMS: without it there are no color spaces), paint ops and tools,
               # and the formats people open (the rest are OPTIONAL, below)
               *['usr/lib/x86_64-linux-gnu/kritaplugins/' + p + '.so' for p in (
@@ -120,16 +122,10 @@ ALWAYS = {'libgcc-s1', 'fontconfig-config'}
 # engine for now (docs/GUI_SCORE.md). Its system gimprc's icon-theme isn't used.
 HOME_FILES = {'gimp': {'.config/GIMP/2.10/gimprc': '(icon-theme "Legacy")\n'},
               # zathura's seccomp sandbox: the x86 engine has no seccomp, and zathura quits without it
-              'zathura': {'.config/zathura/zathurarc': 'set sandbox none\n'},
-              # Audacious: there's no sound device, and its output probe never picks the file writer
-              # (priority 10): select it, and the Qt UI, in the plugin registry. A registry in an older
-              # format (10, not 11) is read only for each plugin's "enabled" flag (Primary = 1); the
-              # rest is rescanned (libaudcore plugin-registry.cc parse_plugins_fallback)
-              'audacious': {'.config/audacious/plugin-registry': 'format 10\noutput /usr/lib/x86_64-linux-gnu/audacious/Output/filewriter.so\nenabled 1\niface /usr/lib/x86_64-linux-gnu/audacious/General/qtui.so\nenabled 1\n'}}
+              'zathura': {'.config/zathura/zathurarc': 'set sandbox none\n'}}
 
-# Arguments the launcher puts before the user's. Audacious: Debian's build starts in GTK mode,
-# whose UI isn't in its set (the Qt one is): --qt
-APP_ARGS = {'audacious': ['--qt']}
+# Arguments each launch starts with: Debian's Audacious runs its GTK interface unless asked for Qt
+ARGS = {'audacious': ['--qt']}
 
 OPTIONAL = {'gimp': ['usr/lib/gimp/2.0/plug-ins/*/*', 'usr/lib/x86_64-linux-gnu/gegl-0.4/*.so'],
             'vlc': ['usr/lib/x86_64-linux-gnu/vlc/plugins/*/*.so'],
@@ -358,7 +354,7 @@ def main():
             **({'remove': sorted(set(remove))} if remove else {}),
             **({'links': sorted([k, v] for k, v in links.items())} if links else {}),
             **({'home': HOME_FILES[app]} if app in HOME_FILES else {}),
-            **({'args': APP_ARGS[app]} if app in APP_ARGS else {}),
+            **({'args': ARGS[app]} if app in ARGS else {}),
         }
         for n in keep:
             d = db[n]

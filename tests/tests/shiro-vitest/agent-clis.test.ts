@@ -262,7 +262,31 @@ describe('claude install --native', () => {
   }
   const hex = async (b: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', b as BufferSource)), (x) => x.toString(16).padStart(2, '0')).join('');
 
-  async function setup(binary: Uint8Array, manifestSum: string) {
+  /**
+   * This site's /claude-releases/ and /debian/pool/ (server.mjs) as the page's fetch sees them:
+   * `files` by path; `mode` 'missing' 404s everything, 'html' is an older server's app shell, 'down' throws
+   */
+  function siteSource(files: Record<string, Uint8Array | string>, mode: 'ok' | 'missing' | 'html' | 'down' = 'ok') {
+    const asked: string[] = [];
+    return {
+      asked,
+      source: {
+        origin: 'https://tab.test',
+        fetch: async (url: string) => {
+          const path = url.replace('https://tab.test', '');
+          asked.push(path);
+          if (mode === 'down') throw new TypeError('Failed to fetch');
+          if (mode === 'html') return new Response('<!doctype html><title>tabcomputer</title>', { headers: { 'content-type': 'text/html' } });
+          const body = mode === 'ok' ? files[path] : undefined;
+          if (body === undefined) return new Response('not a served Claude Code release path\n', { status: 404 });
+          const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+          return new Response(bytes as BodyInit, { headers: { 'content-type': 'application/octet-stream', 'content-length': String(bytes.length) } });
+        },
+      },
+    };
+  }
+
+  async function setup(binary: Uint8Array, manifestSum: string, site?: ReturnType<typeof siteSource>) {
     const { installNativeClaude } = await import('@shiro/commands/claude-native');
     const { fs } = await createTestShell();
     // The test FileSystem is shared between tests (one IndexedDB)
@@ -291,9 +315,59 @@ describe('claude install --native', () => {
       },
     };
     const ctx: any = { fs, shell, env: { HOME: '/home/user', HTTPS_PROXY: 'http://proxy.test:3128' }, cwd: '/', stdout: '', stderr: '', args: [] };
-    const muslDeb = { urls: ['https://mirror.test/musl.deb'], sha256: await hex(deb), libc: 'usr/lib/x86_64-linux-musl/libc.so' };
-    return { fs, ctx, lines, run: () => installNativeClaude(ctx, '/home/user/.local/bin/claude', undefined, muslDeb), libc };
+    const muslDeb = { urls: ['https://deb.debian.org/debian/pool/main/m/musl/musl_test_amd64.deb', 'https://mirror.test/musl.deb'], sha256: await hex(deb), libc: 'usr/lib/x86_64-linux-musl/libc.so' };
+    // (no site: the relay path alone, as on shiro and older servers)
+    const run = () => installNativeClaude(ctx, '/home/user/.local/bin/claude', undefined, muslDeb, site?.source ?? null);
+    return { fs, ctx, lines, run, libc, deb };
   }
+
+  /** The files server.mjs serves for release 9.9.9 */
+  const siteFiles = async (binary: Uint8Array, deb: Uint8Array, sum?: string) => ({
+    '/claude-releases/latest': '9.9.9\n',
+    '/claude-releases/9.9.9/manifest.json': JSON.stringify({ platforms: { 'linux-x64-musl': { checksum: sum ?? await hex(binary), size: binary.length } } }),
+    '/claude-releases/9.9.9/linux-x64-musl/claude': binary,
+    '/debian/pool/main/m/musl/musl_test_amd64.deb': deb,
+  });
+
+  it('downloads from this site with the page\'s fetch, no relay and no curl package (#40)', async () => {
+    const binary = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 4, 2]);
+    const probe = await setup(binary, await hex(binary));
+    const site = siteSource(await siteFiles(binary, probe.deb));
+    const { fs, ctx, lines, run, libc } = await setup(binary, await hex(binary), site);
+    await fs.unlink('/usr/lib/pkg/curl/bin/curl').catch(() => {});
+    expect(await run()).toBe(0);
+    expect(Array.from(await fs.readFile('/home/user/.local/bin/claude') as Uint8Array)).toEqual(Array.from(binary));
+    expect(Array.from(await fs.readFile('/lib/ld-musl-x86_64.so.1') as Uint8Array)).toEqual(Array.from(libc));
+    expect(site.asked).toEqual(['/claude-releases/latest', '/claude-releases/9.9.9/manifest.json', '/claude-releases/9.9.9/linux-x64-musl/claude', '/debian/pool/main/m/musl/musl_test_amd64.deb']);
+    expect(lines).toEqual([]); // nothing ran in the guest: no curl, no pkg install
+    expect(ctx.stdout).toContain('https://tab.test/claude-releases/9.9.9/linux-x64-musl/claude');
+    expect(ctx.stdout).toContain('Installed Claude Code 9.9.9');
+  });
+
+  for (const mode of ['missing', 'html', 'down'] as const) {
+    it(`falls back to the relay when this site ${mode === 'missing' ? '404s' : mode === 'html' ? 'answers with its app shell (an older server)' : 'is unreachable'}`, async () => {
+      const binary = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 7, 7]);
+      const site = siteSource({}, mode);
+      const { fs, ctx, lines, run } = await setup(binary, await hex(binary), site);
+      expect(await run()).toBe(0);
+      expect(Array.from(await fs.readFile('/home/user/.local/bin/claude') as Uint8Array)).toEqual(Array.from(binary));
+      expect(site.asked[0]).toBe('/claude-releases/latest');
+      expect(lines.some((l) => l.includes('downloads.claude.ai/claude-code-releases/9.9.9/linux-x64-musl/claude'))).toBe(true);
+      expect(ctx.stdout).toContain('Installed Claude Code 9.9.9');
+    });
+  }
+
+  it('falls back to the relay when this site\'s binary fails the sha256 check', async () => {
+    const binary = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 5, 5]);
+    const probe = await setup(binary, await hex(binary));
+    // The site's copy is corrupt (same size, other bytes); the manifest is right
+    const site = siteSource({ ...(await siteFiles(binary, probe.deb)), '/claude-releases/9.9.9/linux-x64-musl/claude': new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 6, 6]) });
+    const { fs, ctx, lines, run } = await setup(binary, await hex(binary), site);
+    expect(await run()).toBe(0);
+    expect(ctx.stdout).toContain('sha256 mismatch');
+    expect(lines.some((l) => l.includes('downloads.claude.ai/claude-code-releases/9.9.9/linux-x64-musl/claude'))).toBe(true);
+    expect(Array.from(await fs.readFile('/home/user/.local/bin/claude') as Uint8Array)).toEqual(Array.from(binary));
+  });
 
   it('downloads the latest musl build, checks its sha256 and installs musl\'s loader', async () => {
     const binary = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 9, 9, 9]);
@@ -316,7 +390,7 @@ describe('claude install --native', () => {
     const { ctx } = await setup(new Uint8Array([1]), 'f'.repeat(64));
     const { installNativeClaude } = await import('@shiro/commands/claude-native');
     ctx.shell = { execute: async () => 7 };
-    expect(await installNativeClaude(ctx, '/home/user/.local/bin/claude')).toBe(1);
+    expect(await installNativeClaude(ctx, '/home/user/.local/bin/claude', undefined, undefined, null)).toBe(1);
     expect(ctx.stderr).toContain('TCP relay');
   });
 });

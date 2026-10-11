@@ -47,7 +47,7 @@ back-to-back runs of 5 samples each (one value when they agree, else both) at 7c
 microbenchmarks are `pbench` (`tests/tests/shiro-vitest/fixtures/x86/pbench.c`,
 the x86 suite's `x86.blink.*` / `x86.native.*`). Debian's own `perf bench`
 (linux-perf 6.12) also runs in Blink, so its column lines up with published
-numbers (opt-in suite `perfbench`; one run each). WSL2/WSL3 are the
+numbers (opt-in suite `perfbench`; medians of 5, [run](../bench/results/bench-28-perfbench.json); memcpy from an earlier run). WSL2/WSL3 are the
 published figures that prompted this table (tonym.us, "WSL2 vs WSL3
 benchmarks": i5-8500T, 2 vCPUs, different sizes). They are reference
 points for the method, not same-machine comparisons.
@@ -56,17 +56,30 @@ any Linux, WSL included.
 
 | benchmark | tabcomputer (Blink) | Blink, direct channels | WASI guest | native (this VM) | Blink / native | `perf bench` in Blink | WSL2 / WSL3 (published) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
-| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
-| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 8.1 s total, `-p -g 1 -l 20` (after Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
+| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 117 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
+| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 775 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 7.6 s total, `-p -g 1 -l 20` (Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
 | `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
 | `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
+| native Claude Code 2.1.296: `claude` → idle prompt | 40.6–43.9 s | — | — | 0.54 s | ~80× | — | — |
+| native Claude Code: key → echo on the input line (p50 / p90 / p99) | 189–204 / 231–266 ms / 1.6–1.8 s | — | — | 6.3 / 12.3 / 22–26 ms | ~30× (p50) | — | — |
 
 What each row measures:
 
+- **Native Claude Code** (opt-in suite `claude`, bench/README.md; two runs
+  of one round, [a](../bench/results/bench-27-claude-a.json),
+  [b](../bench/results/bench-27-claude-b.json), at 2e2e3c3). Anthropic's
+  linux-x64-musl build in Blink, typed at the real terminal of a fresh
+  profile, against a local mock Messages API; native is the same binary in a
+  pty on this VM. In the tab the start is 41–44 s whether or not the page has
+  run it before (the warm launch is no faster), the first key after the prompt
+  takes 2.8 s, a key 150 ms after the previous echo takes ~200 ms (a few take
+  1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
+  is 17 s. Native numbers stop at the pty, without a terminal emulator; in
+  the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to
@@ -89,8 +102,11 @@ What each row measures:
   Argument 0 must be convertible to a valid number"): its 40 processes in one
   Blink instance push wasm memory past 2 GiB, and pointers above that arrived
   negative in Blink's JS glue. Blink patch 0129 (unix/perf-blink 191817f4)
-  fixes it; the run then takes 8.1 s (perf-blink's Chromium run, not this
-  table's machine). `-g 2` (80 processes) still fails with fork(): ENOMEM,
+  fixes it; the run then takes 7.6 s on this table's machine (median of 5,
+  p90 7.9 s; [perfbench run](../bench/results/bench-28-perfbench.json) at
+  e02a65d with Blink 0129 from main; perf-blink's own Chromium run had 8.1 s).
+  The same run has `syscall basic` at 117 µs/op and `sched pipe` at
+  775 µs/op. `-g 2` (80 processes) still fails with fork(): ENOMEM,
   because same-instance children fill the 4 GiB wasm memory. That is a
   structural limit, and the reason the WSL figure (20 groups) has no
   tabcomputer counterpart.
@@ -985,6 +1001,34 @@ proc/s within one run); two further 15-run passes on the new code gave
 medians 1240 and 1215 proc/s, base 1200. One of those passes stalled at
 ≈10 proc/s for its last 11 samples and did not recur in two more; worth
 watching if it shows up on other branches.
+
+### unix/perf-blink 17 — direct kernel channels in their own buffers, on by default
+
+Blink 0600 (docs/X86_ENGINES.md): each Blink thread's own kernel channel
+is a small SharedArrayBuffer the page watches. Round 8 proposed this
+("a way out, not built"). Before, every call was proxied to host.mjs's
+thread and took two messages. The page never holds the wasm memory, so
+the round-8 peak RSS cost is gone.
+
+`node bench/ab.mjs origin/unix/integration --suites x86 --only
+'x86\.blink\.' --rounds 3` (Chromium, isolated; the base is 549dc219,
+whose committed blink.wasm predates its patch 0517, inotify, and the new
+side includes it):
+
+| metric (isolated) | base | new | shift | verdict |
+|---|---:|---:|---:|---|
+| x86.blink.vim_defaults | 697 ms | 490 ms | -29.2% | improved |
+| x86.blink.vim_startup | 1466 ms | 1144 ms | -21.8% | improved |
+| x86.blink.go_nethttp | 337 ms | 277 ms | -17.6% | improved |
+| x86.blink.go_hello | 152 ms | 142 ms | -8.8% | same |
+| x86.blink.hello_musl | 71 ms | 66 ms | -7.2% | same |
+| x86.blink.peak_rss.vim_startup | 7.5 MiB | 4.3 MiB | -26.7% | same |
+| x86.blink.peak_rss.go_nethttp | 12.4 MiB | 10.3 MiB | -18.8% | same |
+| x86.blink.peak_rss.go_hello | 2.5 MiB | 3.4 MiB | +4.4% | same |
+
+Of 13 metrics with results, 3 improved and 10 are the same, peak RSS
+included; gh_version gave no result on either side. In Node (scratch harness), a statically linked
+program's getppid/stat/pread round trip goes from ~120-145 µs to 5-16 µs.
 
 ### unix/perf-blink 16 — the page's kept compiled modules
 

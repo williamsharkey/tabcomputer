@@ -601,7 +601,7 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    count, total and longest time (with its kernel call and waits), every
    5 s and at the first read of stdin (a TUI's prompt is up). Debugging
    aid, for profiling programs where they run.
-65. Direct channels (opt-in, `TABCOMPUTER_BLINK_DIRECT=1`): host.mjs puts
+65. (Replaced by 0600, which is on by default.) Direct channels (opt-in, `TABCOMPUTER_BLINK_DIRECT=1`): host.mjs puts
    four kernel channels in Blink's own wasm memory, and the page serves
    them by watching their state words
    (`KernelChannel.watch`, the way WASI guests' channels are served).
@@ -967,6 +967,42 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
 
    It matches native, and the gowait stress, the xz threaded decode, Open
    POSIX fork_21-1 and the LTP fork/mm subset are unchanged.
+0600. Direct channels, on by default (`TABCOMPUTER_BLINK_DIRECT=0` turns
+   them off): each Blink thread's own kernel channel is a small
+   SharedArrayBuffer (64 KiB of data) that the page makes and serves by
+   watching its state word. Patch 65 put them in the wasm memory instead.
+   - host.mjs hands one to each pthread Worker as emscripten creates it
+     (shiro-kernel.js `getNewWorker`), and asks the page for more
+     (`blink-dch-req`) as threads take them.
+   - The thread copies its request in and the reply out through JS
+     imports on its own thread (`shiro_dch_*`): no proxy to host.mjs's
+     thread, no messages. getppid in Node: ~120 µs → 5–16 µs.
+   - The page never holds the process's wasm memory, so a finished
+     process's memory isn't kept until the page's next GC. That was why
+     65 stayed opt-in (+10–22 MiB peak RSS).
+   - Calls for a vfork or hosted child (`as` ≠ 0), and transfers over
+     64 KiB, still take the pool.
+
+   Signals. With a thread's own channel, a signal goes to whichever reply
+   takes it first:
+   - host.mjs's channel no longer takes signals as they come
+     (`WorkerRunnerOptions.listen`). Otherwise its thread queues them only
+     after the guest's own call, e.g. sigqueue to itself, has returned
+     without one.
+   - The page posts `blink-signal` (host.mjs's getpid, which takes the
+     signal) only while the kernel isn't already running one of the
+     process's direct calls (`KernelChannel.serving`). That call's reply
+     carries the signal to the thread waiting for it. A call only posted
+     doesn't count: it can start after the interruption and sleep through
+     it (fixtures/x86/sigwake.c lost wakeups).
+   - Kernel fix this exposed: a real-time signal routed through job
+     control while another instance was already pending was queued twice
+     (siginfo values 100 101 101 102 102 …). The listening channel used to
+     take each one at once and hid it.
+
+   Numbered from 0600 at the integration coordinator's request (the new
+   unix/perf-blink owner renumbers). Tests: x86-engine's siginfo,
+   aio-sigqueue, sigwake and shmobj fixtures, with direct channels on.
 
 The page compiles blink.wasm once and gives the `WebAssembly.Module` to every
 Blink worker (src/x86-engine/blink.ts `blinkWasmModule`, host.mjs

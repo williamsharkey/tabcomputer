@@ -420,11 +420,6 @@ async function runShell(ctx: CommandContext, invokedAs: 'sh' | 'bash'): Promise<
     const options = parsed.on;
     const shopts = parsed.shopts;
     const rest = parsed.rest;
-    const out = (code: number, stdout: string, stderr: string) => {
-      ctx.stdout += stdout.replace(/\r\n/g, '\n');
-      ctx.stderr += stderr.replace(/\r\n/g, '\n');
-      return code;
-    };
 
     let script: string;
     let argv0: string;
@@ -481,14 +476,11 @@ async function runShell(ctx: CommandContext, invokedAs: 'sh' | 'bash'): Promise<
     // (programs in it don't write on the terminal what sh's redirects or pipe take:
     // `bash -c 'node x.js' > f` printed on the screen and left f empty)
     const term = ctx.terminal && terminalForCommand(ctx.terminal, ctx);
-    // Output goes out as each command finishes where nothing captures it
-    if (ctx.streamStdout && ctx.streamStderr) {
-      return child.runScriptText(script, term, ctx.streamStdout, ctx.streamStderr);
-    }
-    let stdout = '';
-    let stderr = '';
-    const code = await child.runScriptText(script, term, (s) => { stdout += s; }, (s) => { stderr += s; });
-    return out(code, stdout, stderr);
+    // Output goes out as each command finishes where nothing captures it, else into
+    // ctx as it comes: a Ctrl-C or timeout that stops waiting for sh keeps what it
+    // wrote before, as the pipe would have it
+    return child.runScriptText(script, term, ctx.streamStdout ?? ((s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }),
+      ctx.streamStderr ?? ((s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }));
   }
 }
 

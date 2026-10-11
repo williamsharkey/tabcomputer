@@ -1,0 +1,705 @@
+{
+  "apt_update": {
+    "wallMs": 36739,
+    "guestRunMs": 26957,
+    "buckets": {
+      "lib:libapt-pkg.so.7.0": {
+        "ms": 17627,
+        "ofRun": 65.4,
+        "ofWall": 48
+      },
+      "lib:libxxhash.so.0": {
+        "ms": 2130,
+        "ofRun": 7.9,
+        "ofWall": 5.8
+      },
+      "libc mem*/str*": {
+        "ms": 1919,
+        "ofRun": 7.1,
+        "ofWall": 5.2
+      },
+      "libc other": {
+        "ms": 1653,
+        "ofRun": 6.1,
+        "ofWall": 4.5
+      },
+      "program/unmapped": {
+        "ms": 1504,
+        "ofRun": 5.6,
+        "ofWall": 4.1
+      },
+      "lib:libnettle.so.8": {
+        "ms": 1114,
+        "ofRun": 4.1,
+        "ofWall": 3
+      },
+      "lib:libgmp.so.10": {
+        "ms": 562,
+        "ofRun": 2.1,
+        "ofWall": 1.5
+      },
+      "lib:libstdc++.so.6": {
+        "ms": 420,
+        "ofRun": 1.6,
+        "ofWall": 1.1
+      },
+      "lib:libhogweed.so.6": {
+        "ms": 20,
+        "ofRun": 0.1,
+        "ofWall": 0.1
+      },
+      "lib:libapt-private.so.0.0": {
+        "ms": 6,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libm.so.6": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libselinux.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libgcc_s.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libzstd.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      }
+    },
+    "procs": [
+      {
+        "pid": 460,
+        "prog": "/usr/bin/apt-get.debian",
+        "runMs": 23583,
+        "compiledMs": 22562,
+        "libs": 16,
+        "top": [
+          "lib:libapt-pkg.so.7.0 17551",
+          "lib:libxxhash.so.0 2130",
+          "libc mem*/str* 1759"
+        ]
+      },
+      {
+        "pid": 467,
+        "prog": "/usr/bin/sqv",
+        "runMs": 1126,
+        "compiledMs": 789,
+        "libs": 6,
+        "top": [
+          "lib:libnettle.so.8 573",
+          "program/unmapped 258",
+          "lib:libgmp.so.10 217"
+        ]
+      },
+      {
+        "pid": 470,
+        "prog": "/usr/bin/sqv",
+        "runMs": 787,
+        "compiledMs": 364,
+        "libs": 6,
+        "top": [
+          "lib:libnettle.so.8 321",
+          "program/unmapped 215",
+          "lib:libgmp.so.10 188"
+        ]
+      },
+      {
+        "pid": 471,
+        "prog": "/usr/bin/sqv",
+        "runMs": 580,
+        "compiledMs": 310,
+        "libs": 6,
+        "top": [
+          "lib:libnettle.so.8 221",
+          "lib:libgmp.so.10 157",
+          "program/unmapped 152"
+        ]
+      },
+      {
+        "pid": 466,
+        "prog": "/usr/lib/apt/methods/sqv",
+        "runMs": 468,
+        "compiledMs": 216,
+        "libs": 16,
+        "top": [
+          "program/unmapped 274",
+          "lib:libapt-pkg.so.7.0 76",
+          "libc other 74"
+        ]
+      },
+      {
+        "pid": 461,
+        "prog": "/usr/bin/dpkg",
+        "runMs": 143,
+        "compiledMs": 99,
+        "libs": 4,
+        "top": [
+          "program/unmapped 112",
+          "libc other 19",
+          "libc mem*/str* 12"
+        ]
+      },
+      {
+        "pid": 472,
+        "prog": "/usr/bin/dpkg",
+        "runMs": 143,
+        "compiledMs": 143,
+        "libs": 4,
+        "top": [
+          "program/unmapped 127",
+          "libc mem*/str* 10",
+          "libc other 6"
+        ]
+      },
+      {
+        "pid": 474,
+        "prog": "cat",
+        "runMs": 64,
+        "compiledMs": 22,
+        "libs": 1,
+        "top": [
+          "program/unmapped 36",
+          "libc other 20",
+          "libc mem*/str* 8"
+        ]
+      },
+      {
+        "pid": 473,
+        "prog": "/usr/bin/dpkg",
+        "runMs": 63,
+        "compiledMs": 28,
+        "libs": 4,
+        "top": [
+          "program/unmapped 44",
+          "libc other 13",
+          "libc mem*/str* 6"
+        ]
+      }
+    ]
+  },
+  "claude_start": {
+    "wallMs": 36,
+    "guestRunMs": 99,
+    "buckets": {
+      "program/unmapped": {
+        "ms": 84,
+        "ofRun": 84.6,
+        "ofWall": 232.6
+      },
+      "libc other": {
+        "ms": 11,
+        "ofRun": 11,
+        "ofWall": 30.3
+      },
+      "libc mem*/str*": {
+        "ms": 4,
+        "ofRun": 4.3,
+        "ofWall": 11.9
+      },
+      "lib:libselinux.so.1": {
+        "ms": 0,
+        "ofRun": 0.1,
+        "ofWall": 0.2
+      },
+      "lib:libpcre2-8.so.0": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      }
+    },
+    "procs": [
+      {
+        "pid": 481,
+        "prog": "mkdir",
+        "runMs": 50,
+        "compiledMs": 18,
+        "libs": 3,
+        "top": [
+          "program/unmapped 35",
+          "libc other 11",
+          "libc mem*/str* 4"
+        ]
+      },
+      {
+        "pid": 480,
+        "prog": "?",
+        "runMs": 49,
+        "compiledMs": 13,
+        "libs": 0,
+        "top": [
+          "program/unmapped 49"
+        ]
+      }
+    ]
+  },
+  "dpkg_gcc": {
+    "wallMs": 16734,
+    "guestRunMs": 15802,
+    "buckets": {
+      "liblzma": {
+        "ms": 13228,
+        "ofRun": 83.7,
+        "ofWall": 79
+      },
+      "lib:libmd.so.0": {
+        "ms": 1107,
+        "ofRun": 7,
+        "ofWall": 6.6
+      },
+      "program/unmapped": {
+        "ms": 700,
+        "ofRun": 4.4,
+        "ofWall": 4.2
+      },
+      "libc other": {
+        "ms": 464,
+        "ofRun": 2.9,
+        "ofWall": 2.8
+      },
+      "libc mem*/str*": {
+        "ms": 303,
+        "ofRun": 1.9,
+        "ofWall": 1.8
+      },
+      "lib:libselinux.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libzstd.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libacl.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "libz": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libbz2.so.1.0": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      }
+    },
+    "procs": [
+      {
+        "pid": 503,
+        "prog": "dpkg-deb",
+        "runMs": 13320,
+        "compiledMs": 12945,
+        "libs": 6,
+        "top": [
+          "liblzma 13157",
+          "libc mem*/str* 93",
+          "libc other 40"
+        ]
+      },
+      {
+        "pid": 497,
+        "prog": "dpkg",
+        "runMs": 1900,
+        "compiledMs": 1075,
+        "libs": 4,
+        "top": [
+          "lib:libmd.so.0 1107",
+          "program/unmapped 339",
+          "libc other 308"
+        ]
+      },
+      {
+        "pid": 499,
+        "prog": "dpkg-deb",
+        "runMs": 217,
+        "compiledMs": 41,
+        "libs": 6,
+        "top": [
+          "program/unmapped 95",
+          "liblzma 71",
+          "libc other 38"
+        ]
+      },
+      {
+        "pid": 502,
+        "prog": "tar",
+        "runMs": 109,
+        "compiledMs": 33,
+        "libs": 4,
+        "top": [
+          "program/unmapped 56",
+          "libc mem*/str* 29",
+          "libc other 24"
+        ]
+      },
+      {
+        "pid": 496,
+        "prog": "?",
+        "runMs": 74,
+        "compiledMs": 17,
+        "libs": 0,
+        "top": [
+          "program/unmapped 74"
+        ]
+      },
+      {
+        "pid": 507,
+        "prog": "cat",
+        "runMs": 67,
+        "compiledMs": 21,
+        "libs": 1,
+        "top": [
+          "program/unmapped 37",
+          "libc other 21",
+          "libc mem*/str* 9"
+        ]
+      },
+      {
+        "pid": 506,
+        "prog": "rm",
+        "runMs": 65,
+        "compiledMs": 24,
+        "libs": 1,
+        "top": [
+          "program/unmapped 37",
+          "libc other 20",
+          "libc mem*/str* 8"
+        ]
+      },
+      {
+        "pid": 498,
+        "prog": "dpkg-split",
+        "runMs": 50,
+        "compiledMs": 13,
+        "libs": 2,
+        "top": [
+          "program/unmapped 31",
+          "libc other 14",
+          "libc mem*/str* 5"
+        ]
+      }
+    ]
+  },
+  "dpkg_linux_perf": {
+    "wallMs": 8698,
+    "guestRunMs": 6798,
+    "buckets": {
+      "liblzma": {
+        "ms": 3424,
+        "ofRun": 50.4,
+        "ofWall": 39.4
+      },
+      "program/unmapped": {
+        "ms": 1377,
+        "ofRun": 20.3,
+        "ofWall": 15.8
+      },
+      "lib:libmd.so.0": {
+        "ms": 1282,
+        "ofRun": 18.9,
+        "ofWall": 14.7
+      },
+      "libc other": {
+        "ms": 381,
+        "ofRun": 5.6,
+        "ofWall": 4.4
+      },
+      "libc mem*/str*": {
+        "ms": 333,
+        "ofRun": 4.9,
+        "ofWall": 3.8
+      },
+      "lib:libzstd.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "libz": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libselinux.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libacl.so.1": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      },
+      "lib:libpcre2-8.so.0": {
+        "ms": 0,
+        "ofRun": 0,
+        "ofWall": 0
+      }
+    },
+    "procs": [
+      {
+        "pid": 490,
+        "prog": "dpkg-deb",
+        "runMs": 3261,
+        "compiledMs": 3088,
+        "libs": 6,
+        "top": [
+          "liblzma 3172",
+          "libc mem*/str* 49",
+          "program/unmapped 23"
+        ]
+      },
+      {
+        "pid": 477,
+        "prog": "dpkg",
+        "runMs": 1804,
+        "compiledMs": 1465,
+        "libs": 4,
+        "top": [
+          "lib:libmd.so.0 1282",
+          "program/unmapped 258",
+          "libc other 182"
+        ]
+      },
+      {
+        "pid": 479,
+        "prog": "dpkg-deb",
+        "runMs": 437,
+        "compiledMs": 147,
+        "libs": 6,
+        "top": [
+          "liblzma 252",
+          "program/unmapped 115",
+          "libc other 51"
+        ]
+      },
+      {
+        "pid": 487,
+        "prog": "dpkg-divert",
+        "runMs": 365,
+        "compiledMs": 304,
+        "libs": 2,
+        "top": [
+          "program/unmapped 304",
+          "libc mem*/str* 40",
+          "libc other 22"
+        ]
+      },
+      {
+        "pid": 489,
+        "prog": "dpkg-divert",
+        "runMs": 142,
+        "compiledMs": 86,
+        "libs": 2,
+        "top": [
+          "program/unmapped 106",
+          "libc mem*/str* 20",
+          "libc other 16"
+        ]
+      },
+      {
+        "pid": 488,
+        "prog": "dpkg-divert",
+        "runMs": 140,
+        "compiledMs": 68,
+        "libs": 2,
+        "top": [
+          "program/unmapped 99",
+          "libc mem*/str* 22",
+          "libc other 19"
+        ]
+      },
+      {
+        "pid": 482,
+        "prog": "tar",
+        "runMs": 139,
+        "compiledMs": 139,
+        "libs": 4,
+        "top": [
+          "libc mem*/str* 71",
+          "program/unmapped 64",
+          "libc other 3"
+        ]
+      },
+      {
+        "pid": 476,
+        "prog": "?",
+        "runMs": 125,
+        "compiledMs": 125,
+        "libs": 0,
+        "top": [
+          "program/unmapped 125"
+        ]
+      },
+      {
+        "pid": 483,
+        "prog": "/bin/sh",
+        "runMs": 113,
+        "compiledMs": 39,
+        "libs": 1,
+        "top": [
+          "program/unmapped 101",
+          "libc other 6",
+          "libc mem*/str* 6"
+        ]
+      },
+      {
+        "pid": 478,
+        "prog": "dpkg-split",
+        "runMs": 81,
+        "compiledMs": 26,
+        "libs": 2,
+        "top": [
+          "program/unmapped 51",
+          "libc other 21",
+          "libc mem*/str* 8"
+        ]
+      },
+      {
+        "pid": 494,
+        "prog": "cat",
+        "runMs": 72,
+        "compiledMs": 23,
+        "libs": 1,
+        "top": [
+          "program/unmapped 40",
+          "libc other 23",
+          "libc mem*/str* 9"
+        ]
+      },
+      {
+        "pid": 484,
+        "prog": "fork of 483 (/bin/sh)",
+        "runMs": 71,
+        "compiledMs": 13,
+        "libs": 1,
+        "top": [
+          "program/unmapped 64",
+          "libc other 6",
+          "libc mem*/str* 1"
+        ]
+      },
+      {
+        "pid": 493,
+        "prog": "rm",
+        "runMs": 48,
+        "compiledMs": 14,
+        "libs": 1,
+        "top": [
+          "program/unmapped 27",
+          "libc other 15",
+          "libc mem*/str* 6"
+        ]
+      }
+    ]
+  },
+  "git_clone": {
+    "wallMs": 158904,
+    "guestRunMs": 130877,
+    "buckets": {
+      "program/unmapped": {
+        "ms": 118506,
+        "ofRun": 90.5,
+        "ofWall": 74.6
+      },
+      "libz": {
+        "ms": 10056,
+        "ofRun": 7.7,
+        "ofWall": 6.3
+      },
+      "libc mem*/str*": {
+        "ms": 1498,
+        "ofRun": 1.1,
+        "ofWall": 0.9
+      },
+      "libc other": {
+        "ms": 817,
+        "ofRun": 0.6,
+        "ofWall": 0.5
+      }
+    },
+    "procs": [
+      {
+        "pid": 512,
+        "prog": "/usr/lib/git-core/git",
+        "runMs": 127882,
+        "compiledMs": 98130,
+        "libs": 3,
+        "top": [
+          "program/unmapped 117709",
+          "libz 8250",
+          "libc mem*/str* 1343"
+        ]
+      },
+      {
+        "pid": 511,
+        "prog": "git",
+        "runMs": 2743,
+        "compiledMs": 2056,
+        "libs": 3,
+        "top": [
+          "libz 1806",
+          "program/unmapped 611",
+          "libc other 192"
+        ]
+      },
+      {
+        "pid": 513,
+        "prog": "/usr/lib/git-core/git",
+        "runMs": 87,
+        "compiledMs": 26,
+        "libs": 3,
+        "top": [
+          "program/unmapped 61",
+          "libc other 18",
+          "libc mem*/str* 9"
+        ]
+      },
+      {
+        "pid": 509,
+        "prog": "?",
+        "runMs": 73,
+        "compiledMs": 25,
+        "libs": 0,
+        "top": [
+          "program/unmapped 73"
+        ]
+      },
+      {
+        "pid": 514,
+        "prog": "cat",
+        "runMs": 57,
+        "compiledMs": 20,
+        "libs": 1,
+        "top": [
+          "program/unmapped 32",
+          "libc other 17",
+          "libc mem*/str* 8"
+        ]
+      },
+      {
+        "pid": 510,
+        "prog": "rm",
+        "runMs": 35,
+        "compiledMs": 15,
+        "libs": 1,
+        "top": [
+          "program/unmapped 20",
+          "libc other 10",
+          "libc mem*/str* 5"
+        ]
+      }
+    ]
+  }
+}

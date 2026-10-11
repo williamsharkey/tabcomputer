@@ -82,11 +82,18 @@ function bucketOf(pc, ranges) {
 function parseProfile(text) {
   const pid = Number(/^pid (\d+)/m.exec(text)?.[1]);
   let runMs = 0, compiledMs = 0;
+  const tids = [];
+  const blocks = Number(/^total: (\d+) compiled blocks/m.exec(text)?.[1] ?? 0);
   const lines = text.split('\n');
   const th = lines.findIndex((l) => /^thread\s+run ms/.test(l));
-  if (th >= 0) for (let i = th + 1; i < lines.length && /^\s+\d+\s/.test(lines[i]); i++) {
+  if (th >= 0) for (let i = th + 1; i < lines.length && /^\s*\d+\s/.test(lines[i]); i++) {
     const c = lines[i].trim().split(/\s+/).map(Number);
-    runMs += c[1]; compiledMs += c[c.length - 1];
+    // the compiled-code time is sampled and scaled (1 in SHIRO_BLINK_PROFILE_EVERY): capped at the thread's run time
+    // a real pid and its blocks run: files of one instance repeat it (a finished thread's count no
+    // longer moves; ids from 262144 are reused across instances, rows with no blocks are other
+    // instances' children listed before they ran)
+    if (c[0] < 262144 && c[5] > 0) tids.push(`${c[0]}:${c[5]}`);
+    runMs += c[1]; compiledMs += Math.min(c[c.length - 1], c[1]);
   }
   const table = (headRe, stopRe) => {
     const out = [];
@@ -99,7 +106,7 @@ function parseProfile(text) {
     }
     return out;
   };
-  return { pid, runMs, compiledMs, compiled: table(/^guest instructions run in compiled code/, /^\S/), interp: table(/^most interpreted addresses/, /^most interpreted opcodes/) };
+  return { pid, tids, blocks, runMs, compiledMs, compiled: table(/^guest instructions run in compiled code/, /^\S/), interp: table(/^most interpreted addresses/, /^most interpreted opcodes/) };
 }
 
 const report = {};
@@ -108,9 +115,22 @@ for (const w of readdirSync(dir).filter((d) => existsSync(join(dir, d, 'wall.jso
   const B = {};
   let run = 0;
   const procs = [];
-  for (const f of readdirSync(join(dir, w)).filter((f) => /^\d+\.txt$/.test(f))) {
-    const p = parseProfile(readFileSync(join(dir, w, f), 'utf8'));
-    const { ranges, prog } = ldRanges(join(dir, w, `ld.${p.pid}`));
+  // A file covers its whole Blink instance (every process and thread in it), and each process of
+  // the instance writes one: files that repeat a pid with the same blocks run are one instance; keep the most
+  // complete (most blocks run)
+  const all = readdirSync(join(dir, w)).filter((f) => /^\d+\.txt$/.test(f)).map((f) => parseProfile(readFileSync(join(dir, w, f), 'utf8'))).sort((a, b) => b.blocks - a.blocks || b.runMs - a.runMs);
+  const kept = [], seen = new Set();
+  for (const p of all) { if (p.tids.some((t) => seen.has(t))) continue; p.tids.forEach((t) => seen.add(t)); kept.push(p); }
+  for (const p of kept) {
+    // a child forked without exec has no LD_DEBUG output of its own but the parent's mappings:
+    // take the nearest lower pid that has one (its forking parent, in these workloads), marked "fork of"
+    let ld = ldRanges(join(dir, w, `ld.${p.pid}`)), inherited = null;
+    if (!ld.ranges.length) {
+      const lower = readdirSync(join(dir, w)).map((f) => /^ld\.(\d+)$/.exec(f)?.[1]).filter(Boolean).map(Number).filter((x) => x < p.pid).sort((a, b) => b - a)[0];
+      if (lower != null) { ld = ldRanges(join(dir, w, `ld.${lower}`)); inherited = lower; }
+    }
+    const { ranges } = ld;
+    const prog = inherited != null ? `fork of ${inherited} (${ld.prog ?? '?'})` : ld.prog;
     const share = (rows) => { const s = {}; let t = 0; for (const [pc, n] of rows) { const b = bucketOf(pc, ranges); s[b] = (s[b] || 0) + n; t += n; } return { s, t }; };
     const c = share(p.compiled), it = share(p.interp);
     const interpMs = Math.max(0, p.runMs - p.compiledMs);

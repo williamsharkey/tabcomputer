@@ -1,7 +1,10 @@
-// Native Claude Code, interactive (opt-in: --suites claude; isolated only).
-// Anthropic's linux-x64-musl build in Blink, typed at the real terminal of a
-// fresh profile, against the local mock Messages API (lib/mockmodel.mjs,
-// reached through server.mjs's TCP relay). Every time is taken in the page
+// Claude Code, interactive (opt-in: --suites claude; isolated only). Both
+// builds, typed at the real terminal of a fresh profile, against the local
+// mock Messages API (lib/mockmodel.mjs): claude_native.* is Anthropic's
+// linux-x64-musl build in Blink (reaching the mock through server.mjs's TCP
+// relay), claude_npm.* the pinned JS build on tabcomputer's node (installed
+// before the round; its fetch goes straight to the mock). Same definitions
+// for both; the list below names the native ones. Every time is taken in the page
 // with performance.now(), from the term.input() that types the key to:
 // - `parsed`: the xterm buffer showing the effect (onWriteParsed);
 // - `frame`: the end of the next animation frame after that, i.e. the
@@ -180,8 +183,8 @@ async function exitClaude(h) {
   });
 }
 
-async function round(h, add, mock, { cold }) {
-  const cmd = `cd ~/w && ${ENV(mock.url)} claude --native`;
+async function round(h, add, mock, { cold, build }) {
+  const cmd = `cd ~/w && ${ENV(mock.url)} claude --${build}`;
   const tag = cold ? 'cold' : 'warm';
   const s = await startClaude(h, cmd, 600000);
   if (!s.prompt) h.log(`    ${tag} start screen:\n${s.screen.trimEnd()}`);
@@ -246,47 +249,53 @@ function nativeRounds(h, binary, rounds, mockUrl) {
   return { out };
 }
 
-export async function run(h) {
-  if (!h.isolated) { h.skip('claude_native.suite', '', 'native Claude Code runs in Blink: cross-origin isolated only'); return; }
-  if (!h.fixtures['claude-native'] || !h.fixtures['ld-musl-x86_64.so.1']) {
-    h.skip('claude_native.start.cold.prompt', 'ms', 'native Claude Code not cached: put the linux-x64-musl binary at bench/.cache/fixtures/claude-native and musl\'s loader at bench/.cache/fixtures/ld-musl-x86_64.so.1 (bench/README.md); never downloaded by the bench');
-    return;
-  }
-  if (!h.mockModel) { h.skip('claude_native.start.cold.prompt', 'ms', 'no mock model server (needs a non-loopback address on this machine)'); return; }
-  if (!h.wantsAny('claude_native', 'claude_native.start.cold.prompt', 'claude_native.echo.p50')) return;
-  const mock = h.mockModel;
-  const rounds = h.quick ? 1 : Math.min(h.runs, 3);
+/** Percentile rows (p50/p90/p99/max) of `xs` as `${name}.pNN`. */
+function percentiles(h, name, xs, notes) {
+  if (!xs?.length) return;
+  const q = (p) => { const s = xs.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))]; };
+  h.sample(`${name}.p50`, [q(0.5)], 'ms', { notes: `${notes}: median over ${xs.length} keys` });
+  h.sample(`${name}.p90`, [q(0.9)], 'ms', { notes: 'p90, same keys' });
+  h.sample(`${name}.p99`, [q(0.99)], 'ms', { notes: 'p99, same keys' });
+  h.sample(`${name}.max`, [Math.max(...xs)], 'ms', { notes: 'slowest key' });
+}
+
+const BUILDS = {
+  native: { what: '`claude --native` (linux-x64-musl in Blink)', needs: ['claude-native', 'ld-musl-x86_64.so.1'] },
+  npm: { what: '`claude --npm` (the pinned JS build on tabcomputer\'s node; installed before the round)', needs: [] },
+};
+
+/** `rounds` fresh profiles of one build: a cold and a warm launch each; samples as claude_<build>.*. */
+async function measureBuild(h, build, mock, rounds) {
+  const pre = `claude_${build}`;
   const R = {};
   const add = (k, v) => (R[k] ??= []).push(v);
   for (let i = 0; i < rounds; i++) {
-    await h.try(`claude_native.round${i + 1}`, '', async () => {
+    await h.try(`${pre}.round${i + 1}`, '', async () => {
       await h.page?.context().close().catch(() => {});
       await h.boot({ path: '/?ui=terminal' });
       await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());
       for (const ev of ['crash', 'close', 'popup', 'dialog']) h.page.on(ev, (x) => h.log(`    page ${ev}${x?.url ? `: ${x.url()}` : ''}${x?.message ? `: ${x.message()}` : ''}`));
       h.page.on('framenavigated', (f) => { if (f === h.page.mainFrame()) h.log(`    page navigated: ${f.url()}`); });
-      await h.eval(async (json) => {
-        await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
-        await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
-        await window.__bench.writeFile('/home/user/.claude.json', json);
-      }, claudeJson('/home/user', '/home/user/w'));
-      await h.sh('mkdir -p ~/w && chmod +x ~/.local/bin/claude /lib/ld-musl-x86_64.so.1');
+      if (build === 'native') {
+        await h.eval(async () => {
+          await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
+          await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
+        });
+        await h.sh('chmod +x ~/.local/bin/claude /lib/ld-musl-x86_64.so.1');
+      } else {
+        // installed first (workload.claude_npm.first measures that), so cold is the first launch, not the install
+        const r = await h.eval(() => window.__bench.shLimit('claude --npm --version > /tmp/cn.out 2>&1', 300000));
+        if (r.code !== 0) throw new Error(`claude --npm --version: exit ${r.code}: ${(await h.sh('cat /tmp/cn.out')).out.slice(-200)}`);
+      }
+      await h.eval((json) => window.__bench.writeFile('/home/user/.claude.json', json), claudeJson('/home/user', '/home/user/w'));
+      await h.sh('mkdir -p ~/w');
       await install(h);
-      await round(h, add, mock, { cold: true });
-      await round(h, add, mock, { cold: false });
+      await round(h, add, mock, { cold: true, build });
+      await round(h, add, mock, { cold: false, build });
     }, { force: true });
   }
-  const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`claude_native.${key}`, R[key], unit, { notes }); };
-  const P = (key, notes) => {
-    const xs = R[key];
-    if (!xs?.length) return;
-    const q = (p) => { const s = xs.slice().sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))]; };
-    h.sample(`claude_native.${key}.p50`, [q(0.5)], 'ms', { notes: `${notes}: median over ${xs.length} keys` });
-    h.sample(`claude_native.${key}.p90`, [q(0.9)], 'ms', { notes: 'p90, same keys' });
-    h.sample(`claude_native.${key}.p99`, [q(0.99)], 'ms', { notes: 'p99, same keys' });
-    h.sample(`claude_native.${key}.max`, [Math.max(...xs)], 'ms', { notes: 'slowest key' });
-  };
-  const B = '`claude --native` (linux-x64-musl in Blink) in a fresh profile, mock model';
+  const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`${pre}.${key}`, R[key], unit, { notes }); };
+  const B = `${BUILDS[build].what} in a fresh profile, mock model`;
   S('start.cold.first_screen', 'ms', `${B}: Enter → Claude's first output in the terminal buffer`);
   S('start.cold.prompt', 'ms', `${B}: Enter → the idle input prompt in the buffer`);
   S('start.cold.prompt.frame', 'ms', 'same, to the end of the frame that paints it');
@@ -296,13 +305,30 @@ export async function run(h) {
   S('rss_at_prompt', 'MiB', 'renderer RSS (workers included) at the cold prompt');
   S('echo.first', 'ms', 'first key typed at the prompt (1.5 s after it shows) → its echo on the input line');
   S('echo.first.frame', 'ms', 'same, painted');
-  P('echo', `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
-  P('echo.frame', 'key → the painted frame showing it');
+  percentiles(h, `${pre}.echo`, R.echo, `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
+  percentiles(h, `${pre}.echo.frame`, R['echo.frame'], 'key → the painted frame showing it');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');
+}
 
-  if (h.wantsAny('claude_native.native', 'claude_native.native.start.prompt', 'claude_native.native.echo.p50')) {
+export async function run(h) {
+  if (!h.isolated) { h.skip('claude.suite', '', 'measured in the isolated (production) configuration only; native Claude Code needs Blink'); return; }
+  if (!h.mockModel) { h.skip('claude.suite', '', 'no mock model server (needs a non-loopback address on this machine)'); return; }
+  const mock = h.mockModel;
+  const rounds = h.quick ? 1 : Math.min(h.runs, 3);
+  for (const build of Object.keys(BUILDS)) {
+    const pre = `claude_${build}`;
+    if (!h.wantsAny(pre, `${pre}.start.cold.prompt`, `${pre}.echo.p50`)) continue;
+    const missing = BUILDS[build].needs.filter((f) => !h.fixtures[f]);
+    if (missing.length) {
+      h.skip(`${pre}.start.cold.prompt`, 'ms', 'native Claude Code not cached: put the linux-x64-musl binary at bench/.cache/fixtures/claude-native and musl\'s loader at bench/.cache/fixtures/ld-musl-x86_64.so.1 (bench/README.md); never downloaded by the bench');
+      continue;
+    }
+    await measureBuild(h, build, mock, rounds);
+  }
+
+  if (h.fixtures['claude-native'] && h.wantsAny('claude_native.native', 'claude_native.native.start.prompt', 'claude_native.native.echo.p50')) {
     const nat = nativeRounds(h, h.fixtures['claude-native'], rounds, mock.url);
     if (nat.skip) h.skip('claude_native.native.start.prompt', 'ms', nat.skip);
     else {
@@ -316,10 +342,7 @@ export async function run(h) {
       const what = "the same binary natively on this machine's Linux in a pty (bench/lib/native-pty.py)";
       if (N.first) h.sample('claude_native.native.start.first_screen', N.first, 'ms', { notes: `native reference: ${what}: exec → first output` });
       if (N.prompt) h.sample('claude_native.native.start.prompt', N.prompt, 'ms', { notes: 'native: exec → the prompt text in the output' });
-      if (N.echo) {
-        R['native.echo'] = N.echo;
-        P('native.echo', `native: key written to the pty → the key in Claude's output`);
-      }
+      percentiles(h, 'claude_native.native.echo', N.echo, "native: key written to the pty → the key in Claude's output");
     }
   }
 }

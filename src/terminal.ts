@@ -894,8 +894,6 @@ export class ShiroTerminal {
   }
 
   private async handleInput(data: string) {
-    // (bracketed paste markers, left on by a program that enabled mode 2004: the text is what counts)
-    if (data.includes('\x1b[20')) data = data.replace(/\x1b\[20[01]~/g, '');
     if (this.running && data.includes('\x03')) this.typeAheadDropped = true;
     // A kernel job owns the terminal: everything goes through the pty line
     // discipline (Ctrl-C/Ctrl-Z become SIGINT/SIGTSTP to its process group)
@@ -918,6 +916,13 @@ export class ShiroTerminal {
       this.stdinPassthrough(data);
       return;
     }
+
+    // Bracketed paste markers (mode 2004, left on by a program that enabled it)
+    // are the program's: a kernel job and a passthrough program get them above,
+    // as Claude Code needs them to see a paste (a pasted image path becomes an
+    // attachment only in one). For the line editor and the builtins below, the
+    // text is what counts.
+    if (data.includes('\x1b[20')) data = data.replace(/\x1b\[20[01]~/g, '');
 
     // Raw mode: send all keystrokes directly to the callback (e.g., vi editor)
     if (this.rawModeCallback) {

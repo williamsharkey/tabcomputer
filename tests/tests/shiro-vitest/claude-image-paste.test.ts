@@ -6,7 +6,7 @@
  * plain clipboard write goes straight to the page's clipboard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createTestShell } from './helpers';
+import { createTestShell, createTestOS } from './helpers';
 import { xclipCmd, xselCmd, pbpasteCmd, pbcopyCmd } from '@shiro/commands/pbcopy';
 import { resetClipboard } from '@shiro/utils/clipboard';
 import { isClipboardWrite } from '@shiro/node-compat/modules/child-process';
@@ -76,5 +76,49 @@ describe("Claude Code's Ctrl+V image paste from node", () => {
       '',
     ]);
     await vi.waitFor(() => expect(clip).toBe('copied by node'));
+  }, 60_000);
+});
+
+/**
+ * Cmd+V: the terminal saves a pasted image and pastes its path
+ * (terminal-file-paste.ts). Claude Code looks for image paths only in a
+ * paste event, so the bracketed paste markers must reach the program: the
+ * terminal used to strip them from everything, and Claude Code took the path
+ * as typed text.
+ */
+describe('a pasted image reaches a node program as a bracketed paste of its path', () => {
+  it('markers and all, so Claude Code sees a paste', async () => {
+    const { fs, terminal, type } = await createTestOS();
+    await fs.mkdir('/tmp/bp', { recursive: true });
+    await fs.rm?.('/tmp/bp/got.json').catch(() => {});
+    await fs.writeFile('/tmp/bp/r.js', `
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      process.stdout.write("\\x1b[?2004hREADY\\n");
+      let got = "";
+      process.stdin.on("data", (d) => {
+        got += d;
+        if (got.includes("\\x1b[201~")) {
+          require("fs").writeFileSync("/tmp/bp/got.json", JSON.stringify(got));
+          process.stdout.write("\\x1b[?2004l");
+          process.exit(0);
+        }
+      });
+    `);
+    type('node /tmp/bp/r.js\r');
+    await vi.waitFor(() => expect(terminal.getBufferContent()).toContain('READY'), { timeout: 30_000 });
+    const dt = {
+      files: [new File([new Uint8Array(PNG)], 'image.png', { type: 'image/png' })],
+      items: [],
+      types: ['Files'],
+      getData: () => '',
+    };
+    const e = new (window as any).Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(e, 'clipboardData', { value: dt });
+    terminal.term.element!.parentElement!.dispatchEvent(e);
+    await vi.waitFor(async () => expect(await fs.exists('/tmp/bp/got.json')).toBe(true), { timeout: 30_000 });
+    const got = JSON.parse(await fs.readFile('/tmp/bp/got.json', 'utf8') as string);
+    const m = /^\x1b\[200~(\/tmp\/paste-\d{8}-\d{6}(?:-\d+)?\.png)\x1b\[201~$/.exec(got);
+    expect(m, JSON.stringify(got)).not.toBeNull();
+    expect([...(await fs.readFile(m![1])) as Uint8Array]).toEqual(PNG);
   }, 60_000);
 });

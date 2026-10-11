@@ -1,0 +1,156 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-11T08:06:39.896Z",
+  "git": {
+   "sha": "90599936eb96c0f829eed718defb93b435a80cdf",
+   "short": "9059993",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": false,
+  "runs": 5,
+  "machine": {
+   "id": "c7438dc4bb1e",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.10GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 12,
+  "netcache": {
+   "hits": 2,
+   "misses": 0,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "kernel.pipe_throughput",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 2182,
+   "p90": 2375,
+   "min": 1574,
+   "max": 2375,
+   "n": 5,
+   "samples": [
+    1574,
+    2375,
+    2173,
+    2182,
+    2297
+   ],
+   "notes": "64 MiB, 64 KiB writes, WASM writer → kernel pipe → WASM reader (reader's clock)"
+  },
+  {
+   "name": "kernel.pipe_throughput_512b",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 174.1,
+   "p90": 240.1,
+   "min": 88.7,
+   "max": 240.1,
+   "n": 5,
+   "samples": [
+    88.7,
+    240.1,
+    207.6,
+    90.27,
+    174.1
+   ],
+   "notes": "4 MiB in 512-byte writes/reads (syscall-bound)",
+   "gate": "kernel.pipe_throughput"
+  },
+  {
+   "name": "kernel.pipe_pingpong",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 7.7,
+   "p90": 11.57,
+   "min": 6.453,
+   "max": 11.57,
+   "n": 5,
+   "samples": [
+    7.038,
+    7.7,
+    11.57,
+    6.453,
+    10.28
+   ],
+   "notes": "2000 one-byte round trips between two WASM processes over two kernel pipes (kbench ping ↔ pong; each read blocks until the other's write): the WASI guest's counterpart of pbench's pipe ping-pong"
+  },
+  {
+   "name": "kernel.pipe_throughput",
+   "suite": "kernel",
+   "mode": "nonisolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 292.4,
+   "p90": 382.6,
+   "min": 281.9,
+   "max": 382.6,
+   "n": 5,
+   "samples": [
+    292.4,
+    281.9,
+    282.6,
+    353.8,
+    382.6
+   ],
+   "notes": "64 MiB, 64 KiB writes, WASM writer → kernel pipe → WASM reader (reader's clock)"
+  },
+  {
+   "name": "kernel.pipe_throughput_512b",
+   "suite": "kernel",
+   "mode": "nonisolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 96.42,
+   "p90": 108.7,
+   "min": 71.82,
+   "max": 108.7,
+   "n": 5,
+   "samples": [
+    71.82,
+    86.48,
+    108.7,
+    97.32,
+    96.42
+   ],
+   "notes": "4 MiB in 512-byte writes/reads (syscall-bound)",
+   "gate": "kernel.pipe_throughput"
+  },
+  {
+   "name": "kernel.pipe_pingpong",
+   "suite": "kernel",
+   "mode": "nonisolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 21.9,
+   "p90": 24.35,
+   "min": 19.5,
+   "max": 24.35,
+   "n": 5,
+   "samples": [
+    24.35,
+    19.75,
+    19.5,
+    21.9,
+    22.35
+   ],
+   "notes": "2000 one-byte round trips between two WASM processes over two kernel pipes (kbench ping ↔ pong; each read blocks until the other's write): the WASI guest's counterpart of pbench's pipe ping-pong"
+  }
+ ]
+}

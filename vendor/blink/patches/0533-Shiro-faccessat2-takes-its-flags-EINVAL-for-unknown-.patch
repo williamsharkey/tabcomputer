@@ -1,0 +1,65 @@
+From 513041a22698b9e106f490444dea6d82fdc9d324 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 06:56:17 +0000
+Subject: [PATCH] Shiro: faccessat2 takes its flags (EINVAL for unknown ones;
+ AT_EMPTY_PATH asks about dirfd itself), and utimensat of an empty path
+ without AT_EMPTY_PATH is ENOENT (the audit after #54)
+
+---
+ blink/shiro.inc | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 2283638..1229296 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -838,11 +838,36 @@ static i64 ShiroReadlinkAt(struct Machine *m, int dirfd, i64 path, i64 out,
+   return r;
+ }
+ 
++// faccessat2: its flags are AT_SYMLINK_NOFOLLOW, AT_EACCESS and
++// AT_EMPTY_PATH, which with an empty path asks about dirfd itself (O_PATH
++// included; Linux 5.8). The kernel's faccessat looks at the file's type and
++// execute bits, as here.
++EMSCRIPTEN_KEEPALIVE int blink_shiro_emptyat(void) { return 1; }
++
++static i64 ShiroFaccessat2(struct Machine *m, int dirfd, i64 path, int mode, int flags) {
++  u8 st[144];
++  char *s;
++  i64 r;
++  if (flags & ~(0x100 | 0x200 | 0x1000)) return -EINVAL_LINUX;
++  if (mode & ~7) return -EINVAL_LINUX;
++  if (!(flags & 0x1000) || !path || !(s = LoadStr(m, path)) || *s) {
++    return ShiroAtCall(m, 269, dirfd, path, mode, 0);
++  }
++  if ((r = ShiroStatAt(m, dirfd, 0, 0, 0x1000, st)) < 0) return r;
++  if ((mode & 1) && (Read32(st + 24) & 0170000) == 0100000 && !(Read32(st + 24) & 0111)) {
++    return -EACCES_LINUX;
++  }
++  return 0;
++}
++
+ static i64 ShiroUtimens(struct Machine *m, int dirfd, i64 path, i64 times,
+                         int flags, int timeval) {
+   char *buf = (char *)ShiroAlloc(m, 4096 + 32);
+   int n = 0, i;
+   if (path && (n = ShiroPath(m, path, buf, 0)) < 0) return n;
++  // a NULL path is dirfd itself (utimensat, futimens); an empty one only
++  // with AT_EMPTY_PATH (the kernel takes both for the fd)
++  if (path && !n && !(flags & 0x1000)) return -ENOENT_LINUX;
+   if (times) {
+     for (i = 0; i < 2; ++i) {
+       u8 t[16];
+@@ -4746,7 +4771,8 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       break;
+     }
+     case 0x015: r = ShiroPathCall(m, 21, a, b, 0, 0); break;          // access
+-    case 0x10D: case 0x1B7: r = ShiroAtCall(m, 269, a, b, c, 0); break;  // faccessat(2)
++    case 0x10D: r = ShiroAtCall(m, 269, a, b, c, 0); break;          // faccessat
++    case 0x1B7: r = ShiroFaccessat2(m, a, b, c, d); break;           // faccessat2
+     case 0x007: r = ShiroPoll(m, a, b, (int)c); break;
+     case 0x10F: {                                                     // ppoll
+       int ms, pushed;
+-- 
+2.43.0
+

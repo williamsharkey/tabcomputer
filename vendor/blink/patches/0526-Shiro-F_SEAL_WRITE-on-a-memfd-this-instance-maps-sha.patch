@@ -1,0 +1,107 @@
+From 9576816171a09ab430fab9770920721eda57ee74 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 05:44:43 +0000
+Subject: [PATCH] Shiro: F_SEAL_WRITE on a memfd this instance maps shared,
+ from an fd open for writing, is EBUSY (LTP memfd_create01)
+
+---
+ blink/shiro.inc | 37 ++++++++++++++++++++++++++++++++++---
+ 1 file changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 9006ef0..2cb214c 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -981,6 +981,7 @@ static i64 ShiroIoctl(struct Machine *m, int fd, u64 req, i64 arg) {
+ 
+ // ── fcntl ────────────────────────────────────────────────────────────────
+ 
++static bool ShiroMappedWritable(struct Machine *, int);
+ static i64 ShiroFcntl(struct Machine *m, int fd, int cmd, i64 arg) {
+   switch (cmd) {
+     case 0: case 1: case 2: case 3: case 4: case 1030:
+@@ -997,8 +998,11 @@ static i64 ShiroFcntl(struct Machine *m, int fd, int cmd, i64 arg) {
+     }
+     case 8: case 9: case 10: case 11: case 15: case 16:  // owner/sig
+       return 0;
++    case 1033:  // F_ADD_SEALS: F_SEAL_WRITE while it is mapped shared and writable is EBUSY
++      if ((arg & 8) && ShiroMappedWritable(m, fd)) return -EBUSY_LINUX;
++      return KS(m, 72, A12(fd, cmd, (int)arg));
+     case 1031: case 1032:  // F_SETPIPE_SZ / F_GETPIPE_SZ: the kernel's pipes
+-    case 1033: case 1034:  // F_ADD_SEALS / F_GET_SEALS: the kernel's memfds
++    case 1034:             // F_GET_SEALS: the kernel's memfds
+     case 1024: case 1025:  // F_SETLEASE / F_GETLEASE: the kernel's leases (LTP fcntl27)
+       return KS(m, 72, A12(fd, cmd, (int)arg));
+     default:
+@@ -2993,6 +2997,7 @@ struct ShiroRemoteMap {
+   int pid;
+   i64 addr, size;
+   u32 off;
++  bool maywrite;  // a shared map of a file open for writing (Linux: VM_MAYWRITE)
+   struct ShiroRemoteObj *obj;
+ };
+ static struct ShiroRemoteMap *g_shiro_remote;
+@@ -3267,10 +3272,32 @@ static void ShiroRemoteFork(int parent, int child) {
+   UNLOCK(&g_shiro_remote_lock);
+ }
+ 
++// Whether a memfd that could take F_SEAL_WRITE (open for writing, not
++// F_SEAL_SEAL'd: else the kernel refuses first) has a shared mapping in
++// this instance that may write it (Linux: mapping_writably_mapped; LTP
++// memfd_create01). A memfd's shared mappings are remote objects (eager);
++// the kernel names the memfd's object (SHMOBJ_LOOKUP), if it has one.
++// Mappings in other instances aren't seen.
++static bool ShiroMappedWritable(struct Machine *m, int fd) {
++  struct ShiroRemoteMap *r;
++  bool found = false;
++  i64 seals, id;
++  if (!g_shiro_remote) return false;
++  if ((seals = KS(m, 72, A12(fd, 1034, 0))) < 0 || (seals & 1)) return false;
++  if ((KS(m, 72, A12(fd, 3, 0)) & 3) == 0) return false;
++  if ((id = KS(m, 1020, A12(fd, 0x400, 0, 0))) <= 0) return false;
++  LOCK(&g_shiro_remote_lock);
++  for (r = g_shiro_remote; r && !found; r = r->next) {
++    found = r->maywrite && r->obj->id == id;
++  }
++  UNLOCK(&g_shiro_remote_lock);
++  return found;
++}
++
+ // mmap(MAP_SHARED) of `fd`: remote pages if it is a shareable object, else
+ // SHIRO_NOT_REMOTE
+ static i64 ShiroRemoteMapFile(struct Machine *m, i64 virt, u64 size, int prot,
+-                              int flags, int fd, i64 off) {
++                              int flags, int fd, i64 off, bool maywrite) {
+   struct ShiroRemoteObj *o;
+   struct ShiroRemoteMap *r;
+   i64 id, addr, end = off + (i64)size, v, rc;
+@@ -3311,6 +3338,7 @@ static i64 ShiroRemoteMapFile(struct Machine *m, i64 virt, u64 size, int prot,
+   r->addr = addr;
+   r->size = size;
+   r->off = (u32)off;
++  r->maywrite = maywrite;
+   r->obj = o;
+   LOCK(&g_shiro_remote_lock);
+   r->next = g_shiro_remote;
+@@ -3716,6 +3744,8 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_maywrite(void) { return 1; }
+ 
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_fallocate(void) { return 1; }
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_sealbusy(void) { return 1; }
++
+ static int ShiroMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
+   bool nomw = false;
+   i64 v;
+@@ -3755,7 +3785,8 @@ static i64 ShiroMmapFile(struct Machine *m, i64 virt, u64 size, int prot,
+   if (shared && ((KS(m, 72, A12(fd, 3, 0)) & 3) != 2 || ((r = KS(m, 72, A12(fd, 1034, 0))) > 0 && (r & 0x18)))) {
+     mark |= PAGE_NOMW;
+   }
+-  if (shared && (r = ShiroRemoteMapFile(m, virt, size, prot, flags, fd, off)) != SHIRO_NOT_REMOTE) {
++  if (shared && (r = ShiroRemoteMapFile(m, virt, size, prot, flags, fd, off,
++                                         !(mark & PAGE_NOMW))) != SHIRO_NOT_REMOTE) {
+     if (r >= 0) ShiroMarkShared(m, r, size, mark);
+     if (r >= 0 && ShiroStatAt(m, fd, 0, 0, 0x1000, st) >= 0 && (Read32(st + 24) & 0170000) == 0100000) {
+       ShiroBusAdd(m, r, size, prot, fd, off, Read64(st + 48), true);
+-- 
+2.43.0
+

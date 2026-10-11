@@ -42,6 +42,8 @@ interface Timer {
   queued: boolean; // its signal was sent and may still be pending
   cur: number; // expiries while that signal was pending
   last: number; // overruns of the last signal taken
+  /** The queued signal's siginfo: its si_overrun follows `cur` until it is taken */
+  info?: A.SigInfo;
   tid?: number; // SIGEV_THREAD_ID: the thread its signal is for
 }
 
@@ -129,11 +131,14 @@ export class PosixTimers {
       // A signal that would only be discarded isn't generated, and the last
       // signal's overruns stay the reported ones (Linux 6.13's ignored timers)
       if (!tm.queued && PosixTimers.discarded(proc, tm.signo)) tm.cur = 0;
-      else if (tm.queued) tm.cur = Math.min(DELAYTIMER_MAX, tm.cur + 1 + missed);
-      else {
+      else if (tm.queued) {
+        tm.cur = Math.min(DELAYTIMER_MAX, tm.cur + 1 + missed);
+        if (tm.info) tm.info.overrun = tm.cur;
+      } else {
         tm.queued = true;
         tm.cur = Math.min(DELAYTIMER_MAX, missed);
-        this.deliver(proc, tm.signo, { signo: tm.signo, code: A.SI_TIMER, timerid: tm.id, overrun: 0, value: tm.value, tid: tm.tid });
+        tm.info = { signo: tm.signo, code: A.SI_TIMER, timerid: tm.id, overrun: tm.cur, value: tm.value, tid: tm.tid };
+        this.deliver(proc, tm.signo, tm.info);
       }
     }
     if (tm.interval > 0) {
@@ -146,15 +151,20 @@ export class PosixTimers {
     const ms = tm.deadline - now();
     tm.handle = setTimeout(() => {
       if (proc.exiting || tm.deadline === 0) return;
-      if (tm.deadline - now() > 1) { this.arm(proc, tm); return; } // (a long one waits in steps)
+      if (tm.deadline > now()) { this.arm(proc, tm); return; } // (never early; a long one waits in steps)
       this.fire(proc, tm);
     }, Math.min(0x7fffffff, Math.max(0, ms)));
     (tm.handle as { unref?: () => void })?.unref?.();
   }
 
-  /** What `abs` (ms on the timer's clock) is on performance.now()'s */
+  /**
+   * What `abs` (ms on the timer's clock) is on performance.now()'s. Blink's
+   * CLOCK_REALTIME follows Date.now() to within 2 ms, and Date.now() is
+   * whole ms: an absolute realtime timer waits 3 ms more, so the guest never
+   * reads a time before its expiry (Open POSIX timer_settime_9-2)
+   */
   private toNow(clock: number, absMs: number): number {
-    const at = clock === 0 || clock === 5 ? Date.now()
+    const at = clock === 0 || clock === 5 ? Date.now() - 3
       : clock === 7 ? Date.now() - this.bootMs
       : performance.timeOrigin + performance.now(); // emscripten's CLOCK_MONOTONIC in Blink's threads
     return now() + (absMs - at);
@@ -197,6 +207,7 @@ export class PosixTimers {
     // stopped then armed again ran its function for the old expiries too)
     this.dropPending(proc, tm);
     tm.cur = 0;
+    tm.last = 0; // (Linux: it_overrun_last)
     if (tm.handle) clearTimeout(tm.handle);
     tm.handle = undefined;
     tm.interval = value > 0 ? interval : 0;

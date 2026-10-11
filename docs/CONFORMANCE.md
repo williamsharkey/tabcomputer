@@ -10,9 +10,9 @@ conformance work started (fc0af54).
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
-| [Syscalls: LTP under Blink (x86-64)](#syscalls-ltp-under-blink-x86-64) | — | **431/534 (80.7%)** |
+| [Syscalls: LTP under Blink (x86-64)](#syscalls-ltp-under-blink-x86-64) | — | **472/534 (88.4%)** |
 | [Syscalls: wasi-testsuite (wasm32-wasip1)](#syscalls-wasi-testsuite-wasm32-wasip1) | — | **71/72 (98.6%)** |
-| [POSIX: Open POSIX Test Suite under Blink (x86-64)](#posix-open-posix-test-suite-under-blink-x86-64) | — | **1428/1448 (98.6%)** |
+| [POSIX: Open POSIX Test Suite under Blink (x86-64)](#posix-open-posix-test-suite-under-blink-x86-64) | — | **1436/1448 (99.2%)** |
 
 How each suite runs, and what is and isn't scored, is described in
 [tests/conformance/README.md](../tests/conformance/README.md).
@@ -568,19 +568,19 @@ busybox `testsuite/` (pinned, fetched by scripts/conformance/fetch.sh) run in ta
 
 ## Syscalls: LTP under Blink (x86-64)
 
-Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel processes in the Blink engine; only tests that pass natively on the build host as an unprivileged user (uid 1000, like tabcomputer) are scored. Blink forks within one instance by default (patch 0048), so the child shares MAP_SHARED pages, where LTP keeps its result counts and checkpoints; with BLINK_SAME_INSTANCE_FORK=0 (snapshot fork) they are not shared, so when the Summary reads all zeros the TPASS/TFAIL/TBROK lines are counted instead (tests/conformance/lib/ltp.mjs). Trend: 146 (first run) → 172 → 148 (TBROK/TFAIL lines counted, snapshot fork) → 197 (same-instance fork opt-in, A/B against 155 without it) → 222 (same-instance fork the default, Blink 0034–0048, kernel O_PATH/locks/pipe sizes/epoll/errno fixes) → 229 (AF_UNIX DGRAM/SEQPACKET sockets, timeouts that never end early, unlinkat/wait4 errnos; bind04 now reaches its abstract-name cases, which Blink truncates) → 237 (Blink 0050–0054: same-instance children no longer stall each other, sleeps show S and end on signals, abstract AF_UNIX names keep their length) → 240/322 (Blink 0058–0070 and signalfd01/02 added to the scored set: nanosleep04 and signalfd pass; UDP over loopback, AF_UNIX datagram backpressure and socket errnos fix bind05, sendfile07, connect03, accept03 and epoll_wait05; ppoll01 and waitpid08/10 newly fail, both Blink regressions reported to perf-blink) → 272/322 (Blink 0080/0081, built locally until perf-blink folds them into its build: record locks, pipe sizes and RLIMIT_NOFILE are the kernel's, read-only output buffers are EFAULT, LTP errnos for clocks, rlimits, iovs, waitid, sendfile, O_PATH fds, personality; waitpid13 fails like waitpid08/10) → 280/322 (measured on integration a8bf453, perf-blink's build with 0080–0082 and its 0075–0077: ppoll takes its sigmask, a futex wake is no longer counted twice (waitpid08/10/13), /proc/self/maps is a memfd, pipes are writable by the page, nanosleep writes rem before the signal frame; futex_cmp_requeue01 now crashes the test worker). → 282/322 measured on integration bab5481 (perf-blink's engine through 0110: futex requeue, copy-on-write fork): futex_cmp_requeue02/03 and waitpid01 pass; clock_gettime04 failed once on CLOCK_BOOTTIME jitter under load (8 ms > 6 ms). → 283/322 on integration dff2c0d (perf-blink's engine through 0114 with this branch's 0500–0504): execve06 passes. → 283/322 again on unix/conformance 55e936d (perf-blink's engine through 0119 with this branch's 0505–0509, as for Open POSIX): no change; clock_gettime04 (CLOCK_BOOTTIME jitter) and futex_wake02 still fail. → 431/534 on unix/conformance d3049611 with the scored set widened to the calls real tools use (212 more: memory maps and locks, file metadata and sync, splice/tee/copy_file_range, eventfd/timerfd/inotify, socket messages and options, queued and per-thread signals, POSIX timers and itimers, prctl, ids, rusage, affinity; perf-blink's engine through 0121 with this branch's 0514 built locally: Linux's argument checks before the call, mincore, mlock; and host.mjs's chunk fix, without which writes over 1 MiB came back short): the first 322 at 285 (clock_gettime04 and futex_wake02 pass this time), the new 212 at 146. Left among the new: inotify (not implemented), ioctl_pidfd/ioctl_ns, mmap/mremap edge cases, prctl options, fallocate modes, multicast/packet socket options, readlinkat of an O_PATH symlink, splice07 (/proc/self/fd reopen), splice08/09 (Linux 6.7).
+Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel processes in the Blink engine; only tests that pass natively on the build host as an unprivileged user (uid 1000, like tabcomputer) are scored. Blink forks within one instance by default (patch 0048), so the child shares MAP_SHARED pages, where LTP keeps its result counts and checkpoints; with BLINK_SAME_INSTANCE_FORK=0 (snapshot fork) they are not shared, so when the Summary reads all zeros the TPASS/TFAIL/TBROK lines are counted instead (tests/conformance/lib/ltp.mjs). Trend: 146 (first run) → 172 → 148 (TBROK/TFAIL lines counted, snapshot fork) → 197 (same-instance fork opt-in, A/B against 155 without it) → 222 (same-instance fork the default, Blink 0034–0048, kernel O_PATH/locks/pipe sizes/epoll/errno fixes) → 229 (AF_UNIX DGRAM/SEQPACKET sockets, timeouts that never end early, unlinkat/wait4 errnos; bind04 now reaches its abstract-name cases, which Blink truncates) → 237 (Blink 0050–0054: same-instance children no longer stall each other, sleeps show S and end on signals, abstract AF_UNIX names keep their length) → 240/322 (Blink 0058–0070 and signalfd01/02 added to the scored set: nanosleep04 and signalfd pass; UDP over loopback, AF_UNIX datagram backpressure and socket errnos fix bind05, sendfile07, connect03, accept03 and epoll_wait05; ppoll01 and waitpid08/10 newly fail, both Blink regressions reported to perf-blink) → 272/322 (Blink 0080/0081, built locally until perf-blink folds them into its build: record locks, pipe sizes and RLIMIT_NOFILE are the kernel's, read-only output buffers are EFAULT, LTP errnos for clocks, rlimits, iovs, waitid, sendfile, O_PATH fds, personality; waitpid13 fails like waitpid08/10) → 280/322 (measured on integration a8bf453, perf-blink's build with 0080–0082 and its 0075–0077: ppoll takes its sigmask, a futex wake is no longer counted twice (waitpid08/10/13), /proc/self/maps is a memfd, pipes are writable by the page, nanosleep writes rem before the signal frame; futex_cmp_requeue01 now crashes the test worker). → 282/322 measured on integration bab5481 (perf-blink's engine through 0110: futex requeue, copy-on-write fork): futex_cmp_requeue02/03 and waitpid01 pass; clock_gettime04 failed once on CLOCK_BOOTTIME jitter under load (8 ms > 6 ms). → 283/322 on integration dff2c0d (perf-blink's engine through 0114 with this branch's 0500–0504): execve06 passes. → 283/322 again on unix/conformance 55e936d (perf-blink's engine through 0119 with this branch's 0505–0509, as for Open POSIX): no change; clock_gettime04 (CLOCK_BOOTTIME jitter) and futex_wake02 still fail. → 431/534 on unix/conformance d3049611 with the scored set widened to the calls real tools use (212 more: memory maps and locks, file metadata and sync, splice/tee/copy_file_range, eventfd/timerfd/inotify, socket messages and options, queued and per-thread signals, POSIX timers and itimers, prctl, ids, rusage, affinity; perf-blink's engine through 0121 with this branch's 0514 built locally: Linux's argument checks before the call, mincore, mlock; and host.mjs's chunk fix, without which writes over 1 MiB came back short): the first 322 at 285 (clock_gettime04 and futex_wake02 pass this time), the new 212 at 146. Left among the new: inotify (not implemented), ioctl_pidfd/ioctl_ns, mmap/mremap edge cases, prctl options, fallocate modes, multicast/packet socket options, readlinkat of an O_PATH symlink, splice07 (/proc/self/fd reopen), splice08/09 (Linux 6.7). → 472/534 on unix/conformance e479d27a with this branch's Blink 0523–0533 built locally on top of the engine through 0521 (not yet perf-blink's build; quiet rerun of the failures): mmap04 (/proc/self/maps shows shared and write-only mappings), memfd_create01 (mprotect of a write-sealed shared map, fallocate, F_SEAL_WRITE while mapped, O_TRUNC of a shrink-sealed memfd), prctl03 (child subreapers; a same-instance fork child's waitpid restarts after an SA_RESTART handler), tgkill02 (RLIMIT_SIGPENDING), timer_settime03 (timer_getoverrun of the signal taken), ioctl_pidfd01 (pidfds through the kernel), fallocate02/03, and the inotify, prctl, mmap/mremap and readlinkat cases earlier patches fixed. clock_gettime04 failed this time on CLOCK_BOOTTIME jitter (6 ms); times03 now has system and children's system time but the test process's startup reads 6–7 ticks of user time against its limit of 5. Left: ioctl_pidfd02–06 and ioctl_ns* (namespaces), the timer-slack tests under load (poll02, select02, pselect01, epoll_wait02, epoll_pwait03), futex_waitv, fcntl38/39 (dnotify), /proc/self/smaps and pagemap (mlock05, mmap12), MAP_HUGETLB-less mmap18, splice07, pipe13, and the eight in hangs.json.
 
 | Area | Before | Now | Failing |
 |---|---|---|---|
 | accept | — | 2/3 | 1 |
 | alarm | — | 5/5 | 0 |
 | bind | — | 4/4 | 0 |
-| brk | — | 1/2 | 1 |
+| brk | — | 2/2 | 0 |
 | chdir | — | 2/2 | 0 |
 | chmod | — | 2/2 | 0 |
-| clock_gettime | — | 1/1 | 0 |
+| clock_gettime | — | 0/1 | 1 |
 | clock_nanosleep | — | 3/3 | 0 |
-| clone | — | 7/8 | 1 |
+| clone | — | 8/8 | 0 |
 | close | — | 2/2 | 0 |
 | close_range | — | 0/1 | 1 |
 | connect | — | 2/2 | 0 |
@@ -600,11 +600,11 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | exit | — | 1/1 | 0 |
 | exit_group | — | 1/1 | 0 |
 | faccessat | — | 2/2 | 0 |
-| fallocate | — | 0/2 | 2 |
+| fallocate | — | 2/2 | 0 |
 | fchdir | — | 2/2 | 0 |
 | fchmod | — | 1/1 | 0 |
 | fchmodat | — | 2/2 | 0 |
-| fcntl | — | 26/36 | 10 |
+| fcntl | — | 28/36 | 8 |
 | flock | — | 5/5 | 0 |
 | fork | — | 8/9 | 1 |
 | fstat | — | 4/4 | 0 |
@@ -629,20 +629,20 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | gettid | — | 2/2 | 0 |
 | gettimeofday | — | 2/2 | 0 |
 | getuid | — | 2/2 | 0 |
-| inotify | — | 0/8 | 8 |
-| ioctl | — | 1/13 | 12 |
+| inotify | — | 8/8 | 0 |
+| ioctl | — | 2/13 | 11 |
 | kill | — | 4/4 | 0 |
 | link | — | 2/2 | 0 |
 | lseek | — | 3/4 | 1 |
-| lstat | — | 2/4 | 2 |
+| lstat | — | 4/4 | 0 |
 | madvise | — | 2/3 | 1 |
-| memfd_create | — | 1/3 | 2 |
+| memfd_create | — | 2/3 | 1 |
 | mincore | — | 3/3 | 0 |
 | mknod | — | 1/1 | 0 |
 | mlock | — | 2/3 | 1 |
-| mmap | — | 8/18 | 10 |
+| mmap | — | 16/18 | 2 |
 | mprotect | — | 1/1 | 0 |
-| mremap | — | 6/9 | 3 |
+| mremap | — | 8/9 | 1 |
 | munmap | — | 2/2 | 0 |
 | nanosleep | — | 3/3 | 0 |
 | open | — | 8/8 | 0 |
@@ -652,7 +652,7 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | pipe2 | — | 2/2 | 0 |
 | poll | — | 3/4 | 1 |
 | ppoll | — | 1/1 | 0 |
-| prctl | — | 2/7 | 5 |
+| prctl | — | 7/7 | 0 |
 | pread | — | 4/4 | 0 |
 | preadv | — | 4/4 | 0 |
 | preadv2 | — | 4/4 | 0 |
@@ -662,22 +662,22 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | pwritev2 | — | 4/4 | 0 |
 | read | — | 4/4 | 0 |
 | readahead | — | 1/1 | 0 |
-| readlinkat | — | 0/2 | 2 |
+| readlinkat | — | 2/2 | 0 |
 | readv | — | 2/2 | 0 |
 | recvmsg | — | 1/1 | 0 |
 | rmdir | — | 1/1 | 0 |
 | rt_sigqueueinfo | — | 1/2 | 1 |
 | rt_sigtimedwait | — | 1/1 | 0 |
 | sbrk | — | 2/2 | 0 |
-| sched_getaffinity | — | 0/1 | 1 |
+| sched_getaffinity | — | 1/1 | 0 |
 | select | — | 3/4 | 1 |
 | sendfile | — | 13/16 | 3 |
 | sendmsg | — | 0/1 | 1 |
 | sendto | — | 0/1 | 1 |
 | set_tid_address | — | 1/1 | 0 |
 | setitimer | — | 2/2 | 0 |
-| setpgid | — | 2/3 | 1 |
-| setrlimit | — | 1/2 | 1 |
+| setpgid | — | 3/3 | 0 |
+| setrlimit | — | 2/2 | 0 |
 | setsockopt | — | 1/5 | 4 |
 | shutdown | — | 2/2 | 0 |
 | sigaltstack | — | 1/1 | 0 |
@@ -696,11 +696,11 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 | sync_file_range | — | 1/1 | 0 |
 | sysinfo | — | 2/2 | 0 |
 | tee | — | 2/2 | 0 |
-| tgkill | — | 1/3 | 2 |
+| tgkill | — | 3/3 | 0 |
 | time | — | 1/1 | 0 |
 | timer_create | — | 2/2 | 0 |
-| timer_settime | — | 0/1 | 1 |
-| timerfd | — | 5/6 | 1 |
+| timer_settime | — | 1/1 | 0 |
+| timerfd | — | 6/6 | 0 |
 | times | — | 1/2 | 1 |
 | tkill | — | 2/2 | 0 |
 | truncate | — | 2/2 | 0 |
@@ -720,44 +720,32 @@ Static x86-64 LTP syscall tests (scripts/conformance/build-ltp.sh) run as kernel
 <details><summary>Failing cases</summary>
 
 - **accept**: accept02 — accept02.c:116: TBROK: ioctl(3,SIOCGIFINDEX,...) failed: ENOTTY (25)
-- **brk**: brk01 — brk01.c:59: TFAIL: brk() failed to set address have 0x88024000 expected 0x88023fff
-- **clone**: clone08 — clone08.c:85: TBROK: CLONE_PARENT_SETTID clone() failed: EINVAL (22)
+- **clock_gettime**: clock_gettime04 — clock_gettime04.c:169: TFAIL: CLOCK_BOOTTIME(vDSO or syscall with libc spec): Difference between successive readings greater than 6 ms (0): 6
 - **close_range**: close_range02 — close_range02.c:84: TBROK: clone failed: EINVAL (22)
 - **epoll_pwait**: epoll_pwait03 — tst_timer_test.c:314: TFAIL: do_epoll_pwait() slept for too long
 - **epoll_wait**: epoll_wait02 — tst_timer_test.c:314: TFAIL: epoll_wait() slept for too long
-- **fallocate**: fallocate02 — passed 0 failed 0 broken 0; fallocate03 — fallocate03.c:81: TFAIL: fallocate(fd, DEFAULT_MODE, 8192, 4096) failed: EOPNOTSUPP (95)
-- **fcntl**: fcntl14 — no summary; fcntl14_64 — no summary; fcntl27 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl27_64 — fcntl27.c:37: TFAIL: fcntl(fd, F_SETLEASE, F_RDLCK) expected EAGAIN/EWOULDBLOCK: EINVAL (22); fcntl38 — passed 0 failed 0 broken 0; fcntl38_64 — passed 0 failed 0 broken 0; fcntl39 — passed 0 failed 0 broken 0; fcntl39_64 — passed 0 failed 0 broken 0; fcntl40 (hang/timeout) — skipped: hangs tabcomputer; fcntl40_64 — passed 0 failed 0 broken 0
+- **fcntl**: fcntl14 (hang/timeout) — no summary; fcntl14_64 — no summary; fcntl38 — passed 0 failed 0 broken 0; fcntl38_64 — passed 0 failed 0 broken 0; fcntl39 — passed 0 failed 0 broken 0; fcntl39_64 — passed 0 failed 0 broken 0; fcntl40 (hang/timeout) — skipped: hangs tabcomputer; fcntl40_64 — passed 0 failed 0 broken 0
 - **fork**: fork14 (hang/timeout) — no summary
-- **futex**: futex_cmp_requeue01 (hang/timeout) — skipped: hangs tabcomputer; futex_wait05 (hang/timeout) — skipped: hangs tabcomputer; futex_waitv01 — passed 0 failed 0 broken 0; futex_waitv02 — passed 0 failed 0 broken 0; futex_waitv03 — passed 0 failed 0 broken 0; futex_wake02 — futex_wake02.c:79: TFAIL: futex_wake() woken up 7 threads, expected 10: SUCCESS (0); futex_wake03 (hang/timeout) — skipped: hangs tabcomputer; futex_wake05 — futex_wake05.c:67: TFAIL: uaddr file truncated succeeded
-- **inotify**: inotify01 — passed 0 failed 0 broken 0; inotify02 — passed 0 failed 0 broken 0; inotify04 — passed 0 failed 0 broken 0; inotify05 — passed 0 failed 0 broken 0; inotify09 — passed 0 failed 0 broken 0; inotify10 — passed 0 failed 0 broken 0; inotify11 — passed 0 failed 0 broken 0; inotify12 — passed 0 failed 0 broken 0
-- **ioctl**: ioctl01 — ioctl01.c:62: TFAIL: Termio address is invalid expected EFAULT: ENOTTY (25); ioctl07 — ioctl07.c:27: TBROK: ioctl(3,((((2U) << (((0+8)+8)+14)) | ((('R')) << (0+8)) | (((0x00)) << 0) | ((((sizeof(int)))) << ((0+8)+8)))),...) failed: ENOTTY (25); ioctl10 — passed 0 failed 0 broken 0; ioctl_ns02 — ioctl_ns02.c:33: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns03 — ioctl_ns03.c:32: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns04 — ioctl_ns04.c:32: TBROK: open(/proc/self/ns/user,0,0000) failed: ENOENT (2); ioctl_pidfd01 — ioctl_pidfd.h:58: TBROK: pidfd_open(6489, 0) failed: ENOSYS (38); ioctl_pidfd02 — passed 0 failed 0 broken 0; ioctl_pidfd03 — passed 0 failed 0 broken 0; ioctl_pidfd04 — passed 0 failed 0 broken 0; ioctl_pidfd05 — passed 0 failed 0 broken 0; ioctl_pidfd06 — passed 0 failed 0 broken 0
+- **futex**: futex_cmp_requeue01 (hang/timeout) — skipped: hangs tabcomputer; futex_wait05 (hang/timeout) — skipped: hangs tabcomputer; futex_waitv01 — passed 0 failed 0 broken 0; futex_waitv02 — passed 0 failed 0 broken 0; futex_waitv03 — passed 0 failed 0 broken 0; futex_wake02 — futex_wake02.c:79: TFAIL: futex_wake() woken up 3 threads, expected 8: SUCCESS (0); futex_wake03 (hang/timeout) — skipped: hangs tabcomputer; futex_wake05 — futex_wake05.c:67: TFAIL: uaddr file truncated succeeded
+- **ioctl**: ioctl01 — ioctl01.c:62: TFAIL: Termio address is invalid expected EFAULT: ENOTTY (25); ioctl07 — ioctl07.c:27: TBROK: ioctl(3,((((2U) << (((0+8)+8)+14)) | ((('R')) << (0+8)) | (((0x00)) << 0) | ((((sizeof(int)))) << ((0+8)+8)))),...) failed: ENOTTY (25); ioctl10 — passed 0 failed 0 broken 0; ioctl_ns02 — ioctl_ns02.c:33: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns03 — ioctl_ns03.c:32: TBROK: open(/proc/self/ns/uts,0,0000) failed: ENOENT (2); ioctl_ns04 — ioctl_ns04.c:32: TBROK: open(/proc/self/ns/user,0,0000) failed: ENOENT (2); ioctl_pidfd02 — passed 0 failed 0 broken 0; ioctl_pidfd03 — passed 0 failed 0 broken 0; ioctl_pidfd04 — passed 0 failed 0 broken 0; ioctl_pidfd05 — passed 0 failed 0 broken 0; ioctl_pidfd06 — passed 0 failed 0 broken 0
 - **lseek**: lseek11 — passed 0 failed 0 broken 0
-- **lstat**: lstat02 — lstat02.c:74: TFAIL: lstat() failed unexpectedly; expected: EFAULT - got: EBADF (9); lstat02_64 — lstat02.c:74: TFAIL: lstat() failed unexpectedly; expected: EFAULT - got: EBADF (9)
-- **madvise**: madvise10 — madvise10.c:81: TFAIL: In PID 6512, addr[1] = 0x01, expected[1] = 0x00
-- **memfd_create**: memfd_create01 — memfd_create01.c:65: TFAIL: mmap((nil), 8192, 3, 1, 3, 0) succeeded unexpectedly; memfd_create04 — passed 0 failed 0 broken 0
+- **madvise**: madvise10 — madvise10.c:81: TFAIL: In PID 6463, addr[1] = 0x01, expected[1] = 0x00
+- **memfd_create**: memfd_create04 — passed 0 failed 0 broken 0
 - **mlock**: mlock05 — mlock05.c:30: TBROK: fopen(/proc/self/smaps,r) failed: ENOENT (2)
-- **mmap**: mmap01 — mmap01.c:43: TFAIL: Read 16 expected 12; mmap04 — mmap04.c:63: TBROK: Expected 1 conversions got 0 FILE '/proc/self/maps'; mmap06 — mmap06.c:57: TFAIL: mmap(NULL, tc->length, tc->prot, tc->flags, fd, 0) expected EINVAL: EACCES (13); mmap12 — mmap12.c:47: TFAIL: pen dev pagemap failed: ENOENT (2); mmap15 — mmap15.c:34: TFAIL: mmap() into high mem region succeeded unexpectedly; mmap18 — mmap18.c:92: TBROK: mmap(0x8011d000,16384,PROT_READ | PROT_WRITE(3),306,-1,0) failed: EOPNOTSUPP (95); mmap20 — mmap20.c:46: TFAIL: mmap() is successful, but it should have failed: ENOENT (2); mmap21 — mmap21.c:58: TFAIL: Mapped file has not been updated at byte 1048577; mmap23 — mmap23.c:21: TFAIL: mmap(2GB) with MAP_32BIT succeeded; mmap24 — mmap24.c:71: TFAIL: mapping at 0x80001000 + 33554432 exceeds 2GB limit
-- **mremap**: mremap01 — mremap01.c:67: TFAIL: mremap()'d region did not sync to the file. file[8191999] == 0x00, expected 0xff; mremap06 — mremap06.c:110: TBROK: fallocate() failed; mremap07 — passed 0 failed 0 broken 0
+- **mmap**: mmap12 — mmap12.c:47: TFAIL: pen dev pagemap failed: ENOENT (2); mmap18 — mmap18.c:92: TBROK: mmap(0x8011d000,16384,PROT_READ | PROT_WRITE(3),306,-1,0) failed: EOPNOTSUPP (95)
+- **mremap**: mremap07 — passed 0 failed 0 broken 0
 - **pipe**: pipe13 — tst_test.c:1969: TBROK: Test killed! (timeout?)
 - **poll**: poll02 — tst_timer_test.c:314: TFAIL: poll() slept for too long
-- **prctl**: prctl02 — prctl02.c:155: TFAIL: prctl() succeeded unexpectedly; prctl03 — prctl03.c:101: TBROK: waitpid(6682,(nil),0) failed: EINTR (4); prctl05 — prctl05.c:67: TFAIL: /proc/self/task/6686/comm != 'prctl05_test' got 'prctl05'; prctl08 — prctl08.c:105: TFAIL: prctl(PR_SET_TIMERSLACK, 0) failed: EINVAL (22); prctl09 — prctl09.c:38: TBROK: prctl set timerslack 200us failed: EINVAL (22)
 - **pselect**: pselect01 — tst_timer_test.c:314: TFAIL: pselect() slept for too long; pselect01_64 — tst_timer_test.c:314: TFAIL: pselect() slept for too long
 - **pwrite**: pwrite04 (hang/timeout) — skipped: hangs tabcomputer
-- **readlinkat**: readlinkat01 — readlinkat01.c:72: TBROK: open(readlink_symlink,2228224,0000) failed: ELOOP (40); readlinkat02 — readlinkat02.c:54: TFAIL: readlinkat(3, test_file/test_file, NULL, 256) expected ENOTDIR: ENOENT (2)
 - **rt_sigqueueinfo**: rt_sigqueueinfo01 — rt_sigqueueinfo01.c:70: TFAIL: rt_sigqueueinfo() failed: ESRCH (3)
-- **sched_getaffinity**: sched_getaffinity01 — sched_getaffinity01.c:33: TFAIL: sched_getaffinity() should fail with ESRCH: EPERM (1)
 - **select**: select02 — tst_timer_test.c:314: TFAIL: select() slept for too long
 - **sendfile**: sendfile02_64 (hang/timeout) — skipped: hangs tabcomputer; sendfile09 — passed 0 failed 0 broken 0; sendfile09_64 — passed 0 failed 0 broken 0
 - **sendmsg**: sendmsg03 — passed 0 failed 0 broken 0
 - **sendto**: sendto03 — passed 0 failed 0 broken 0
-- **setpgid**: setpgid03 — setpgid03.c:56: TFAIL: setpgid(child_pid, getppid()) succeeded
-- **setrlimit**: setrlimit06 — setrlimit06.c:117: TFAIL: Got no signal after reaching both limit
 - **setsockopt**: setsockopt05 — passed 0 failed 0 broken 0; setsockopt07 — passed 0 failed 0 broken 0; setsockopt08 — passed 0 failed 0 broken 0; setsockopt09 — passed 0 failed 0 broken 0
 - **splice**: splice07 — tst_test.c:1969: TBROK: Test killed! (timeout?); splice08 — passed 0 failed 0 broken 0; splice09 — passed 0 failed 0 broken 0
-- **tgkill**: tgkill02 — tgkill02.c:57: TFAIL: tgkill() should have failed with EAGAIN: SUCCESS (0); tgkill03 — tgkill03.c:103: TFAIL: Defunct tid should have failed with ESRCH: EPERM (1)
-- **timer_settime**: timer_settime03 — timer_settime03.c:114: TFAIL: Timer overrun counter is wrong: 0; expected 2147483647 or negative number
-- **timerfd**: timerfd_settime02 (hang/timeout) — no summary
-- **times**: times03 — times03.c:116: TFAIL: buf2.tms_stime = 0
+- **times**: times03 — times03.c:87: TFAIL: buf1.tms_utime = 6
 - **waitpid**: waitpid06 (hang/timeout) — skipped: hangs tabcomputer; waitpid07 (hang/timeout) — skipped: hangs tabcomputer
 
 </details>
@@ -780,16 +768,16 @@ WebAssembly/wasi-testsuite prebuilt wasip1 modules (C, Rust, AssemblyScript) run
 
 ## POSIX: Open POSIX Test Suite under Blink (x86-64)
 
-The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scripts/conformance/build-openposix.sh) run as static x86-64 kernel processes in the Blink engine: signals, pthreads, semaphores, message queues, timers, clocks, mmap, scheduling. A test passes when it exits 0; only tests that pass natively on the build host as uid 1000 are scored (openposix/native-baseline.json). First run: 1173/1448, with Blink 0080–0084 built locally (raise(SIGKILL) and sigqueue/AIO fixed from this suite); the gaps are POSIX message queues (mq_*), POSIX timers (timer_*), sigwait/sigtimedwait, sched_* policies and shm_open. → 1326/1448 (kernel POSIX message queues and timers, Blink 0086–0089 and 0093 built locally: mq_*, timer_*, sigtimedwait/sigwait, sched_*; sigqueue waits on siginfo in Blink's handler frames; fork_21-1 and pthread_attr_destroy_1-1 hit a Blink page-lock assertion, fixed in perf-blink's 0092). → 1353/1448 with perf-blink's Blink 0092 (fork keeps page lock counts) and 0095 (siginfo in SA_SIGINFO frames, real-time signals queue): sigqueue, sigwait/sigwaitinfo, fork_21-1, pthread_attr_destroy_1-1, lio_listio and aio_* now pass. Left: shm_open and mmap of shared objects, mlock*, pthread_cancel and cancellation points, process-shared pthread objects, pthread_kill interrupting another thread's call (mq_timedsend_12-1). → 1379/1448 (kernel: kill/sigqueue permissions, SIGCHLD's CLD_* siginfo and SA_NOCLDSTOP/SA_NOCLDWAIT, sigtimedwait taking unblocked waited signals, timer overruns, open() owner bits; Blink 0096–0099 built locally: raise of a blocked real-time signal queues, sigprocmask/sigaltstack modes, write-only pages readable, shared kernel-file maps written back before a new map and at exit, mlock/mmap errors). Left: mmap of shared objects across instances and SIGBUS past EOF, pthread_cancel and cancellation points, process-shared pthread objects, fork cases, pthread_kill interrupting another thread's call (mq_timedsend_12-1); sigqueue_1-1 is fixed by perf-blink's 0110. Measured on integration bab5481 (perf-blink's engine through 0110, which has 0096–0098 but not this branch's 0500/0501): 1370/1448, rerun on a quiet machine; 0500 (mlock/mmap errors) and 0501 (pthread_cancel) add 15 more when built (1379 + pthread_cancel's 9 locally). → 1375/1448 on integration dff2c0d (perf-blink's engine through 0114 with 0500–0504, quiet rerun of the failures): pthread_cancel and cancellation points, CPU clock ids, mlock/mmap errors, fsync, st_ctime and the process-shared mutexes/condition variables of perf-blink's 0112 pass; 26 named-semaphore and /dev/shm tests (sem_*, shm_open_5-1/28-1/28-3, mmap_11-5) abort in 0112's munmap (memorymalloc.c:834), and clock_getcpuclockid_1-2 (another process's CPU clock) is fixed by 0506. → 1428/1448 on unix/conformance 55e936d (integration 38397fa: perf-blink's engine through 0119, with this branch's 0507–0509 built locally on emsdk 6.0.11; quiet rerun of the failures): perf-blink's 0117 fixes the 26 aborts in munmap and the process-shared barrier/rwlock/spinlock tests; 0507: pthread_kill interrupts another thread's blocking call, and a process signal reaches a thread that doesn't block it (mq_timedsend_12-1, pthread_kill_8-1); 0508: SIGBUS past a mapped file's end (mmap_11-2, mmap_11-3); 0509: a fork child's CPU clocks and times() start at 0, and a parent counts its children's CPU time (fork_8-1, fork_22-1); 0505/0506 in the build: fork_13-1, clock_getcpuclockid_1-2; and a dozen timing-sensitive pthread_* tests pass. Six of these come from 0507–0509, which integration's engine doesn't have yet. Left: SIGEV_THREAD timers (fork_18-1), message catalogs (fork_7-1), shared maps across a fork (mmap_3-1, mmap_7-4), aio_cancel waits, mlockall_3-6/3-7, sem_close_3-2, shm_open_23-1.
+The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scripts/conformance/build-openposix.sh) run as static x86-64 kernel processes in the Blink engine: signals, pthreads, semaphores, message queues, timers, clocks, mmap, scheduling. A test passes when it exits 0; only tests that pass natively on the build host as uid 1000 are scored (openposix/native-baseline.json). First run: 1173/1448, with Blink 0080–0084 built locally (raise(SIGKILL) and sigqueue/AIO fixed from this suite); the gaps are POSIX message queues (mq_*), POSIX timers (timer_*), sigwait/sigtimedwait, sched_* policies and shm_open. → 1326/1448 (kernel POSIX message queues and timers, Blink 0086–0089 and 0093 built locally: mq_*, timer_*, sigtimedwait/sigwait, sched_*; sigqueue waits on siginfo in Blink's handler frames; fork_21-1 and pthread_attr_destroy_1-1 hit a Blink page-lock assertion, fixed in perf-blink's 0092). → 1353/1448 with perf-blink's Blink 0092 (fork keeps page lock counts) and 0095 (siginfo in SA_SIGINFO frames, real-time signals queue): sigqueue, sigwait/sigwaitinfo, fork_21-1, pthread_attr_destroy_1-1, lio_listio and aio_* now pass. Left: shm_open and mmap of shared objects, mlock*, pthread_cancel and cancellation points, process-shared pthread objects, pthread_kill interrupting another thread's call (mq_timedsend_12-1). → 1379/1448 (kernel: kill/sigqueue permissions, SIGCHLD's CLD_* siginfo and SA_NOCLDSTOP/SA_NOCLDWAIT, sigtimedwait taking unblocked waited signals, timer overruns, open() owner bits; Blink 0096–0099 built locally: raise of a blocked real-time signal queues, sigprocmask/sigaltstack modes, write-only pages readable, shared kernel-file maps written back before a new map and at exit, mlock/mmap errors). Left: mmap of shared objects across instances and SIGBUS past EOF, pthread_cancel and cancellation points, process-shared pthread objects, fork cases, pthread_kill interrupting another thread's call (mq_timedsend_12-1); sigqueue_1-1 is fixed by perf-blink's 0110. Measured on integration bab5481 (perf-blink's engine through 0110, which has 0096–0098 but not this branch's 0500/0501): 1370/1448, rerun on a quiet machine; 0500 (mlock/mmap errors) and 0501 (pthread_cancel) add 15 more when built (1379 + pthread_cancel's 9 locally). → 1375/1448 on integration dff2c0d (perf-blink's engine through 0114 with 0500–0504, quiet rerun of the failures): pthread_cancel and cancellation points, CPU clock ids, mlock/mmap errors, fsync, st_ctime and the process-shared mutexes/condition variables of perf-blink's 0112 pass; 26 named-semaphore and /dev/shm tests (sem_*, shm_open_5-1/28-1/28-3, mmap_11-5) abort in 0112's munmap (memorymalloc.c:834), and clock_getcpuclockid_1-2 (another process's CPU clock) is fixed by 0506. → 1428/1448 on unix/conformance 55e936d (integration 38397fa: perf-blink's engine through 0119, with this branch's 0507–0509 built locally on emsdk 6.0.11; quiet rerun of the failures): perf-blink's 0117 fixes the 26 aborts in munmap and the process-shared barrier/rwlock/spinlock tests; 0507: pthread_kill interrupts another thread's blocking call, and a process signal reaches a thread that doesn't block it (mq_timedsend_12-1, pthread_kill_8-1); 0508: SIGBUS past a mapped file's end (mmap_11-2, mmap_11-3); 0509: a fork child's CPU clocks and times() start at 0, and a parent counts its children's CPU time (fork_8-1, fork_22-1); 0505/0506 in the build: fork_13-1, clock_getcpuclockid_1-2; and a dozen timing-sensitive pthread_* tests pass. Six of these come from 0507–0509, which integration's engine doesn't have yet. Left: SIGEV_THREAD timers (fork_18-1), message catalogs (fork_7-1), shared maps across a fork (mmap_3-1, mmap_7-4), aio_cancel waits, mlockall_3-6/3-7, sem_close_3-2, shm_open_23-1. → 1436/1448 on unix/conformance (e479d27a's Blink 0523–0533 built locally on the engine through 0521; quiet rerun of the failures; timer_settime_9-2 after the kernel fix below): 0521 and the kernel's timer changes fix SIGEV_THREAD timers (fork_18-1); aio_cancel_5-1/6-1/7-1, aio_suspend_1-1, mmap_3-1, mmap_7-4 and sem_close_3-2 pass. timer_settime_9-2 had expired up to 0.8 ms early: the kernel fired a timer 1 ms before its deadline, and Blink's CLOCK_REALTIME may trail Date.now(), so an absolute realtime timer now waits for its deadline plus 3 ms. Left: message catalogs (fork_7-1), mlockall_3-6/3-7, mmap_11-4 (UNTESTED), timeouts in mmap_10-1, mmap_24-1, pthread_cond_broadcast_1-2, pthread_cond_timedwait_2-5/4-2 and shm_open_23-1, and the two in hangs (shm_open_15-1, sigaction_17-15).
 
 | Area | Before | Now | Failing |
 |---|---|---|---|
-| aio_cancel | — | 8/11 | 3 |
+| aio_cancel | — | 11/11 | 0 |
 | aio_error | — | 2/2 | 0 |
 | aio_fsync | — | 11/11 | 0 |
 | aio_read | — | 10/10 | 0 |
 | aio_return | — | 2/2 | 0 |
-| aio_suspend | — | 3/4 | 1 |
+| aio_suspend | — | 4/4 | 0 |
 | aio_write | — | 10/10 | 0 |
 | asctime | — | 1/1 | 0 |
 | clock | — | 2/2 | 0 |
@@ -800,7 +788,7 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | clock_settime | — | 1/1 | 0 |
 | ctime | — | 1/1 | 0 |
 | difftime | — | 1/1 | 0 |
-| fork | — | 14/16 | 2 |
+| fork | — | 15/16 | 1 |
 | fsync | — | 3/3 | 0 |
 | getpid | — | 1/1 | 0 |
 | gmtime | — | 2/2 | 0 |
@@ -811,7 +799,7 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | mktime | — | 1/1 | 0 |
 | mlock | — | 3/3 | 0 |
 | mlockall | — | 3/5 | 2 |
-| mmap | — | 27/32 | 5 |
+| mmap | — | 29/32 | 3 |
 | mq_close | — | 6/6 | 0 |
 | mq_getattr | — | 2/2 | 0 |
 | mq_notify | — | 6/6 | 0 |
@@ -927,7 +915,7 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 | sched_setparam | — | 8/8 | 0 |
 | sched_setscheduler | — | 8/8 | 0 |
 | sched_yield | — | 1/1 | 0 |
-| sem_close | — | 3/4 | 1 |
+| sem_close | — | 4/4 | 0 |
 | sem_destroy | — | 2/2 | 0 |
 | sem_getvalue | — | 5/5 | 0 |
 | sem_init | — | 9/9 | 0 |
@@ -973,14 +961,11 @@ The Open POSIX Test Suite's conformance tests (open_posix_testsuite in LTP, scri
 
 <details><summary>Failing cases</summary>
 
-- **aio_cancel**: aio_cancel_5-1 (hang/timeout) — timeout: ; aio_cancel_6-1 (hang/timeout) — timeout: ; aio_cancel_7-1 (hang/timeout) — timeout: 
-- **aio_suspend**: aio_suspend_1-1 — UNRESOLVED: aio_suspend/1-1.c Error at write(): No such file or directory
-- **fork**: fork_18-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/18-1.c unresolved: got 22 (Invalid argument) on line 87 (Failed to create a ti; fork_7-1 — UNRESOLVED: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/7-1.c unresolved: got 2 (No such file or directory) on line 121 (Could not ope
+- **fork**: fork_7-1 — UNRESOLVED: Test /home/user/tabcomputer/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/fork/7-1.c unresolved: got 2 (No such file or directory) on line 121 (Could n
 - **mlockall**: mlockall_3-6 — FAIL: The shared memory pages of the process are not locked.; mlockall_3-7 — FAIL: The mapped files pages of the process are not locked.
-- **mmap**: mmap_10-1 (hang/timeout) — timeout: ; mmap_11-4 — UNTESTED: From mmap(2) manpage, skip known bug on tmpfs; mmap_24-1 (hang/timeout) — timeout: ; mmap_3-1 — FAIL: Test Fail: The file is not mapped correctly; mmap_7-4 — FAIL: mmap with MAP_SHARED failed to propagate change into the child
+- **mmap**: mmap_10-1 (hang/timeout) — timeout: ; mmap_11-4 — UNTESTED: From mmap(2) manpage, skip known bug on tmpfs; mmap_24-1 (hang/timeout) — timeout: 
 - **pthread_cond_broadcast**: pthread_cond_broadcast_1-2 (hang/timeout) — timeout:  MF  : 200809
 - **pthread_cond_timedwait**: pthread_cond_timedwait_2-5 (hang/timeout) — timeout: ; pthread_cond_timedwait_4-2 (hang/timeout) — timeout:  MF  : 200809
-- **sem_close**: sem_close_3-2 — FAIL: Test /home/user/shiro/tests/conformance/.cache/ltp/testcases/open_posix_testsuite/conformance/interfaces/sem_close/3-2.c FAILED: The semaphore count has changed after sem_close
 - **shm_open**: shm_open_15-1 (hang/timeout) — skipped: hangs tabcomputer; shm_open_23-1 (hang/timeout) — timeout: 
 - **sigaction**: sigaction_17-15 (hang/timeout) — skipped: hangs tabcomputer
 

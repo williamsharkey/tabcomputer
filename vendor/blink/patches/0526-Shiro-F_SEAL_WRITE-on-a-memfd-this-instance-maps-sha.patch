@@ -58,7 +58,7 @@ index 9006ef0..2cb214c 100644
 +  if (!g_shiro_remote) return false;
 +  if ((seals = KS(m, 72, A12(fd, 1034, 0))) < 0 || (seals & 1)) return false;
 +  if ((KS(m, 72, A12(fd, 3, 0)) & 3) == 0) return false;
-+  if ((id = KS(m, 1020, A12(fd, 0x200, 0, 0))) <= 0) return false;
++  if ((id = KS(m, 1020, A12(fd, 0x400, 0, 0))) <= 0) return false;
 +  LOCK(&g_shiro_remote_lock);
 +  for (r = g_shiro_remote; r && !found; r = r->next) {
 +    found = r->maywrite && r->obj->id == id;

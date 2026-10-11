@@ -229,7 +229,7 @@ export const SYS_shiro_shmobj_published = 1022;
 /** shiro_shmobj_map kind flag: remote from the first map (no publish round) */
 export const SHMOBJ_EAGER = 0x100;
 /** shiro_shmobj_map kind flag: map nothing, return the id of the fd's object if it has one (else ENOENT) */
-export const SHMOBJ_LOOKUP = 0x200;
+export const SHMOBJ_LOOKUP = 0x400;
 export const SYS_shmget = 29;
 export const SYS_shmat = 30;
 export const SYS_shmctl = 31;

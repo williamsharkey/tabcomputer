@@ -2004,6 +2004,10 @@ export class Kernel {
     const f = proc.fds.get(args[0]);
     // A regular file never becomes ready: its tryRead/tryWrite fail only while a page of a big file must load (syscall loads it)
     if (!f || f.flags & A.O_NONBLOCK || f.kind === 'file') return undefined;
+    // (one not open that way is EBADF, the syscall's answer: a pipe's write end
+    // read never became ready, and LTP pipe03 waited for good)
+    const acc = f.flags & A.O_ACCMODE;
+    if (nr === A.SYS_read ? acc === A.O_WRONLY : acc === A.O_RDONLY) return undefined;
     if (nr === A.SYS_read) return f.tryRead ? f : undefined;
     return f.tryWrite && (args[1] >>> 0) <= A.PIPE_BUF ? f : undefined;
   }

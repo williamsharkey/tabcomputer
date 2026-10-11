@@ -1710,6 +1710,15 @@ export class FileSystem {
     return this.cache.get(path)?.blob;
   }
 
+  /**
+   * The blob id of the big file at `path`, also when its bytes left memory
+   * (FSNode.evicted, where blobOf has none): a reader can then take it a block
+   * at a time (readBlock) instead of readFile loading all of it (rg, #44).
+   */
+  async blobId(path: string): Promise<string | undefined> {
+    try { return (await this._getMeta(await this._canon(path, true)))?.blob; } catch { return undefined; }
+  }
+
   // ── Hard links (see INODE_KEY) ─────────────────────────────────────────
 
   /** name -> ino of linked files (stored as LINK_MAP_KEY), and their loaded inode records. */

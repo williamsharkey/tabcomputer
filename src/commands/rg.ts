@@ -321,30 +321,195 @@ export const rgCmd: Command = {
     const mlRegex = multiline ? new RegExp(patternStr, (ignoreCase ? 'gim' : 'gm') + (dotall ? 's' : '')) : null;
 
     /**
-     * Binary: a NUL in the first 64 KiB (rg gives up on a binary file at its first
-     * NUL). A big file is checked from its first stored block, not read whole.
+     * A file's bytes, a block at a time: a big file's stored blocks (FileSystem.BLOCK,
+     * 1 MiB) even when its bytes left memory, else slices of the whole file. A
+     * 250 MB file is never one buffer or one string (it stalled the page, #44).
      */
-    const binaryHead = async (filePath: string): Promise<boolean> => {
-      const fs = ctx.fs as unknown as { blobOf?: (p: string) => string | undefined; readBlock?: (id: string, i: number, keep?: boolean) => Promise<Uint8Array> };
-      const id = fs.blobOf?.(filePath);
-      if (!id || !fs.readBlock) return false;
-      try { return (await fs.readBlock(id, 0, false)).subarray(0, 65536).includes(0); } catch { return false; }
+    type BlockFs = { blobId?: (p: string) => Promise<string | undefined>; blobOf?: (p: string) => string | undefined; readBlock?: (id: string, i: number, keep?: boolean) => Promise<Uint8Array> };
+    const CHUNK = 1 << 20;
+    async function* fileBlocks(filePath: string): AsyncGenerator<Uint8Array> {
+      const bfs = ctx.fs as unknown as BlockFs;
+      const id = bfs.readBlock ? (await bfs.blobId?.(filePath)) ?? bfs.blobOf?.(filePath) : undefined;
+      if (id) {
+        for (let i = 0; ; i++) {
+          const b = await bfs.readBlock!(id, i, false);
+          if (!b.length) return;
+          yield b;
+        }
+      }
+      const all = await ctx.fs.readFile(filePath) as Uint8Array;
+      for (let off = 0; off < all.length; off += CHUNK) yield all.subarray(off, off + CHUNK);
+    }
+    // Let the page run between blocks and between files (not after every small file: a timer each is 4 ms)
+    let lastYield = performance.now();
+    const yieldIfDue = async () => {
+      if (performance.now() - lastYield < 25) return;
+      await new Promise<void>((r) => setTimeout(r, 0));
+      lastYield = performance.now();
+    };
+    const concatBytes = (a: Uint8Array, b: Uint8Array) => { const out = new Uint8Array(a.length + b.length); out.set(a); out.set(b, a.length); return out; };
+
+    type Sub = { text: string; start: number; end: number };
+    /**
+     * One file's search a line at a time, printing as it goes: before-context in a
+     * ring, after-context by count; it is done at -l's first match or once -m's
+     * last match has its after-context. (A final newline ends the last line; it
+     * doesn't start an empty one, as in rg.)
+     */
+    const lineSearch = (displayPath: string) => {
+      const path = { text: displayPath };
+      const prefix = showFilename ? displayPath + pathSep : '';
+      const before: { ln: number; text: string; off: number; term: boolean }[] = [];
+      let lineNo = 0, offset = 0, afterLeft = 0, lastPrinted = -2;
+      let matchCount = 0, nMatches = 0, begun = false, maxed = false, done = false;
+      const emit = (ln: number, text: string, off: number, term: boolean, subs: Sub[] | null) => {
+        if (json) {
+          if (!begun) { jsonLine({ type: 'begin', data: { path } }); begun = true; }
+          jsonLine({
+            type: subs ? 'match' : 'context',
+            data: {
+              path, lines: { text: text + (term ? '\n' : '') }, line_number: ln + 1, absolute_offset: off,
+              submatches: subs ? subs.map((m) => ({ match: { text: m.text }, start: m.start, end: m.end })) : [],
+            },
+          });
+        } else {
+          if ((afterCtx || beforeCtx) && lastPrinted >= 0 && ln > lastPrinted + 1) ctx.stdout += '--\n'; // between context groups
+          if (subs && onlyMatching) {
+            for (const m of subs) ctx.stdout += prefix + (lineNumbers ? (ln + 1) + ':' : '') + m.text + '\n';
+          } else {
+            ctx.stdout += prefix + (lineNumbers ? (ln + 1) + (subs ? ':' : '-') : '') + text + '\n';
+          }
+        }
+        lastPrinted = ln;
+      };
+      return {
+        get done() { return done; },
+        line(text: string, term: boolean) {
+          const ln = lineNo++, off = offset;
+          offset += text.length + (term ? 1 : 0);
+          if (done) return;
+          if (maxed) { // -m reached: only the last match's after-context
+            if (afterLeft > 0) { afterLeft--; emit(ln, text, off, term, null); }
+            if (afterLeft === 0) done = true;
+            return;
+          }
+          regex.lastIndex = 0;
+          if (regex.test(text) !== invertMatch) {
+            matchCount++;
+            const subs: Sub[] = [];
+            if (!invertMatch) {
+              regex.lastIndex = 0;
+              let m: RegExpExecArray | null;
+              while ((m = regex.exec(text)) !== null) {
+                if (m[0] === '') { regex.lastIndex++; continue; }
+                subs.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+              }
+            }
+            nMatches += subs.length;
+            if (filesOnly) { done = true; return; } // the rest of the file isn't needed
+            if (!countOnly) {
+              for (const b of before) emit(b.ln, b.text, b.off, b.term, null);
+              before.length = 0;
+              emit(ln, text, off, term, subs);
+              afterLeft = afterCtx;
+            }
+            if (maxCount && matchCount >= maxCount) { maxed = true; if (countOnly || afterLeft === 0) done = true; }
+          } else if (!countOnly) {
+            if (afterLeft > 0) { afterLeft--; emit(ln, text, off, term, null); }
+            else if (beforeCtx > 0) { before.push({ ln, text, off, term }); if (before.length > beforeCtx) before.shift(); }
+          }
+        },
+        finish() {
+          totals.searches++;
+          totals.bytesSearched += offset;
+          if (matchCount === 0) return;
+          found = true;
+          totals.searchesWithMatch++;
+          totals.matchedLines += matchCount;
+          totals.matches += nMatches;
+          if (filesOnly) { ctx.stdout += displayPath + (nullSep ? '\0' : '\n'); return; }
+          if (countOnly) { ctx.stdout += prefix + matchCount + '\n'; return; }
+          if (json) {
+            jsonLine({
+              type: 'end',
+              data: {
+                path, binary_offset: null,
+                stats: { elapsed: elapsed(), searches: 1, searches_with_match: 1, bytes_searched: offset, bytes_printed: 0, matched_lines: matchCount, matches: nMatches },
+              },
+            });
+          }
+        },
+      };
     };
 
+    /**
+     * Search a file (or stdin's `text`). Binary, as rg: a NUL in the file's first
+     * block skips it without reading the rest; a NUL further on ends the search there.
+     */
     const searchFile = async (filePath: string, displayPath: string, text?: string) => {
       if (text === undefined && !matchesFilters(displayPath)) return;
-      if (text === undefined && await binaryHead(filePath)) return;
-      let content: string;
+      if (text !== undefined) {
+        if (text.slice(0, 65536).includes('\0')) return;
+        if (mlRegex) return searchWhole(displayPath, text.replace(/\n$/, ''));
+        const eng = lineSearch(displayPath);
+        const lines = text.split('\n');
+        const term = text.endsWith('\n');
+        if (term) lines.pop();
+        for (let k = 0; k < lines.length && !eng.done; k++) eng.line(lines[k], k < lines.length - 1 || term);
+        eng.finish();
+        return;
+      }
+      if (mlRegex) {
+        // -U: one regex over the whole text (rg reads such a file whole too)
+        const parts: Uint8Array[] = [];
+        let first = true;
+        try {
+          for await (const b of fileBlocks(filePath)) {
+            const z = b.indexOf(0);
+            if (z >= 0 && first) return;
+            first = false;
+            parts.push(z >= 0 ? b.subarray(0, z) : b);
+            if (z >= 0) break;
+            await yieldIfDue();
+          }
+        } catch { return; }
+        const all = parts.length === 1 ? parts[0] : parts.reduce((a, b) => concatBytes(a, b), new Uint8Array(0));
+        return searchWhole(displayPath, decodeBytes(all));
+      }
+      const eng = lineSearch(displayPath);
+      let carry: Uint8Array = new Uint8Array(0);
+      let first = true;
       try {
-        if (text !== undefined) content = text;
-        else {
-          const bytes = await ctx.fs.readFile(filePath) as Uint8Array;
-          if (bytes.indexOf(0) >= 0) return; // binary: skipped, before decoding it (~0.3 s for 30 MB, #19)
-          content = decodeBytes(bytes);
+        for await (const raw of fileBlocks(filePath)) {
+          if (!first) await yieldIfDue();
+          let b = raw;
+          let stop = false;
+          const z = b.indexOf(0);
+          if (z >= 0) {
+            if (first) return; // binary: skipped, the rest never read
+            b = b.subarray(0, z);
+            stop = true;
+          }
+          first = false;
+          // Whole lines only (a block ends mid-line, maybe mid-character): the rest waits for the next block
+          const joined = carry.length ? concatBytes(carry, b) : b;
+          const nl = joined.lastIndexOf(10);
+          if (nl >= 0) {
+            const lines = decodeBytes(joined.subarray(0, nl)).split('\n');
+            for (let k = 0; k < lines.length && !eng.done; k++) eng.line(lines[k], true);
+            carry = joined.slice(nl + 1);
+          } else {
+            carry = joined.slice();
+          }
+          if (stop || eng.done) break;
         }
       } catch { return; }
-      // Skip binary files (a NUL near the start)
-      if (content.slice(0, 65536).includes('\0')) return;
+      if (!eng.done && carry.length) eng.line(decodeBytes(carry), false);
+      eng.finish();
+    };
+
+    /** -U: the whole text at once (matches may span lines) */
+    const searchWhole = (displayPath: string, content: string) => {
       totals.searches++;
       totals.bytesSearched += content.length;
 
@@ -483,6 +648,7 @@ export const rgCmd: Command = {
           if (stat.isDirectory()) {
             await searchDir(childPath, displayPath);
           } else if (stat.isFile()) { // (not a FIFO: reading one would wait)
+            await yieldIfDue();
             await searchFile(childPath, displayPath);
           }
         } catch { /* skip */ }
@@ -492,7 +658,7 @@ export const rgCmd: Command = {
     if (fromStdin) {
       const text = ctx.liveStdin && ctx.shell?.kernelStdio ? await ctx.shell.kernelStdio.readAll()
         : ctx.readStdin ? await ctx.readStdin() : ctx.stdin;
-      await searchFile('-', '<stdin>', text.replace(/\n$/, ''));
+      await searchFile('-', '<stdin>', text);
       summary();
       return found ? 0 : 1;
     }

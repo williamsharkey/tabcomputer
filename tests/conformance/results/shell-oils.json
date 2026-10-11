@@ -705,21 +705,9 @@
    ]
   },
   "sh-options": {
-   "pass": 33,
+   "pass": 36,
    "total": 37,
    "failures": [
-    {
-     "i": 20,
-     "name": "noclobber on <>"
-    },
-    {
-     "i": 24,
-     "name": "set without args lists variables"
-    },
-    {
-     "i": 25,
-     "name": "set without args and array variables"
-    },
     {
      "i": 26,
      "name": "set without args and assoc array variables (not in OSH)"

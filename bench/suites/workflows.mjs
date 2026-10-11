@@ -13,6 +13,7 @@
 //   the first run on a machine.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +77,144 @@ const side = (h, cmd) => h.eval(async (c) => {
   const code = await sh.execute(c, (s) => { out += s; }, (s) => { out += s; });
   return { code, out };
 }, cmd);
+
+// ── an interactive `claude --npm` session, page responsiveness while it runs ──
+// The model is mocked (mockModel: a local Messages API with streamed replies),
+// so the session needs no credentials and no network.
+const CLAUDE = ['workflow.claude_session_lag', 'workflow.claude_session_lag.p50', 'workflow.claude_session_lag.p99', 'workflow.claude_session_lag.max', 'workflow.claude_session_lag.longtasks_per_min', 'workflow.claude_session_lag.longtask_ms_per_min', 'workflow.claude_session_lag.stalls', 'workflow.claude_session.start', 'workflow.claude_session.turn'];
+const FAKE_KEY = 'sk-ant-api03-bench-not-a-real-key-000000000000000000000000';
+const TURNS = 3;
+
+function sse(events) { return events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`).join(''); }
+/** A Messages API reply: `text` streamed in small deltas (or one JSON body when not streaming). */
+function mockMessage(body, text) {
+  const model = body.model || 'claude-sonnet-4-5';
+  const usage = { input_tokens: 12, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const id = `msg_bench_${Math.random().toString(36).slice(2, 10)}`;
+  if (!body.stream) return { contentType: 'application/json', body: JSON.stringify({ id, type: 'message', role: 'assistant', model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage }) };
+  const words = text.match(/\S+\s*/g) || [text];
+  return {
+    contentType: 'text/event-stream',
+    body: sse([
+      ['message_start', { message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1 } } }],
+      ['content_block_start', { index: 0, content_block: { type: 'text', text: '' } }],
+      ...words.map((w) => ['content_block_delta', { index: 0, delta: { type: 'text_delta', text: w } }]),
+      ['content_block_stop', { index: 0 }],
+      ['message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 40 } }],
+      ['message_stop', {}],
+    ]),
+  };
+}
+
+/**
+ * A local Messages API: ANTHROPIC_BASE_URL points here (node-compat/process.ts sets
+ * its own only when unset). Claude's fetch runs in a Worker, out of Playwright's
+ * routes, so this is a real server on this machine, with CORS for the page's origin.
+ */
+async function mockModel(host) {
+  let n = 0;
+  const server = createServer((req, res) => {
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*', 'access-control-expose-headers': '*' };
+    if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(raw || '{}'); } catch {}
+      const path = new URL(req.url, 'http://x').pathname;
+      if (/\/v1\/messages\/count_tokens/.test(path)) { res.writeHead(200, { ...cors, 'content-type': 'application/json' }); res.end('{"input_tokens":12}'); return; }
+      if (/\/v1\/messages/.test(path)) {
+        // the reply to a user's turn names it; side calls (titles, topic checks) get a short text
+        const last = JSON.stringify(body.messages?.slice(-1) ?? '');
+        const turn = /bench turn (\d+)/.exec(last)?.[1];
+        const text = turn ? `BENCH-REPLY-${turn} ` + 'Here is a mocked answer with a few sentences of text so the terminal renders a streamed reply. '.repeat(4) : 'ok';
+        n++;
+        const m = mockMessage(body, text);
+        res.writeHead(200, { ...cors, 'content-type': m.contentType, 'request-id': `req_bench_${n}` });
+        res.end(m.body);
+        return;
+      }
+      res.writeHead(200, { ...cors, 'content-type': 'application/json' }); res.end('{}');
+    });
+  });
+  // this machine's address, not localhost: a guest's fetch of localhost goes to its own in-tab servers
+  await new Promise((r) => server.listen(0, host, r));
+  return { url: `http://${host}:${server.address().port}`, calls: () => n, close: () => new Promise((r) => server.close(r)) };
+}
+
+/** Tick lateness of a 500 ms heartbeat (the watchdog's own measure), sampled in the page. */
+const startLagSampler = (h) => h.eval(() => {
+  const S = window.__benchLag = { lags: [], stop: null };
+  let expected = performance.now() + 500;
+  const id = setInterval(() => { const now = performance.now(); S.lags.push(Math.max(0, now - expected)); expected = now + 500; }, 500);
+  S.stop = () => clearInterval(id);
+});
+const stopLagSampler = (h) => h.eval(() => { const S = window.__benchLag; S.stop(); return S.lags; });
+const watchdogJson = async (h) => { const r = await side(h, 'watchdog --json -n 1500'); try { return JSON.parse(r.out); } catch { return null; } };
+const pct = (xs, q) => { const s = xs.slice().sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))] : NaN; };
+
+async function claudeSession(h, add) {
+  await h.page?.context().close().catch(() => {});
+  await h.boot({ path: '/?ui=terminal' });
+  if (!h.hostAddr) throw new Error('no non-loopback address on this machine for the mock model server');
+  const mock = await mockModel(h.hostAddr);
+  try {
+  // past the net cache's route, which fails every non-GET request off this origin
+  await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());
+  // installed first (what workload.claude_npm.first measures), so the session is the warm case
+  const inst = await side(h, 'claude --npm --version');
+  if (inst.code !== 0) throw new Error(`claude --npm --version: ${inst.out.slice(-200)}`);
+  await h.eval((k) => window.__bench.writeFile('/home/user/.claude.json', JSON.stringify({ hasCompletedOnboarding: true, theme: 'dark', customApiKeyResponses: { approved: [k.slice(-20)], rejected: [] } })), FAKE_KEY);
+  await side(h, 'mkdir -p ~/w');
+  const wd0 = await watchdogJson(h);
+  const t0 = Date.now();
+  await startLagSampler(h);
+  const env = `ANTHROPIC_BASE_URL=${mock.url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1`;
+  // Startup dialogs a user answers with Enter (the external CLAUDE.md import tabcomputer's ~/CLAUDE.md
+  // makes, ...): accept each, until the prompt shows
+  // (Ink redraws in place: look at the screen's last lines, not at what was appended)
+  const screen = async () => (await termText(h)).replace(/\s+$/, '').split('\n').slice(-15).join('\n');
+  const ts = Date.now();
+  await h.eval((l) => window.__tabcomputer.terminal.term.input(l, true), `cd ~/w && ${env} claude --npm\r`);
+  let answered = 0;
+  for (;;) {
+    const tail = await screen();
+    if (/for shortcuts|shift\+tab to cycle|\? for|Try "/.test(tail) && /^❯/m.test(tail)) break;
+    if (/Enter to confirm/.test(tail) && answered < 5) { answered++; await h.eval(() => window.__tabcomputer.terminal.term.input('\r', true)); await h.page.waitForTimeout(1000); continue; }
+    if (Date.now() - ts > 300000) throw new Error(`timed out waiting for the claude prompt: ${tail.slice(-400)}`);
+    await h.page.waitForTimeout(100);
+  }
+  add('cl_start', Date.now() - ts);
+  await h.page.waitForTimeout(1500);
+  for (let i = 1; i <= TURNS; i++) {
+    const t1 = Date.now();
+    // the Enter on its own: text and CR in one input arrive as a paste, which doesn't submit
+    await h.eval((l) => window.__tabcomputer.terminal.term.input(l, true), `bench turn ${i}: say something`);
+    await h.page.waitForTimeout(500);
+    await h.eval(() => window.__tabcomputer.terminal.term.input('\r', true));
+    while (!new RegExp(`BENCH-REPLY-${i}`).test(await termText(h))) {
+      if (Date.now() - t1 > 120000) throw new Error(`timed out waiting for reply ${i} (${mock.calls()} model calls): ${(await screen()).slice(-400)}`);
+      await h.page.waitForTimeout(50);
+    }
+    add('cl_turn', Date.now() - t1);
+    await h.page.waitForTimeout(3000); // reading the answer
+  }
+  await h.page.waitForTimeout(10000); // idle at the prompt
+  await h.eval(() => window.__tabcomputer.terminal.term.input('\x03', true));
+  await h.page.waitForTimeout(300);
+  await h.eval(() => window.__tabcomputer.terminal.term.input('\x03', true));
+  await typeAndWait(h, 'echo "@@cl-exit"\r', /^@@cl-exit$/m, 60000, 'claude exit').catch(() => {});
+  const lags = await stopLagSampler(h);
+  const minutes = (Date.now() - t0) / 60000;
+  const wd1 = await watchdogJson(h);
+  add('cl_p50', pct(lags, 0.5)); add('cl_p99', pct(lags, 0.99)); add('cl_max', Math.max(...lags));
+  if (wd0 && wd1) {
+    add('cl_lt_min', (wd1.longTasks.count - wd0.longTasks.count) / minutes);
+    add('cl_lt_ms_min', (wd1.longTasks.ms - wd0.longTasks.ms) / minutes);
+    add('cl_stalls', wd1.events.filter((e) => e.kind === 'stall' && e.t >= t0).length);
+  }
+  } finally { await mock.close(); }
+}
 
 /** A step's wall time and host user/sys (Chromium tree), as `key`, `key_user`, `key_sys`. */
 function addCpu(add, key, r) { add(key, r.ms); add(`${key}_user`, r.user); add(`${key}_sys`, r.sys); }
@@ -167,6 +306,25 @@ function nativeBuilds(h, rounds) {
 
 export async function run(h) {
   if (!h.isolated) { h.skip('workflow.suite', '', 'measured in the isolated (production) configuration only'); return; }
+  const rounds0 = h.quick ? 1 : Math.min(h.runs, 3);
+
+  if (h.wantsAny(...CLAUDE)) {
+    const R = {};
+    const add = (k, v) => (R[k] ??= []).push(v);
+    for (let i = 0; i < rounds0; i++) {
+      try { await claudeSession(h, add); } catch (e) { h.skip('workflow.claude_session.round', '', `round ${i + 1} failed: ${String(e.message).slice(0, 300)}`); }
+    }
+    const S = (key, name, unit, notes) => { if (R[key]?.length) h.sample(name, R[key], unit, { notes }); };
+    const what = `an interactive \`claude --npm\` session typed at the terminal (start, ${TURNS} turns with streamed mock replies, 10 s idle, Ctrl-C twice)`;
+    S('cl_p50', 'workflow.claude_session_lag.p50', 'ms', `event-loop lag p50: lateness of a 500 ms heartbeat (the watchdog's measure) during ${what}`);
+    S('cl_p99', 'workflow.claude_session_lag.p99', 'ms', 'event-loop lag p99, same session');
+    S('cl_max', 'workflow.claude_session_lag.max', 'ms', 'longest heartbeat delay, same session');
+    S('cl_lt_min', 'workflow.claude_session_lag.longtasks_per_min', '/min', "long tasks (≥ 50 ms) per minute, from the watchdog's counters (longTasks.count)");
+    S('cl_lt_ms_min', 'workflow.claude_session_lag.longtask_ms_per_min', 'ms/min', 'time in long tasks per minute (watchdog longTasks.ms)');
+    S('cl_stalls', 'workflow.claude_session_lag.stalls', 'count', 'watchdog `stall` events (heartbeat ≥ 2 s late) during the session');
+    S('cl_start', 'workflow.claude_session.start', 'ms', '`claude --npm` typed → its prompt (installed, warm)');
+    S('cl_turn', 'workflow.claude_session.turn', 'ms', 'Enter on a prompt → the mocked reply shows in the terminal');
+  }
   const rounds = h.quick ? 1 : Math.min(h.runs, 3);
   const S = (R, name, key, unit, notes) => { if (R[key]?.length) h.sample(name, R[key], unit, { notes }); };
 

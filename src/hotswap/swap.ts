@@ -41,6 +41,8 @@ export interface ModuleReport {
   classes: ClassReport[];
   /** Exports that aren't swappable classes: importers outside the swap keep the old ones */
   fixed: string[];
+  /** Module state the new copy took from the live module (state.ts) */
+  state: string[];
   hook: boolean;
 }
 
@@ -215,16 +217,26 @@ export function swapModules(modules: Record<string, Record<string, unknown>>, un
   try {
     for (const [key, ns] of Object.entries(modules)) {
       const liveNs = liveModule(key);
-      const rep: ModuleReport = { module: key, live: !!liveNs, classes: [], fixed: [], hook: false };
+      const rep: ModuleReport = { module: key, live: !!liveNs, classes: [], fixed: [], state: [], hook: false };
       reports.push(rep);
       if (!liveNs) continue;
       for (const name of Object.keys(ns)) {
-        if (name === '__hotswap') continue;
+        if (name === '__hotswap' || name === '__hotswapState') continue;
         const v = ns[name], lv = liveNs[name];
         if (isClass(v) && isClass(lv)) {
           if (v !== lv) rep.classes.push(swapClass(lv, v, undo, name));
         } else if (v !== lv) {
           rep.fixed.push(name);
+        }
+      }
+      // State the new copy took (state.ts): on revert, the live module gets the `let` values back
+      const st = ns.__hotswapState as { took: string[]; mutable: string[]; state: Record<string, unknown> } | undefined;
+      const liveState = (globalThis as any).__tabcomputerLiveState?.get(key);
+      if (st) {
+        rep.state = [...st.took];
+        const back = st.took.filter((n) => st.mutable.includes(n));
+        if (liveState && back.length) {
+          undo.push(() => { for (const n of back) try { liveState[n] = st.state[n]; } catch { /* gone */ } });
         }
       }
       const hook = ns.__hotswap;

@@ -252,6 +252,51 @@ describe('hotswap: building a swap bundle', () => {
     }
   });
 
+  it("shares the live module's state: containers aliased, lets carried in and written back on revert", async () => {
+    const src = `let counter = 0;\nconst reg = new Map<string, number>();\nconst TABLE = new Set(['a']);\nexport class C { inc(): number { reg.set('n', ++counter); return counter; } get reg() { return reg; } get table() { return TABLE; } }\n`;
+    const files: Record<string, string> = { '/co/src/hs-fixture/c.ts': src };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    // the live module, as the Vite plugin exposes it
+    let liveCounter = 41;
+    const liveReg = new Map<string, number>();
+    class C { inc() { return ++liveCounter; } }
+    registerLive('src/hs-fixture/c.ts', { C });
+    const g = globalThis as any;
+    (g.__tabcomputerLiveState ??= new Map()).set('src/hs-fixture/c.ts', {
+      get counter() { return liveCounter; }, set counter(v: number) { liveCounter = v; },
+      get reg() { return liveReg; },
+    });
+    try {
+      const out = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/c.ts'], build: esbuild.build as any });
+      const mgr = new HotswapManager();
+      const rec = mgr.apply(await evalCode(out.code));
+      expect(rec.report[0].state.sort()).toEqual(['counter', 'reg']);
+      const { moduleState } = await import('@shiro/hotswap/state');
+      expect(moduleState(src).map((x) => x.name)).toEqual(['counter', 'reg']);
+      expect(moduleState('const a = /* @__PURE__ */ new Map();\nconst b = new WeakMap<number, WeakRef<C>>();\nconst t = { x: 1 };\nconst l = [];\nexport let e = 1;\n  let inner = 2;\n'))
+        .toEqual([{ name: 'e', mutable: true }, { name: 'a', mutable: false }, { name: 'b', mutable: false }, { name: 'l', mutable: false }]);
+      expect(rec.report[0].fixed).toEqual([]);
+      const c = new C() as any;
+      expect(c.inc()).toBe(42);
+      expect(c.inc()).toBe(43);
+      expect(c.reg).toBe(liveReg);
+      expect(liveReg.get('n')).toBe(43);
+      expect(c.table.has('a')).toBe(true);
+      mgr.revert();
+      expect(liveCounter).toBe(43);
+      expect(c.inc()).toBe(44);
+
+      // --fresh-state: the swap keeps its own
+      const fresh = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/c.ts'], build: esbuild.build as any, freshState: true });
+      const rec2 = mgr.apply(await evalCode(fresh.code));
+      expect(rec2.report[0].state).toEqual([]);
+      expect((new C() as any).inc()).toBe(1);
+      mgr.revert();
+    } finally {
+      g.__tabcomputerLiveState.delete('src/hs-fixture/c.ts');
+    }
+  });
+
   it('refuses bare imports that are not live', async () => {
     const fs: HotswapFs = { async readFile(p) { if (p === '/co/src/hs-fixture/x.ts') return `import 'left-pad';\nexport const x = 1;\n`; throw new Error('ENOENT'); } };
     await expect(buildSwap(fs, { root: '/co', files: ['src/hs-fixture/x.ts'], build: esbuild.build as any }))
@@ -421,5 +466,125 @@ describe('outer', () => {
     // -t filters by full name
     const only = await runTestBundle(out.code, { filter: /adds/ });
     expect(only.results.map((r) => r.name)).toEqual(['outer > adds 1 + 2', 'outer > adds 2 + 2']);
+  });
+});
+
+describe('hotswap: checkout, diff and push of the build source', () => {
+  // A filesystem in memory with the calls source.ts uses
+  function memFs() {
+    const files = new Map<string, Uint8Array>();
+    const dirs = new Set<string>(['/']);
+    const enc = new TextEncoder();
+    const parent = (p: string) => p.slice(0, p.lastIndexOf('/')) || '/';
+    return {
+      files,
+      async readFile(p: string, e?: 'utf8') {
+        const d = files.get(p);
+        if (!d) throw new Error('ENOENT ' + p);
+        return e ? new TextDecoder().decode(d) : d;
+      },
+      async writeFile(p: string, d: Uint8Array | string) {
+        if (!dirs.has(parent(p))) throw new Error('ENOENT dir ' + parent(p));
+        files.set(p, typeof d === 'string' ? enc.encode(d) : d);
+      },
+      async mkdir(p: string) { for (let d = p; d !== '/'; d = parent(d)) dirs.add(d); },
+      async readdir(p: string) {
+        const names = new Set<string>();
+        for (const k of [...files.keys(), ...dirs]) if (k !== p && parent(k) === p) names.add(k.slice(p.length + 1));
+        if (!dirs.has(p)) throw new Error('ENOENT ' + p);
+        return [...names];
+      },
+      async stat(p: string) {
+        const isDir = dirs.has(p), isFile = files.has(p);
+        if (!isDir && !isFile) throw new Error('ENOENT ' + p);
+        return { isDirectory: () => isDir, isFile: () => isFile };
+      },
+      async unlink(p: string) { files.delete(p); },
+    };
+  }
+
+  async function tarball() {
+    const { tar } = await import('../../../vite-plugin-hotswap');
+    const zlib = await import('node:zlib');
+    const crypto = await import('node:crypto');
+    const sha1 = (b: Buffer) => crypto.createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
+    const src: [string, Buffer][] = [
+      ['src/shell.ts', Buffer.from('export class Shell {}\n')],
+      ['src/old.ts', Buffer.from('export const old = 1;\n')],
+      ['tests/tests/shiro-vitest/' + 'deep/'.repeat(25) + 'long.test.ts', Buffer.from('// a path over 100 bytes\n')],
+    ];
+    const manifest = { sha: 'b'.repeat(40), build: '961', files: Object.fromEntries(src.map(([p, d]) => [p, sha1(d)])) };
+    return new Uint8Array(zlib.gzipSync(tar([['.hotswap-source.json', Buffer.from(JSON.stringify(manifest))], ...src])));
+  }
+
+  it('unpacks the tarball, finds changes, and pushes them on the build commit', async () => {
+    const src = await import('@shiro/hotswap/source');
+    const fs = memFs();
+    const gz = await tarball();
+    const m = await src.checkoutSource(fs as any, '/home/user/shiro', { fetch: (async () => new Response(gz)) as any, url: 'http://x/' });
+    expect(m.build).toBe('961');
+    expect(fs.files.has('/home/user/shiro/tests/tests/shiro-vitest/' + 'deep/'.repeat(25) + 'long.test.ts')).toBe(true);
+    expect(await src.sourceChanges(fs as any, '/home/user/shiro')).toEqual([]);
+    await expect(src.checkoutSource(fs as any, '/home/user/shiro', { fetch: (async () => new Response(gz)) as any, url: 'http://x/' })).rejects.toThrow(/not empty/);
+
+    await fs.writeFile('/home/user/shiro/src/shell.ts', 'export class Shell { hi() { return 1; } }\n');
+    await fs.writeFile('/home/user/shiro/src/new.ts', 'export const n = 2;\n');
+    await fs.unlink('/home/user/shiro/src/old.ts');
+    expect(await src.sourceChanges(fs as any, '/home/user/shiro')).toEqual([
+      { path: 'src/new.ts', status: 'A' }, { path: 'src/old.ts', status: 'D' }, { path: 'src/shell.ts', status: 'M' },
+    ]);
+    expect(await src.baseText(fs as any, '/home/user/shiro', 'src/shell.ts')).toBe('export class Shell {}\n');
+
+    // GitHub, faked
+    const calls: [string, string, any][] = [];
+    let branchHead: string | null = null;
+    let n = 0;
+    const api = async (method: string, path: string, body?: any) => {
+      calls.push([method, path, body]);
+      if (method === 'GET' && path.endsWith(`/git/commits/${'b'.repeat(40)}`)) return { status: 200, data: { tree: { sha: 'basetree' } } };
+      if (method === 'GET' && path.includes('/git/ref/heads/')) return branchHead ? { status: 200, data: { object: { sha: branchHead } } } : { status: 404, data: {} };
+      if (method === 'POST' && path.endsWith('/git/blobs')) return { status: 201, data: { sha: `blob${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/trees')) return { status: 201, data: { sha: `tree${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/commits')) return { status: 201, data: { sha: `commit${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/refs')) { branchHead = body.sha; return { status: 201, data: {} }; }
+      if (method === 'PATCH') { branchHead = body.sha; return { status: 200, data: {} }; }
+      return { status: 500, data: { message: 'unexpected ' + method + ' ' + path } };
+    };
+    const r1 = await src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'shell: hi' });
+    expect(r1).toMatchObject({ created: true, files: 3, branch: 'fix/x' });
+    const tree = calls.find((c) => c[1].endsWith('/git/trees'))![2];
+    expect(tree.base_tree).toBe('basetree');
+    expect(tree.tree).toEqual([
+      { path: 'src/new.ts', mode: '100644', type: 'blob', sha: 'blob1' },
+      { path: 'src/old.ts', mode: '100644', type: 'blob', sha: null },
+      { path: 'src/shell.ts', mode: '100644', type: 'blob', sha: 'blob2' },
+    ]);
+    const commit = calls.find((c) => c[1].endsWith('/git/commits') && c[0] === 'POST')![2];
+    expect(commit.parents).toEqual(['b'.repeat(40)]);
+    expect(atob(calls.find((c) => c[1].endsWith('/git/blobs'))![2].content)).toBe('export const n = 2;\n');
+
+    // a second push from this checkout goes on top of the first
+    calls.length = 0;
+    const r2 = await src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'more' });
+    expect(r2.created).toBe(false);
+    expect(calls.find((c) => c[1].endsWith('/git/commits') && c[0] === 'POST')![2].parents).toEqual([r1.commit]);
+    // a branch someone else moved is refused without --force
+    branchHead = 'someoneelse';
+    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'm' })).rejects.toThrow(/moved since this checkout pushed it.*fix\/x-2/);
+    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'theirs', message: 'm' })).rejects.toThrow(/wasn't made from this checkout/);
+    // the trunk, deploy and the shared work branches: never
+    calls.length = 0;
+    for (const b of ['main', 'deploy', 'unix/integration', 'unix/hot-swap']) {
+      await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: b, message: 'm' })).rejects.toThrow(/won't push/);
+    }
+    expect(calls).toEqual([]);
+    expect(src.protectedBranch('hotswap/fix-1')).toBe(false);
+  });
+
+  it('names the source tarball after the build commit', async () => {
+    const { sourceTarName } = await import('../../../vite-plugin-hotswap');
+    const { sourceUrl } = await import('@shiro/hotswap/source');
+    const sha = 'abcdef0123456789'.repeat(2) + 'abcdef01';
+    expect(sourceUrl(sha, 'https://tabcomputer.com/')).toBe(`https://tabcomputer.com/${sourceTarName(sha)}`);
   });
 });

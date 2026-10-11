@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2133/2417 (88.2%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2136/2417 (88.4%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -82,7 +82,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | regex | 1/37 | 35/37 | 2 |
 | temp-binding | 0/4 | 4/4 | 0 |
 | background | 3/27 | 24/27 | 3 |
-| sh-options | 0/32 | 33/37 | 4 |
+| sh-options | 0/32 | 36/37 | 1 |
 | command-parsing | 0/2 | 2/2 | 0 |
 | var-op-bash | — | 25/26 | 1 |
 | nameref | — | 28/32 | 4 |
@@ -180,7 +180,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **process-sub**: Non-linear pipeline with \>()
 - **regex**: Unquoted { is a regex parse error; make a lisp example
 - **background**: wait -n with arguments - arguments are respected; wait with invalid arg; Signal message for killed background job
-- **sh-options**: noclobber on \<\>; set without args lists variables; set without args and array variables; set without args and assoc array variables (not in OSH)
+- **sh-options**: set without args and assoc array variables (not in OSH)
 - **var-op-bash**: Array expansion with nullary var op @Q
 - **nameref**: exported nameref; a[expr] in nameref; a[@] in nameref; bad mutation through nameref: ref[0]= where ref is array[0]
 - **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; dynamic array parsing is not allowed

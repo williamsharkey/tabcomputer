@@ -57,3 +57,11 @@ describe('negation', () => {
     expect((await sh('! false; echo $?')).out).toBe('0\n');
   });
 });
+
+describe('set with no arguments', () => {
+  it('lists every variable, arrays as name=([0]=…), locals in scope', async () => {
+    const r = await sh("__G=g; __arr=(1 2 '3 4'); f() { local __l=L; set | grep '^__'; }; f");
+    expect(r.out).toBe('__G=g\n__arr=([0]="1" [1]="2" [2]="3 4")\n__l=L\n');
+  });
+});
+

@@ -16,7 +16,7 @@
 import * as A from './abi';
 import type { Kernel } from './kernel';
 import type { OpenFile } from './fd';
-import type { Process } from './process';
+import type { Process, ThreadInfo } from './process';
 
 /** How a guest can block on a syscall here. */
 export function canBlock(): 'sab' | 'jspi' | 'none' {
@@ -731,6 +731,8 @@ export class KernelChannel {
 
   /** Thread id served by this channel (the pid for the main thread). */
   readonly tid: number;
+  /** That thread's record (proc.threads): the call in progress, for /proc/PID/task/TID */
+  private readonly thread: ThreadInfo;
   private unlisten: () => void;
 
   /**
@@ -746,6 +748,7 @@ export class KernelChannel {
     this.i32 = new Int32Array(sab, off, A.CH_DATA / 4);
     this.data = opts.size !== undefined ? new Uint8Array(sab, off + A.CH_DATA, opts.size) : new Uint8Array(sab, off + A.CH_DATA);
     this.tid = opts.tid ?? proc.pid;
+    this.thread = proc.thread(this.tid);
     // `listen: false`: signals ride only on replies (Blink's direct channels:
     // host.mjs delivers the others, and an idle channel must not hold one)
     this.unlisten = opts.listen === false ? () => {} : proc.addSignalListener(() => this.flagSignals());
@@ -816,6 +819,7 @@ export class KernelChannel {
       this.busy = false;
     }
     if (r === undefined) return false;
+    this.thread.syscalls++;
     t ??= now();
     this.markPicked(t);
     this.reply(r);
@@ -836,6 +840,8 @@ export class KernelChannel {
       this.opts.onThreadExit?.(args[0]);
       return;
     }
+    const th = this.thread;
+    th.nr = nr; th.args = args; th.since = Date.now(); th.syscalls++;
     const f = this.kernel.readinessFile(this.proc, nr, args);
     if (f) return this.waitReady(f, nr, args);
     let result: number | undefined;
@@ -851,6 +857,7 @@ export class KernelChannel {
   /** End the call in progress: reply (unless the process is gone) and update the hot-guest bookkeeping. */
   private finish(result: number | undefined): void {
     this.busy = false;
+    this.thread.nr = -1;
     if (result !== undefined && !this.stopped && !this.proc.exiting) this.reply(result);
     this.repliedAt = now();
     if (this.hot && watching.has(this)) pumpHot();
@@ -953,6 +960,8 @@ export class KernelChannel {
     if (this.stopped) return;
     this.stopped = true;
     this.unlisten();
+    // (an ended thread is gone from /proc/PID/task)
+    if (this.isThread && this.proc.threads.get(this.tid) === this.thread) this.proc.threads.delete(this.tid);
     Atomics.store(this.i32, A.CH_STATE, A.STATE_DEAD);
     Atomics.notify(this.i32, A.CH_STATE);
   }

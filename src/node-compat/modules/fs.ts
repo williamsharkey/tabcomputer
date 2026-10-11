@@ -229,12 +229,13 @@ function moveCachedTree(fileCache: Map<string, string>, fileMtimes: Map<string, 
 function makeDirent(ctx: CommandContext, parent: string, name: string, isDir: boolean): any {
   const link = typeof ctx.fs.readlinkCached === 'function' ? ctx.fs.readlinkCached(parent + '/' + name) : undefined;
   const isLink = typeof link === 'string';
+  const fifo = !isLink && !isDir && ctx.fs.lookupCached?.(parent + '/' + name, false)?.node?.special === 'fifo';
   return {
     name, parentPath: parent, path: parent,
-    isFile: () => !isLink && !isDir,
+    isFile: () => !isLink && !isDir && !fifo,
     isDirectory: () => !isLink && isDir,
     isSymbolicLink: () => isLink,
-    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false,
+    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => fifo, isSocket: () => false,
   };
 }
 
@@ -1169,7 +1170,7 @@ export function createFsModule(deps: FsDeps): any {
             for (const name of entries) {
               try {
                 const st = await ctx.fs.lstat(resolved + '/' + name);
-                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false });
+                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => !!st.isFIFO?.(), isSocket: () => false });
               } catch { dirents.push({ name, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false }); }
             }
             callback?.(null, dirents);

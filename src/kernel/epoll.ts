@@ -150,6 +150,11 @@ export class EpollFile implements OpenFile {
 
   constructor(public flags = 0) {}
 
+  /** The fds in the interest list (as the caller numbered them): what an epoll_wait waits on */
+  watchedFds(): number[] {
+    return [...this.interest.values()].flatMap((m) => [...m.keys()]);
+  }
+
   /** epoll_ctl. `fd` is the caller's fd for `file` (reported back and used as the key, with the description). */
   ctl(op: number, fd: number, file: OpenFile, events: number, dataLo: number, dataHi: number): number {
     if (file === this) return -EINVAL;

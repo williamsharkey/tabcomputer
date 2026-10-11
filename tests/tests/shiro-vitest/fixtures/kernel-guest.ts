@@ -232,6 +232,9 @@ parentPort!.once('message', m => {
   if (m.tid !== undefined) {
     // An extra thread (attachThread): report ids, then end just this thread
     sys.write(1, `thread tid=${sys.gettid()} pid=${sys.getpid()} start=${m.tid}\n`);
+    // (startData blockFd: first block reading that fd, as a thread waiting on a pipe)
+    const blockFd = (m as { blockFd?: number }).blockFd;
+    if (blockFd !== undefined) sys.read(blockFd, new Uint8Array(16));
     sys.exitThread(0);
   }
   sys.exit(main(sys, m.argv));

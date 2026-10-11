@@ -112,6 +112,8 @@ const blockedkidsBin = join(out, 'blockedkids');
 const haveBlockedkids = tryBuild('gcc', ['-static', '-O1', '-o', blockedkidsBin, 'blockedkids.c']);
 const pingpongBin = join(out, 'futexpingpong');
 const havePingpong = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', pingpongBin, 'futexpingpong.c']);
+const pbenchBin = join(out, 'pbench');
+const havePbench = tryBuild('gcc', ['-static', '-O2', '-o', pbenchBin, 'pbench.c']);
 const sockaddrsBin = join(out, 'sockaddrs');
 const haveSockaddrs = tryBuild('gcc', ['-static', '-O1', '-o', sockaddrsBin, 'sockaddrs.c']);
 const sleepintrBin = join(out, 'sleepintr');
@@ -1294,6 +1296,16 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const { shell } = await setup(readFileSync(pingpongBin));
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('fork: parent bad 0 child bad 0\nthreads: main bad 0 thread bad 0\n');
+  }, 120_000);
+
+  // bench/suites/x86.mjs's perf-bench-style rows: every mode finishes (messaging's 20 processes start together)
+  it.skipIf(!havePbench)('pbench: syscall, pipe ping-pong, messaging, memcpy, fork+exec finish', async () => {
+    const { shell } = await setup(readFileSync(pbenchBin));
+    const r = await run(shell, './prog syscall 200 && ./prog pipe 20 && ./prog messaging 1 4 5 && ./prog memcpy 4 2 && ./prog forkexec 2');
+    const out = r.output.replace(/\r\n/g, '\n');
+    expect([...out.matchAll(/^mode=(\w+)$/gm)].map((m) => m[1])).toEqual(['syscall', 'pipe', 'messaging', 'memcpy', 'forkexec']);
+    expect(out).toMatch(/^procs=8$/m);
+    expect(out).toMatch(/^MBps=\d/m);
   }, 120_000);
 
   // LTP bind04 (abstract names), nft/getifaddrs (netlink), uv venvs ($ORIGIN), go link (fallocate)

@@ -29,6 +29,8 @@ export const safeModeCmd: Command = {
           try { if (localStorage.getItem(k) !== null) { localStorage.removeItem(k); removed.push(k); } } catch { /* no storage */ }
         }
         out(removed.length ? `Removed from localStorage: ${removed.join(', ')}` : 'No saved layout to remove.');
+        // the restored terminals' scrollback (IndexedDB)
+        if (typeof indexedDB !== 'undefined') { await (await import('../desktop/session-store')).clearAll(); out('Removed the saved terminal scrollback.'); }
         return 0;
       }
       case 'disable-profile': {

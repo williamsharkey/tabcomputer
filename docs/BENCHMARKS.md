@@ -2873,3 +2873,48 @@ command; git's lazy stub carries it.
 
 Boot A/B baba09d0 → HEAD (`--suites boot`, 2 rounds): 23 same, the bundle
 1 KiB larger.
+
+### unix/perf-fs-shell 20 — main-thread stalls (#19, #28); experiments not shipped
+
+**Stalls** (`bench/fs-stalls.mjs`: the page's main thread profiled, every
+long task ≥ 50 ms attributed to its functions; unminified build). A flush now
+issues its IndexedDB requests 8 ms at a time (one transaction still), and
+calls answered from memory let the page run every 20 ms. Byte copies use
+`Uint8Array.prototype.slice`: a Node Buffer's `slice` is a view, so each
+1 MiB block of a cloned pack was stored with the whole 265 MB pack buffer.
+isomorphic-git is transformed at build (`vite-plugin-isogit.ts`): objects of
+64 KB or more inflate with DecompressionStream (pako as fallback), with turns
+while indexing and checking out.
+
+| longest main-thread task | before | after |
+|---|---:|---:|
+| `npm i` (express, lodash, react, react-dom, typescript) | 144 ms | < 50 ms |
+| writing 30,000 small files | 410 ms | < 50 ms |
+| `find` over 30,000 files | 156 ms | < 50 ms |
+| `git clone --depth 1` of the tabcomputer repo | 155 s, then ENOSPC | 0.3 s, 16–18 s total |
+
+**Experiment: IndexedDB writes in a Worker** (not shipped). Main-thread time
+to hand records over, Chromium:
+
+| records | `store.put` | `postMessage` | copy + transfer |
+|---|---:|---:|---:|
+| 2000 × 10 KB | 62 ms | 28 ms | 16 ms |
+| 50 × 1 MB | 105 ms | 56 ms | 35 ms |
+| 5000 × 2 KB | 79 ms | 15 ms | 16 ms |
+
+About 50–60 ms less per `npm i`, but that time is already split into ≤ 8 ms
+slices, and records still in a postMessage are lost when the page goes away,
+where an issued transaction completes.
+
+**Experiment: compressing cold files** (not shipped). deflate-raw of files of
+64 KB or more, skipping already compressed formats by magic bytes:
+
+| tree | size | saved |
+|---|---:|---:|
+| node_modules (express, lodash, react, typescript, vite) | 73 MiB | 60%; 17% without the 3 native binaries over 4 MB |
+| tabcomputer checkout with .git | 538 MiB | 1% (515 MiB already compressed) |
+
+DecompressionStream reads at 150–220 MB/s: +3.5 ms for lodash.js (0.5 MB),
++6.4 ms for react-dom (1.1 MB), +103 ms for a 23 MB binary on the first read
+after eviction. The saving is in block-stored native binaries, and the stored
+format change touches every reader: held until storage quota is the problem.

@@ -207,7 +207,9 @@ export async function executeNodeScript(
 
     // Console and process
     const fakeConsole = createFakeConsole(ctx, stdoutBuf, stderrBuf, _st);
-    const fakeProcess = createFakeProcess(ctx, fileArgs, scriptPath, stdoutBuf, stderrBuf, _st, processEvents, pendingPromises);
+    // Buffer shim (process.stdin's chunks are Buffers of it)
+    const FakeBuffer = createFakeBuffer();
+    const fakeProcess = createFakeProcess(ctx, fileArgs, scriptPath, stdoutBuf, stderrBuf, _st, processEvents, pendingPromises, FakeBuffer);
     if (opts.node) {
       fakeProcess.execArgv = [...opts.node.execArgv];
       if (opts.node.noDeprecation) (fakeProcess as any).noDeprecation = true;
@@ -230,8 +232,6 @@ export async function executeNodeScript(
     else await claudeBootstrap(ctx, ctx.env['HOME'] || '/home/user', scriptPath);
     const homeDir = ctx.env['HOME'] || '/home/user';
 
-    // Buffer shim
-    const FakeBuffer = createFakeBuffer();
     // The script's own timers: what its code, its modules and its globalThis call setTimeout &
     // co. as. Only these are its to cancel when it ends; page code (xterm's write buffer) and
     // the shims schedule through the global, which counts as the script's activity meanwhile

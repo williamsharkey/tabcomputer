@@ -1925,6 +1925,8 @@ describe('live ES module bindings (tabcomputer#35)', () => {
     const out = transformESModules(`\ufeffimport { e } from './e.js';\nexport { e as "module.exports" };\nfor (const { e } of []) e;\n`);
     expect(out).toContain('__shiro_module.exports["module.exports"] = e;');
     expect(() => compile(`\ufeffimport { e } from './e.js';\nexport { e as "module.exports" };\n`)).not.toThrow();
+    // a top-level await of an imported function is still top-level await (a sync compile refuses it)
+    expect(transformESModules(`import { peer } from './p.js';\nconst { V } = await peer('x');\nexport { V };\n`)).toContain('await __shiro_live0.peer(');
   });
 });
 

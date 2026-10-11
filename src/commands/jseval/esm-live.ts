@@ -219,12 +219,8 @@ function liveBindings(src: string, general: boolean): string {
   let i = 0;
   while (i < len) {
     if (skipI < skip.length && i === skip[skipI][0]) {
-      // (general: the statement keeps only the names read as copies; the module is loaded above)
-      if (general && !imports[skipI].untouched) {
-        const rec = imports[skipI];
-        const kept = rec.raw.filter((t) => !rec.items.some(([local, text]) => text === t && locals.has(local)));
-        emit(i, skip[skipI][1], kept.length ? `import { ${kept.join(', ')} } from ${rec.quote}${rec.spec}${rec.quote};` : '');
-      }
+      // (the statement stays: a position the pass can't classify reads its copy, which the
+      // exporter's getters let it take while that module still loads)
       i = skip[skipI++][1]; prev = ';'; prevWord = '';
       continue;
     }
@@ -302,7 +298,10 @@ function liveBindings(src: string, general: boolean): string {
     if (top === 'c' && (memberPos || (prev === 'w' && MEMBER_PREFIX.has(prevWord)) || prev === '*')) return null;
     if (prev === 'w' && /^(?:function|class|var|let|const|import|export)$/.test(prevWord)) return null;
     if (next === ':' && (prev === '{' || prev === ';' || prev === '}' || prev === '')) return null; // label
-    if (next === '(' || next === '`') return `(0, ${ref})`;
+    // (after `await`: `await (0, x.f)()` would call a function named await where top-level
+    // await isn't allowed, not be the syntax error that compiles the module async: SvelteKit's
+    // `await import_peer(…)`)
+    if (next === '(' || next === '`') return prev === 'w' && (prevWord === 'await' || prevWord === 'yield') ? ref : `(0, ${ref})`;
     return ref;
   }
 

@@ -1,22 +1,23 @@
-From ab35d86e691d79c1ff4585b99d41a2bd5ae9b586 Mon Sep 17 00:00:00 2001
+From 99146a48b0192dae3be0084b8f3b67aedd3c8fd4 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 03:21:10 +0000
-Subject: [PATCH] Shiro: a hosted fork child's and a vfork child's kernel calls
- take the thread's direct channel too
+Subject: [PATCH] Shiro: a hosted fork child's kernel calls take its thread's
+ direct channel too
 
 The call's process (as) goes with the request in the channel's last word,
 and the page serves it as that process (KernelChannel procOf). A signal
 that rides on the reply goes to that child's System, as host.mjs does for
-the pool (a vfork child's stays with the parent until it execs). Before,
-only the process's own calls skipped the proxy to host.mjs's thread: a
-pipe ping-pong between a process and its same-instance child went from
-290 to 656 us once the parent's calls were direct and the child's not.
+the pool. A vfork child's calls still take the pool: it runs on its
+parent's thread, which the page interrupts as the parent. Before, only the
+process's own calls skipped the proxy to host.mjs's thread: a pipe
+ping-pong between a process and its same-instance child went from 290 to
+656 us once the parent's calls were direct and the child's not.
 ---
- blink/shiro.inc | 54 ++++++++++++++++++++++++++++++++++++++++++-------
- 1 file changed, 47 insertions(+), 7 deletions(-)
+ blink/shiro.inc | 55 ++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 48 insertions(+), 7 deletions(-)
 
 diff --git a/blink/shiro.inc b/blink/shiro.inc
-index d86fdb7..34d528d 100644
+index d86fdb7..06c2466 100644
 --- a/blink/shiro.inc
 +++ b/blink/shiro.inc
 @@ -138,7 +138,7 @@ static void ShiroSyncMask(struct Machine *);
@@ -58,17 +59,16 @@ index d86fdb7..34d528d 100644
  void blink_shiro_signal_info(int, int, int, int, int, int, int, int, int);
  static bool g_shiro_siginfo = true;  // the kernel has call 1030
  static void ShiroDrainSignals(int);
-@@ -236,14 +243,47 @@ static void ShiroDrainSignals(int sig) {
+@@ -236,14 +243,48 @@ static void ShiroDrainSignals(int sig) {
    }
  }
  
-+// A signal that rode on the reply to a child's call (as): a hosted fork
-+// child's goes to its own System, as host.mjs does for the pool; a vfork
-+// child's stays with this process until the child execs or exits
++// A signal that rode on the reply to a hosted fork child's call (as) goes to
++// the child's own System, as host.mjs does for the pool
 +void blink_shiro_signal_pid_info(int, int, int, int, int, int, int, int, int, int);
 +void blink_shiro_signal_pid(int, int);
 +static void ShiroDrainSignalsAs(int as, int sig) {
-+  int a2[12], r, sig2, pid = t_vfork ? 0 : as;
++  int a2[12], r, sig2, pid = as;
 +  i32 w[32];
 +  if (!as) {
 +    ShiroDrainSignals(sig);
@@ -98,7 +98,9 @@ index d86fdb7..34d528d 100644
  static int ShiroKsys(int nr, int args[12], int as, void *data, int inlen, int outcap) {
    int r, sig, hi;
 -  if (as || !ShiroDirectCall(nr, args, data, inlen, outcap, &r, &sig)) {
-+  if (!ShiroDirectCallAs(nr, args, as, data, inlen, outcap, &r, &sig)) {
++  // (a vfork child's calls take the pool: it runs on its parent's thread, which
++  // the page interrupts as the parent)
++  if ((as && t_vfork) || !ShiroDirectCallAs(nr, args, as, data, inlen, outcap, &r, &sig)) {
      return shiro_ksys(nr, args, as, data, inlen, outcap);
    }
 -  // a signal for the guest rode on the reply

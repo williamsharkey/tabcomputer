@@ -20,6 +20,13 @@ it('lookupCached follows a link to a relative link in another directory, and thr
   await fs.symlink('usr/lib', '/tmp/c/lib');
   await fs.symlink('/tmp/c/lib/blas/libblas.so.3', '/tmp/c/usr/lib/viadir.so');
   await fs.symlink('../lib/blas', '/tmp/c/usr/blasdir');
+  // #65's repro: relative → relative in another directory, and absolute → relative
+  await fs.mkdir('/tmp/c/D/sub', { recursive: true });
+  await fs.writeFile('/tmp/c/D/sub/real.txt', 'data');
+  await fs.symlink('real.txt', '/tmp/c/D/sub/rel1');
+  await fs.symlink('/tmp/c/D/sub/rel1', '/tmp/c/D/abs_to_rel');
+  await fs.symlink('sub/rel1', '/tmp/c/D/rel_to_rel');
+  for (const p of ['/tmp/c/D/abs_to_rel', '/tmp/c/D/rel_to_rel']) expect(fs.lookupCached(p)?.path, p).toBe('/tmp/c/D/sub/real.txt');
   for (const p of ['/tmp/c/usr/lib/libblas.so.3', '/tmp/c/usr/lib/viadir.so', '/tmp/c/lib/libblas.so.3', '/tmp/c/usr/blasdir/libblas.so.3']) {
     const hit = fs.lookupCached(p);
     expect(hit, p).toBeTruthy();

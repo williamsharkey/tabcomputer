@@ -1519,9 +1519,13 @@ export class Shell {
 
   /** The environment a program started from this shell gets: env minus unexported variables */
   exportedEnv(): Record<string, string> {
-    if (!this.localVars.size) return this.env;
-    const e = { ...this.env };
-    for (const n of this.localVars) delete e[n];
+    // Variables only: not $? $# $1…, LINENO and $_ (bash doesn't export them) or the shell's own
+    // __PIPE_STDIN (env - ./prog gave the program ?=0 and LINENO=1)
+    const e: Record<string, string> = {};
+    for (const k in this.env) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k === 'LINENO' || k === '_' || k === '__PIPE_STDIN' || k.startsWith('__shiro') || this.localVars.has(k)) continue;
+      e[k] = this.env[k];
+    }
     return e;
   }
 
@@ -4971,6 +4975,14 @@ export class Shell {
           if (liveOut.out) ctx.streamStdout = liveOut.out;
           if (liveOut.err) ctx.streamStderr = liveOut.err;
         }
+        // `cmd 2>&1 | …` (stdout not to a file): one stream for both, so what a
+        // command writes as it goes (sh -c, a script, node) keeps its order; it
+        // came out as all of stdout, then all of stderr (tabcomputer#30)
+        const mergeErr = !liveOut && redirects.some(r => r.type === '2>&1') &&
+          !redirects.some(r => r.type === '>' || r.type === '>>' || r.type === '2>' || r.type === '2>>');
+        if (mergeErr && !ctx.streamStdout && !ctx.streamStderr) {
+          ctx.streamStdout = ctx.streamStderr = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
+        }
         if (cmd) {
           try {
             exitCode = live
@@ -5013,7 +5025,7 @@ export class Shell {
               const toCtxErr = (t: string) => { ctx.stderr += t.replace(/\r\n/g, '\n'); };
               exitCode = await this.executeScript(executable, cmdArgs, ctx,
                 outRedirected || i !== pipeline.length - 1 ? toCtxOut : writeStdout,
-                outRedirected ? toCtxErr : stderrWriter, effectiveCmdName);
+                mergeErr ? toCtxOut : outRedirected ? toCtxErr : stderrWriter, effectiveCmdName);
             } catch (e: any) {
               ctx.stderr += e.message + '\n';
               exitCode = 1;
@@ -5192,7 +5204,9 @@ export class Shell {
     const appender = (path: string) => {
       let pending = '';
       let busy: Promise<void> | null = null;
-      const w = Object.assign((t: string) => { if (!t) return; w.used = true; pending += t; busy ??= pump(); },
+      // (what streams here comes through the shell's writers, whose lines end in \r\n for
+      // the terminal: `sh -c '…' > f 2>&1` put \r\n in f)
+      const w = Object.assign((t: string) => { if (!t) return; w.used = true; pending += t.replace(/\r\n/g, '\n'); busy ??= pump(); },
         { flush: () => busy ?? Promise.resolve(), used: false });
       const pump = async () => {
         while (pending) {

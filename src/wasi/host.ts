@@ -170,7 +170,7 @@ export function usesWasixLibc(imports: { module: string; name: string }[]): bool
   return imports.some(i => i.module === 'wasix_32v1' && !SHIM_WASIX.has(i.name));
 }
 
-async function childPreopens(kernel: Kernel, module: WebAssembly.Module): Promise<string[]> {
+export async function childPreopens(kernel: Kernel, module: WebAssembly.Module): Promise<string[]> {
   const fs = kernel.fs;
   if (usesWasixLibc(WebAssembly.Module.imports(module)) || !fs) return [];
   const out: string[] = [];

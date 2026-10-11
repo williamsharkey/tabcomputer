@@ -43,11 +43,12 @@ The same static x86-64 binary in tabcomputer (Blink, isolated Chromium
 back-to-back runs of 5 samples each (one value when they agree, else both) at 7cdc95f
 ([a](../bench/results/bench-26-pbench-a.json),
 [b](../bench/results/bench-26-pbench-b.json); workflows:
-[quick](../bench/results/bench-26-workflows-quick.json) at 920a9df, 1 round). The
+[quick](../bench/results/bench-26-workflows-quick.json) at 920a9df, 1 round;
+`vite build`: [3 rounds](../bench/results/bench-29-vite.json) of Build 973). The
 microbenchmarks are `pbench` (`tests/tests/shiro-vitest/fixtures/x86/pbench.c`,
 the x86 suite's `x86.blink.*` / `x86.native.*`). Debian's own `perf bench`
 (linux-perf 6.12) also runs in Blink, so its column lines up with published
-numbers (opt-in suite `perfbench`; one run each). WSL2/WSL3 are the
+numbers (opt-in suite `perfbench`; medians of 5, [run](../bench/results/bench-28-perfbench.json); memcpy from an earlier run). WSL2/WSL3 are the
 published figures that prompted this table (tonym.us, "WSL2 vs WSL3
 benchmarks": i5-8500T, 2 vCPUs, different sizes). They are reference
 points for the method, not same-machine comparisons.
@@ -56,17 +57,40 @@ any Linux, WSL included.
 
 | benchmark | tabcomputer (Blink) | Blink, direct channels | WASI guest | native (this VM) | Blink / native | `perf bench` in Blink | WSL2 / WSL3 (published) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
-| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
-| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 8.1 s total, `-p -g 1 -l 20` (after Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
+| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 117 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
+| pipe ping-pong (round trip) | 391 µs | 653–717 µs | 7.7 µs (22 µs without isolation) | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 775 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 7.6 s total, `-p -g 1 -l 20` (Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
-| `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
+| `vite build` (React template; wall / user / sys) | 3.0 s / 4.4 s / 0.8 s | — | — | 1.9 s / 2.6 s / 0.3 s | 1.6× wall | — | — |
 | `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
+| native Claude Code 2.1.296: `claude` → idle prompt | 40.6–43.9 s | — | — | 0.54 s | ~80× | — | — |
+| native Claude Code: key → echo on the input line (p50 / p90 / p99) | 189–204 / 231–266 ms / 1.6–1.8 s | — | — | 6.3 / 12.3 / 22–26 ms | ~30× (p50) | — | — |
 
 What each row measures:
 
+- **Native Claude Code** (opt-in suite `claude`, bench/README.md; two runs
+  of one round, [a](../bench/results/bench-27-claude-a.json),
+  [b](../bench/results/bench-27-claude-b.json), at 2e2e3c3). Anthropic's
+  linux-x64-musl build in Blink, typed at the real terminal of a fresh
+  profile, against a local mock Messages API; native is the same binary in a
+  pty on this VM. In the tab the start is 41–44 s whether or not the page has
+  run it before (the warm launch is no faster), the first key after the prompt
+  takes 2.8 s, a key 150 ms after the previous echo takes ~200 ms (a few take
+  1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
+  is 17 s. Native numbers stop at the pty, without a terminal emulator; in
+  the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
+  The kernel's pty trace (Build 975, [run](../bench/results/bench-29-claude-stages.json))
+  splits a key's 222 ms: 1 ms until Claude reads it, 215 ms of Claude's
+  own work in Blink until its first write back (no syscalls in between),
+  0.4 ms for xterm. The 1.8 s outliers are keys whose first write was not
+  the echo: the echo came in a later write.
+  `/exit` returns the shell in 3.4 s (10 s on a launch with no turn). For
+  comparison the npm build (`claude_npm.*`, [c](../bench/results/bench-27-claude-c.json))
+  starts in 1.2 s, echoes a key in ~19 ms (p99 ~25 ms), answers the mocked
+  turn in 0.22 s and holds 426 MiB; it doesn't exit on `/exit` at Build 973
+  (its node process stays running; reported to agent-clis).
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to
@@ -81,6 +105,11 @@ What each row measures:
   it slower (650–720 µs). Natively on this VM, ~35 µs of the 39 µs is an
   idle vCPU waking up: the same loop pinned to one CPU, or on a busy
   machine, is 3 µs.
+  Two WASM (WASI) processes doing the same over two kernel pipes
+  (`kernel.pipe_pingpong`, kbench `ping` ↔ `pong`; median of 5 runs of 2000
+  round trips, [run](../bench/results/bench-29-pingpong.json) at Build 975)
+  take 7.7 µs with SAB channels and 22 µs on the JSPI fallback: the kernel's
+  pipe and wake-up path costs ~50× less than Blink's round trip to it.
 - **Messaging** (hackbench, `perf bench sched messaging -p` shape). Scheduler
   and channel contention across 20 Worker-backed processes passing 100-byte
   messages through pipes. ~580 µs per message, so per-message cost is the
@@ -89,8 +118,11 @@ What each row measures:
   Argument 0 must be convertible to a valid number"): its 40 processes in one
   Blink instance push wasm memory past 2 GiB, and pointers above that arrived
   negative in Blink's JS glue. Blink patch 0129 (unix/perf-blink 191817f4)
-  fixes it; the run then takes 8.1 s (perf-blink's Chromium run, not this
-  table's machine). `-g 2` (80 processes) still fails with fork(): ENOMEM,
+  fixes it; the run then takes 7.6 s on this table's machine (median of 5,
+  p90 7.9 s; [perfbench run](../bench/results/bench-28-perfbench.json) at
+  e02a65d with Blink 0129 from main; perf-blink's own Chromium run had 8.1 s).
+  The same run has `syscall basic` at 117 µs/op and `sched pipe` at
+  775 µs/op. `-g 2` (80 processes) still fails with fork(): ENOMEM,
   because same-instance children fill the 4 GiB wasm memory. That is a
   structural limit, and the reason the WSL figure (20 groups) has no
   tabcomputer counterpart.
@@ -112,8 +144,8 @@ What each row measures:
   where Blink's time goes beyond the guest's own work. The first `go run` is
   not comparable to a native empty-cache build: the go layer ships a warm
   `~/.cache/go-build`. `go build -a` is in full runs only, at about 20 minutes.
-- **`vite build`.** Node-in-the-page (no x86) on the same template: 2.3× native
-  wall time and 3.3× its user CPU.
+- **`vite build`.** Node-in-the-page (no x86) on the same template: 1.6× native
+  wall time and 1.7× its user CPU (it was 2.3× and 3.3× in the 920a9df run).
 - **`apt-get install`.** dpkg and apt in Blink from the mirror cache. There is
   no native row, since installing would change this machine.
 
@@ -368,6 +400,79 @@ baseline run **on the same machine** (the committed
 untouched kernel metrics differ by up to 2× against it). Kernel/net/x86
 metrics swing ±25% between identical runs here, so a flag on them was re-run
 3× alternating base/new before being called noise.
+
+### unix/perf-kernel, round 12: x86 IPC with Blink 0133 (direct channels by default)
+
+Blink 0130–0133 (each thread's own direct channel; a hosted fork child's
+kernel calls on its thread's channel) made direct channels the default. The
+pool-only path is `TABCOMPUTER_BLINK_DIRECT=0`. pbench in isolated Chromium,
+7 runs each, guest clock:
+
+| | direct (default) | pool only | native |
+|---|---:|---:|---:|
+| `syscall_rt` (getppid round trip) | 2.6 µs | 124 µs | 0.11 µs |
+| `pipe_pingpong` | 51.6 µs | 308 µs | 26.5 µs |
+| `messaging 1 10 50` (µs per message, 3 rounds) | 502 / 498 / 529 | 441 / 446 / 461 | 0.72 |
+
+- pipe_pingpong went from 656 µs with direct channels on (before 0133) to
+  52 µs, 6× faster than the pool. getppid is 48× faster than the pool.
+- messaging (20 processes, fan-out of 10) is ~12% slower with direct
+  channels than with the pool, in all 3 rounds. Not investigated yet.
+
+### unix/perf-kernel, round 11: where native Claude Code spends its time, from the kernel
+
+`node bench/claude-profile.mjs --keys 30` (native Claude Code 2.1.296,
+linux-x64-musl in Blink, headless Chromium in this container; API key,
+onboarding done, a local stand-in for api.anthropic.com). Kernel profiler
+(src/kernel/profiler.ts, the same report as `strace -c`), two runs:
+
+| | run A | run B |
+|---|---:|---:|
+| startup: `claude` → input box | 46.6 s | 46.6 s |
+| kernel CPU during startup | 201 ms | 205 ms |
+| syscalls during startup | 2899 | 2897 |
+| keypress → character drawn (median / p90) | 238 / 446 ms | 337 / 669 ms |
+| per key: pty input → guest's read (median) | 7.1 ms | 44.0 ms |
+| per key: read → first write back (median) | 227 ms | 234 ms |
+| per key: syscalls, kernel time | 17.5, 1.6 ms | 16.0, 1.6 ms |
+
+- The kernel is not where the time goes: under 0.5% of startup is kernel
+  CPU, and about 1.6 ms of each ~240 ms keystroke is kernel time. The
+  page's main thread is 84% idle during startup and 93% idle while typing
+  (CPU profile). The rest is the guest computing in Blink: ~230 ms of
+  compute per keystroke (JSC without its JIT) before the first byte comes back.
+- In-kernel wall time at startup (17.5 s) is mostly 9–10 `poll(1 fd, -1)`
+  calls (one took 10.9 s): helper threads and children waiting, off the
+  critical path. Then 651 `pread64` calls read 508 MB (the 250 MB binary,
+  twice) in 0.45–0.48 s. Their pages are seldom cached, so the new pread64
+  sync path answers only 3% of them.
+- epoll_wait timeouts are Bun's timers (0 ms ×32, 19–530 ms); only one in
+  70 timed out while typing. The guest is woken by the pty input, not
+  by a timer. The pty input → read gap (7–44 ms median, up to 278 ms) is
+  the guest still busy with the previous key, not a missed wakeup.
+- Per key: 2 epoll_wait, 2 epoll_ctl, 3 reads of the pty (2 EAGAIN), 4–6
+  writes (~40 bytes to the pty, the rest 8-byte eventfd wakeups between Bun's threads),
+  openat/newfstatat of `~/.claude.json` and `~/.claude/ide`.
+
+Per engine thread (the profiler's thread table; time between one call's
+result and the thread's next call is the guest computing, or sleeping in
+the engine):
+
+- The main thread computes: 46.2 s of the 47.5 s startup is outside the
+  kernel (its max gap 0.7 s, between two pread64s of the binary). While typing it is
+  outside the kernel for 7.3 s of 8 s, a median 236 ms per keystroke, which is
+  the whole read → first write.
+- Threads 262144 and 262146 wake about once a second (write → openat:
+  the ~/.claude.json watchFile poll and ~/.claude/ide discovery). They do
+  little between calls, but their sleeps aren't reported: Blink's
+  shiro_sleeping (patch 0036) covers only the main thread.
+- ~/.claude.json is not touched per keystroke: newfstatat every ~1.0–1.4 s,
+  ~/.claude/ide openat in pairs every ~1.2 s, both also while idle. For
+  ~4.5 s after the input box appears, Claude saves ~/.claude.json about 6
+  times (lock mkdir/rmdir, backups, rewrite; 588 syscalls).
+
+The hooks cost nothing measurable while no profiler is attached: `node bench/ab.mjs
+a748c014 360b37b4 --suites kernel,x86 --rounds 6 --quick` gives all 32 metrics "same".
 
 ### go_nethttp +30%: patch 0053's emulator, not the kernel (unix/bench)
 
@@ -930,6 +1035,34 @@ proc/s within one run); two further 15-run passes on the new code gave
 medians 1240 and 1215 proc/s, base 1200. One of those passes stalled at
 ≈10 proc/s for its last 11 samples and did not recur in two more; worth
 watching if it shows up on other branches.
+
+### unix/perf-blink 17 — direct kernel channels in their own buffers, on by default
+
+Blink 0600 (docs/X86_ENGINES.md): each Blink thread's own kernel channel
+is a small SharedArrayBuffer the page watches. Round 8 proposed this
+("a way out, not built"). Before, every call was proxied to host.mjs's
+thread and took two messages. The page never holds the wasm memory, so
+the round-8 peak RSS cost is gone.
+
+`node bench/ab.mjs origin/unix/integration --suites x86 --only
+'x86\.blink\.' --rounds 3` (Chromium, isolated; the base is 549dc219,
+whose committed blink.wasm predates its patch 0517, inotify, and the new
+side includes it):
+
+| metric (isolated) | base | new | shift | verdict |
+|---|---:|---:|---:|---|
+| x86.blink.vim_defaults | 697 ms | 490 ms | -29.2% | improved |
+| x86.blink.vim_startup | 1466 ms | 1144 ms | -21.8% | improved |
+| x86.blink.go_nethttp | 337 ms | 277 ms | -17.6% | improved |
+| x86.blink.go_hello | 152 ms | 142 ms | -8.8% | same |
+| x86.blink.hello_musl | 71 ms | 66 ms | -7.2% | same |
+| x86.blink.peak_rss.vim_startup | 7.5 MiB | 4.3 MiB | -26.7% | same |
+| x86.blink.peak_rss.go_nethttp | 12.4 MiB | 10.3 MiB | -18.8% | same |
+| x86.blink.peak_rss.go_hello | 2.5 MiB | 3.4 MiB | +4.4% | same |
+
+Of 13 metrics with results, 3 improved and 10 are the same, peak RSS
+included; gh_version gave no result on either side. In Node (scratch harness), a statically linked
+program's getppid/stat/pread round trip goes from ~120-145 µs to 5-16 µs.
 
 ### unix/perf-blink 16 — the page's kept compiled modules
 

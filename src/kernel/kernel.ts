@@ -14,6 +14,7 @@ import type { Command, CommandContext } from '../commands/index';
 import { KernelStdio, execLazyStdin } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
 import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText, type ThreadState } from './procfs';
+import { KernelProfiler, type ProfileOptions, type ProfileReport } from './profiler';
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
@@ -21,7 +22,7 @@ import * as A from './abi';
 import { elfInterpreter } from '../elf-interp';
 import {
   type OpenFile, FdTable, BufferFile, DevNull, DevZero, DevRandom, DevFull,
-  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
+  RegularFile, DirFile, abortableWait, charDevStat, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
   linkCount, writeBackAll, attachInodeShared, detachOpenFileShared, unlinkedFileKey, sharedBufferOf,
 } from './fd';
 import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
@@ -194,6 +195,9 @@ function ownerDenies(proc: Process, mode: number | undefined, flags: number): bo
   return ((mode >> 6) & need) !== need;
 }
 
+/** The "handler" `sh -i` catches SIGINT with (interactiveShell): any number but SIG_DFL/SIG_IGN */
+const SHELL_SIGINT_HANDLER = 2;
+
 export class Kernel {
   fs?: FileSystem;
   /** Paths of AF_UNIX socket files (net.ts bind); they stat as sockets. */
@@ -203,6 +207,22 @@ export class Kernel {
   /** uname(2) nodename (the prompt's \h). */
   hostname = activeProfile().hostname;
   readonly procs = new Map<number, Process>();
+  /** The attached profiler (startProfile), or null: every syscall entry checks it */
+  profiler: KernelProfiler | null = null;
+
+  /** Attach a profiler (replacing any): `strace -c`, bench probes. stopProfile() detaches it and returns its report. */
+  startProfile(opts: ProfileOptions = {}): KernelProfiler {
+    this.profiler?.stop();
+    this.profiler = new KernelProfiler(opts);
+    return this.profiler;
+  }
+
+  stopProfile(prof: KernelProfiler | null = this.profiler): ProfileReport | null {
+    if (!prof) return null;
+    prof.stop();
+    if (this.profiler === prof) this.profiler = null;
+    return prof.report();
+  }
   readonly init: Process;
   private loaders: Loader[] = [];
   private devices = new Map<string, DeviceOpener>();
@@ -572,6 +592,9 @@ export class Kernel {
       umask: parent.umask,
     });
     if (opts.setsid) { proc.sid = pid; proc.pgid = pid; }
+    // a program the page runs as ./prog: /proc/PID/exe is absolute, so that
+    // open("/proc/self/exe") finds it (execve resolves its own path)
+    if (opts.path.includes('/') && !opts.path.startsWith('/')) proc.data.exe = normalize(`${proc.cwd}/${opts.path}`);
     proc.uid = opts.uid ?? parent.uid;
     // sudo's root gets root's group too; dropping back to the user gets the user's
     proc.gid = opts.uid === undefined ? parent.gid : opts.uid === 0 ? 0 : 1000;
@@ -715,34 +738,57 @@ export class Kernel {
     for (const f of files) if (refCount(f) === 0) { this.locks.release(f); this.flocks.release(f); }
     this.shm.detachAll(proc);
     this.sem.exited(proc);
+    const reaper = this.subreaperOf(proc);
     for (const child of this.procs.values()) {
-      if (child.ppid === proc.pid) {
-        // An orphan: init reaps it as soon as it is a zombie, as Linux's does
-        child.ppid = 1;
-        child.data.orphaned = true;
-        if (child.state === 'zombie') this.procs.delete(child.pid);
+      if (child.ppid !== proc.pid) continue;
+      if (reaper) {
+        // the nearest living ancestor with PR_SET_CHILD_SUBREAPER adopts it;
+        // a zombie tells it at once (Linux's reparent_leader)
+        child.ppid = reaper.pid;
+        if (child.state === 'zombie' && child.exitStatus !== undefined) this.notifyParentOfExit(reaper, child, child.exitStatus);
+        continue;
       }
+      // An orphan: init reaps it as soon as it is a zombie, as Linux's does
+      child.ppid = 1;
+      child.data.orphaned = true;
+      if (child.state === 'zombie') this.procs.delete(child.pid);
     }
     proc.markExited(status);
     this.logTrap(proc, status);
     const parent = this.procs.get(proc.ppid);
-    if (parent && parent.pid !== 1) {
-      const killed = A.WIFSIGNALED(status);
-      this.deliver(parent, A.SIGCHLD, {
-        signo: A.SIGCHLD, code: !killed ? A.CLD_EXITED : status & 0x80 ? A.CLD_DUMPED : A.CLD_KILLED,
-        pid: proc.pid, uid: proc.ruid ?? proc.uid, status: killed ? A.WTERMSIG(status) : A.WEXITSTATUS(status),
-      });
-    }
     if (proc.ppid === 1) {
       // A child the page spawned directly (ppid 1) waits for its runner's waitpid
       if (proc.data.orphaned) this.procs.delete(proc.pid);
       else this.scheduleInitReap(proc);
+    } else if (parent) {
+      this.notifyParentOfExit(parent, proc, status);
     }
-    // A parent ignoring SIGCHLD or with SA_NOCLDWAIT leaves no zombie: the
-    // child is reaped now, and a wait for it ends in ECHILD (Linux)
-    else if (parent && (parent.dispositions.get(A.SIGCHLD) === 'ignore' ||
-             ((parent.sigactions.get(A.SIGCHLD)?.flags ?? 0) & A.SA_NOCLDWAIT))) this.procs.delete(proc.pid);
     this.notify();
+  }
+
+  /**
+   * SIGCHLD to `parent` for its child's exit. A parent ignoring SIGCHLD or
+   * with SA_NOCLDWAIT leaves no zombie: the child is reaped now, and a wait
+   * for it ends in ECHILD (Linux)
+   */
+  private notifyParentOfExit(parent: Process, child: Process, status: number): void {
+    const killed = A.WIFSIGNALED(status);
+    this.deliver(parent, A.SIGCHLD, {
+      signo: A.SIGCHLD, code: !killed ? A.CLD_EXITED : status & 0x80 ? A.CLD_DUMPED : A.CLD_KILLED,
+      pid: child.pid, uid: child.ruid ?? child.uid, status: killed ? A.WTERMSIG(status) : A.WEXITSTATUS(status),
+    });
+    if (parent.dispositions.get(A.SIGCHLD) === 'ignore' ||
+        ((parent.sigactions.get(A.SIGCHLD)?.flags ?? 0) & A.SA_NOCLDWAIT)) this.procs.delete(child.pid);
+  }
+
+  /** The nearest living ancestor of `proc` that set PR_SET_CHILD_SUBREAPER (Linux's find_new_reaper) */
+  private subreaperOf(proc: Process): Process | undefined {
+    const seen = new Set<number>();
+    for (let p = this.procs.get(proc.ppid); p && p.pid !== 1 && !seen.has(p.pid); p = this.procs.get(p.ppid)) {
+      seen.add(p.pid);
+      if (p.data.subreaper && !p.exiting) return p;
+    }
+    return undefined;
   }
 
   /**
@@ -819,6 +865,7 @@ export class Kernel {
           if (!(options & A.WNOWAIT)) {
             this.procs.delete(k.pid);
             caller.childCpuMs += cpuMs;
+            caller.childSystemMs += ProcFs.systemMs(k) + k.childSystemMs;
             this.notify();
           }
           return { pid: k.pid, status: k.exitStatus!, cpuMs };
@@ -863,6 +910,17 @@ export class Kernel {
     else if (pid === -1) targets = [...this.procs.values()].filter(p => p.pid !== 1 && p.pid !== sender.pid);
     else targets = [...this.procs.values()].filter(p => p.pgid === -pid);
     targets = targets.filter(p => p.state !== 'zombie' || pid > 0);
+    // An in-page background job leads the group its kernel programs run in
+    // (shell.ts executeBackground, #63): `kill -TERM -- -$!` reaches it too
+    const inPageLeader = pid < -1 && !this.procs.has(-pid) ? processTable.get(-pid) : undefined;
+    if (inPageLeader && inPageLeader.status === 'running') {
+      if (sig !== 0) {
+        for (const p of targets.filter(p => this.maySignal(sender, p, sig))) this.deliver(p, sig, { signo: sig, code: A.SI_USER, pid: sender.pid, uid: sender.uid });
+        // (its programs have it now: the job only ends, it doesn't signal them again)
+        processTable.kill(-pid, sig, { group: true });
+      }
+      return 0;
+    }
     if (targets.length === 0) return -A.ESRCH;
     // the ones the sender may signal; none of several is EPERM as for one
     targets = targets.filter(p => this.maySignal(sender, p, sig));
@@ -1135,7 +1193,9 @@ export class Kernel {
     }
     if (f instanceof MemFile) {
       const r = f.reopen(statusFlags);
-      if ((flags & A.O_TRUNC) && canWrite(flags)) await r.truncate(0);
+      // (F_SEAL_SHRINK refuses O_TRUNC: EPERM, LTP memfd_create01)
+      const t = (flags & A.O_TRUNC) && canWrite(flags) ? await r.truncate(0) : 0;
+      if (t < 0) { await r.close(); return t; }
       return r;
     }
     if (f instanceof PipeEnd || f instanceof FifoRdWr) {
@@ -1512,7 +1572,9 @@ export class Kernel {
       // A description just for the stat: O_NOCTTY (stat must not make a pty the
       // caller's controlling tty), closed after (a slave left open hides hangups)
       const f = await dev(proc, A.O_RDONLY | A.O_NOCTTY, p);
-      if (typeof f === 'number') return f;
+      // /dev/tty is a node of its own (char 5,0): stat finds it whatever opening it
+      // would do now (ENXIO without a controlling tty, EIO once its terminal closed)
+      if (typeof f === 'number') return p === '/dev/tty' ? { ...charDevStat((5 << 8) | 0), gid: 5 } : f;
       try { return await f.stat(); } finally { if (f !== proc.ctty) await f.close(); }
     }
     if (p === '/proc' || p.startsWith('/proc/')) {
@@ -1743,11 +1805,32 @@ export class Kernel {
       if (sig === A.SIGINT) p.interruptSyscalls(); // a fresh prompt
       return true;
     };
+    // The terminal's signals (the pty sends them through job control, which
+    // looks at dispositions, not the hook above): like bash, catch SIGINT (it
+    // stops the line being run, or gives a fresh prompt) and ignore the job
+    // control ones. Its jobs start with the default dispositions (no inheritSignals).
+    for (const sig of [A.SIGQUIT, A.SIGTSTP, A.SIGTTIN, A.SIGTTOU]) proc.dispositions.set(sig, 'ignore');
+    proc.dispositions.set(A.SIGINT, SHELL_SIGINT_HANDLER);
+    // Each line runs under an abort of its own (the shell's is the process's, which its end fires)
+    const procAbort = shell.inheritedAbort;
+    let lineAbort: AbortController | null = null;
+    proc.data.onSignal = (sig: number) => {
+      if (sig !== A.SIGINT) return;
+      proc.pendingSignals.delete(sig); // (taken here: nothing else would take it)
+      proc.siginfo.delete(sig);
+      lineAbort?.abort();
+    };
     shell.env.PS1 ??= '\\u@\\h:\\w\\$ ';
     let chain = Promise.resolve();
     const out = (fd: number) => (s: string) => {
       chain = chain.then(async () => { if (!proc.exiting) await this.writeAll(proc, fd, encodeText(s.replace(/\r\n/g, '\n'))); });
     };
+    // Commands run on this process's fds, as in `sh -c` (builtins see the
+    // terminal: isatty, tty, stty, node's REPL; and read it live)
+    const stdio = new KernelStdio(this, proc);
+    shell.kernelStdio = stdio;
+    stdio.adoptFds(shell);
+    shell.kernelStdinLive = true;
     // Jobs get process groups of their own and the terminal while they run (Ctrl-Z, fg, bg, jobs)
     const f0 = proc.fds.get(0);
     if (f0?.kind === 'pty') {
@@ -1782,8 +1865,20 @@ export class Kernel {
         pending += A.decodeText(buf.subarray(0, n));
       }
       if (!line.trim()) continue;
-      code = await shell.execute(line, out(1), out(2));
+      const abort = lineAbort = new AbortController();
+      const onProcAbort = () => abort.abort();
+      procAbort?.signal.addEventListener('abort', onProcAbort, { once: true });
+      shell.inheritedAbort = abort;
+      try {
+        code = await shell.execute(line, stdio.out, stdio.err, false, undefined, true);
+        await stdio.flush();
+      } finally {
+        lineAbort = null;
+        shell.inheritedAbort = procAbort;
+        procAbort?.signal.removeEventListener('abort', onProcAbort);
+      }
       await chain;
+      if (abort.signal.aborted && !proc.exiting) await this.writeAll(proc, 2, enc.encode('\n'));
       if (shell.exited) return code;
     }
   }
@@ -1848,6 +1943,17 @@ export class Kernel {
    * Registered handlers (registerSyscalls) always take the async path.
    */
   syscallSync(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
+    const prof = this.profiler;
+    if (prof === null) return this.syscallSyncImpl(proc, nr, args, data);
+    if (!prof.wants(proc)) { prof.tid = 0; return this.syscallSyncImpl(proc, nr, args, data); }
+    const d = prof.describe(proc, nr, args, data);
+    const t0 = performance.now();
+    const r = this.syscallSyncImpl(proc, nr, args, data);
+    prof.sync(proc, nr, r, (performance.now() - t0) * 1000, d);
+    return r;
+  }
+
+  private syscallSyncImpl(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
     if (proc.state !== 'running' || proc.exiting) return undefined;
     proc.syscalls++; // (/proc CPU estimate: these take no time)
     const hs = this.syscallTable.get(nr);
@@ -1893,6 +1999,15 @@ export class Kernel {
         const f = proc.fds.get(args[0]);
         return f?.tryWrite?.(data.subarray(0, Math.min(args[1] >>> 0, data.length)));
       }
+      case A.SYS_pread64:
+      case A.SYS_pwrite64: {
+        const f = proc.fds.get(args[0]);
+        const fn = nr === A.SYS_pread64 ? f?.tryPread : f?.tryPwrite;
+        if (!f || !fn || f.flags & A.O_PATH) return undefined;
+        const off = (args[3] | 0) * 0x100000000 + (args[2] >>> 0);
+        if (off < 0) return -A.EINVAL;
+        return fn.call(f, data.subarray(0, Math.min(args[1] >>> 0, data.length)), off);
+      }
       case A.SYS_fstat:
       case A.SYS_newfstatat: {
         if (nr === A.SYS_newfstatat && !(args[1] === 0 && args[2] & A.AT_EMPTY_PATH)) {
@@ -1936,6 +2051,10 @@ export class Kernel {
     const f = proc.fds.get(args[0]);
     // A regular file never becomes ready: its tryRead/tryWrite fail only while a page of a big file must load (syscall loads it)
     if (!f || f.flags & A.O_NONBLOCK || f.kind === 'file') return undefined;
+    // (one not open that way is EBADF, the syscall's answer: a pipe's write end
+    // read never became ready, and LTP pipe03 waited for good)
+    const acc = f.flags & A.O_ACCMODE;
+    if (nr === A.SYS_read ? acc === A.O_WRONLY : acc === A.O_RDONLY) return undefined;
     if (nr === A.SYS_read) return f.tryRead ? f : undefined;
     return f.tryWrite && (args[1] >>> 0) <= A.PIPE_BUF ? f : undefined;
   }
@@ -1957,8 +2076,17 @@ export class Kernel {
       if (i >= 0) proc.calls.splice(i, 1);
     };
     // The caller awaits the call itself: the bookkeeping adds no await hop to it
+    const prof = this.profiler;
+    if (prof === null || !prof.wants(proc)) {
+      if (prof !== null) prof.tid = 0;
+      const p = this.syscallImpl(proc, nr, args, data);
+      p.then(done, done);
+      return p;
+    }
+    const c = prof.begin(proc, nr, args, data);
     const p = this.syscallImpl(proc, nr, args, data);
-    p.then(done, done);
+    c.cpuUs = (performance.now() - c.t0) * 1000;
+    p.then((r) => { done(); prof.end(c, r); }, () => { done(); prof.end(c, -A.EFAULT); });
     return p;
   }
 
@@ -2272,7 +2400,7 @@ export class Kernel {
           let initial: (() => Uint8Array | Promise<Uint8Array>) | undefined;
           let writeBack: ((b: Uint8Array) => void | Promise<void>) | undefined;
           let onRemote: ((sab: SharedArrayBuffer) => void) | undefined;
-          const kind = args[1] & ~A.SHMOBJ_EAGER;
+          const kind = args[1] & ~(A.SHMOBJ_EAGER | A.SHMOBJ_LOOKUP);
           if (kind & ~0xff) return -A.EINVAL;
           const f = kind === 0 ? proc.fds.get(args[0]) : undefined;
           if (kind === 0 && f instanceof MemFile) {
@@ -2326,6 +2454,7 @@ export class Kernel {
             key = `shm:${seg.id}`;
             size = seg.size;
           } else return -A.EINVAL;
+          if (args[1] & A.SHMOBJ_LOOKUP) return this.shmobj.idOf(key) ?? -A.ENOENT;
           const r = await this.shmobj.map(instance, key, size, initial, writeBack, { eager: !!(args[1] & A.SHMOBJ_EAGER), onRemote });
           if (typeof r === 'number') return r;
           if (data.length >= 4) new DataView(data.buffer, data.byteOffset, 4).setInt32(0, r.remote ? 1 : 0, true);
@@ -2355,15 +2484,23 @@ export class Kernel {
           if (args[1] & ~(A.O_NONBLOCK | A.PIDFD_THREAD) || pid <= 0) return -A.EINVAL;
           const target = args[1] & A.PIDFD_THREAD ? this.processOfTid(pid) : this.procs.get(pid);
           if (!target) return -A.ESRCH;
-          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK)), 0, true);
+          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK), () => this.procs.get(target.pid) !== target), 0, true);
         }
         case A.SYS_pidfd_send_signal: {
-          // (pidfd, sig, siginfo, flags)
+          // (pidfd, sig, siginfo given, flags); data = the siginfo. Its signal
+          // must be sig, and only the kernel's si_codes (SI_USER and up) or
+          // SI_TKILL may not be claimed for another process (EPERM)
           if (args[3]) return -A.EINVAL;
           const f = file(args[0]);
           if (!f) return -A.EBADF;
           if (!(f instanceof PidFdFile)) return -A.EBADF;
           if (f.exited) return -A.ESRCH;
+          if (args[2] && data.length >= 12) {
+            const dv = new DataView(data.buffer, data.byteOffset, 12);
+            if (dv.getInt32(0, true) !== args[1]) return -A.EINVAL;
+            const code = dv.getInt32(8, true);
+            if ((code >= 0 || code === -6) && f.target !== proc) return -A.EPERM;
+          }
           return this.kill(f.target.pid, args[1], proc);
         }
         case A.SYS_signalfd:
@@ -2473,6 +2610,8 @@ export class Kernel {
           return nr === A.SYS_getpgid ? p.pgid : p.sid;
         }
         case A.SYS_prctl: { // PR_SET_NAME (15), len; data = the name: the main thread's is the process's comm
+          // PR_SET_CHILD_SUBREAPER (36): orphaned descendants come to it (exit)
+          if (args[0] === 36) { proc.data.subreaper = !!args[1]; return 0; }
           if (args[0] !== 15) return -A.EINVAL;
           proc.data.comm = new TextDecoder().decode(data.subarray(0, Math.min(15, args[1] >>> 0)));
           return 0;
@@ -2499,7 +2638,8 @@ export class Kernel {
         }
         case A.SYS_exit:
         case A.SYS_exit_group:
-          await this.exit(proc, A.W_EXITCODE(args[0]));
+          // (an engine that crashed reports its exit: the guest dies of the crash's signal)
+          await this.exit(proc, typeof proc.data.crashSignal === 'number' ? proc.data.crashSignal : A.W_EXITCODE(args[0]));
           return 0;
         case A.SYS_wait4: {
           // WNOHANG, WUNTRACED, WCONTINUED, WNOWAIT (waitid comes through here), __WNOTHREAD/__WALL/__WCLONE
@@ -2688,6 +2828,48 @@ export class Kernel {
           if (!f) return -A.EBADF;
           if (!f.truncate) return -A.EINVAL;
           return await f.truncate(i64(args[1], args[2]));
+        }
+        case A.SYS_fallocate: {
+          // fd, mode, offset (lo, hi), len (lo, hi). In Linux's order: the
+          // arguments, the mode, a write fd, then the file's type. Space is
+          // never short, so it allocates nothing: mode 0 extends the file,
+          // KEEP_SIZE alone does nothing, PUNCH_HOLE and ZERO_RANGE write
+          // zeros (a memfd's seals refuse as for a write or a truncate).
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          const mode = args[1] >>> 0, off = i64(args[2], args[3]), len = i64(args[4], args[5]);
+          if (off < 0 || len <= 0) return -A.EINVAL;
+          if (mode & ~(A.FALLOC_FL_KEEP_SIZE | A.FALLOC_FL_PUNCH_HOLE | A.FALLOC_FL_ZERO_RANGE)) return -A.EOPNOTSUPP;
+          if ((mode & A.FALLOC_FL_PUNCH_HOLE) && !(mode & A.FALLOC_FL_KEEP_SIZE)) return -A.EOPNOTSUPP;
+          if ((mode & A.FALLOC_FL_PUNCH_HOLE) && (mode & A.FALLOC_FL_ZERO_RANGE)) return -A.EINVAL;
+          if ((f.flags & A.O_ACCMODE) === A.O_RDONLY) return -A.EBADF;
+          const st = await f.stat();
+          const type = st.mode & A.S_IFMT;
+          if (type === A.S_IFIFO) return -A.ESPIPE;
+          if (type === A.S_IFDIR) return -A.EISDIR;
+          if (type !== A.S_IFREG) return -A.ENODEV;
+          if (off + len > Number.MAX_SAFE_INTEGER) return -A.EFBIG;
+          if (!f.truncate || !f.pwrite) return -A.EOPNOTSUPP;
+          const end = off + len;
+          try {
+            if (mode & (A.FALLOC_FL_PUNCH_HOLE | A.FALLOC_FL_ZERO_RANGE)) {
+              const stop = mode & A.FALLOC_FL_KEEP_SIZE ? Math.min(end, st.size) : end;
+              const zeros = new Uint8Array(Math.min(Math.max(stop - off, 0), 1 << 20));
+              for (let p = off; p < stop;) {
+                const n = await f.pwrite(zeros.subarray(0, Math.min(zeros.length, stop - p)), p);
+                if (n < 0) return n;
+                p += n;
+              }
+              // (a punched hole past the end leaves the size alone; a memfd
+              // sealed against writes refuses even that)
+              if (stop <= off && (mode & A.FALLOC_FL_PUNCH_HOLE) && f instanceof MemFile && (f.seals & (A.F_SEAL_WRITE | A.F_SEAL_FUTURE_WRITE))) return -A.EPERM;
+              return 0;
+            }
+            if (mode & A.FALLOC_FL_KEEP_SIZE || end <= st.size) return 0;
+            return await f.truncate(end);
+          } catch {
+            return -A.ENOSPC;
+          }
         }
         case A.SYS_truncate: {
           const f = await this.open(proc, str(0, args[0]), A.O_WRONLY);
@@ -3092,11 +3274,19 @@ export class Kernel {
           return 0;
         }
         case A.SYS_shiro_cputimes: {
-          // the caller's CPU time and its reaped children's, in µs (times, getrusage)
-          if (data.length < 16) return -A.EINVAL;
-          const dv = new DataView(data.buffer, data.byteOffset, 16);
+          // The caller's CPU time and its reaped children's, in µs (times,
+          // getrusage), then the system time of each when there is room for
+          // it. args[1] & 1: the engine tells its system time, µs in
+          // args[2..3] (the time in quick kernel calls; part of the CPU time)
+          if (args[1] & 1) proc.systemMs = ((args[2] >>> 0) + (args[3] >>> 0) * 0x100000000) / 1000;
+          if (data.length < 16) return args[1] & 1 ? 0 : -A.EINVAL;
+          const dv = new DataView(data.buffer, data.byteOffset, data.length >= 32 ? 32 : 16);
           dv.setBigInt64(0, BigInt(Math.round(ProcFs.cpuMs(proc) * 1000)), true);
           dv.setBigInt64(8, BigInt(Math.round(proc.childCpuMs * 1000)), true);
+          if (data.length >= 32) {
+            dv.setBigInt64(16, BigInt(Math.round(ProcFs.systemMs(proc) * 1000)), true);
+            dv.setBigInt64(24, BigInt(Math.round(proc.childSystemMs * 1000)), true);
+          }
           return 0;
         }
         case A.SYS_getenv: {
@@ -3219,7 +3409,12 @@ export class Kernel {
       case A.F_GETFD: return fds.getCloexec(fd) ? A.FD_CLOEXEC : 0;
       case A.F_SETFD: return fds.setCloexec(fd, !!(arg & A.FD_CLOEXEC));
       // a socket is open for reading and writing (Linux reports O_RDWR)
-      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE) | A.O_RDWR : f.flags;
+      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux, and
+      // O_CLOEXEC is the fd's: a device keeps the open flags as given)
+      case A.F_GETFL: {
+        const fl = f.flags & ~A.O_OPEN_ONLY & ~A.O_CLOEXEC;
+        return f.kind === 'socket' ? (fl & ~A.O_ACCMODE) | A.O_RDWR : fl;
+      }
       case A.F_SETFL: {
         const mask = A.O_NONBLOCK | A.O_APPEND;
         f.flags = (f.flags & ~mask) | (arg & mask);

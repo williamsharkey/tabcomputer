@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, onTestFinished, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -134,6 +134,18 @@ const sysvshmBin = join(out, 'sysvshm');
 const haveSysvshm = 'SYS_shmget' in Abi && tryBuild('gcc', ['-static', '-O1', '-o', sysvshmBin, 'sysvshm.c']);
 const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
+const zombiekillBin = join(out, 'zombiekill');
+const haveZombiekill = tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiekillBin, 'zombiekill.c']);
+const flagfuseBin = join(out, 'flagfuse');
+const haveFlagfuse = tryBuild('gcc', ['-static', '-O1', '-o', flagfuseBin, 'flagfuse.c']);
+const spinhandoffBin = join(out, 'spinhandoff');
+const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
+const callretBin = join(out, 'callret');
+const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
+const forkmanyBin = join(out, 'forkmaps-many');
+const haveForkmany = tryBuild('gcc', ['-static', '-O1', '-o', forkmanyBin, 'forkmaps-many.c']);
+const callsBin = join(out, 'calls');
+const haveCalls = tryBuild('gcc', ['-static', '-O2', '-o', callsBin, 'calls.c']);
 const futexckptBin = join(out, 'futexckpt');
 const haveFutexckpt = tryBuild('gcc', ['-static', '-O1', '-o', futexckptBin, 'futexckpt.c']);
 const sysvsemBin = join(out, 'sysvsem');
@@ -216,6 +228,17 @@ const fionbioBin = join(out, 'fionbio');
 const haveFionbio = tryBuild('gcc', ['-static', '-O1', '-o', fionbioBin, 'fionbio.c']);
 const fuzzBin = join(out, 'jitfuzz');
 const haveFuzz = tryBuild('gcc', ['-static', '-O1', '-o', fuzzBin, 'jitfuzz.c']);
+// alufuzz.c is generated (1.5 MB of C): every ALU form, wjit's category 0
+const aluBin = join(out, 'alufuzz');
+const haveAlu = (() => {
+  try {
+    writeFileSync(join(out, 'alufuzz.c'), execFileSync('python3', [join(FIX, 'alufuzz.py')], { maxBuffer: 64 << 20 }));
+    execFileSync('gcc', ['-static', '-O1', '-o', aluBin, join(out, 'alufuzz.c')], { stdio: 'pipe', timeout: 120_000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // signalfd needs Blink to forward signalfd/signalfd4 and the signal mask to the kernel (a patch named for it)
 const signalfdBin = join(out, 'signalfd');
@@ -335,6 +358,58 @@ const haveMapthreads = readFileSync(resolve(__dirname, '../../../public/engines/
 const timerqueueBin = join(out, 'timerqueue');
 const haveTimerqueue = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_timerq') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', timerqueueBin, 'timerqueue.c', '-lrt']);
+// Blink 0523: /proc/self/maps marks shared and write-only mappings
+const mapspermBin = join(out, 'mapsperm');
+const haveMapsperm = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapsperm') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapspermBin, 'mapsperm.c']);
+// Blink 0524: a shared map of a file it may not write can't be made writable
+const maywriteBin = join(out, 'maywrite');
+const haveMaywrite = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_maywrite') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', maywriteBin, 'maywrite.c']);
+// Blink 0525/0526: fallocate is the kernel's; F_SEAL_WRITE on a writably mapped memfd is EBUSY
+const haveFallocate = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_fallocate');
+const memfdfallocBin = join(out, 'memfdfalloc');
+const haveMemfdfalloc = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sealbusy') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', memfdfallocBin, 'memfdfalloc.c']);
+// Blink 0527/0528: PR_SET_CHILD_SUBREAPER is the kernel's; a fork child's calls restart after SA_RESTART
+const subreaperBin = join(out, 'subreaper');
+const haveSubreaper = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_forkrestart') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', subreaperBin, 'subreaper.c']);
+// Blink 0529: RLIMIT_SIGPENDING for tkill/tgkill of a real-time signal
+const sigpendingBin = join(out, 'sigpending');
+const haveSigpending = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sigpending') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', sigpendingBin, 'sigpending.c']);
+// Blink 0530: timer_getoverrun is the overruns of the signal taken last
+const overrunBin = join(out, 'overrun');
+const haveOverrun = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_overrun') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', overrunBin, 'overrun.c', '-lrt']);
+// Blink 0531: system time is the time in quick kernel calls
+const systimeBin = join(out, 'systime');
+const haveSystime = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_systime') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', systimeBin, 'systime.c']);
+// Blink 0532: pidfds are the kernel's (pidfd_open, pidfd_send_signal, PIDFD_GET_INFO, waitid P_PIDFD)
+const pidfdBin = join(out, 'pidfd');
+const havePidfd = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_pidfd') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', pidfdBin, 'pidfd.c']);
+// Blink 0533: empty paths in the *at calls (faccessat2's flags, utimensat)
+const emptyatBin = join(out, 'emptyat');
+const haveEmptyat = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_emptyat') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', emptyatBin, 'emptyat.c']);
+// Blink 0534: host pages by address (forks of a process with many pages)
+const forkmapsBin = join(out, 'forkmaps');
+const haveForkmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_hostaddr') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', forkmapsBin, 'forkmaps.c']);
+// Blink 0535: a SIGEV_THREAD_ID timer's signal for an exited thread is dropped
+const tiddropBin = join(out, 'tiddrop');
+const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_tiddrop') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', tiddropBin, 'tiddrop.c', '-lrt']);
+// Blink 0536: mlock marks pages; /proc/self/smaps and smaps_rollup; msync of locked pages
+const smapsBin = join(out, 'smaps');
+const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
+// read of a pipe's write end and write of its read end are EBADF, not a wait
+const pipeebadfBin = join(out, 'pipeebadf');
+const havePipeebadf = tryBuild('gcc', ['-static', '-O1', '-w', '-o', pipeebadfBin, 'pipeebadf.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -424,6 +499,19 @@ describe.skipIf(!haveJit || !haveFuzz)('Blink engine: wasm JIT', () => {
     expect(jit.output.split('\n').length).toBeGreaterThan(100);
     expect(jit.output).toBe(interp.output);
   }, 120_000);
+
+  it.skipIf(!haveAlu)('runs every ALU form like the interpreter and the host CPU (alufuzz)', async () => {
+    // add/or/adc/sbb/and/sub/xor/cmp in each width as reg, reg<-mem, mem<-reg, imm8, imm32 and mem<-imm, with the flags
+    // dead, pushed, or consumed by a fused jcc: one checksum line per form (5360), each run hot enough to compile
+    const { shell } = await setup(readFileSync(aluBin));
+    const jit = await run(shell, './prog 300');
+    const interp = await run(shell, 'BLINK_WJIT=0 ./prog 300');
+    expect(jit.exitCode).toBe(0);
+    const lines = (s: string) => s.replace(/\r/g, '').trim().split('\n');
+    expect(lines(jit.output).length).toBe(5360);
+    expect(lines(jit.output)).toEqual(lines(interp.output));
+    if (process.arch === 'x64') expect(lines(jit.output)).toEqual(lines(execFileSync(aluBin, ['300']).toString()));
+  }, 600_000);
 
   it('sees code rewritten after mprotect, in RWX pages and after munmap', async () => {
     const { shell } = await setup(readFileSync(jitBin));
@@ -515,8 +603,13 @@ describe.skipIf(!haveFork || !haveForkShared || !haveShfutex || !haveOrphan || !
       'killed spinning child: signaled=1 sig=9\nSIGTERM to pausing child: signaled=1 sig=15\n');
     await run(shell, 'rm -f /tmp/orphan.out');
     await run(shell, `${sif} x`);
-    await run(shell, 'sleep 1');
-    expect((await run(shell, 'cat /tmp/orphan.out')).output).toContain('child outlived parent');
+    // (the child writes 300 ms on; under load, give it longer than that)
+    let got = '';
+    for (let i = 0; i < 20 && !got.includes('child outlived parent'); i++) {
+      await run(shell, 'sleep 0.5');
+      got = (await run(shell, 'cat /tmp/orphan.out')).output;
+    }
+    expect(got).toContain('child outlived parent');
   }, 60_000);
 
   it.skipIf(!haveMtchild)("ends a child's other threads with it", async () => {
@@ -650,10 +743,17 @@ describe('Blink engine: kernel processes', () => {
     expect(holder).toBe(0);           // blocked reading stdin: the lock is free
     expect(waiters).toBe(0);
     expect(acquires).toBeGreaterThan(0);
-    // and the kernel call it's in, by its tid (patch 0127): read (0) on the main thread
-    const calls = p.data.engineCalls as Map<number, { nr: number; since: number }> | undefined;
-    expect(calls?.get(p.pid)?.nr).toBe(0);
-    expect((calls?.get(p.pid) as { args?: number[] } | undefined)?.args?.[0]).toBe(0);  // fd 0
+    // and the kernel call it's in, by its tid: read (0) on the main thread, on its
+    // own kernel channel (direct channels), or on the pool's (patch 0127)
+    const direct = (p.data.engineDirect as Map<number, { sab: SharedArrayBuffer; serving: boolean }> | undefined)?.get(p.pid);
+    if (direct) {
+      expect(direct.serving).toBe(true);
+      expect(new Int32Array(direct.sab)[1]).toBe(0);
+    } else {
+      const calls = p.data.engineCalls as Map<number, { nr: number; args?: number[] }> | undefined;
+      expect(calls?.get(p.pid)?.nr).toBe(0);
+      expect(calls?.get(p.pid)?.args?.[0]).toBe(0);  // fd 0
+    }
     expect((p.data.engineThreads as Set<number>).has(p.pid)).toBe(true);
     await w.write(new TextEncoder().encode('x\n'));
     await w.close();
@@ -1070,6 +1170,88 @@ it.skipIf(!haveTimerqueue)('a timer\'s signal held by its thread is queued once,
   expect(r.output.replace(/\r\n/g, '\n')).toBe('taken 1 overruns many queued behind 0 or 1\n');
 }, 60_000);
 
+it.skipIf(!haveMapsperm)('/proc/self/maps: a MAP_SHARED mapping is \'s\' and apart from a private neighbor, PROT_WRITE alone is "-w" (LTP mmap04)', async () => {
+  const { shell } = await setup(readFileSync(mapspermBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('---p ---s -w-p -wxs rw-s -w-p rw-p\n');
+}, 60_000);
+
+it.skipIf(!haveMaywrite)('mprotect(PROT_WRITE) of a shared map of a read-only fd or a write-sealed memfd is EACCES; a private map of it is fine (LTP memfd_create01)', async () => {
+  const { shell } = await setup(readFileSync(maywriteBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('unsealed 0 sealed 13 one page 13 read only 0 private 0 rdonly fd 13\n');
+}, 60_000);
+
+it.skipIf(!haveMemfdfalloc)('fallocate extends, keeps the size or punches zeros; memfd seals: F_SEAL_WRITE is EBUSY while mapped shared, F_SEAL_GROW refuses fallocate, F_SEAL_SHRINK an O_TRUNC reopen (LTP memfd_create01, fallocate*)', async () => {
+  const { shell } = await setup(readFileSync(memfdfallocBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('grow 0 100 keep 0 100 punch 0 0 100 no keep 95 bad 22 rdonly 9\nmapped 16 shrink 0 private 0 seals 14 grow 1 punch 1 trunc 1 size 8192\n');
+}, 60_000);
+
+it.skipIf(!haveSubreaper)('PR_SET_CHILD_SUBREAPER: an orphaned grandchild comes to the subreaper, which waits for it; in a fork child, waitpid restarts after an SA_RESTART SIGCHLD (LTP prctl03)', async () => {
+  const { shell } = await setup(readFileSync(subreaperBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('set 0\nchild flag 0\nwaitpid 1\ngrandchild reparented 1\nwait 1 sigchld 2\nflag 1\n');
+}, 60_000);
+
+it.skipIf(!haveSigpending)('RLIMIT_SIGPENDING 0: tgkill of a real-time signal to another thread is EAGAIN, a standard one still goes (LTP tgkill02)', async () => {
+  const { shell } = await setup(readFileSync(sigpendingBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('default 0 zero rt 11 zero standard 0\n');
+}, 60_000);
+
+it.skipIf(!haveOverrun)('timer_getoverrun in the handler is that signal\'s overruns, capped at DELAYTIMER_MAX like si_overrun, and 0 after timer_settime (LTP timer_settime03)', async () => {
+  const { shell } = await setup(readFileSync(overrunBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('overrun max 1 si_overrun max 1 after settime 0\n');
+}, 60_000);
+
+it.skipIf(!haveSystime)('system calls count as system time: tms_stime, ru_stime, and a reaped child\'s tms_cstime (LTP times03)', async () => {
+  const { shell } = await setup(readFileSync(systimeBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('stime 1 rusage 1 cstime 1\n');
+}, 60_000);
+
+it.skipIf(!havePidfd)('pidfds: PIDFD_GET_INFO, pidfd_send_signal, readable at exit, waitid(P_PIDFD), the exit status once reaped; ENOTTY on /proc/self/exe (LTP ioctl_pidfd01)', async () => {
+  const { shell } = await setup(readFileSync(pidfdBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('running 0 pid 1 ppid 1 poll 0 signal 0 poll 1 exited 0 exit 0 status 0\n' +
+    'waitid 0 pid 1 code 1 reaped no mask -1 3 reaped 0 exit 1 status 15 file -1 25\n');
+}, 60_000);
+
+it.skipIf(!haveEmptyat)('an empty path in the *at calls is ENOENT, or dirfd itself with AT_EMPTY_PATH (O_PATH too); faccessat2 refuses unknown flags (tabcomputer#54\'s audit)', async () => {
+  const { shell } = await setup(readFileSync(emptyatBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('fchmodat 2\nfchownat 0 0 2\nfaccessat2 0 0 2 0\nfaccessat2 badflag 22\nfstatat 0 0 2\nstatx 0 2\n' +
+    'utimensat null 0 empty 2 emptyflag 0 opath 0\nmtime 2\nmknodat 2 unlinkat 2 mkdirat 2\nreadlinkat 2\nopenat 2\n');
+}, 60_000);
+
+it.skipIf(!haveForkmaps)('a process with 984 private file mappings forks and execs 100 times (Blink aborted "pt & PAGE_V" around fork 60: debian\'s forkmaps, ldconfig, dracut-install)', async () => {
+  const { shell } = await setup(readFileSync(forkmapsBin));
+  // (without the JIT: its modules, compiled in the background, would reach the cache count a later test checks)
+  const r = await run(shell, 'BLINK_WJIT=0 ./prog 984 100');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('ok 984 100\n');
+}, 180_000);
+
+it.skipIf(!haveTiddrop)('a SIGEV_THREAD_ID timer whose thread exited signals no one: the process lives on (SIGRTMIN killed it; 0521\'s test under load)', async () => {
+  const { shell } = await setup(readFileSync(tiddropBin));
+  const r = await run(shell, './prog; echo rc $?');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('alive\nrc 0\n');
+}, 60_000);
+
+it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps_rollup\'s sum; msync(MS_INVALIDATE) of locked pages is EBUSY (LTP mlock05, Open POSIX mlockall_3-6/3-7)', async () => {
+  const { shell } = await setup(readFileSync(smapsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('size 1024 rss 8 locked 0\nmsync 0\nmlocked rss 1024 locked 1024 rollup 1\n' +
+    'msync locked -1 16\nmunlocked locked 0 msync 0\n');
+}, 60_000);
+
+it.skipIf(!havePipeebadf)('read of a pipe\'s write end and write of its read end fail EBADF at once (LTP pipe03 hung)', async () => {
+  const { shell } = await setup(readFileSync(pipeebadfBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('write read end -1 9 read write end -1 9\n');
+}, 60_000);
+
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));
   const r = await run(shell, './prog');
@@ -1334,7 +1516,7 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const { shell } = await setup(readFileSync(sockaddrsBin));
     const r = await run(shell, 'ln -s prog link; ./link');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('abstract bound 1 len 110 connect 1\nnetlink len 12 family 16\n' +
-      'exe /home/user/work/prog\nfallocate -1 EOPNOTSUPP\n');
+      `exe /home/user/work/prog\nfallocate ${haveFallocate ? '0 ok' : '-1 EOPNOTSUPP'}\n`);
   }, 60_000);
 
   // LTP nanosleep02; exit_group with threads parked in a futex, a sleep and a read (patch 0053)
@@ -1422,6 +1604,64 @@ describe('Blink engine: CPU and syscall fixes', () => {
     }
   }, 60_000);
 
+  // LTP pause01 (conformance's repro): a same-instance fork child's exit_group
+  // got no reply on its direct channel, so the page served it again and again,
+  // and the next children's registrations and signals waited seconds behind
+  // it: kill() missed children still in pause()
+  it.skipIf(!haveZombiekill)('kill() reaches each fork child while its earlier siblings are unreaped zombies', async () => {
+    const { shell } = await setup(readFileSync(zombiekillBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
+    expect(Date.now() - t0).toBeLessThan(15_000);
+  }, 60_000);
+
+  // a fused cmp+setcc across an instruction that writes no flags: movd/movq and
+  // scalar SSE arithmetic used the producer's locals as scratch (Firefox's
+  // parser took ++i for a pre-decrement: gui's bisect; patch 0139)
+  it.skipIf(!haveFlagfuse)('flags fused across movd, movq and scalar SSE arithmetic are the producer\'s, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(flagfuseBin));
+    const r = await run(shell, './prog 2000; BLINK_WJIT=0 ./prog 200');
+    const lines = r.output.replace(/\r\n/g, '\n').trim().split('\n');
+    expect(lines).toHaveLength(20);
+    for (const l of lines) expect(l).toMatch(/ 0 of \d+ wrong$/);
+  }, 60_000);
+
+  // two threads that hand a flag back and forth by spinning: compiled code
+  // held the GIL for up to seconds per handoff (Blender's startup; patch 0138)
+  it.skipIf(!haveSpinhandoff)('threads that spin on each other hand the GIL over promptly in compiled code', async () => {
+    const { shell } = await setup(readFileSync(spinhandoffBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog 300 2>/dev/null');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('300 rounds\n');
+    expect(Date.now() - t0).toBeLessThan(20_000);
+  }, 60_000);
+
+  // small callees compiled into their caller's region, their rets going back
+  // inside it (BLINK_WJIT_OFF bit 21 turns that off); the outputs are native's
+  it.skipIf(!haveCallret || !haveCalls)('calls and returns match native, callees in the caller\'s region or not, and interpreted', async () => {
+    const { fs, shell } = await setup(readFileSync(callretBin));
+    await fs.writeFile('/home/user/work/calls', readFileSync(callsBin), { mode: 0o755 });
+    for (const env of ['', 'BLINK_WJIT_OFF=0x200000 ', 'BLINK_WJIT=0 ']) {
+      let r = await run(shell, `${env}./prog`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('fib 682000\ntwo_sites 729979e90c11aca0\nlongjmp 36020\n' +
+        'detour 6ee6d79c67ba74b0\npointers 7d2877d473ee2321\n');
+      r = await run(shell, `${env}./calls 1000000 2>/dev/null`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('calls b30fec670ff9ba2e\nmemory b328a7deb029a1df\nregs b730b7fef0aa8521\n');
+    }
+  }, 120_000);
+
+  // debian: dracut-install and ldconfig aborted ("pt & PAGE_V", "impossible
+  // memory") or hung once a process with many file pages mapped had forked
+  // enough times: every fork took new g_hostpages slots, and past 2^20 a page
+  // table entry lost its address bits. 250 files of 96 KiB and 180 forks is
+  // ~1.08 M page allocations, past the 2^20 index slots (patch 0534).
+  it.skipIf(!haveForkmany)('a process with many file pages mapped forks and execs 180 times', async () => {
+    const { shell } = await setup(readFileSync(forkmanyBin));
+    const r = await run(shell, './prog 250 96 180');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('250 files mapped\n180 forks done 747000\n');
+  }, 600_000);
+
   // LTP waitpid08/10: one of 8 forked children never woke from its checkpoint
   it.skipIf(!haveFutexckpt)('every wake a waker counts reaches a waiter (futex in shared memory, 8 children)', async () => {
     const { shell } = await setup(readFileSync(futexckptBin));
@@ -1485,12 +1725,25 @@ describe('Blink engine: CPU and syscall fixes', () => {
   // serves the next process running the same code
   it.skipIf(!haveRounding)('compiled code\'s modules reach the page\'s cache, and the same program compiles to the same keys', async () => {
     const { keptCompiledModules } = await import('@shiro/x86-engine/blink');
+    // the modules come in batches the guest's threads post, which can still be
+    // on their way when the process has exited (a loaded machine): wait until
+    // the count holds still
+    const settled = async () => {
+      let n = keptCompiledModules().count, still = 0;
+      for (let i = 0; i < 100 && still < 5; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        const m = keptCompiledModules().count;
+        still = m === n ? still + 1 : 0;
+        n = m;
+      }
+      return n;
+    };
     const { shell } = await setup(readFileSync(roundingBin));
     await run(shell, './prog > /dev/null');
-    const once = keptCompiledModules();
-    expect(once.count).toBeGreaterThan(0);
+    const once = await settled();
+    expect(once).toBeGreaterThan(0);
     await run(shell, './prog > /dev/null');
-    expect(keptCompiledModules().count).toBe(once.count); // (same bytes: the same keys)
+    expect(await settled()).toBe(once); // (same bytes: the same keys)
   }, 120_000);
 
   // a signal that comes while the guest is between kernel calls wakes the

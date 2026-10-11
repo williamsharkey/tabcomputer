@@ -787,6 +787,12 @@ export class KernelChannel {
     return false;
   }
 
+  /** Tell an attached profiler which thread the next kernel entry is from */
+  private profTid(p: Process): void {
+    const prof = this.kernel.profiler;
+    if (prof) prof.tid = this.recordFor(p).tid;
+  }
+
   /** The thread record a call on this channel goes to: a hosted child's own (its tid is its pid) */
   private recordFor(p: Process): ThreadInfo {
     return p === this.proc ? this.thread : p.thread(p.pid);
@@ -840,8 +846,23 @@ export class KernelChannel {
     return s === A.STATE_REQUEST || s === A.STATE_REQUEST_SPIN;
   }
 
+  /**
+   * The kernel is running this channel's call: a signal that interrupts the
+   * process now ends it (or it ends anyway), and its reply carries the
+   * signal. (A call only posted isn't: it can start after the interruption
+   * and sleep through it.)
+   */
+  get serving(): boolean { return this.busy; }
+
   /** A request is waiting and nothing is serving it yet. */
-  get ready(): boolean { return !this.busy && !this.stopped && this.pending; }
+  get ready(): boolean { return !this.busy && !this.stopped && !this.abandoned && this.pending; }
+  /**
+   * The request posted now got no reply (its process is exiting, or the call
+   * failed): it stays posted, and serving it again would only repeat it (an
+   * exit_group served back to back kept the page from its other work for
+   * seconds). The guest posts its next request only after a reply.
+   */
+  private abandoned = false;
 
   /** A call is in progress on the async path (it needs microtasks to finish; readiness waits don't). */
   get inCall(): boolean { return this.asyncCall; }
@@ -872,7 +893,8 @@ export class KernelChannel {
     this.busy = true;
     let r: number | undefined;
     try {
-      r = nr === A.SYS_gettid ? (p === this.proc ? this.tid : p.pid) : this.kernel.syscallSync(p, nr, this.loadArgs(), this.data);
+      if (nr === A.SYS_gettid) r = p === this.proc ? this.tid : p.pid;
+      else { this.profTid(p); r = this.kernel.syscallSync(p, nr, this.loadArgs(), this.data); }
     } finally {
       this.busy = false;
     }
@@ -907,6 +929,7 @@ export class KernelChannel {
     let result: number | undefined;
     this.asyncCall = true;
     try {
+      this.profTid(p);
       result = await this.kernel.syscall(p, nr, args, this.data);
     } finally {
       this.asyncCall = false;
@@ -918,7 +941,13 @@ export class KernelChannel {
   private finish(result: number | undefined): void {
     this.busy = false;
     if (this.callThread) { this.callThread.nr = -1; this.callThread = null; }
-    if (result !== undefined && !this.stopped && !this.cur.exiting) this.reply(result);
+    // An exiting process's calls get no reply: its threads end with it. A
+    // hosted fork child's do (procOf): the engine instance that runs it goes
+    // on, and the child's thread waits for its exit_group's reply to end
+    // itself (it posted it again and again, and its siblings' signals and
+    // registrations waited behind it: LTP pause01)
+    if (result !== undefined && !this.stopped && (!this.cur.exiting || this.cur !== this.proc)) this.reply(result);
+    else this.abandoned = true;
     this.repliedAt = now();
     if (this.hot && watching.has(this)) pumpHot();
   }
@@ -939,7 +968,7 @@ export class KernelChannel {
       let off = () => {};
       // Blocked: the process is in a syscall for /proc (S, syscall, wchan) and its kernel
       // time, as kernel.syscall counts its calls (a fallback goes there and counts itself)
-      let t0 = 0;
+      let t0 = 0, pt0 = 0;
       const call = { nr, args };
       const leave = () => {
         if (!t0) return;
@@ -948,6 +977,7 @@ export class KernelChannel {
         if (ms >= 2) proc.kernelMs += ms;
         const i = proc.calls.indexOf(call);
         if (i >= 0) proc.calls.splice(i, 1);
+        this.kernel.profiler?.blocked(proc, nr, performance.now() - pt0);
         t0 = 0;
       };
       const end = (r: number | undefined, fallback = false) => {
@@ -958,6 +988,7 @@ export class KernelChannel {
         sig.removeEventListener('abort', onAbort);
         if (!fallback) { this.finish(r); resolve(); return; }
         this.asyncCall = true;
+        this.profTid(proc);
         void this.kernel.syscall(proc, nr, args, this.data).then(
           res => { this.asyncCall = false; this.finish(res); },
           () => { this.asyncCall = false; this.finish(undefined); }).finally(resolve);
@@ -973,6 +1004,7 @@ export class KernelChannel {
           do {
             again = false;
             if (this.stopped || proc.exiting) { end(undefined); return; }
+            this.profTid(proc);
             const r = this.kernel.syscallSync(proc, nr, args, this.data);
             if (r !== undefined) { end(r); return; }
             // Not ready, or something only the full path handles
@@ -989,6 +1021,7 @@ export class KernelChannel {
       attempt();
       if (!done) {
         t0 = Date.now();
+        pt0 = performance.now();
         if (proc.inSyscall++ === 0) proc.syscallSince = t0;
         proc.calls.push(call);
       }

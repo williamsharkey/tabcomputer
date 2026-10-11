@@ -24,8 +24,12 @@ export interface ShiroProcess {
 export interface ProcessSource {
   list(): ShiroProcess[];
   get(pid: number): ShiroProcess | undefined;
-  /** Send `sig` (default SIGTERM); false when the pid isn't this source's */
-  kill(pid: number, sig?: number): boolean;
+  /**
+   * Send `sig` (default SIGTERM); false when the pid isn't this source's.
+   * `group`: sent to the process group `pid` leads, whose kernel members the
+   * kernel has already signalled (kill(-PGID) reaching an in-page job, #63)
+   */
+  kill(pid: number, sig?: number, opts?: { group?: boolean }): boolean;
 }
 
 class ProcessTable {
@@ -61,9 +65,9 @@ class ProcessTable {
     return proc;
   }
 
-  kill(pid: number, sig?: number): boolean {
+  kill(pid: number, sig?: number, opts?: { group?: boolean }): boolean {
     const proc = this.processes.get(pid);
-    if (!proc) return this.sources.some(s => s.kill(pid, sig));
+    if (!proc) return this.sources.some(s => s.kill(pid, sig, opts));
     if (proc.status !== 'running') return false;
     if (proc.abortController) proc.abortController.abort();
     proc.kill();

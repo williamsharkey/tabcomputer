@@ -1,24 +1,17 @@
 import { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
-import { decodeBytes } from '../utils/byte-text';
+import { byteLength, decodeBytes } from '../utils/byte-text';
+import { timeSlicer, yieldTask } from '../utils/time-slice';
 
-/** A binary file decoded for matching only, a MiB at a time with the page running between (#19) */
-async function lossyDecode(bytes: Uint8Array): Promise<string> {
-  const dec = new TextDecoder();
-  const parts: string[] = [];
-  for (let off = 0; off < bytes.length; off += 1 << 20) {
-    const end = Math.min(off + (1 << 20), bytes.length);
-    parts.push(dec.decode(bytes.subarray(off, end), { stream: end < bytes.length }));
-    if (end < bytes.length) await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  return parts.join('');
-}
+/** A binary file is decoded for matching 256 KiB at a time: the native decode of binary measured ~30 ms per MiB (#19) */
+const BINARY_CHUNK = 256 << 10;
 
 /**
  * grep, following GNU grep: BRE by default (-E ERE, -F fixed strings, -P
  * JavaScript/Perl-ish), several patterns (-e, -f, newlines), -i -v -w -x -c
  * -l -L -o -q -s -n -h -H -m -A/-B/-C -r/-R --include/--exclude/--exclude-dir
- * --color. Exit status 0 when a line is selected, 1 when none, 2 on error.
+ * --color -Z -z -b -T. Exit status 0 when a line is selected, 1 when none, 2
+ * on error.
  */
 export const grepCmd: Command = {
   name: 'grep',
@@ -32,6 +25,8 @@ export const grepCmd: Command = {
     let withFilename: boolean | null = null;
     let colorMode = 'never';
     let textMode = false;
+    // -Z: a NUL after file names; -z: NUL-terminated lines in and out; -b: byte offsets; -T: a tab before the line
+    let nullName = false, nullData = false, byteOffset = false, initialTab = false;
     let label = '(standard input)';
     const patterns: string[] = [];
     let patternGiven = false;
@@ -77,6 +72,8 @@ export const grepCmd: Command = {
       '--recursive': () => { recursive = true; }, '--dereference-recursive': () => { recursive = true; deref = true; },
       '--text': () => { textMode = true; }, '--line-buffered': () => {}, '--color': () => { colorMode = 'always'; },
       '--colour': () => { colorMode = 'always'; },
+      '--null': () => { nullName = true; }, '--null-data': () => { nullData = true; },
+      '--byte-offset': () => { byteOffset = true; }, '--initial-tab': () => { initialTab = true; },
     };
     while (i < args.length) {
       const arg = args[i];
@@ -136,7 +133,11 @@ export const grepCmd: Command = {
           case 'H': withFilename = true; continue;
           case 'h': withFilename = false; continue;
           case 'a': textMode = true; continue;
-          case 'I': case 'U': case 'Z': case 'z': case 'b': case 'u': continue;
+          case 'Z': nullName = true; continue;
+          case 'z': nullData = true; continue;
+          case 'b': byteOffset = true; continue;
+          case 'T': initialTab = true; continue;
+          case 'I': case 'U': case 'u': continue;
           case 'e': { const v = value(); if (v === null) return 2; patterns.push(...v.split('\n')); patternGiven = true; j = arg.length; continue; }
           case 'f': { const v = value(); if (v === null || !(await readPatternFile(v))) return 2; j = arg.length; continue; }
           case 'm': { const v = value(); maxCount = parseInt(v ?? '0', 10); j = arg.length; continue; }
@@ -197,23 +198,33 @@ export const grepCmd: Command = {
 
     /** Search one input; returns true if a line was selected */
     const searchText = (content: string, name: string): boolean => {
-      const binary = !textMode && content.includes('\0');
-      const lines = content.split('\n');
-      if (content.endsWith('\n')) lines.pop();
-      const prefix = (ln: number, sep: string) => (showNames ? name + sep : '') + (lineNumbers ? (ln + 1) + sep : '');
+      const eol = nullData ? '\0' : '\n';
+      const binary = !textMode && !nullData && content.includes('\0');
+      // (empty input has no lines: `true | grep -v x` selects nothing)
+      const lines = content === '' ? [] : content.split(eol);
+      if (content.endsWith(eol)) lines.pop();
+      // each line's byte offset, for -b
+      const starts: number[] = [];
+      if (byteOffset) { let off = 0; for (const l of lines) { starts.push(off); off += byteLength(l) + 1; } }
+      const prefix = (ln: number, sep: string, col = 0) => {
+        const p = (showNames ? name + (nullName ? '\0' : sep) : '') + (lineNumbers ? (ln + 1) + sep : '')
+          + (byteOffset ? (starts[ln] + (col ? byteLength(lines[ln].slice(0, col)) : 0)) + sep : '');
+        return p && initialTab ? p + '\t' : p;
+      };
+      const nameEnd = nullName ? '\0' : '\n';
       let count = 0;
       let lastPrinted = -1;
       let afterLeft = 0;
       for (let ln = 0; ln < lines.length; ln++) {
         if (maxCount >= 0 && count >= maxCount) {
           // GNU still prints trailing context after the last match
-          if (afterLeft > 0 && hasContext) { ctx.stdout += prefix(ln, '-') + lines[ln] + '\n'; lastPrinted = ln; afterLeft--; continue; }
+          if (afterLeft > 0 && hasContext) { ctx.stdout += prefix(ln, '-') + lines[ln] + eol; lastPrinted = ln; afterLeft--; continue; }
           break;
         }
         const selected = matches(lines[ln]) !== invertMatch;
         if (!selected) {
           if (hasContext && afterLeft > 0) {
-            ctx.stdout += prefix(ln, '-') + lines[ln] + '\n';
+            ctx.stdout += prefix(ln, '-') + lines[ln] + eol;
             lastPrinted = ln;
             afterLeft--;
           }
@@ -227,8 +238,8 @@ export const grepCmd: Command = {
         if (hasContext) {
           const from = Math.max(0, ln - beforeCtx, lastPrinted + 1);
           if (printedAny && (lastPrinted < 0 || from > lastPrinted + 1)) ctx.stdout += '--\n';
-          for (let b = from; b < ln; b++) ctx.stdout += prefix(b, '-') + lines[b] + '\n';
-          ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + '\n';
+          for (let b = from; b < ln; b++) ctx.stdout += prefix(b, '-') + lines[b] + eol;
+          ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + eol;
           lastPrinted = ln;
           afterLeft = afterCtx;
           printedAny = true;
@@ -241,15 +252,53 @@ export const grepCmd: Command = {
           while ((m = regex.exec(lines[ln])) !== null) {
             // Empty matches print nothing (and must not stall the scan)
             if (m[0] === '') { regex.lastIndex++; continue; }
-            ctx.stdout += prefix(ln, ':') + (useColor ? `\x1b[1;31m${m[0]}\x1b[0m` : m[0]) + '\n';
+            ctx.stdout += prefix(ln, ':', m.index) + (useColor ? `\x1b[1;31m${m[0]}\x1b[0m` : m[0]) + eol;
           }
           continue;
         }
-        ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + '\n';
+        ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + eol;
       }
-      if (countOnly && !quiet) ctx.stdout += (showNames ? name + ':' : '') + count + '\n';
-      if (filesWith && count > 0 && !quiet) ctx.stdout += name + '\n';
-      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + '\n'; }
+      if (countOnly && !quiet) ctx.stdout += (showNames ? name + (nullName ? '\0' : ':') : '') + count + '\n';
+      if (filesWith && count > 0 && !quiet) ctx.stdout += name + nameEnd;
+      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + nameEnd; }
+      return count > 0;
+    };
+
+    /**
+     * searchText for a binary file (NULs, no -a/-z): its lines are never
+     * printed, so they are matched as they are decoded, a chunk at a time with
+     * the page running between, instead of decoding the whole file into one
+     * string first (a 30 MB binary held the page for ~80 ms, #19). The
+     * decode is the native lossy one, enough to match.
+     */
+    const searchBinary = async (bytes: Uint8Array, name: string): Promise<boolean> => {
+      const dec = new TextDecoder();
+      let count = 0;
+      let carry = '';
+      let stop = false;
+      const line = (l: string): void => {
+        if (maxCount >= 0 && count >= maxCount) { stop = true; return; }
+        if ((matches(l) !== invertMatch)) {
+          count++;
+          anySelected = true;
+          if (quiet || filesWith || !countOnly && !filesWithout) stop = true;
+        }
+      };
+      for (let off = 0; off < bytes.length && !stop; off += BINARY_CHUNK) {
+        const end = Math.min(off + BINARY_CHUNK, bytes.length);
+        const text = carry + dec.decode(bytes.subarray(off, end), { stream: end < bytes.length });
+        let from = 0;
+        for (let nl = text.indexOf('\n'); nl >= 0 && !stop; nl = text.indexOf('\n', from)) { line(text.slice(from, nl)); from = nl + 1; }
+        carry = text.slice(from);
+        if (end < bytes.length && !stop) await yieldTask();
+      }
+      if (!stop && carry !== '') line(carry);
+      // (searchText's output, in its order)
+      const nameEnd = nullName ? '\0' : '\n';
+      if (count > 0 && !quiet && !filesWith && !filesWithout && !countOnly) ctx.stdout += `Binary file ${name} matches\n`;
+      if (countOnly && !quiet) ctx.stdout += (showNames ? name + (nullName ? '\0' : ':') : '') + count + '\n';
+      if (filesWith && count > 0 && !quiet) ctx.stdout += name + nameEnd;
+      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + nameEnd; }
       return count > 0;
     };
 
@@ -260,6 +309,8 @@ export const grepCmd: Command = {
     const fileWanted = (base: string) =>
       (includeRes.length === 0 || includeRes.some((re) => re.test(base))) && !excludeRes.some((re) => re.test(base));
 
+    // cached reads resolve as microtasks: without a yield a -r walk is one task (#19)
+    const slice = timeSlicer();
     const searchPath = async (path: string, display: string, top: boolean): Promise<void> => {
       if (quiet && anySelected) return;
       const resolved = ctx.fs.resolvePath(path, ctx.cwd);
@@ -282,17 +333,17 @@ export const grepCmd: Command = {
       const base = display.split('/').pop() || display;
       if (!top && !fileWanted(base)) return;
       if (top && recursive && includeRes.length && !fileWanted(base)) return;
-      let content: string;
-      try {
-        const bytes = await ctx.fs.readFile(resolved) as Uint8Array;
-        // A binary file's lines are never printed ("Binary file matches"): the native lossy decode
-        // is enough to match, where the byte-exact one took ~0.4 s on a 30 MB binary (#19)
-        content = !textMode && bytes.indexOf(0) >= 0 ? await lossyDecode(bytes) : decodeBytes(bytes);
-      } catch {
+      let bytes: Uint8Array;
+      await slice();
+      try { bytes = await ctx.fs.readFile(resolved) as Uint8Array; }
+      catch {
         error(`${display}: Permission denied`);
         return;
       }
-      searchText(content, display);
+      // A binary file's lines are never printed ("Binary file matches"): the native lossy decode
+      // is enough to match, where the byte-exact one took ~0.4 s on a 30 MB binary (#19)
+      if (!textMode && !nullData && bytes.indexOf(0) >= 0) await searchBinary(bytes, display);
+      else searchText(decodeBytes(bytes), display);
     };
 
     if (files.length === 0) {

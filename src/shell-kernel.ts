@@ -16,6 +16,7 @@ import type { Runner, Kernel } from './kernel/kernel';
 import type { Process } from './kernel/process';
 import type { OpenFile } from './kernel/fd';
 import * as A from './kernel/abi';
+import { TIMEOUT_EXPIRED_EVENT } from './kernel/signals';
 import { packageOfPath, packageShadows, packageKernelProgram } from './pkg-manager';
 import { nodeKernelProgram } from './node-worker/boot';
 import { elfInterpreter, missingInterpreterMessage } from './elf-interp';
@@ -286,6 +287,9 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
 
   // Under timeout (its abort says so) the job leads a group of its own even in a hosted shell
   const ownGroup = !!(shell.abortController as { ownProcessGroup?: boolean } | null)?.ownProcessGroup;
+  // A background job's programs (no job control) run in the job's group, not the host
+  // shell's: `kill $!` reaches just them, the agent's other jobs keep running (#63)
+  const jobGroup = !tty && !ownGroup && !shell.options.has('monitor') ? shell.jobPgid : undefined;
   const procs: Process[] = [];
   let input = stdin0;
   for (let i = 0; i < programs.length; i++) {
@@ -298,11 +302,13 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
       path: p.path ?? p.argv[0], argv: p.argv, env: p.env ? { ...p.env, ...env } : env, cwd: opts.cwd,
       fds: { ...extra, 0: input, 1: out, 2: errOut }, run: p.run,
       // children of a hosted shell stay in its process group, under it
-      pgid: host && !shell.options.has('monitor') && !ownGroup ? undefined : procs.length ? procs[0].pgid : 0,
+      pgid: jobGroup ?? (host && !shell.options.has('monitor') && !ownGroup ? undefined : procs.length ? procs[0].pgid : 0),
       parent: host ?? undefined,
       uid: shell.uid,
     };
     const proc = tty ? tty.spawnJob(kernel, spawn) : kernel.spawn(spawn);
+    // Signals the shell's programs start ignoring (nohup's SIGHUP, #61): before the program runs
+    for (const sig of shell.ignoredSignals ?? []) proc.dispositions.set(sig, 'ignore');
     proc.umask = shell.umask; // (the shell's umask builtin, not the parent process's)
     procs.push(proc);
     if (nextInput) input = nextInput;
@@ -326,14 +332,23 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
   // SIGINT, or the signal the abort names (timeout -s SIG -k DURATION)
   const abort = shell.abortController;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
-  const onAbort = () => {
-    const reason = abort?.signal.reason as { signal?: number; killAfter?: number } | undefined;
-    kernel.kill(-pgid, typeof reason?.signal === 'number' ? reason.signal : A.SIGINT);
+  const signalJob = (reason: { signal?: number; killAfter?: number; groupSignalled?: number } | undefined) => {
+    // (`kill -- -PGID` to an in-page job: the kernel has signalled this group already)
+    if (reason?.groupSignalled !== pgid) kernel.kill(-pgid, typeof reason?.signal === 'number' ? reason.signal : A.SIGINT);
     if (typeof reason?.killAfter === 'number') {
+      clearTimeout(killTimer);
       killTimer = setTimeout(() => { if (procs.some((p) => p.alive)) kernel.kill(-pgid, A.SIGKILL); }, reason.killAfter);
     }
   };
+  const onAbort = () => signalJob(abort?.signal.reason as { signal?: number; killAfter?: number } | undefined);
+  // timeout's expiry on a signal that was already aborted (by the shell around
+  // timeout): abort() can't fire again, so timeout sends this (#53)
+  const onExpire = (e: Event) => signalJob((e as CustomEvent).detail);
   abort?.signal.addEventListener('abort', onAbort);
+  abort?.signal.addEventListener(TIMEOUT_EXPIRED_EVENT, onExpire);
+  // An abort while the job was still being set up was dispatched before this
+  // listener existed: act on it now, or the job runs on with nothing to stop it (#53)
+  if (abort?.signal.aborted) onAbort();
   let exitCode: number;
   try {
     if (tty) {
@@ -345,6 +360,7 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     }
   } finally {
     abort?.signal.removeEventListener('abort', onAbort);
+    abort?.signal.removeEventListener(TIMEOUT_EXPIRED_EVENT, onExpire);
     clearTimeout(killTimer);
   }
   const stopped = exitCode > 128 && procs.some((p) => p.state === 'stopped');

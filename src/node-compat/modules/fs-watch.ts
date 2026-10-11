@@ -114,29 +114,46 @@ export function createWatchApi(deps: WatchDeps) {
       if (!recursive && rel.includes('/')) return null;
       return rel;
     };
-    const queue = (eventType: Change['eventType'], filename: string) => deliverWatchEvent(() => emit({ eventType, filename }));
+    // (checked again when delivered: a new file's 'rename' and 'change' come from one write, and
+    // when a storm's delivery goes on in a later task, chokidar has watched the file by the
+    // 'change', hands it to the file's watcher, and reports a change: Astro restarted when its
+    // update check created .astro/settings.json)
+    const queue = (eventType: Change['eventType'], filename: string, p?: string, at?: number) => deliverWatchEvent(() => {
+      if (at !== undefined && p !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) return;
+      emit({ eventType, filename });
+    });
     // A change from before this subscription (one relayed late to a guest) is already in
     // what its subscriber read, and so is one from before this process started watching
     // that file itself: chokidar found .astro/settings.json by reading its directory,
     // watched it, then heard the file's creation from the directory's watcher (chokidar
     // hands a directory's events to its files' watchers) and reported a 'change' (Astro
     // took it for a settings edit and restarted)
-    const since = Date.now();
+    // (to the microsecond, as the page stamps `at`: chokidar watches a file it saw created
+    // within the same millisecond, and that creation's write then passed for a new change)
+    const since = performance.timeOrigin + performance.now();
+    let lastEvent = '', lastPath = '', lastHeard = 0;
     if (!dirWatch) fileWatchSince.set(target, Math.max(fileWatchSince.get(target) ?? 0, since));
     const off = ctx.fs.onChange((event, path, newPath, detail) => {
       const at = detail?.at;
       if (at !== undefined && at < since) return;
+      // A change made before the same one to the same file reached us is in what that one's
+      // reader will read: one, as inotify merges an event with the one before it while that
+      // isn't read yet. A guest hears them late and apart (writeFileSync's truncate, then its
+      // write: Astro took the second 'change' of its .astro/settings.json, after the one its
+      // preferences.set() expected, for a settings edit, and restarted)
+      if (at !== undefined && event === lastEvent && path === lastPath && at <= lastHeard) return;
+      lastEvent = event; lastPath = path; lastHeard = performance.timeOrigin + performance.now();
       for (const [p, gone] of [[path, event === 'delete' || event === 'rename'], [newPath, false]] as [string | undefined, boolean][]) {
         if (!p) continue;
         const name = nameFor(p);
         if (name === null) continue;
         if (at !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) { if (gone) known.delete(p); else known.add(p); continue; }
         // (a mode or times change: Node reports 'change', as Linux's IN_ATTRIB)
-        if (event === 'attrib') { queue('change', name); continue; }
-        if (event === 'write' && known.has(p)) { queue('change', name); continue; }
-        if (event === 'write') { known.add(p); queue('rename', name); queue('change', name); continue; }
+        if (event === 'attrib') { queue('change', name, p, at); continue; }
+        if (event === 'write' && known.has(p)) { queue('change', name, p, at); continue; }
+        if (event === 'write') { known.add(p); queue('rename', name, p, at); queue('change', name, p, at); continue; }
         if (gone) known.delete(p); else known.add(p);
-        queue('rename', name);
+        queue('rename', name, p, at);
       }
     });
     return () => { off(); if (!dirWatch && fileWatchSince.get(target) === since) fileWatchSince.delete(target); };

@@ -27,6 +27,10 @@ describe('agent session restore: which lines run an agent', () => {
   it('resume commands keep the build, model and permission flags, not the prompt', () => {
     expect(resumeArgv('claude', ['claude', '--npm', '--model', 'opus', '--dangerously-skip-permissions', 'fix the tests'], A))
       .toEqual(['claude', '--npm', '--model', 'opus', '--dangerously-skip-permissions', '--resume', A]);
+    // claude --vm (the native build's JavaScript on the page's engine) resumes as --vm
+    expect(resumeArgv('claude', ['claude', '--vm', 'fix it'], A)).toEqual(['claude', '--vm', '--resume', A]);
+    expect(agentOf('claude --vm --version')).toBe(null);
+    expect(agentOf('claude --vm install')).toBe(null);
     expect(resumeArgv('claude', ['claude', '--native', '--resume', OLD, '--permission-mode=plan'], A))
       .toEqual(['claude', '--native', '--permission-mode=plan', '--resume', A]);
     expect(resumeArgv('codex', ['codex', '--sandbox', 'danger-full-access', '-m', 'o4', 'write a test'], A))

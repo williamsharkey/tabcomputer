@@ -65,9 +65,14 @@ export function pacedSend(send: (data: Uint8Array) => void, nextFrame: (cb: () =
   };
 }
 
-/** The X windows a batch makes current (tcMakeCurrent's draw and read), found by walking command headers. */
+/**
+ * The X windows a batch makes current (tcMakeCurrent's draw and read), found
+ * by walking command headers. Pbuffers created (tcCreatePbuffer) go into
+ * `pbuffers` and are left out, then and in later batches.
+ */
 const MAKE_CURRENT = OPS.findIndex(([name]) => name === 'tcMakeCurrent');
-export function windowsMadeCurrent(buf: ArrayBuffer): number[] {
+const CREATE_PBUFFER = OPS.findIndex(([name]) => name === 'tcCreatePbuffer');
+export function windowsMadeCurrent(buf: ArrayBuffer, pbuffers = new Set<number>()): number[] {
   const dv = new DataView(buf);
   const out: number[] = [];
   for (let off = 0; off + 12 <= buf.byteLength;) {
@@ -79,9 +84,9 @@ export function windowsMadeCurrent(buf: ArrayBuffer): number[] {
       if (words < 1) return out;
       if ((h & 0xffff) === MAKE_CURRENT && (h >>> 16) && p + 16 <= end) {
         const draw = dv.getUint32(p + 8, true), read = dv.getUint32(p + 12, true);
-        if (draw) out.push(draw);
-        if (read && read !== draw) out.push(read);
-      }
+        if (draw && !pbuffers.has(draw)) out.push(draw);
+        if (read && read !== draw && !pbuffers.has(read)) out.push(read);
+      } else if ((h & 0xffff) === CREATE_PBUFFER && (h >>> 16) && p + 8 <= end) pbuffers.add(dv.getUint32(p + 4, true));
       p += words * 4;
     }
     if (end <= off) return out;
@@ -99,21 +104,24 @@ function workerPath(xs: XServer | null): boolean {
 /**
  * The executor in a Worker (worker.ts). Frames come back as ImageBitmaps and
  * go into the window's GL surface (a `bitmaprenderer` canvas over it), so
- * there is no readback; the window's own pixels stay what X drew. The page
+ * there is no readback; the window's own pixels stay what X drew, and
+ * XGetImage reads the frame from the surface when asked. The page
  * tells the Worker each window's size, from its surface.
  */
 function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Backend {
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'glshiro' });
-  const surfaces = new Map<number, { surface: GLSurface; ctx: ImageBitmapRenderingContext | null; unsub: (() => void)[] }>();
-  let commands = 0, frames = 0, broken = false;
+  const surfaces = new Map<number, { surface: GLSurface; unsub: (() => void)[] }>();
+  let commands = 0, frames = 0, busy = 0, broken = false;
   /** made current before the window could take a surface (not mapped yet, say): tried again on each batch and frame */
   const pending = new Set<number>();
+  /** pbuffers' XIDs, which the X server never sees: the Worker sizes them */
+  const pbuffers = new Set<number>();
   const sizeOf = (s: GLSurface) => ({ width: s.width, height: s.height });
   const track = (xid: number): [number, { width: number; height: number }] | null => {
     if (surfaces.has(xid)) return null;
     let surface: GLSurface;
-    try { surface = xs.glSurface(xid); } catch { return null; } // a pbuffer or pixmap: the Worker sizes it
-    const entry = { surface, ctx: null as ImageBitmapRenderingContext | null, unsub: [] as (() => void)[] };
+    try { surface = xs.glSurface(xid); } catch { return null; } // not an X window (yet)
+    const entry = { surface, unsub: [] as (() => void)[] };
     entry.unsub.push(surface.onChange(() => worker.postMessage({ type: 'sizes', sizes: [[xid, sizeOf(surface)]] })));
     entry.unsub.push(surface.onDestroy(() => { forget(xid); worker.postMessage({ type: 'sizes', sizes: [[xid, null]] }); }));
     surfaces.set(xid, entry);
@@ -126,20 +134,16 @@ function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Bac
     for (const u of e.unsub) u();
   };
   worker.onmessage = (ev: MessageEvent) => {
-    const m = ev.data as { type: string; data?: Uint8Array; xid?: number; bitmap?: ImageBitmap; commands?: number; frames?: number; reason?: string };
+    const m = ev.data as { type: string; data?: Uint8Array; xid?: number; bitmap?: ImageBitmap; commands?: number; frames?: number; busy?: number; reason?: string };
     switch (m.type) {
       case 'send': send(m.data!); break;
       case 'frame': {
         if (pending.has(m.xid!)) { const t = track(m.xid!); if (t) { pending.delete(m.xid!); worker.postMessage({ type: 'sizes', sizes: [t] }); } }
         const e = surfaces.get(m.xid!);
-        const canvas = e?.surface.canvas;
-        if (!e || !canvas) { m.bitmap!.close(); break; }
-        if (canvas.width !== m.bitmap!.width || canvas.height !== m.bitmap!.height) { canvas.width = m.bitmap!.width; canvas.height = m.bitmap!.height; }
-        e.ctx ??= canvas.getContext('bitmaprenderer');
-        if (e.ctx) e.ctx.transferFromImageBitmap(m.bitmap!); else m.bitmap!.close();
+        if (e) e.surface.present(m.bitmap!); else m.bitmap!.close();
         break;
       }
-      case 'done': commands = m.commands!; frames = m.frames!; break;
+      case 'done': commands = m.commands!; frames = m.frames!; busy = m.busy ?? busy; break;
       case 'broken': broken = true; console.warn('[glshiro]', m.reason); break;
     }
   };
@@ -148,7 +152,7 @@ function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Bac
     run(buf) {
       if (broken) return false;
       const sizes: [number, { width: number; height: number }][] = [];
-      for (const xid of windowsMadeCurrent(buf)) if (!surfaces.has(xid)) pending.add(xid);
+      for (const xid of windowsMadeCurrent(buf, pbuffers)) if (!surfaces.has(xid)) pending.add(xid);
       for (const xid of pending) { const t = track(xid); if (t) { sizes.push(t); pending.delete(xid); } }
       worker.postMessage({ type: 'batch', buf, sizes }, [buf]);
       return true;
@@ -159,6 +163,7 @@ function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Bac
     },
     commands: () => commands,
     frames: () => frames,
+    busyMs: () => busy,
   };
 }
 

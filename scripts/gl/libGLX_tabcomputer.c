@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -178,6 +179,10 @@ static int connect_server(void) {
     sock_failed = 1;
     return -1;
   }
+  /* a whole window's texture (Qt re-sends it every frame) in one write: the kernel's default AF_UNIX send
+   * buffer is 256 KB, which made a 1.7 MB upload ~7 handoffs to glshiro (Linux doubles this, up to wmem_max) */
+  int sndbuf = 8 << 20;
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
   sock_fd = fd;
   /* hello: protocol, pid, program name (control batch, context 0) */
   char name[256] = "";
@@ -237,7 +242,7 @@ struct tc_ctx {
   GLenum error;
   int swap_interval;
   /* client state the guest needs */
-  struct tc_carray { uint8_t enabled, client; GLint size; GLenum type; GLsizei stride; const uint8_t *ptr; } arrays[29];
+  struct tc_carray { uint8_t enabled, client; GLint size; GLenum type; GLsizei stride; const uint8_t *ptr; GLuint divisor; } arrays[29];
   GLuint client_unit, vao;
   int in_begin;
   uint32_t list_mode;
@@ -280,7 +285,9 @@ static void free_info(struct tc_object *o) {
 struct tc_thread {
   struct tc_ctx *ctx;
   uint32_t *buf; size_t used; /* words, after the 3-word batch header */
-  uint32_t *big; size_t big_words;
+  uint32_t *big; size_t big_words; /* a command bigger than a batch, sent alone */
+  uint32_t *big_mem; size_t big_cap; /* kept for the next one: a fresh malloc each time is an mmap, page faults and an munmap */
+  const void *zc; size_t zc_bytes, zc_at; /* a big command's large array, sent from the caller's memory at word zc_at */
 };
 static __thread struct tc_thread T;
 
@@ -311,8 +318,13 @@ uint32_t *tc_begin(size_t argwords, unsigned op) {
   if (T.used + need > BATCH_WORDS) {
     flush();
     if (need > BATCH_WORDS) {
-      T.big = malloc((3 + need) * 4);
-      if (!T.big) return NULL;
+      if (T.big_cap < 3 + need) {
+        free(T.big_mem);
+        T.big_cap = 3 + need + (3 + need) / 8;
+        T.big_mem = malloc(T.big_cap * 4);
+        if (!T.big_mem) { T.big_cap = 0; return NULL; }
+      }
+      T.big = T.big_mem;
       T.big_words = 3 + need;
       w = T.big + 3;
       goto header;
@@ -328,13 +340,29 @@ header:
 void tc_end(void) {
   if (!T.big) return;
   pthread_mutex_lock(&sock_lock);
-  send_batch(T.ctx ? T.ctx->id : 0, T.big, T.big_words);
+  if (!T.zc) send_batch(T.ctx ? T.ctx->id : 0, T.big, T.big_words);
+  else {
+    /* the words before the array, the array from the caller's memory, its padding, and any words after it */
+    uint32_t *b = T.big;
+    size_t aw = (T.zc_bytes + 3) >> 2, after = T.zc_at + aw;
+    static const uint8_t zero[4];
+    b[0] = BATCH_MAGIC; b[1] = T.ctx ? T.ctx->id : 0; b[2] = (uint32_t)(T.big_words * 4);
+    if (sock_fd >= 0 && (write_all(b, T.zc_at * 4) < 0 || write_all(T.zc, T.zc_bytes) < 0 ||
+        write_all(zero, aw * 4 - T.zc_bytes) < 0 || write_all(b + after, (T.big_words - after) * 4) < 0)) lost_connection();
+    T.zc = NULL;
+  }
   pthread_mutex_unlock(&sock_lock);
-  free(T.big); T.big = NULL;
+  T.big = NULL;
+  if (T.big_cap > (64u << 20) / 4) { free(T.big_mem); T.big_mem = NULL; T.big_cap = 0; } /* keep up to 64 MB */
 }
 uint32_t *tc_put_array(uint32_t *w, const void *p, size_t n) {
   if (!p) { *w++ = 0xffffffffu; return w; }
   *w++ = (uint32_t)n;
+  /* in a command too big for a batch (a whole window's texture, say): not copied, written from p at tc_end */
+  if (n >= 65536 && T.big && !T.zc && w > T.big && w < T.big + T.big_words) {
+    T.zc = p; T.zc_bytes = n; T.zc_at = (size_t)(w - T.big);
+    return w + ((n + 3) >> 2);
+  }
   if (n) { memcpy(w, p, n); if (n & 3) memset((uint8_t *)w + n, 0, 4 - (n & 3)); }
   return w + ((n + 3) >> 2);
 }
@@ -348,13 +376,18 @@ void tc_unimplemented(const char *name) {
 /* A command whose answer the page sends back: flushes the batch (ending
  * with the command just encoded) and waits for the reply. Returns a malloc'd
  * payload (free it) or NULL. */
+/* TABCOMPUTER_GL_DEBUG=2: where frames' time goes, logged every 10 swaps (3: also each query that waits for a reply) */
+static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static struct { double since, reply_ms, throttle_ms, upload_ms; unsigned replies, swaps, uploads; } stat;
 static uint8_t *call_reply(uint32_t *len) {
   uint8_t *p = NULL; uint32_t n = 0;
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   flush_locked();
   int k;
   while ((k = read_message(&p, &n)) != MSG_REPLY) if (k < 0) { pthread_mutex_unlock(&sock_lock); *len = 0; return NULL; }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) { stat.reply_ms += now_ms() - t0; stat.replies++; }
   *len = n;
   return p;
 }
@@ -463,6 +496,7 @@ static int get_values(GLenum op, GLenum pname, const uint32_t *extra, int nextra
     int i = find_limit(c, pname);
     if (i >= 0) { int n = c->limit_n[i] < max ? c->limit_n[i] : max; memcpy(out, c->limit_val[i], (size_t)n * sizeof *out); return n; }
   }
+  if (dbg() >= 3) logf_("query op %u, pname 0x%x", op, pname);
   uint32_t *w = tc_begin(1 + (size_t)nextra, op);
   if (!w) return 0;
   w[0] = pname;
@@ -540,7 +574,7 @@ static uint32_t ask_u32(unsigned op, const uint32_t *args, int nargs) {
   free(p);
   return v;
 }
-#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; return (R)ask_u32(op, &a, 1); }
+#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; if (dbg() >= 3) logf_("query op %u, 0x%x", op, a); return (R)ask_u32(op, &a, 1); }
 ASK1(glIsEnabled, GLenum, GLboolean, OP_glIsEnabled)
 ASK1(glIsTexture, GLuint, GLboolean, OP_glIsTexture)
 ASK1(glIsBuffer, GLuint, GLboolean, OP_glIsBuffer)
@@ -624,6 +658,8 @@ GLuint tc_glCreateProgram(void) {
 }
 static void simple1(unsigned op, uint32_t a) { uint32_t *w = tc_begin(1, op); if (w) { w[0] = a; tc_end(); } }
 static void simple2(unsigned op, uint32_t a, uint32_t b) { uint32_t *w = tc_begin(2, op); if (w) { w[0] = a; w[1] = b; tc_end(); } }
+/* (WebGL2 restarts at the index type's maximum, the index GL 3.1 apps like Blender use; the page notes others) */
+void tc_glPrimitiveRestartIndex(GLuint index) { simple1(OP_glPrimitiveRestartIndex, index); }
 void tc_glDeleteShader(GLuint s) {
   CUR();
   struct tc_object *o = object(c->share, s, 0);
@@ -812,9 +848,76 @@ void tc_glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize, GLsize
   fetch_program_info(o, program);
   active_var(o->uniforms, o->nuniforms, index, bufSize, length, size, type, name);
 }
+/* Uniform blocks, from the program's info (a block member's loc is -2 - its block's index; others' are >= -1). */
+static struct tc_object *program_info(GLuint program) {
+  struct tc_ctx *c = T.ctx;
+  if (!c) return NULL;
+  struct tc_object *o = object(c->share, program, 0);
+  if (!o || o->kind != 2) { local_error(GL_INVALID_VALUE); return NULL; }
+  fetch_program_info(o, program);
+  return o;
+}
+void tc_glGetActiveUniformBlockName(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nblocks) { local_error(GL_INVALID_VALUE); return; }
+  copy_log(o->blocks[index].name, bufSize, length, name);
+}
+void tc_glGetActiveUniformBlockiv(GLuint program, GLuint index, GLenum pname, GLint *params) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nblocks) { local_error(GL_INVALID_VALUE); return; }
+  GLint n = 0;
+  for (uint32_t i = 0; i < o->nuniforms; i++) if (o->uniforms[i].loc == -2 - (int32_t)index) n++;
+  switch (pname) {
+  case GL_UNIFORM_BLOCK_DATA_SIZE: *params = o->blocks[index].size; return;
+  case GL_UNIFORM_BLOCK_NAME_LENGTH: *params = (GLint)strlen(o->blocks[index].name) + 1; return;
+  case GL_UNIFORM_BLOCK_BINDING: *params = 0; return; /* (as linked; glUniformBlockBinding's isn't kept here) */
+  case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS: *params = n; return;
+  case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
+    for (uint32_t i = 0, k = 0; i < o->nuniforms; i++) if (o->uniforms[i].loc == -2 - (int32_t)index) params[k++] = (GLint)i;
+    return;
+  case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER: case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER: *params = 1; return;
+  case GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER: *params = 0; return;
+  }
+  local_error(GL_INVALID_ENUM);
+}
+void tc_glGetActiveUniformName(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nuniforms) { local_error(GL_INVALID_VALUE); return; }
+  copy_log(o->uniforms[index].name, bufSize, length, name);
+}
+void tc_glGetActiveUniformsiv(GLuint program, GLsizei count, const GLuint *indices, GLenum pname, GLint *params) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  for (GLsizei k = 0; k < count; k++) {
+    if (indices[k] >= o->nuniforms) { local_error(GL_INVALID_VALUE); return; }
+    struct tc_uniform *u = &o->uniforms[indices[k]];
+    switch (pname) {
+    case GL_UNIFORM_TYPE: params[k] = (GLint)u->type; break;
+    case GL_UNIFORM_SIZE: params[k] = u->size; break;
+    case GL_UNIFORM_NAME_LENGTH: params[k] = (GLint)strlen(u->name) + 1; break;
+    case GL_UNIFORM_BLOCK_INDEX: params[k] = u->loc <= -2 ? -2 - u->loc : -1; break;
+    case GL_UNIFORM_IS_ROW_MAJOR: params[k] = 0; break;
+    /* the std140 layout isn't sent: the page would have to be asked */
+    case GL_UNIFORM_OFFSET: case GL_UNIFORM_ARRAY_STRIDE: case GL_UNIFORM_MATRIX_STRIDE:
+      params[k] = -1; tc_unimplemented("glGetActiveUniformsiv(OFFSET/ARRAY_STRIDE/MATRIX_STRIDE)"); break;
+    default: local_error(GL_INVALID_ENUM); return;
+    }
+  }
+}
+void tc_glGetUniformIndices(GLuint program, GLsizei count, const GLchar *const *names, GLuint *indices) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  for (GLsizei k = 0; k < count; k++) {
+    indices[k] = GL_INVALID_INDEX;
+    for (uint32_t i = 0; i < o->nuniforms; i++) if (!strcmp(o->uniforms[i].name, names[k])) { indices[k] = i; break; }
+  }
+}
 /* "a", "a[0]" and "a[3]" find the uniform the page listed as "a[0]" (size n). */
 static GLint find_location(struct tc_uniform *v, uint32_t n, const char *name) {
-  for (uint32_t i = 0; i < n; i++) if (!strcmp(v[i].name, name)) return v[i].loc;
+  for (uint32_t i = 0; i < n; i++) if (!strcmp(v[i].name, name)) return v[i].loc < 0 ? -1 : v[i].loc;
   size_t len = strlen(name);
   long idx = 0;
   size_t base = len;
@@ -1003,12 +1106,15 @@ void tc_glTexImage1D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLin
   put_image(w + 7, pixels, n); tc_end();
 }
 void tc_glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels) {
+  if (dbg() >= 3) logf_("glTexImage2D 0x%x level %d %dx%d format 0x%x type 0x%x", target, level, width, height, format, type);
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   size_t n = pixels ? image_bytes(&unpack, width, height, 1, format, type) : 0;
   uint32_t *w = tc_begin(8 + image_words(pixels, n), OP_glTexImage2D);
   if (!w) return;
   w[0] = target; w[1] = (uint32_t)level; w[2] = (uint32_t)ifmt; w[3] = (uint32_t)width; w[4] = (uint32_t)height; w[5] = (uint32_t)border;
   w[6] = format; w[7] = type;
   put_image(w + 8, pixels, n); tc_end();
+  if (t0) { stat.upload_ms += now_ms() - t0; stat.uploads++; }
 }
 void tc_glTexImage3D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels) {
   size_t n = pixels ? image_bytes(&unpack, width, height, depth, format, type) : 0;
@@ -1026,6 +1132,7 @@ void tc_glTexSubImage1D(GLenum target, GLint level, GLint x, GLsizei width, GLen
   put_image(w + 6, pixels, n); tc_end();
 }
 void tc_glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
+  if (dbg() >= 3) logf_("glTexSubImage2D 0x%x level %d %d,%d %dx%d format 0x%x", target, level, x, y, width, height, format);
   size_t n = image_bytes(&unpack, width, height, 1, format, type);
   uint32_t *w = tc_begin(8 + image_words(pixels, n), OP_glTexSubImage2D);
   if (!w) return;
@@ -1288,19 +1395,27 @@ static void upload(uint32_t which, uint32_t unit, int64_t offset, const void *p,
   if (!w) return;
   w[0] = which; w[1] = unit; memcpy(w + 2, &offset, 8); tc_put_array(w + 4, p, n); tc_end();
 }
-/* Copies vertices first .. first + count - 1 of every enabled client array to the page. */
-static void upload_arrays(struct tc_ctx *c, int64_t first, int64_t count) {
+/* Copies vertices first .. first + count - 1 of every enabled client array to the page; an instanced
+ * array (glVertexAttribDivisor) its elements 0 .. ceil(instances / divisor) - 1. */
+static void upload_arrays_inst(struct tc_ctx *c, int64_t first, int64_t count, int64_t instances) {
   static const GLenum ff[] = { GL_VERTEX_ARRAY, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_SECONDARY_COLOR_ARRAY, GL_FOG_COORD_ARRAY };
   if (first < 0 || count <= 0) return;
   for (int i = 0; i < CA_N; i++) {
     struct tc_carray *a = &c->arrays[i];
     if (!a->enabled || !a->client) continue;
     size_t elem = element_size(a), stride = a->stride ? (size_t)a->stride : elem;
-    int64_t off = first * (int64_t)stride;
-    size_t n = (size_t)(count - 1) * stride + elem;
+    int64_t from = first, many = count;
+    if (a->divisor) { from = 0; many = (instances + a->divisor - 1) / a->divisor; if (many <= 0) continue; }
+    int64_t off = from * (int64_t)stride;
+    size_t n = (size_t)(many - 1) * stride + elem;
     uint32_t which = i < 16 ? (uint32_t)i : i < CA_TEXCOORD ? ff[i - CA_VERTEX] : GL_TEXTURE_COORD_ARRAY;
     upload(which, i >= CA_TEXCOORD ? (uint32_t)(i - CA_TEXCOORD) : 0, off, a->ptr + off, n);
   }
+}
+static void upload_arrays(struct tc_ctx *c, int64_t first, int64_t count) { upload_arrays_inst(c, first, count, 1); }
+void tc_glVertexAttribDivisor(GLuint index, GLuint divisor) {
+  if (T.ctx && index < 16) T.ctx->arrays[index].divisor = divisor;
+  simple2(OP_glVertexAttribDivisor, index, divisor);
 }
 void tc_glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) {
   set_array(index < 16 ? (int)index : -1, size, type, stride, pointer);
@@ -1367,7 +1482,7 @@ void tc_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
   uint32_t *w = tc_begin(3, OP_glDrawArrays); if (w) { w[0] = mode; w[1] = (uint32_t)first; w[2] = (uint32_t)count; tc_end(); }
 }
 void tc_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst) {
-  if (T.ctx && client_arrays_on(T.ctx)) upload_arrays(T.ctx, first, count);
+  if (T.ctx && client_arrays_on(T.ctx)) upload_arrays_inst(T.ctx, first, count, inst);
   uint32_t *w = tc_begin(4, OP_glDrawArraysInstanced); if (w) { w[0] = mode; w[1] = (uint32_t)first; w[2] = (uint32_t)count; w[3] = (uint32_t)inst; tc_end(); }
 }
 static void index_range(const void *p, GLsizei count, GLenum type, uint32_t *lo, uint32_t *hi) {
@@ -1383,6 +1498,8 @@ static void index_range(const void *p, GLsizei count, GLenum type, uint32_t *lo,
 /* range: the vertices the draw reads when the app said (glDrawRangeElements), else NULL */
 static void draw_elements(unsigned op, GLenum mode, GLsizei count, GLenum type, const void *indices, const uint32_t *extra, int nextra,
                           const uint32_t *range, GLint base) {
+  /* instanced ops carry the instance count first */
+  int64_t instances = op == OP_glDrawElementsInstanced || op == OP_glDrawElementsInstancedBaseVertex ? (int64_t)extra[0] : 1;
   struct tc_ctx *c = T.ctx;
   if (!c || count <= 0) return;
   size_t isize = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
@@ -1401,7 +1518,7 @@ static void draw_elements(unsigned op, GLenum mode, GLsizei count, GLenum type, 
       index_range(tmp, count, type, &lo, &hi);
       free(tmp);
     }
-    if (lo <= hi) upload_arrays(c, (int64_t)lo + base, (int64_t)hi - lo + 1);
+    if (lo <= hi) upload_arrays_inst(c, (int64_t)lo + base, (int64_t)hi - lo + 1, instances);
   }
   if (client_indices) { upload(GL_ELEMENT_ARRAY_BUFFER, 0, 0, indices, n); indices = NULL; }
   uint32_t *w = tc_begin(5 + (size_t)nextra, op);
@@ -1708,6 +1825,8 @@ static Bool make_current(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXCo
     flush();
     if (old != c) { old->bound = 0; T.ctx = NULL; release_context(old); }
   }
+  if (dbg()) logf_("make current: context %u, draw 0x%lx, read 0x%lx (was %u)%s", c ? c->id : 0, (unsigned long)draw, (unsigned long)read, old ? old->id : 0,
+    c && c->bound && old != c ? ": current in another thread" : "");
   if (!c) { T.ctx = NULL; return True; }
   if (c->bound && old != c) return False; /* current in another thread: BadAccess */
   c->bound = 1;
@@ -1728,6 +1847,7 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
   if (w) { w[0] = a[0]; w[1] = a[1]; tc_end(); flush(); }
   else control(0, OP_tcSwapBuffers, a, 2);
   /* throttle: never more than MAX_FRAMES_AHEAD frames ahead of the page */
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   while (sock_fd >= 0 && (int32_t)(frames_sent - frames_acked) > MAX_FRAMES_AHEAD) {
     uint8_t *p = NULL; uint32_t len;
@@ -1736,6 +1856,15 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     free(p);
   }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) {
+    double t1 = now_ms();
+    stat.throttle_ms += t1 - t0;
+    if (!stat.since) stat.since = t1;
+    else if (++stat.swaps == 10) {
+      logf_("10 frames in %.0f ms: %u replies waited %.0f ms, the swap throttle %.0f ms, %u glTexImage2D %.0f ms", t1 - stat.since, stat.replies, stat.reply_ms, stat.throttle_ms, stat.uploads, stat.upload_ms);
+      memset(&stat, 0, sizeof stat); stat.since = t1;
+    }
+  }
 }
 static Bool tc_glXIsDirect(Display *dpy, GLXContext ctx) { (void)dpy; (void)ctx; return True; }
 static void tc_glXCopyContext(Display *dpy, GLXContext src, GLXContext dst, unsigned long mask) { (void)dpy; (void)src; (void)dst; (void)mask; tc_unimplemented("glXCopyContext"); }

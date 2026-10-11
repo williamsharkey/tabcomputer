@@ -299,11 +299,19 @@ export function inPageJobForPid(pid: number): BackgroundJob | undefined {
 }
 /** Signals whose default action doesn't end a process (0, SIGCHLD, SIGCONT, the stops, SIGURG, SIGWINCH) */
 const NON_TERMINATING = new Set([0, 17, 18, 19, 20, 21, 22, 23, 28]);
-/** `kill -SIG` to an in-page job: a terminating signal aborts it and its status becomes 128+SIG */
-export function signalInPageJob(job: BackgroundJob, sig: number): void {
+/**
+ * `kill -SIG` to an in-page job: a terminating signal aborts it and its status
+ * becomes 128+SIG. The abort names the signal, which the job's running kernel
+ * programs get (shell-kernel.ts) rather than a SIGINT; `groupSignalled`: the
+ * kernel already sent it to the job's group (kill -- -PGID), don't again. A
+ * kill of the job alone (`kill $!`) is `processOnly`: jobs the job started in
+ * the background run on, as a subshell's do when it is killed (#63)
+ */
+export function signalInPageJob(job: BackgroundJob, sig: number, groupSignalled = false): void {
   if (NON_TERMINATING.has(sig) || job.status !== 'running') return;
   if (job.ignoresIntQuit && (sig === 2 || sig === 3)) return;
-  job.abortController?.abort();
+  job.abortController?.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'),
+    { signal: sig, groupSignalled: groupSignalled ? job.pid : undefined, processOnly: !groupSignalled }));
   job.status = 'failed';
   job.exitCode = 128 + sig;
   job.signal = sig;
@@ -315,10 +323,10 @@ export function signalInPageJob(job: BackgroundJob, sig: number): void {
 processTable.attachSource({
   list: () => [...inPageJobs.keys()].map((pid) => inPageJobView(pid)!).filter(Boolean),
   get: (pid) => inPageJobView(pid),
-  kill: (pid, sig = 15) => {
+  kill: (pid, sig = 15, opts) => {
     const job = inPageJobs.get(pid);
     if (!job) return false;
-    signalInPageJob(job, sig);
+    signalInPageJob(job, sig, !!opts?.group);
     return true;
   },
 });
@@ -688,6 +696,12 @@ function capturing<T extends object>(term: T, stdout: boolean, stderr: boolean):
 
 /** Builtins that may run a server that never ends: their redirect files are created before they start */
 const STREAM_REDIRECT_CMDS = new Set(['node', 'nodejs', 'npm', 'npx']);
+/**
+ * Commands that run other commands and pass their output on as it comes when given
+ * stream writers (ctx.streamStdout). Not every command: cat follows a /dom event
+ * file for as long as it has one.
+ */
+const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo', 'nohup']);
 
 /** Is fd 2 still the terminal after these redirects? (`stdoutTty`: fd 1 is, before them) */
 function stderrIsTty(redirects: Redirect[], stdoutTty: boolean): boolean {
@@ -920,6 +934,8 @@ export class Shell {
   set options(v: Set<string>) { this._options = this.watchOptions(v); this.syncOptionVars(); }
   /** $BASHPID: 1 (= $$) in the top shell, a new number in each subshell */
   bashPid = 1;
+  /** performance.now() when $SECONDS was 0: this shell's start, or as `SECONDS=n` set it */
+  private secondsBase = performance.now();
   /** $$ (a subshell keeps its parent's) and $PPID */
   shellPid = 1;
   parentPid = 0;
@@ -965,6 +981,12 @@ export class Shell {
   assocArrays: Map<string, Map<string, string>> = new Map();
   /** Trap handlers: signal → command string */
   traps: Map<string, string> = new Map();
+  /**
+   * Signals the programs this shell starts get as ignored (their disposition
+   * SIG_IGN, as an exec keeps it): nohup's SIGHUP (shell-kernel.ts, #61).
+   * A fork and the shells it starts inherit them.
+   */
+  ignoredSignals: Set<number> = new Set();
   /** Shell aliases: name → replacement string */
   aliases: Map<string, string> = new Map();
   /** Namerefs: name → target variable name */
@@ -1029,6 +1051,13 @@ export class Shell {
   /** This shell's $$ is a kernel process (Kernel.forkShell): /proc describes it from the kernel's table */
   kernelPid?: number;
   kernelHost: { kernel: import('./kernel/kernel').Kernel; proc: import('./kernel/process').Process } | null = null;
+  /**
+   * The process group of the background job this shell runs (its pid, $!),
+   * without job control: the kernel programs it starts join it, so a signal to
+   * the job (`kill $!`, `kill -- -$!`) reaches them and nothing else, and the
+   * host shell's group (an agent's sh -c) doesn't (#63). Forks inherit it.
+   */
+  jobPgid?: number;
   /** File descriptors for `read -u FD` and `exec N< file` */
   fileDescriptors: Map<number, { content: string; offset: number }> = new Map();
   /** Coproc state: { name, pid, output } */
@@ -1597,6 +1626,7 @@ export class Shell {
     child.shoptopts = new Set(this.shoptopts);
     child.readonlyVars = new Set(this.readonlyVars);
     child.logicalPwd = this.logicalPwd;
+    child.secondsBase = this.secondsBase;
     child.bashPid = nextInPagePid++;
     child.isSubshell = true;
     child.scriptShell = this.scriptShell; // a subshell of a script is non-interactive too
@@ -1619,6 +1649,7 @@ export class Shell {
     child.traps = new Map([...this.traps].filter(([k, v]) => v === '' ||
       (k === 'ERR' && this.options.has('errtrace')) || (k === 'DEBUG' && this.options.has('functrace'))));
     child.parentTraps = this.trapsModified || !this.parentTraps ? new Map(this.traps) : this.parentTraps;
+    child.ignoredSignals = new Set(this.ignoredSignals);
     child.aliases = new Map(this.aliases);
     child.aliasView = this.aliasView;
     child.namerefs = new Map(this.namerefs);
@@ -1636,6 +1667,7 @@ export class Shell {
     child.errexitSuppressed = this.errexitSuppressed;
     child.inheritedReturn = this.canReturn();
     child.kernelHost = this.kernelHost;
+    child.jobPgid = this.jobPgid;
     child.kernelPid = this.kernelPid;
     child.uid = this.uid;
     child.bootGate = this.bootGate;
@@ -1790,13 +1822,25 @@ export class Shell {
     }
     const abort = new AbortController();
     const outer = this.abortController ?? this.inheritedAbort;
-    const onOuterAbort = () => abort.abort(outer!.signal.reason);
+    // Only a signal sent to the whole group (timeout's SIGTERM, say) reaches the
+    // job. The shell ending (its process's end, `exit`, `kill $$`) leaves it
+    // running, as bash leaves an async list, and so do SIGINT and SIGQUIT: the
+    // job ignores them without job control and has its own group with it (#53)
+    const onOuterAbort = () => {
+      const reason = outer!.signal.reason as { signal?: unknown; processOnly?: boolean } | undefined;
+      const sig = reason?.signal;
+      // (`kill PID` of the shell around it isn't a signal to this job's group, #63)
+      if (typeof sig === 'number' && sig !== 2 && sig !== 3 && !reason?.processOnly) abort.abort(outer!.signal.reason);
+    };
     outer?.signal.addEventListener('abort', onOuterAbort, { once: true });
     child.inheritedAbort = abort;
     // A script or a kernel process's `sh -c` (an agent's) has no job control: the job's stdin
     // is /dev/null (POSIX 2.9.3.1), not the stream the shell reads, and no [N] pid is printed
     const jobControl = this.options.has('monitor') || this.interactiveFlag || (!this.scriptShell && !this.kernelStdio);
-    if (!jobControl) child.kernelStdinLive = false;
+    if (!jobControl) {
+      child.kernelStdinLive = false;
+      child.jobPgid = pid;
+    }
     // A finished job keeps its status for jobs/wait, not its shell or the outer abort's listener
     const ended = () => {
       outer?.signal.removeEventListener('abort', onOuterAbort);
@@ -4801,9 +4845,20 @@ export class Shell {
 
         // Handle stdin redirect (<)
         let stdin = i > 0 ? lastOutput : '';
+        // `timeout N cmd < fifo`: the FIFO is read inside timeout's window (reading it
+        // here first waited for its writer before the clock started)
+        let lazyStdin: (() => Promise<string>) | undefined;
         for (const redir of redirects) {
           if (redir.type === '<') {
+            lazyStdin = undefined;
             if (redir.target === '/dev/null') {
+              stdin = '';
+              continue;
+            }
+            if (effectiveCmdName === 'timeout' && fdOfRef(redir.target) === null && !this.heredocs.lookup(redir.target) &&
+              await fifo.isFifo(this, this.fs.resolvePath(redir.target, this.cwd))) {
+              const target = redir.target;
+              lazyStdin = () => this.readInputRedirect(target);
               stdin = '';
               continue;
             }
@@ -4854,6 +4909,7 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          ...(lazyStdin ? { readFifoStdin: lazyStdin } : {}),
           stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
             // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
             : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
@@ -4987,6 +5043,13 @@ export class Shell {
           !redirects.some(r => r.type === '>' || r.type === '>>' || r.type === '2>' || r.type === '2>>');
         if (mergeErr && !ctx.streamStdout && !ctx.streamStderr) {
           ctx.streamStdout = ctx.streamStderr = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
+        }
+        // The last command, a shell or a wrapper with its output going straight to the
+        // writers: what runs in it gets there as it writes it, not when it ends
+        // (`timeout 90 sh run.sh > log &` left log empty until the end, #53)
+        if (cmd && PASS_THROUGH_CMDS.has(effectiveCmdName) && !live && i === pipeline.length - 1 && !redirects.some(r => r.type !== '<') && !ctx.stdout && !ctx.stderr) {
+          ctx.streamStdout ??= (t) => writeStdout(t.replace(/\r?\n/g, '\r\n'));
+          ctx.streamStderr ??= (t) => stderrWriter(t.replace(/\r?\n/g, '\r\n'));
         }
         if (cmd) {
           try {
@@ -5721,7 +5784,7 @@ export class Shell {
           if (varName === 'BASHPID') { result += String(this.bashPid); i += m[0].length; continue; }
           if (varName === 'BASH_SUBSHELL' && this.env['BASH_SUBSHELL'] === undefined) { result += '0'; i += m[0].length; continue; }
           if (varName === 'LINENO') { result += (this.env['LINENO'] || '1'); i += m[0].length; continue; }
-          if (varName === 'SECONDS') { result += String(Math.floor(performance.now() / 1000)); i += m[0].length; continue; }
+          if (varName === 'SECONDS') { result += this.secondsValue(); i += m[0].length; continue; }
           if (varName === 'EPOCHSECONDS') { result += String(Math.floor(Date.now() / 1000)); i += m[0].length; continue; }
           if (varName === 'EPOCHREALTIME') { const now = Date.now(); result += `${Math.floor(now / 1000)}.${String(now % 1000).padStart(3, '0')}`; i += m[0].length; continue; }
           // Resolve namerefs: if varName is a nameref, follow it
@@ -6354,6 +6417,8 @@ export class Shell {
     // Simple ${VAR}
     const simpleMatch = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)$/);
     if (simpleMatch) {
+      // (the dynamic ones, as $NAME has them: ${RANDOM} ${SECONDS} ${BASHPID} …)
+      if (/^(?:RANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME|BASHPID|PPID|UID|EUID)$/.test(simpleMatch[1])) return this.expandVars('$' + simpleMatch[1]);
       return this.env[simpleMatch[1]] ?? this.scalarOf(simpleMatch[1]) ?? '';
     }
 
@@ -7306,8 +7371,14 @@ export class Shell {
     return n;
   }
 
+  /** $SECONDS: whole seconds since this shell started (or since `SECONDS=n`, plus n) */
+  private secondsValue(): string {
+    return String(Math.floor((performance.now() - this.secondsBase) / 1000));
+  }
+
   /** Value of NAME (element 0 of an array) or NAME[SUB]; undefined if unset */
   getVar(name: string, sub?: string): string | undefined {
+    if (name === 'SECONDS' && (sub === undefined || sub === '0')) return this.secondsValue();
     if (this.namerefs.has(name)) {
       const ref = this.derefName(name);
       if (!ref) return undefined;
@@ -7345,6 +7416,11 @@ export class Shell {
       name = ref.name;
     }
     if (this.readonlyVars.has(name)) return `${name}: readonly variable`;
+    // SECONDS=n: counts on from n (bash takes the value's leading integer)
+    if (name === 'SECONDS' && (sub === undefined || sub === '0')) {
+      this.secondsBase = performance.now() - (parseInt(value, 10) || 0) * 1000;
+      return null;
+    }
     const attrs = this.varAttrs.get(name);
     if (attrs) {
       if (attrs.has('i')) {

@@ -4,6 +4,47 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/perf-kernel)** — additive: per-socket SO_SNDBUF / SO_RCVBUF (KSocket: AF_UNIX and loopback/relay TCP).
+  - setsockopt(SO_SNDBUF, v) sets max(min(v, wmem_max) * 2, 4608), as Linux
+    does; SO_RCVBUF the same with rmem_max and 2304; SO_SNDBUFFORCE (32) and
+    SO_RCVBUFFORCE (33) skip the max (up to 64 MiB). getsockopt returns the
+    doubled value. wmem_max/rmem_max are 8 MiB (`/proc/sys/net/core/*`), so a
+    socket can queue 16 MiB. The default stays the stack's 256 KiB.
+  - An AF_UNIX write blocks (POLLOUT clears) at the writer's own send buffer;
+    raising it wakes a blocked writer. A datagram larger than it is EMSGSIZE.
+    accept() connections start with the listener's sizes.
+
+- **2026-10-11 (unix/perf-kernel)** — behavior fix: a Blink engine that dies ends its processes with a signal.
+  - A worker error ends the guest with SIGSEGV (a wasm trap, any engine error)
+    or SIGABRT (an abort), instead of exit status 1; a worker that ends without
+    the kernel ending it (Node's 'exit') with SIGKILL. The children it hosted
+    (same-instance fork) die of the same signal.
+  - `blink-abort`: the guest's exit_group that follows ends it with SIGABRT
+    (`proc.data.crashSignal`); if none comes within a second (an abort in
+    another engine thread, or one that wedges), the kernel ends it with SIGABRT.
+    A fork child that died in Blink before exec used to stay running, and its
+    parent's wait4 hung.
+
+- **2026-10-11 (unix/perf-kernel)** — behavior fixes.
+  - F_GETFL and /proc/PID/fdinfo leave out open-only flags (O_CREAT, O_EXCL,
+    O_NOCTTY, O_TRUNC: `O_OPEN_ONLY`), as Linux does. A /dev/tty description
+    (opened O_NOCTTY inside) showed O_NOCTTY.
+  - stat("/dev/tty") finds the node (crw-rw-rw-, gid tty, 5,0) when opening it
+    would fail: ENXIO without a controlling terminal, EIO once the terminal closed.
+
+- **2026-10-11 (unix/perf-kernel)** — additive: the kernel profiler (src/kernel/profiler.ts).
+  - `Kernel.startProfile({pids?, follow?, filter?, paths?, bucketMs?, keys?})`
+    attaches one (`kernel.profiler`), `Kernel.stopProfile()` detaches it
+    and returns its report: per syscall calls, errors, sync-path share,
+    kernel CPU and wall µs, the slowest call and its args, waits by timeout;
+    per descriptor kind (`read:pty`), per path, per process, a timeline, and
+    per engine thread the time between calls (computing or asleep), per keystroke (through the ptys) input → the guest's read → its writes
+    back. Off, each syscall entry pays one null check.
+  - `strace -c [-f] PROG` / `strace -c -p PID [--duration=S]` print it
+    (`--json` for the report itself); `strace -p PID` traces a running process.
+  - pread64/pwrite64 of a regular file whose pages are in memory take the
+    sync path (`OpenFile.tryPread`/`tryPwrite`).
+
 - **2026-10-10 (unix/perf-kernel)** — additive: shared objects (src/kernel/shmobj.ts).
   - `shiro_shmobj_map` 1020 `(fd | shmid, kind, lenLo, lenHi)` → id; data
     i32 = 1 when remote. kind 0: a /dev/shm or /run/shm file, or a memfd;

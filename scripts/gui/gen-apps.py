@@ -114,6 +114,12 @@ APPS = {
 # Kept whenever they are in the closure: glibc dlopens libgcc_s; fontconfig needs /etc/fonts.
 ALWAYS = {'libgcc-s1', 'fontconfig-config'}
 
+# A library that embeds an interpreter needs that interpreter's runtime, which SKIP leaves out (it's there to keep
+# python3/perl for maintainer scripts away): the packages, and globs whose ELF libraries are kept like plug-ins'.
+# Blender links libpython3.11 and failed with "init_fs_encoding ... No module named 'encodings'" without its stdlib.
+# (libpurple0's libperl5.36 is only for Pidgin's optional Perl plug-in loader, so it isn't here.)
+EMBEDS = {'libpython3.11': (['libpython3.11-minimal', 'libpython3.11-stdlib'], ['usr/lib/python3.11/lib-dynload/*.so'])}
+
 # Plug-ins kept only when the startup set already has their libraries; the
 # others are deleted at install (GIMP queries every plug-in on first start).
 # Settings written into the user's home before a launch, when the file isn't there
@@ -174,6 +180,22 @@ def closure(db, prov, roots):
                 if alt: todo.append(alt.split('|')[0].strip().split(' ')[0].split(':')[0])
     return seen
 
+
+def c_utf8_tar(deb):
+    """/usr/lib/locale/C.utf8 out of a libc-bin .deb, as a tar overlay (same bytes on every run)"""
+    import io, tarfile, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run(['dpkg-deb', '-x', deb, d], check=True)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w', format=tarfile.USTAR_FORMAT) as tar:
+            base = os.path.join(d, 'usr/lib/locale/C.utf8')
+            for root, dirs, files in sorted(os.walk(base)):
+                dirs.sort()
+                for f in sorted(files):
+                    full = os.path.join(root, f)
+                    ti = tarfile.TarInfo(os.path.relpath(full, d)); ti.size = os.path.getsize(full); ti.mode = 0o644
+                    with open(full, 'rb') as fh: tar.addfile(ti, fh)
+        return buf.getvalue()
 
 def fetch(db, name, cache):
     fn = db[name]['Filename']
@@ -274,32 +296,37 @@ def main():
     for app, (roots, bins, plugins, extra, desc, kind) in APPS.items():
         # GTK icon themes (Adwaita's symbolic icons, GIMP's theme) are SVG: their pixbuf loader comes too
         if kind in ('gtk2', 'gtk3') and 'librsvg2-common' not in extra: extra = extra + ['librsvg2-common']
-        names = closure(db, prov, roots + extra)
-        root = os.path.join(work, app)
-        shutil.rmtree(root, ignore_errors=True)
-        os.makedirs(root)
-        owner = {}
-        for n in names:
-            for f in unpack(fetch(db, n, cache), root):
-                owner.setdefault(f, n)
-        # ELF closure
-        import glob
-        links = {}
-        starts = [b.lstrip('/') for b in bins]
-        for g in plugins:
-            starts += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, g))]
-        need, seen_files, todo = set(), set(), list(starts)
-        while todo:
-            f = todo.pop()
-            if f in seen_files: continue
-            seen_files.add(f)
-            real = os.path.realpath(os.path.join(root, f))
-            rel = os.path.relpath(real, root)
-            for p in (f, rel):
-                if p in owner: need.add(owner[p])
-            for lib in needed(real):
-                hit = resolve(root, rel, lib, links)
-                if hit: todo.append(hit)
+        # (a second pass when a kept library embeds an interpreter: EMBEDS)
+        for _ in range(2):
+            names = closure(db, prov, roots + extra)
+            root = os.path.join(work, app)
+            shutil.rmtree(root, ignore_errors=True)
+            os.makedirs(root)
+            owner = {}
+            for n in names:
+                for f in unpack(fetch(db, n, cache), root):
+                    owner.setdefault(f, n)
+            # ELF closure
+            import glob
+            links = {}
+            starts = [b.lstrip('/') for b in bins]
+            for g in plugins:
+                starts += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, g))]
+            need, seen_files, todo = set(), set(), list(starts)
+            while todo:
+                f = todo.pop()
+                if f in seen_files: continue
+                seen_files.add(f)
+                real = os.path.realpath(os.path.join(root, f))
+                rel = os.path.relpath(real, root)
+                for p in (f, rel):
+                    if p in owner: need.add(owner[p])
+                for lib in needed(real):
+                    hit = resolve(root, rel, lib, links)
+                    if hit: todo.append(hit)
+            more = [(pkgs, globs) for lib, (pkgs, globs) in EMBEDS.items() if lib in need and not set(pkgs) <= set(extra)]
+            if not more: break
+            for pkgs, globs in more: extra, plugins = extra + pkgs, plugins + globs
         # Data packages (Architecture: all) only when a kept package depends on them
         core = {n for n in names if n in need or n in roots or n in extra or n in ALWAYS}
         def deps(n):
@@ -419,6 +446,14 @@ def main():
         h = hashlib.sha256(data).hexdigest()
         open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
         overlays.append({'path': '/', 'tar': True, 'sha256': h, 'size': len(data), 'when': 'ca-certificates'})
+    # The C.UTF-8 locale (LANG of every app, src/gui/apps.ts appEnv): glibc loads it from
+    # /usr/lib/locale/C.utf8, which Debian ships in libc-bin (skipped: its tools aren't
+    # needed). Without it setlocale fails and GTK warns "Locale not supported by C library".
+    if any('libc6' in a['packages'] for a in apps.values()):
+        data = c_utf8_tar(fetch(db, 'libc-bin', cache))
+        h = hashlib.sha256(data).hexdigest()
+        open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
+        overlays.append({'path': '/', 'tar': True, 'sha256': h, 'size': len(data), 'when': 'libc6'})
     # gdk-pixbuf's loaders.cache for libgdk-pixbuf-2.0-0's own loaders (the only
     # ones any app here has): gdk-pixbuf-query-loaders dlopen()s each loader, so
     # it is made in Blink (`gui install gpicview`, then copy

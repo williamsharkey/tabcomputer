@@ -125,6 +125,7 @@ class Compiler {
     };
     for (const b of this.prog.begin) b.forEach((s) => st(s, null));
     for (const b of this.prog.end) b.forEach((s) => st(s, null));
+    for (const b of [...this.prog.beginfile, ...this.prog.endfile]) b.forEach((s) => st(s, null));
     for (const r of this.prog.rules) {
       ex(r.pattern, null);
       ex(r.pattern2, null);
@@ -558,7 +559,7 @@ class Compiler {
         const arr = this.arrRef(s.arr);
         const k = this.fn.temp();
         const l = this.lval(s.v);
-        return `for (const ${k}_ of [...${arr}.keys()]) {\nif (!${arr}.has(${k}_)) continue;\n${this.seq([...l.setup, l.set(`new SNc(${k}_)`)])};\n${this.stmt(s.body)}\n}`;
+        return `for (const ${k}_ of rt.forinKeys(${arr})) {\nif (!${arr}.has(${k}_)) continue;\n${this.seq([...l.setup, l.set(`new SNc(${k}_)`)])};\n${this.stmt(s.body)}\n}`;
       }
       case 'break': return 'break;';
       case 'continue': return 'continue;';
@@ -601,6 +602,12 @@ class Compiler {
     out.push(this.genFunction('BEGIN_', [], null, true, () => this.stmts(beginBody)));
     const endBody = this.prog.end.flat();
     out.push(this.genFunction('END_', [], null, true, () => this.stmts(endBody)));
+    const beginfileBody = this.prog.beginfile.flat();
+    const endfileBody = this.prog.endfile.flat();
+    out.push(this.genFunction('BEGINFILE_', [], null, true, () => this.stmts(beginfileBody)));
+    out.push(this.genFunction('ENDFILE_', [], null, true, () => this.stmts(endfileBody)));
+    if (beginfileBody.length) out.push('rt.beginFile = BEGINFILE_;');
+    if (endfileBody.length) out.push('rt.endFile = ENDFILE_;');
     const rangeDecls: string[] = [];
     out.push(this.genFunction('MAIN_', [], null, true, () => this.prog.rules.map((r) => {
       const action = r.action ? this.stmts(r.action) : 'rt.out(rt.get0().s + S(rt.ORS));';
@@ -631,7 +638,7 @@ class Compiler {
       cases.push(sp === 'NF' ? `case "NF": rt.setNF(v); return;` : `case ${JSON.stringify(sp)}: rt.${sp} = v; return;`);
     }
     head.push(`rt.assignVar = (name, v) => { switch (name) { ${cases.join(' ')} } };`);
-    const hasMain = this.prog.rules.length > 0;
+    const hasMain = this.prog.rules.length > 0 || this.prog.beginfile.length > 0 || this.prog.endfile.length > 0;
     const hasEnd = this.prog.end.length > 0;
     const source = `${head.join('\n')}\n${out.join('\n')}\nreturn { begin: BEGIN_, main: MAIN_, end: END_, hasMain: ${hasMain}, hasEnd: ${hasEnd} };`;
     return { source, globals: scalars };

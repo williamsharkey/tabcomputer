@@ -446,6 +446,20 @@ export class JobControl {
       targets = this.group(-pid);
     }
     targets = targets.filter((p) => p.runState !== 'zombie' || pid > 0);
+    // An in-page background job leads the group its kernel programs run in
+    // (shell.ts executeBackground): `kill -TERM -- -PID` from any shell (an
+    // agent's next sh -c) reaches it through the process table, as kernel.kill does (#63)
+    if (pid < -1 && !this.procs.has(-pid)) {
+      const leader = processTable.get(-pid);
+      if (leader && leader.status === 'running') {
+        if (sig !== 0) {
+          for (const p of targets) this.send(p, sig);
+          // (its programs have it now: the job only ends, it doesn't signal them again)
+          processTable.kill(-pid, sig, { group: true });
+        }
+        return 0;
+      }
+    }
     if (targets.length === 0) return -ESRCH;
     for (const p of targets) this.send(p, sig);
     return 0;
@@ -836,7 +850,11 @@ function kernelTarget(kernel: Kernel, proc: Process, jc: JobControl): SignalTarg
       const t = jc.get(proc.pid);
       if (t) t.signals.pending = sigset.del(t.signals.pending, sig);
       const info = proc.data.sigInFlight as SigInfo | undefined;
-      proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      // (the pending setter queued this instance already when the signal was
+      // pending before it: another real-time instance, not taken yet)
+      if (!(info?.signo === sig && proc.siginfo.get(sig)?.includes(info))) {
+        proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      }
       proc.pendingSignals.add(sig);
       proc.interruptSyscalls();
       (proc.data.onSignal as ((s: number) => void) | undefined)?.(sig);
@@ -892,3 +910,11 @@ export function attachKernel(kernel: Kernel, jc: JobControl = jobControl): () =>
 export function targetOf(proc: Process, jc: JobControl = jobControl): SignalTarget | undefined {
   return jc.get(proc.pid);
 }
+
+/**
+ * The event `timeout` dispatches on its AbortSignal when its time is up but
+ * the signal was aborted already (by the shell around it, #53): abort() can't
+ * fire twice, so the job's handler (shell-kernel.ts) hears this instead. Its
+ * detail is the abort reason's { signal, killAfter }.
+ */
+export const TIMEOUT_EXPIRED_EVENT = 'tabcomputer-timeout-expired';

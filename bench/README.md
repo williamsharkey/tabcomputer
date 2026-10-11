@@ -14,7 +14,7 @@ Options for `node bench/run.mjs`:
 |---|---|
 | `--quick` | fewer/lighter metrics; isolated mode plus the non-isolated kernel suite |
 | `--runs N` | samples per metric (default 5; boot uses 3 in `--quick`) |
-| `--suites a,b` | default `boot shell kernel wasm x86 net node hygiene workloads workflows`; optional `debian x86first workloads-slow toolchains` |
+| `--suites a,b` | default `boot shell kernel wasm x86 net node hygiene workloads workflows`; optional `debian x86first workloads-slow toolchains perfbench claude` |
 | `--modes isolated,nonisolated` | cross-origin isolated (SAB, Workers, Blink) and/or the fallbacks |
 | `--only re1,re2` | only metrics whose name matches |
 | `--skip re1,re2` | leave out metrics (or `h.try` groups) whose name matches, e.g. `--quick --skip workflow.go,workflow.apt` |
@@ -68,6 +68,57 @@ JS: handy for poking at something a benchmark flagged.
   `bench/.cache/fixtures/ld-musl-x86_64.so.1`; `claude install --native`
   inside tabcomputer fetches the same two files (src/commands/claude-native.ts).
   Without them the metric is recorded as skipped with that note.
+- `node bench/claude-profile.mjs [--keys N] [--out f.json] [--cpu-profile DIR]`
+  (same two fixtures; not part of `run.mjs`): the kernel profile
+  (`src/kernel/profiler.ts`, what `strace -c` prints) of native Claude Code
+  starting (`claude` → its input box, against a local stand-in for
+  api.anthropic.com over the relay) and echoing N keystrokes, with
+  keypress → drawn latency and, per key, pty input → the guest's read →
+  its writes back. `--cpu-profile` also saves the page's main-thread CPU
+  profile of each phase.
+
+## Native Claude Code, interactive (`claude`)
+
+Opt-in: `node bench/run.mjs --suites claude --modes isolated --no-gh` (about
+15 min per round; `--runs 1` for one). Needs the two native fixtures above
+(`bench/.cache/fixtures/claude-native`, `ld-musl-x86_64.so.1`). Each round
+is a fresh profile with the binary copied in, `~/.claude.json` seeded
+(onboarding done, the key approved, `~/w` trusted, so no dialogs), and
+`claude --native` typed at the real terminal of `/?ui=terminal`. The model
+is the mock Messages API (`lib/mockmodel.mjs`) that `run.mjs` starts on this
+machine's address and adds to the relay's ports; native Claude reaches it
+through server.mjs's TCP relay.
+
+Times are taken in the page with `performance.now()`, from the
+`term.input()` that types the key to the xterm buffer showing its effect
+(`onWriteParsed`), and, in each `.frame` twin, to the end of the animation
+frame that paints it. A key counts as echoed when a line holding Claude's
+input mark (`❯` or `>`, also inside a `│` box) starts with every key typed so
+far, so the same letter elsewhere on screen doesn't count. agent-clis and
+perf-kernel use the same definitions.
+
+| metric | from → to |
+|---|---|
+| `claude_native.start.cold.first_screen` | Enter on `claude` (first launch in the profile) → Claude's first output |
+| `claude_native.start.cold.prompt` | Enter → the idle prompt (`❯` and the shortcuts hint) |
+| `claude_native.start.warm.*` | the same for the second launch in the same page |
+| `claude_native.start.next.*`, `rss_at_prompt.next`, `exit.next` | the next session: the page reloaded on the same storage (installed, extracted, nothing in memory), then a launch: what users get from their second session on |
+| `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
+| `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
+| `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |
+| `claude_native.echo.stage.{read,compute,render}.*` | the same keys split by the kernel's pty trace (`kernel.startProfile()`, Build 975+; left out on older builds): pty input → Claude's `read`, → the write holding the key (`echoMs`; the first write of any kind on builds without it), → the echo matched |
+| `claude_native.echo_burst.total` | 10 keys typed at once → the last echoed |
+| `claude_native.turn` | Enter on a prompt → the streamed mock reply |
+| `claude_native.exit.{cold,warm}` | `/exit` Enter → the shell's prompt line back (then a marker the shell prints confirms it reads input); `exit_hung.*` counts launches still running after 120 s, which the suite kills from a side shell to go on |
+| `claude_npm.*` | the same for `claude --npm` (installed before the round) |
+| `claude_vm.*` | the same for `claude --vm` (the native build's JavaScript on the page's engine); `claude_vm.extract` is the first `claude --vm --version` of the profile, the one-time extraction from the binary, kept out of the start times |
+
+`claude_native.native.*` runs the same binary on this machine's Linux in a
+pty (`lib/native-pty.py`; needs musl's loader at `/lib/ld-musl-x86_64.so.1`,
+`apt-get install musl` or a copy of the fixture): exec → first output, exec
+→ prompt, and key written → key read back from the pty (no terminal
+emulator in that path). Change the key sequence or the gap only together
+with the native script's, so both sides stay comparable.
 
 ## User workflows (`workflows`, in quick and full runs)
 
@@ -132,10 +183,12 @@ then the same binary natively on this machine, `--runs` times each:
 
 In `--quick`: all but `messaging`. Counts are picked by pbench so a run
 takes about `PBENCH_MS` (500) ms, guest clock. Full runs add
-`x86.blink_direct.*` (Blink's direct kernel channels,
-`TABCOMPUTER_BLINK_DIRECT=1`) and `x86.native.pipe_pingpong_1cpu` (pinned
+`x86.blink_pool.*` (Blink's pool channels only, `TABCOMPUTER_BLINK_DIRECT=0`;
+`x86.blink.*` is the default, direct channels; before Build 975 the full run's
+extra rows were `x86.blink_direct.*`, direct channels opted in) and `x86.native.pipe_pingpong_1cpu` (pinned
 with `taskset -c 0`). WASI equivalents: `kernel.syscall_rtt.sab` (fstat
-round trip), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
+round trip), `kernel.pipe_pingpong` (kbench `ping` ↔ `pong`, two kernel
+pipes), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
 `kernel.spawn_wait.wasm` (no fork in WASI).
 
 Native numbers on a VM depend on what else runs: an idle vCPU woken by a
@@ -258,8 +311,9 @@ node bench/ab.mjs origin/unix/integration --quick          # integration vs your
 ## Fixtures
 
 - `fixtures/kbench.c` → `kbench.wasm` (committed; `sh fixtures/build.sh`):
-  freestanding WASI program for syscall loops, pipe and file throughput and a
-  CPU loop, and `memcpy` (memory.copy). It times itself with
+  freestanding WASI program for syscall loops, pipe and file throughput, a
+  pipe ping-pong (`ping`/`pong`, joined both ways by `B.pingPong`), a CPU
+  loop, and `memcpy` (memory.copy). It times itself with
   `clock_time_get`, which the guest answers without a syscall.
 - x86: Go hello / net/http from `tests/.../fixtures/x86`, the Go cpuloop from
   `vendor/blink/bench`, a static glibc hello and pbench (rebuilt when

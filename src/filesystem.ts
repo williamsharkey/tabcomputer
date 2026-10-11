@@ -502,6 +502,11 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/stat': () => 'cpu  0 0 0 0 0 0 0 0 0 0\n',
     '/proc/filesystems': () => 'nodev\trootfs\n',
     '/proc/sys/kernel/pid_max': () => '4194304\n',
+    // socket buffer limits (src/kernel/abi.ts WMEM_MAX and the like; SO_SNDBUF doubles what it's given)
+    '/proc/sys/net/core/wmem_max': () => `${8 << 20}\n`,
+    '/proc/sys/net/core/rmem_max': () => `${8 << 20}\n`,
+    '/proc/sys/net/core/wmem_default': () => '212992\n',
+    '/proc/sys/net/core/rmem_default': () => '212992\n',
     '/proc/sys/fs/pipe-max-size': () => '1048576\n',
     '/proc/sys/fs/pipe-user-pages-soft': () => '16384\n',
     '/proc/sys/fs/pipe-user-pages-hard': () => '0\n',
@@ -744,9 +749,15 @@ export class FileSystem {
     return this.virtualProviders.some((vp) => vp.handles(path));
   }
 
-  /** st_ino of the node at canonical `path` (see FSNode.ino); the node is normally cached (just stat'ed). */
+  /**
+   * st_ino of the node at canonical `path` (see FSNode.ino); the node is normally cached (just stat'ed).
+   * A node whose bytes left memory keeps its number in `_meta`, and a linked file's name in `_links`:
+   * without them stat and fstat disagreed once the content cache had swept (GNU cp: "skipping file …,
+   * as it was replaced while being copied", in mkinitramfs's thousands of modules).
+   */
   inoOf(path: string): number {
-    return this.cache.get(path)?.ino ?? pathIno(path);
+    const node = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
+    return node?.ino ?? this._links.get(path) ?? pathIno(path);
   }
 
   /** Give the node at canonical `path` inode number `ino` (link(), which copies, makes the copy share its source's). */
@@ -1515,10 +1526,16 @@ export class FileSystem {
     this._queue(key, bytes && { path: key, type: 'file', content: bytes, mode: 0, mtime: 0, ctime: 0, size: bytes.length });
   }
 
-  /** Queue `content` as blob `id`'s blocks (copies: IndexedDB clones a view's whole buffer). */
+  /**
+   * Queue `content` as blob `id`'s blocks: views of it, which the commit
+   * copies one at a time as it puts them (storableNode: IndexedDB clones a
+   * view's whole buffer), within its time slices. Copying them here was one
+   * task for the whole file: ~15 ms for a 44 MB tar archive (#19). `content`
+   * is not modified after (file content never is).
+   */
   private _queueBlocks(id: string, content: Uint8Array): void {
     const B = FileSystem.BLOCK;
-    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), copyBytes(content, off, off + B));
+    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), content.subarray(off, off + B));
   }
 
   /**
@@ -1988,7 +2005,14 @@ export class FileSystem {
 
   /** st_nlink of the cached node at canonical `path`. */
   nlinkOf(path: string): number {
-    return this.cache.get(path)?.nlink ?? 1;
+    // As inoOf: a swept node is in _meta, a swept hard link only in _links (count its names there)
+    const node = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
+    if (node?.nlink !== undefined) return node.nlink;
+    const ino = node ? undefined : this._links.get(path);
+    if (ino === undefined) return 1;
+    let n = 0;
+    for (const v of this._links.values()) if (v === ino) n++;
+    return Math.max(1, n);
   }
 
   /** All names of the file at canonical `path` (just `path` without links). */
@@ -2099,28 +2123,31 @@ export class FileSystem {
    */
   private _canonDirs = new Map<string, string>();
 
-  private _lookupWalk(path: string, follow: boolean): { path: string; node: FSNode } | null | undefined {
+  private _lookupWalk(path: string, follow: boolean, hops = { n: 0 }): { path: string; node: FSNode } | null | undefined {
     // Symlinks in directory components are followed, as _canon does
     const parts = path.split('/').filter(Boolean);
     let cur = '';
-    let hops = 0;
     for (let i = 0; i < parts.length; i++) {
       if (parts[i] === '.' || parts[i] === '..') { cur = this.resolvePath(`${cur}/${parts[i]}`, '/'); continue; }
-      let next = `${cur}/${parts[i]}`;
+      const next = `${cur}/${parts[i]}`;
       const last = i === parts.length - 1;
-      for (;;) {
-        const node = this._getCached(next);
-        if (!node) return node; // missing (null) or unknown here (undefined)
-        if (node.type !== 'symlink' || (last && !follow)) {
-          if (last) return { path: next, node };
-          if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
-          break;
-        }
-        if (++hops > 40) return undefined;
-        const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
-        next = target.startsWith('/') ? this.resolvePath(target, '/') : this.resolvePath(target, cur || '/');
+      const node = this._getCached(next);
+      if (!node) return node; // missing (null) or unknown here (undefined)
+      if (node.type !== 'symlink' || (last && !follow)) {
+        if (last) return { path: next, node };
+        if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
+        cur = next;
+        continue;
       }
-      cur = next;
+      if (++hops.n > 40) return undefined;
+      // the target is walked like any path, relative to the link's own directory: it may be another
+      // link (liblapack.so.3 → /…/lapack/liblapack.so.3 → liblapack.so.3.11.0) or pass through linked directories
+      const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
+      const r = this._lookupWalk(target.startsWith('/') ? target : this.resolvePath(target, cur || '/'), true, hops);
+      if (!r) return r;
+      if (last) return r;
+      if (r.node.type !== 'dir') return undefined;
+      cur = r.path === '/' ? '' : r.path;
     }
     const root = this._getCached('/');
     return root ? { path: '/', node: root } : root;

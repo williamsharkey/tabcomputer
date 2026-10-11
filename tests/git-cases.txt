@@ -1,0 +1,253 @@
+# Agent-style git sessions, run with git-cases-prelude.sh (r: a repo of the fixture files, one commit)
+git init -q -b main; echo $?; ls -A | grep -c .git
+git init -b main | sed 's|/.*/|/X/|'
+git status; echo $?
+r; git status
+r; git status --porcelain
+r; git status -s
+r; echo x >> a.txt; git status
+r; echo x >> a.txt; git status -s
+r; echo x >> a.txt; git status --porcelain
+r; echo x >> a.txt; echo n > new.txt; git status --porcelain
+r; echo x >> a.txt; echo n > new.txt; git status -s
+r; echo x >> a.txt; echo n > new.txt; git status
+r; echo x >> a.txt; git add a.txt; git status --porcelain
+r; echo x >> a.txt; git add a.txt; git status
+r; echo x >> a.txt; git add a.txt; echo y >> a.txt; git status -s
+r; rm a.txt; git status --porcelain
+r; rm a.txt; git status
+r; git rm -q a.txt; git status --porcelain
+r; mkdir d; echo n > d/f; git status --porcelain
+r; mkdir d; echo n > d/f; git status --porcelain -uall
+r; git status -sb
+r; git status --porcelain=v1 -b
+r; git status --short --branch
+r; echo x >> a.txt; git diff
+r; echo x >> a.txt; git diff --stat
+r; echo x >> a.txt; git diff --name-only
+r; echo x >> a.txt; git diff --name-status
+r; echo x >> a.txt; git diff --numstat
+r; echo x >> a.txt; git diff --shortstat
+r; echo x >> a.txt; git add a.txt; git diff; echo ---; git diff --cached
+r; echo x >> a.txt; git add a.txt; git diff --staged --stat
+r; echo x >> a.txt; git diff --quiet; echo $?
+r; git diff --quiet; echo $?
+r; echo x >> a.txt; git diff --exit-code > /dev/null; echo $?
+r; echo x >> a.txt; git commit -qam two; git diff HEAD~1
+r; echo x >> a.txt; git commit -qam two; git diff HEAD~1 --stat
+r; echo x >> a.txt; git commit -qam two; git diff HEAD~1 HEAD --name-only
+r; echo x >> a.txt; git commit -qam two; git diff HEAD^ -- a.txt
+r; echo x >> a.txt; git diff -U1
+r; echo x >> a.txt; git diff -- b.csv
+r; sed -i 's/apple/APPLE/' a.txt; git diff
+r; echo new > new.txt; git add new.txt; git diff --cached
+r; git rm -q b.csv; git diff --cached --stat
+r; git mv a.txt z.txt; git status --porcelain
+r; git log
+r; git log --oneline
+r; echo x >> a.txt; git commit -qam two; git log --oneline
+r; echo x >> a.txt; git commit -qam two; git log --oneline -1
+r; echo x >> a.txt; git commit -qam two; git log -n 1
+r; echo x >> a.txt; git commit -qam two; git log --format='%H %an %ae %s'
+r; echo x >> a.txt; git commit -qam two; git log --format='%h|%ad|%cd' --date=iso
+r; echo x >> a.txt; git commit -qam two; git log --pretty=format:'%h %s'
+r; echo x >> a.txt; git commit -qam two; git log --pretty=oneline
+r; echo x >> a.txt; git commit -qam two; git log --stat
+r; echo x >> a.txt; git commit -qam two; git log -p -1
+r; echo x >> a.txt; git commit -qam two; git log --oneline --graph
+r; echo x >> a.txt; git commit -qam two; git log --oneline -- b.csv
+r; echo x >> a.txt; git commit -qam two; git log --name-only --oneline
+r; echo x >> a.txt; git commit -qam two; git log --format=%s --reverse
+r; echo x >> a.txt; git commit -qam two; git log --oneline --decorate
+r; git log --format='%an <%ae>%n%B'
+r; git log --format=%ct
+r; git log --date=short --format=%ad
+r; git log --format='%ar' | wc -l
+r; git show
+r; git show --stat
+r; git show --name-only
+r; git show --oneline -s
+r; git show HEAD:a.txt
+r; git show --format=%H -s
+r; echo x >> a.txt; git commit -qam two; git show HEAD~1 --stat
+r; git add -A; echo $?
+r; echo x >> a.txt; echo n > n.txt; git add -u; git status -s
+r; echo x >> a.txt; echo n > n.txt; git add -A; git status -s
+r; echo n > n.txt; git add .; git status -s
+r; git add nosuch; echo $?
+r; echo x >> a.txt; git commit -m two
+r; echo x >> a.txt; git commit -am two
+r; echo x >> a.txt; git commit -am two -q; echo $?
+r; git commit -m nothing; echo $?
+r; git commit --allow-empty -m empty
+r; echo x >> a.txt; git commit -am two -m body; git log -1 --format=%B
+r; git commit --amend -m renamed; git log --oneline
+r; echo x >> a.txt; git add a.txt; git commit --amend --no-edit -q; git log --oneline; git show --stat --format=%s
+r; git branch
+r; git branch feat; git branch
+r; git branch feat; git branch -v
+r; git branch --show-current
+r; git checkout -b feat
+r; git checkout -q -b feat; git branch
+r; git switch -c feat
+r; git switch -c feat -q; git switch main
+r; git checkout -b feat -q; git checkout main
+r; git checkout nosuch; echo $?
+r; git switch nosuch; echo $?
+r; git branch feat; git branch -d feat
+r; git branch feat; git branch -D feat
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; git branch -d feat; echo $?
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; git merge feat
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; git merge -q feat; git log --oneline
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; git merge --no-ff -m merged feat >/dev/null; git log --oneline --graph
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> b.csv; git commit -qam m; git merge feat -m merged; git log --oneline
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; git merge feat; echo $?
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; git merge feat >/dev/null; git status --porcelain
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; git merge feat >/dev/null; tail -5 a.txt
+r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; git merge feat >/dev/null; git merge --abort; git status --porcelain; tail -1 a.txt
+r; git merge nosuch; echo $?
+r; echo x >> a.txt; git stash; git status --porcelain
+r; echo x >> a.txt; git stash -q; git stash list
+r; echo x >> a.txt; git stash push -m wip -q; git stash list; git stash pop -q; git status --porcelain
+r; echo x >> a.txt; git stash -q; git stash pop
+r; git stash; echo $?
+r; echo n > n.txt; git stash -u -q; ls n.txt; git stash pop -q; ls n.txt
+r; echo x >> a.txt; git stash -q; git stash show
+r; echo x >> a.txt; git stash -q; git stash drop
+r; echo x >> a.txt; git restore a.txt; git status --porcelain
+r; echo x >> a.txt; git add a.txt; git restore --staged a.txt; git status --porcelain
+r; echo x >> a.txt; git checkout -- a.txt; git status --porcelain
+r; echo x >> a.txt; git checkout a.txt; git status --porcelain
+r; echo x >> a.txt; git commit -qam two; git reset --soft HEAD~1; git status --porcelain; git log --oneline
+r; echo x >> a.txt; git commit -qam two; git reset --hard HEAD~1; git status --porcelain
+r; echo x >> a.txt; git commit -qam two; git reset -q HEAD~1; git status --porcelain
+r; echo x >> a.txt; git add a.txt; git reset; git status --porcelain
+r; echo x >> a.txt; git add a.txt; git reset -q a.txt; git status --porcelain
+r; echo x >> a.txt; git reset --hard; git status --porcelain
+r; git rev-parse HEAD
+r; git rev-parse --short HEAD
+r; git rev-parse --abbrev-ref HEAD
+r; git rev-parse --is-inside-work-tree
+rev() { git rev-parse --is-inside-work-tree; }; rev; echo $?
+r; git rev-parse --git-dir
+r; mkdir -p src/sub; cd src/sub; git rev-parse --show-prefix; git rev-parse --show-cdup
+r; git rev-parse HEAD~1; echo $?
+r; git rev-parse --verify HEAD >/dev/null; echo $?
+r; git rev-parse main
+r; git ls-files
+r; git ls-files src
+r; echo n > n.txt; git ls-files --others --exclude-standard
+r; echo x >> a.txt; git ls-files -m
+r; git ls-files -s | head -2
+r; git ls-files '*.ts'
+r; git blame a.txt | head -3
+r; git blame -L 1,2 a.txt
+r; git blame --porcelain a.txt | head -3
+r; git tag v1; git tag
+r; git tag -a v1 -m rel; git tag -n
+r; git tag v1; git tag v2; git tag -l 'v*'
+r; git tag v1; git describe --tags
+r; git tag -a v1 -m rel; git describe
+r; git tag v1; git show v1 --stat --format=%s
+r; git tag v1; git tag -d v1
+r; git remote -v
+r; git remote add origin https://example.com/x.git; git remote -v
+r; git remote add origin https://example.com/x.git; git remote
+r; git remote add origin https://example.com/x.git; git remote get-url origin
+r; git remote add origin https://example.com/x.git; git config --get remote.origin.url
+printf 'n.txt\n*.log\nbuild/\n' > .gitignore; r; echo n > n.txt; echo l > x.log; mkdir build; echo b > build/o; echo k > keep.txt; git status --porcelain
+printf '*.log\n!keep.log\n' > .gitignore; r; echo l > x.log; echo k > keep.log; git status -s
+printf 'src/sub/\n' > .gitignore; r; git ls-files | grep -c sub
+printf '*.md\n' > .gitignore; r; git check-ignore -v src/sub/notes.md; git check-ignore a.txt; echo $?
+printf 'x.log\n' > .gitignore; r; echo l > x.log; git add x.log; echo $?; git add -f x.log; git status -s
+r; git config user.name; git config --get user.email; echo $?
+r; git config core.bare
+r; git config --list --local | sort | head -5
+r; git cat-file -t HEAD; git cat-file -p HEAD | head -3
+r; git log --all --oneline
+r; git shortlog -s
+r; git count-objects | sed 's/[0-9]* kilobytes/K/'
+r; git reflog | head -2
+r; echo x >> a.txt; git commit -qam two; git cherry-pick HEAD 2>&1 | head -0; git log --oneline | wc -l
+r; echo x >> a.txt; git commit -qam two; git revert --no-edit HEAD >/dev/null; git log --oneline; tail -1 a.txt
+r; git clean -n; echo n > n.txt; git clean -n; git clean -fq; ls n.txt; echo $?
+r; echo x >> a.txt; git diff --color=always | head -2 | od -c | head -2
+r; git log --format='%d' -1
+r; git checkout -q HEAD~0 2>/dev/null; git status | head -1
+r; git checkout -q --detach; git branch
+c() { r; git checkout -qb feat; echo f >> a.txt; echo fb >> b.csv; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; }; c; git merge feat; git status
+c() { r; git checkout -qb feat; echo f >> a.txt; echo fb >> b.csv; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; }; c; git merge feat >/dev/null; git status -s; git diff --cached --stat
+c() { r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; }; c; git merge feat >/dev/null; git commit -m x; echo $?
+c() { r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; }; c; git merge feat >/dev/null; echo resolved > a.txt; git add a.txt; git status; git commit -q --no-edit; git log --oneline --graph; git log -1 --format=%B; git status -s
+c() { r; git checkout -qb feat; echo f >> a.txt; git commit -qam f; git checkout -q main; echo m >> a.txt; git commit -qam m; }; c; git merge feat >/dev/null; git merge --abort; git status; tail -1 a.txt
+r; git merge --abort; echo $?
+r; git rm nosuch; echo $?
+r; git rm src; echo $?
+r; echo x >> a.txt; git rm a.txt; echo $?
+r; echo x >> a.txt; git add a.txt; git rm a.txt; echo $?
+r; git rm -r -n src
+r; git rm --cached a.txt; git status --porcelain; ls a.txt
+r; git rm -r src; git status --porcelain; ls src
+r; git rm -q '*.txt'; git status --porcelain
+r; git mv a.txt src; git status -s
+r; git mv nosuch z; echo $?
+r; echo u > u; git mv u z; echo $?
+r; git mv a.txt b.csv; echo $?
+r; git mv -f a.txt b.csv; git status -s
+r; git mv -v src lib; git status -s; ls lib
+r; git mv -n a.txt q; git status -s
+r; git restore; echo $?
+r; git restore nosuch; echo $?
+r; echo x >> a.txt; echo y >> b.csv; git restore .; git status -s
+r; echo x >> a.txt; git add a.txt; git restore --staged .; git status -s
+r; echo x >> a.txt; git commit -qam two; git restore --source=HEAD~1 a.txt; git status -s; tail -1 a.txt
+r; echo x >> a.txt; git add a.txt; git restore -SW a.txt; git status -s
+r; echo n > n.txt; git add n.txt; git restore --staged n.txt; git status -s
+r; cd src; echo x >> lib.ts; git restore lib.ts; git status -s
+r; git clean; echo $?
+r; echo u > u; mkdir e; echo e > e/f; git clean -n; git clean -nd; git clean -fq; ls u e 2>&1; git clean -fd; ls e 2>&1
+printf 'x.log\n' > .gitignore; r; echo l > x.log; echo u > u; git clean -n; git clean -nx; git clean -nX
+r; echo x >> a.txt; git commit -qam two; git reset --hard HEAD~1; git log --oneline; tail -1 a.txt
+r; echo x >> a.txt; git add a.txt; git reset; git status -s
+r; echo x >> a.txt; git add a.txt; git reset -q a.txt; git status -s
+r; echo x >> a.txt; git add a.txt; git reset -- a.txt; git status -s
+r; git reset nosuch; echo $?
+r; git reset --soft a.txt; echo $?
+r; echo n > n.txt; git add n.txt; git reset --hard; ls n.txt; echo $?; git status -s
+r; echo x >> a.txt; git commit -qam two; git reset --hard HEAD~1 -q; git reset --hard ORIG_HEAD; tail -1 a.txt
+r; git checkout -qb f; echo f >> a.txt; git commit -qam f; git checkout -q main; git branch -d f; echo $?; git branch -D f
+r; git branch -d main; echo $?
+r; git branch -d nope; echo $?
+r; git branch x; git branch x; echo $?
+r; git switch -c main; echo $?
+r; git branch -m main trunk; git branch; git status | head -1
+r; git branch -m nope z; echo $?
+r; git checkout -q --detach; git branch; git status | head -1
+r; git checkout -qb g; echo g >> a.txt; git commit -qam g; git checkout -q main; echo m >> a.txt; git checkout g; echo $?
+r; git checkout -q main; git checkout main
+r; git branch two HEAD; git branch
+r; echo x >> a.txt; git checkout -b side; git status -s; git branch --show-current
+git init -q -b main; git checkout -b other; git status | head -1; echo x > f; git add f; git commit -qm one; git branch
+r; echo x >> a.txt; echo n > new; git add new; echo u > u; git stash; git stash list; git stash show; ls u; git stash pop
+r; echo x >> a.txt; git stash -q; git rev-parse stash; git cat-file -p stash | tail -1
+r; echo x >> a.txt; git stash -q; echo y >> b.csv; git stash -q -m second; git stash list; git stash show stash@{1}; git stash drop stash@{1}; git stash list
+r; echo x >> a.txt; git stash -q; echo y >> a.txt; git stash pop; echo $?
+r; echo u > u; git stash -u; ls u; git stash pop -q; cat u
+r; git stash pop; echo $?; git stash drop; echo $?
+r; echo x >> a.txt; git add a.txt; git stash -q; git stash apply --index -q; git status -s; git stash list
+r; echo x >> a.txt; git stash -q; git stash show -p
+r; echo x >> a.txt; git stash -q; git stash clear; git stash list; git status -s
+r; git tag v1; git tag -a v2 -m 'rel two'; git tag -n; git tag -n2 -l 'v2'; git tag v1; echo $?; git tag -d nope; echo $?; git tag -d v1 v2
+r; git describe; echo $?; git tag v3; git describe --tags; echo x >> a.txt; git commit -qam two; git describe --tags; git describe --tags --abbrev=0; git describe --always; git tag --contains HEAD~1
+r; git tag v1.10; git tag v1.9; git tag v1.2; git tag -l --sort=-v:refname; git tag --sort=v:refname | head -1
+r; echo x >> a.txt; git describe --tags --dirty 2>&1; git tag v1; git describe --tags --dirty; git describe --tags --long
+r; git remote add origin https://example.com/x.git; git remote add origin x; echo $?; git remote set-url origin https://e.com/y.git; git remote -v; git remote rename origin up; git remote; git remote get-url nope; echo $?; git remote remove up; git remote
+printf 'build/\n*.log\n!keep.log\n/root.txt\nsrc/**/*.md\n' > .gitignore; r; mkdir -p build sub; git check-ignore -v build/x x.log keep.log root.txt sub/root.txt src/sub/notes.md a.txt; echo $?
+printf '*.log\n' > .gitignore; r; mkdir d; printf '!x.log\n' > d/.gitignore; git check-ignore -v d/x.log y.log; git check-ignore -q y.log; echo $?
+printf '*.log\n' > .gitignore; r; echo l > x.log; git add x.log; echo $?; git add . ; git status -s
+r; git ls-files 'src/*'; git ls-files '*.js' '*.md'; cd src; git ls-files; git ls-files '*.ts'
+r; printf '1\n2\n3\n' > n.txt; git add n.txt; git commit -qm n; sed -i 's/2/two/' n.txt; echo 4 >> n.txt; GIT_AUTHOR_NAME=Bobby git commit -qam second; echo 5 >> n.txt; git blame n.txt | sed 's/ 20[0-9-]* [0-9:]* +0000 / D /'; git blame -s n.txt; git blame -L 2,3 n.txt; git blame -L 2,+1 HEAD -- n.txt; git blame -e n.txt | head -2
+r; printf '1\n2\n' > n.txt; git add n.txt; git commit -qm n; echo 3 >> n.txt; git commit -qam three; git blame --porcelain n.txt
+r; git blame nosuch; echo $?
+r; git checkout -qb f; echo 4 >> a.txt; git commit -qam four; git checkout -q main; echo bb >> b.csv; git commit -qam bee; git cherry-pick f; git cherry-pick f; echo $?; git revert --no-edit HEAD; git log --format='%s|%b' -3; git cherry-pick nosuch; echo $?
+r; echo x >> a.txt; GIT_AUTHOR_NAME=Bob git commit -qam two; echo y >> a.txt; git commit -qam three; git shortlog HEAD; git shortlog -sn HEAD; git shortlog -sne HEAD~1; git shortlog -s

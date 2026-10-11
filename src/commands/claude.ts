@@ -98,7 +98,14 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // grep/find/rg in the agent's shell and its search tools: tabcomputer's (~1 ms) rather than
   // the 240 MB binary re-run as ugrep/bfs/rg in Blink (300-1400 ms each, tabcomputer#42)
   const search = nativeSearchSetup(args, ctx.env);
-  const line = jit + links + build + search.env + [path, ...search.args].map(quote).join(' ');
+  // As the npm build (node-compat/process.ts): no self-install or updater and no
+  // official-marketplace clone at start. Without them its first launch copied its
+  // own 250 MB into ~/.local/share/claude/versions through staging/ (~1000
+  // eventfd wakes/s for 24-70 s) and git-cloned the plugin marketplace (#40).
+  // Export any of them to change it.
+  const quiet = ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']
+    .filter((k) => ctx.env[k] === undefined).map((k) => `${k}=1 `).join('');
+  const line = jit + links + quiet + build + search.env + [path, ...search.args].map(quote).join(' ');
   return ctx.shell.execute(line, (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
 }
 

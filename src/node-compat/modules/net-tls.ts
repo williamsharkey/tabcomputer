@@ -12,6 +12,7 @@ import {
   netStack, NetStack, KSocket, AF_INET, AF_INET6, SOCK_STREAM, SHUT_WR, IPPROTO_TCP, TCP_NODELAY,
   SOL_SOCKET, SO_KEEPALIVE, errnoName, ipFamily,
 } from '../../kernel/net';
+import { BlockList, SocketAddress } from './net-blocklist';
 
 export interface NetDeps {
   /** Buffer implementation for 'data' chunks (Uint8Array when absent). */
@@ -450,6 +451,8 @@ export function createNetModule(deps: NetDeps = {}): any {
     isIP: (input: string) => ipFamily(String(input)),
     isIPv4: (input: string) => ipFamily(String(input)) === 4,
     isIPv6: (input: string) => ipFamily(String(input)) === 6,
+    BlockList,
+    SocketAddress,
     getDefaultAutoSelectFamily: () => false,
     setDefaultAutoSelectFamily: () => {},
   };

@@ -33,10 +33,11 @@ describe("rg with Claude Code's flags", () => {
       expect(r.code, cmd).toBe(0);
       expect(r.out.startsWith('ripgrep '), `${cmd}: ${r.out}`).toBe(true);
     }
-    // a -V that is a pattern still searches
-    await fs.writeFile('/tmp/rg44/v.txt', 'a -V b\n');
-    expect((await sh('rg -e -V v.txt')).out).toBe('v.txt:1:a -V b\n');
-    expect((await sh('rg -- -V v.txt')).out).toBe('v.txt:1:a -V b\n'); // (after --, the first word is the pattern)
+    // a -V that is a pattern still searches (in a directory of its own: the other tests list /tmp/rg44)
+    await fs.mkdir('/tmp/rg57', { recursive: true } as any);
+    await fs.writeFile('/tmp/rg57/v.txt', 'a -V b\n');
+    expect((await sh('rg -e -V /tmp/rg57/v.txt')).out).toBe('/tmp/rg57/v.txt:1:a -V b\n');
+    expect((await sh('rg -- -V /tmp/rg57/v.txt')).out).toBe('/tmp/rg57/v.txt:1:a -V b\n'); // (after --, the first word is the pattern)
   });
 
   it('--null: a switch, a NUL after each path (-l, -c -H, --files)', async () => {

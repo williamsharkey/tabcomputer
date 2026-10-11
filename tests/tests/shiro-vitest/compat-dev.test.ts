@@ -1266,7 +1266,7 @@ describe('node: real npm packages', () => {
   it('npm install in a directory without package.json starts one, as npm does', async () => {
     const r = await sh(shell, 'mkdir -p /home/user/nopkg && cd /home/user/nopkg && npm install dayjs@1.11.13 > /dev/null; echo "e=$?"; cat package.json; node -e "console.log(typeof require(\'dayjs\'))"; npm install; echo "f=$?"');
     expect(r.out).toContain('e=0');
-    expect(JSON.parse(r.out.slice(r.out.indexOf('{'), r.out.lastIndexOf('}') + 1))).toEqual({ dependencies: { dayjs: '1.11.13' } });
+    expect(JSON.parse(r.out.slice(r.out.indexOf('{'), r.out.lastIndexOf('}') + 1))).toEqual({ dependencies: { dayjs: '^1.11.13' } }); // as npm saves it (#59)
     expect(r.out).toContain('function\n');
     expect(r.out).toContain('f=0');
     expect((await sh(shell, 'mkdir -p /home/user/nopkg2 && cd /home/user/nopkg2 && npm install; echo "g=$?"; ls')).out).toBe('up to date, audited 0 packages\ng=0\n');

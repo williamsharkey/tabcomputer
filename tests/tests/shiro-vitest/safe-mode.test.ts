@@ -85,7 +85,9 @@ describe('safe mode', () => {
     const reset = await run('safe-mode reset-layout');
     expect(reset.code).toBe(0);
     expect(reset.out).toContain('tabcomputer-desktop-session');
-    expect([...ls.map.keys()]).toEqual(['tabcomputer_github_token']);
+    // (tabcomputer-fs-volume, the #71 volume hint, is not layout state: it survives the reset)
+    expect([...ls.map.keys()].sort()).toEqual(['tabcomputer-fs-volume', 'tabcomputer_github_token'].filter((k) => ls.map.has(k)).sort());
+    expect(ls.map.has('tabcomputer_github_token')).toBe(true);
     expect(RESTORED_STATE_KEYS).not.toContain('tabcomputer_github_token');
     expect((await run('safe-mode reset-layout')).out).toContain('No saved layout');
 

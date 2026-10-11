@@ -1,0 +1,194 @@
+From b1c4db227db9e81220740d800886062a1d891cff Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 13:10:11 +0000
+Subject: [PATCH 145/145] Shiro: compiled code does lock add/or/and/sub/xor,
+ lock inc/dec, xadd and cmpxchg to memory as wasm atomics
+
+They went to the handlers (Analyze sent every lock-prefixed instruction to
+Call, and xadd and cmpxchg weren't compiled at all): refcounts, mutexes and
+allocators' compare-exchanges, millions per run of native Claude. Memory
+forms with lock, and xadd/cmpxchg to memory with or without it (atomic is
+the stronger ordering), are now one wasm atomic read-modify-write with the
+flags computed from the old value, and fuse with a following jcc/setcc
+like the plain forms. cmpxchg's flags are those of cmp acc,dest and a
+mismatch loads the accumulator. An operand that isn't naturally aligned
+(a wasm atomic traps; on x86 it may split a cache line) exits to the
+interpreter, as do lock adc/sbb and the register forms. BLINK_WJIT_OFF
+bit 22 sends them back to the handlers.
+---
+ blink/wjit.c | 130 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 128 insertions(+), 2 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 58b0319..eb49d58 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -1766,6 +1766,27 @@ static bool IsJcc(int op) {
+   return (0x070 <= op && op <= 0x07F) || (0x180 <= op && op <= 0x18F);
+ }
+ 
++// The read-modify-writes compiled as wasm atomics: lock add/or/and/sub/xor
++// of a register or constant into memory, lock inc/dec, and xadd and cmpxchg
++// to memory with or without lock (atomic is the stronger ordering). lock
++// adc/sbb and the register forms of xadd/cmpxchg are the handlers'.
++static bool IsAtomic(u64 rde) {
++  int op = Mopcode(rde), aop;
++  if (IsModrmRegister(rde)) return false;
++  if (op == 0x1B0 || op == 0x1B1 || op == 0x1C0 || op == 0x1C1) return true;
++  if (!Lock(rde)) return false;
++  if (op < 0x40 && (op & 7) <= 1) {
++    aop = op >> 3;
++  } else if (0x080 <= op && op <= 0x083) {
++    aop = ModrmReg(rde);
++  } else if (op == 0x0FE || op == 0x0FF) {
++    return ModrmReg(rde) <= 1;
++  } else {
++    return false;
++  }
++  return aop != 2 && aop != 3 && aop != 7;
++}
++
+ // classifies an instruction: whether it's translated inline, which flags it
+ // reads and writes, and what kind of flag producer it is
+ static void Analyze(struct Ins *in) {
+@@ -1777,9 +1798,23 @@ static void Analyze(struct Ins *in) {
+   in->fw = 0;
+   in->cck = CC_NONE;
+   in->ccw = 0;
+-  if (Lock(rde) || Mode(rde) != XED_MODE_LONG || Eamode(rde) == XED_MODE_REAL) {
+-    goto Call;
++  if (Mode(rde) != XED_MODE_LONG || Eamode(rde) == XED_MODE_REAL) goto Call;
++  if (IsAtomic(rde)) {
++    in->fw = kAllFlags;
++    in->ccw = (op & 1) ? w : 1;
++    if (op == 0x0FE || op == 0x0FF) {
++      in->fw = PF | AF | ZF | SF | OF;
++      in->cck = CC_INCDEC;
++    } else if (op == 0x1B0 || op == 0x1B1) {
++      in->cck = CC_SUB;
++    } else if (op == 0x1C0 || op == 0x1C1) {
++      in->cck = CC_ADD;
++    } else {
++      in->cck = AluCck(op < 0x40 ? op >> 3 : ModrmReg(rde));
++    }
++    return;
+   }
++  if (Lock(rde)) goto Call;
+   if (op < 0x40 && (op & 7) <= 5) {
+     int aop = op >> 3;
+     in->fw = kAllFlags;
+@@ -2037,6 +2072,7 @@ Call:
+ 
+ // category of an inlined instruction, for BLINK_WJIT_OFF bisection
+ static int Category(int op, u64 rde) {
++  if (IsAtomic(rde)) return 22;
+   if (op < 0x40 || (0x080 <= op && op <= 0x083)) return 0;
+   if ((op == 0x0F6 || op == 0x0F7) && ModrmReg(rde) > 1) return 18;
+   if (op == 0x084 || op == 0x085 || op == 0x0A8 || op == 0x0A9 ||
+@@ -2349,6 +2385,92 @@ static void TranslateAlu(struct Cg *g, struct Ins *in) {
+   }
+ }
+ 
++// emits the i64 atomic read-modify-write `base` (the opcode of its 64-bit
++// form) on w bytes at the address on the stack
++static void AtomicRmw(struct Cg *g, int base, int w) {
++  static const u8 kNarrow[9] = {0, 3, 4, 0, 5, 0, 0, 0, 0};
++  B(&g->b, W_ATOMIC);
++  Mem(g, base + kNarrow[w], kAlign[w], 0);
++}
++
++// see IsAtomic(). The operand is resolved for writing and must be naturally
++// aligned (a wasm atomic traps otherwise; on x86 it may split across cache
++// lines): if not, the region exits and the interpreter runs the instruction.
++static void TranslateAtomic(struct Cg *g, struct Ins *in) {
++  static const u8 kRmw[8] = {0x1f, 0x34, 0, 0, 0x2d, 0x26, 0x3b, 0};
++  u64 rde = in->rde;
++  int op = Mopcode(rde);
++  int w = (op & 1) ? Width(rde) : 1;
++  int aop;
++  Ea(g, in, true);
++  if (w > 1) {
++    Get(g, L_EA);
++    Op(g, W_I32_WRAP_I64);
++    I32(g, w - 1);
++    Op(g, W_I32_AND);
++    If(g, T_VOID);
++    Get(g, L_M);
++    I32(g, 0);
++    Mem(g, W_I32_STORE8, 0, OFF(wjhot));
++    ExitTo(g, in->pc);
++    End(g);
++  }
++  Resolve(g, in, w, true);
++  if (op == 0x1B0 || op == 0x1B1) {  // cmpxchg: flags of cmp acc,dest
++    UseReg(g, 0);
++    GetReg(g, 0, w);
++    Set(g, L_CX);
++    Get(g, L_HW);
++    Get(g, L_CX);
++    GetRegField(g, in, w);
++    AtomicRmw(g, 0x49, w);
++    Set(g, L_CY);
++    Alu(g, in, 7, w);
++    Get(g, L_CX);  // a mismatch loads the accumulator
++    Get(g, L_CY);
++    Op(g, W_I64_NE);
++    If(g, T_VOID);
++    Get(g, L_CY);
++    PutReg(g, 0, w);
++    End(g);
++    return;
++  }
++  if (op == 0x0FE || op == 0x0FF) {  // lock inc/dec
++    bool dec = ModrmReg(rde) == 1;
++    Get(g, L_HW);
++    I64(g, 1);
++    AtomicRmw(g, dec ? 0x26 : 0x1f, w);
++    Tee(g, L_CX);
++    I64(g, 1);
++    Op(g, dec ? W_I64_SUB : W_I64_ADD);
++    if (w != 8) {
++      I64(g, Mask(w));
++      Op(g, W_I64_AND);
++    }
++    Set(g, L_CZ);
++    LiveFlags(g, in, dec ? F_DEC : F_INC, w);
++    return;
++  }
++  if (op < 0x40 || op == 0x1C0 || op == 0x1C1) {
++    aop = op < 0x40 ? op >> 3 : 0;
++    GetRegField(g, in, w);
++  } else {
++    aop = ModrmReg(rde);
++    w = (op == 0x080 || op == 0x082) ? 1 : Width(rde);
++    I64(g, in->uimm0 & Mask(w));
++  }
++  Set(g, L_CY);
++  Get(g, L_HW);
++  Get(g, L_CY);
++  AtomicRmw(g, kRmw[aop], w);
++  Set(g, L_CX);
++  Alu(g, in, aop, w);
++  if (op == 0x1C0 || op == 0x1C1) {  // xadd: the register gets the old value
++    Get(g, L_CX);
++    PutRegField(g, in, w);
++  }
++}
++
+ static void TranslateTest(struct Cg *g, struct Ins *in) {
+   u64 rde = in->rde;
+   int op = Mopcode(rde);
+@@ -3509,6 +3631,10 @@ static void Translate(struct Cg *g, struct Ins *in) {
+     CallOp(g, in);
+     return;
+   }
++  if (IsAtomic(rde)) {
++    TranslateAtomic(g, in);
++    return;
++  }
+   if (op < 0x40 || (0x080 <= op && op <= 0x083)) {
+     TranslateAlu(g, in);
+     return;
+-- 
+2.43.0
+

@@ -19,7 +19,7 @@ hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build'
 
 - `hotswap checkout [DIR] [--force]` downloads `assets/hotswap-source-<sha>.tar.gz` from the page's own origin and unpacks it into DIR (`~/shiro` by default). A production build emits that tarball (`hotswapSource` in `vite-plugin-hotswap.ts`, about 3 MB). It holds the build's `src/`, `profiles/`, the vitest suites and the root files a build needs, plus `.hotswap-source.json`: the commit, the build number, and each file's git blob id. So the checkout matches the running page exactly. A dev server has no tarball. A deploy keeps older builds' tarballs for a week, like other assets. A `git clone` of the whole repository would also work but is several hundred MB (`public/pkg`), too much for a tab.
 - `hotswap diff [--stat] [FILE...]` compares the checkout with its manifest: modified, added (under the source directories) and deleted files, as unified diffs against the copy of the tarball kept in `.hotswap/`.
-- `hotswap push BRANCH -m MSG [--repo OWNER/NAME]` commits those changes on top of the build's commit as a new branch, with GitHub's REST API (blobs, a tree on the commit's tree, a commit, a ref; `src/hotswap/source.ts`). It uses your own `gh auth login` token and the name and email in `~/.gitconfig`, and prints the branch URL. The default repository is williamsharkey/shiro.
+- `hotswap push BRANCH -m MSG [--repo OWNER/NAME]` commits those changes on top of the build's commit as a new branch, with GitHub's REST API (blobs, a tree on the commit's tree, a commit, a ref; `src/hotswap/source.ts`). It uses your own `gh auth login` token and the name and email in `~/.gitconfig`, and prints the branch URL. The default repository is williamsharkey/tabcomputer, where tabcomputer is developed.
   - A second push to the same branch from the same checkout adds a commit on top of the first.
   - Any other existing branch is refused, and so is a branch that moved since this checkout pushed it. Push to a new name instead.
   - main, master, deploy and `unix/*` are always refused, and nothing is ever force-pushed.
@@ -49,6 +49,7 @@ hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build'
 The swap bundle includes only the swap set. Every other import resolves to the page's **live** module. `vite-plugin-hotswap.ts` makes each module under `src/` register its namespace in `globalThis.__tabcomputerLive` under its path (`src/shell.ts`). New code therefore shares the page's singletons: the registry, the kernel, the filesystem, the process table.
 
 - **Classes.** When a swapped file exports a class and its live module exports a class of the same name, the live class gets the new class's prototype methods, getters, setters and static methods. Every existing instance runs the new code from its next call, the main shell and the agent's own shell included. The replaced descriptors are kept, and a revert restores them exactly.
+- **Commands.** A registry command (`src/commands/*`) is a plain exported object (`{ name, exec, ... }`), not a class. When a swapped file exports one whose live module exports a command of the same name, the live object is patched in place: `exec`, `description` and its other properties. So the command registry, a lazy command's cache and the ModuleRegistry all run the new code, and a revert restores each property. `withHelpFlags` reads `cmd.exec` at each call for this. A lazy command's module is loaded before the build, so its own imports resolve to live modules too.
 - **New instances.** Code in the swap that does `new Shell()` (forks, subshells) makes instances of the new class. `instanceof` treats the live class and the classes swapped into it as one class, both ways. On revert, those instances run the old code again.
 - **Hooks.**
   - `migrateFrom(old)` on the new class's prototype runs once for each tracked live instance. `this` is the instance, and `old` carries the previous methods. It isn't installed on the prototype. The boot's shell, terminal, kernel and fs and the desktop's extra shells are tracked (`trackInstance` in `src/hotswap/live.ts`).
@@ -75,6 +76,10 @@ The swap bundle includes only the swap set. Every other import resolves to the p
 - **Anything running in a Worker**: the node runtime's workers, WASM and Blink guests, the watchdog worker. That includes everything they share with the page: the kernel's syscall channel layout, SharedArrayBuffer formats, syscall numbers and ABI structs. Change those with a deploy.
 - **Vite-only imports in the swap set** (`?worker`, `?url`): they can't be built in the tab. `?raw` works. Bare npm imports work for the packages in `LIVE_DEPS` in `vite-plugin-hotswap.ts` (xterm today).
 - **The dev server** (`npm run dev`). The plugin runs only in production builds, where module ids are stable.
+
+## `reload`
+
+`reload commands/NAME [PATH]` (`src/commands/reload.ts`) replaces a registry module without a TTL or revert. It now builds through hotswap's builder, so a command's relative imports (`./index`, `../utils/x`) resolve to the page's live modules. The root is the directory above the file's `src/`. For commands, prefer `hotswap apply src/commands/NAME.ts`: it has the TTL and the revert.
 
 ## Stable handles
 

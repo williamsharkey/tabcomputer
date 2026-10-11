@@ -1,5 +1,6 @@
 import type { Command, CommandContext } from './index';
 import { decodeBytes, encodeText } from '../utils/byte-text';
+import { pipeBytes } from '../utils/stream-bytes';
 
 /**
  * tar — GNU tar-compatible (GNU format archives: ustar headers with
@@ -111,20 +112,7 @@ function isZero(b: Uint8Array): boolean {
 class TarFatal extends Error {}
 
 async function streamTransform(data: Uint8Array, stream: any): Promise<Uint8Array> {
-  const writer = stream.writable.getWriter();
-  writer.write(data as any).catch(() => {});
-  writer.close().catch(() => {});
-  const reader = stream.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
-  let o = 0;
-  for (const c of chunks) { out.set(c, o); o += c.length; }
-  return out;
+  return pipeBytes(data, stream);
 }
 
 type Compression = 'gzip' | 'bzip2' | 'xz' | 'zstd' | null;
@@ -139,7 +127,7 @@ function sniff(d: Uint8Array): Compression {
 
 async function decompress(d: Uint8Array, c: Compression): Promise<Uint8Array> {
   switch (c) {
-    case 'gzip': return (await import('./compress/gzip-codec')).gunzip(d); // multi-member .tgz too
+    case 'gzip': return (await import('./compress/gunzip-async')).gunzipAsync(d); // multi-member .tgz too
     case 'bzip2': return (await import('./bzip2')).bzip2Decompress(d);
     case 'xz': return (await import('./xz')).xzDecompress(d);
     case 'zstd': return (await import('./zstd')).zstdDecompress(d);

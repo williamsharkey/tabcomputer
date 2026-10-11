@@ -973,6 +973,12 @@ export class Shell {
   assocArrays: Map<string, Map<string, string>> = new Map();
   /** Trap handlers: signal → command string */
   traps: Map<string, string> = new Map();
+  /**
+   * Signals the programs this shell starts get as ignored (their disposition
+   * SIG_IGN, as an exec keeps it): nohup's SIGHUP (shell-kernel.ts, #61).
+   * A fork and the shells it starts inherit them.
+   */
+  ignoredSignals: Set<number> = new Set();
   /** Shell aliases: name → replacement string */
   aliases: Map<string, string> = new Map();
   /** Namerefs: name → target variable name */
@@ -1628,6 +1634,7 @@ export class Shell {
     child.traps = new Map([...this.traps].filter(([k, v]) => v === '' ||
       (k === 'ERR' && this.options.has('errtrace')) || (k === 'DEBUG' && this.options.has('functrace'))));
     child.parentTraps = this.trapsModified || !this.parentTraps ? new Map(this.traps) : this.parentTraps;
+    child.ignoredSignals = new Set(this.ignoredSignals);
     child.aliases = new Map(this.aliases);
     child.aliasView = this.aliasView;
     child.namerefs = new Map(this.namerefs);

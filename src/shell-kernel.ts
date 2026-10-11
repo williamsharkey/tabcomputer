@@ -304,6 +304,8 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
       uid: shell.uid,
     };
     const proc = tty ? tty.spawnJob(kernel, spawn) : kernel.spawn(spawn);
+    // Signals the shell's programs start ignoring (nohup's SIGHUP, #61): before the program runs
+    for (const sig of shell.ignoredSignals ?? []) proc.dispositions.set(sig, 'ignore');
     proc.umask = shell.umask; // (the shell's umask builtin, not the parent process's)
     procs.push(proc);
     if (nextInput) input = nextInput;

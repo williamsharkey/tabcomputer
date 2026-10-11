@@ -37,7 +37,8 @@ async function setup(root = ROOT!) {
   const { startDisplay } = await import('@shiro/x11/display');
   const { getXSession, configureXSession } = await import('@shiro/x11/session');
   const { installGLX } = await import('@shiro/x11/glx');
-  const { startGLServer } = await import('@shiro/gl/server');
+  const { startGLServer, getGLServer } = await import('@shiro/gl/server');
+  getGLServer()?.stop(); // one per test: the earlier test's server has its own backend
   const { Executor } = await import('@shiro/gl/exec');
   const kernel = new Kernel({ fs, registerWithProcessTable: false });
   registerBlinkLoader(kernel);
@@ -88,6 +89,20 @@ it.skipIf(!ROOT || !existsSync(LIB))('glxinfo and glxgears through glshiro', asy
   expect(frames.length).toBeGreaterThan(3);
   expect(frames[0]).toMatchObject({ width: 300, height: 300 });
   expect(mock.count('drawElements') + mock.count('drawArrays')).toBeGreaterThan(frames.length);
+}, 200_000);
+
+/** Pbuffers as Qt and Krita use them (scripts/gl/probes/pbuffer.c in the rootfs's /usr/bin) */
+it.skipIf(!ROOT || !existsSync(LIB) || !existsSync(join(ROOT ?? '', 'usr/bin/pbuffer')))('a pbuffer through glvnd and glshiro', async () => {
+  const { run, mock } = await setup();
+  const r = await run(['/usr/bin/pbuffer'], 120_000);
+  console.log(r.out);
+  expect(r.status).toBe(0);
+  expect(r.out).toContain('pbuffer created');
+  expect(r.out).toContain('size 64x32');
+  expect(r.out).toContain('current 1');
+  // the recording WebGL2 reads back 0x80 everywhere
+  expect(r.out).toContain('pixel 128 128 128 128');
+  expect(mock.calls.filter((c) => c.name === 'renderbufferStorage').map((c) => c.args.slice(2))).toContainEqual([64, 32]);
 }, 200_000);
 
 /** Transport numbers (scripts/gl/probes/glbench.c in the rootfs's /usr/bin): round trips, bulk MB/s, small calls/s. */

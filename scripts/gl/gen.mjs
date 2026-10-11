@@ -232,7 +232,7 @@ for (const name of primaries) {
 }
 // Internal commands with no gl.xml entry.
 const INTERNAL = ['glClientUploadArray', 'glGetProgramInfo', 'glGetShaderInfo', 'tcMakeCurrent', 'tcSwapBuffers', 'tcContextInfo',
-  'tcCreateContext', 'tcDestroyContext', 'tcDrawableGone', 'tcHello'];
+  'tcCreateContext', 'tcCreatePbuffer', 'tcDestroyContext', 'tcDrawableGone', 'tcHello'];
 const INTERNAL_SPEC = {
   glClientUploadArray: MANUAL.glClientUploadArray, glGetProgramInfo: MANUAL.glGetProgramInfo, glGetShaderInfo: MANUAL.glGetShaderInfo,
   tcHello: 'uuAb>',       // protocol version, pid, program name
@@ -241,7 +241,8 @@ const INTERNAL_SPEC = {
   tcMakeCurrent: 'uuuu',  // context id, draw drawable XID, read drawable XID, fbconfig id
   tcContextInfo: '>',     // strings and limits of the current context
   tcSwapBuffers: 'uu',     // drawable XID, frame number
-  tcDrawableGone: 'u',
+  tcDrawableGone: 'u',     // a window or pbuffer XID that is gone
+  tcCreatePbuffer: 'uuu',  // pbuffer XID (from XAllocID), width, height
 };
 for (const n of INTERNAL) table.push({ name: n, c: null, spec: INTERNAL_SPEC[n], manual: true, internal: true });
 table.sort((a, b) => (a.internal === b.internal ? (a.name < b.name ? -1 : 1) : a.internal ? -1 : 1));

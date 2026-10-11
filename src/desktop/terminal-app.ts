@@ -11,11 +11,54 @@ import { setActiveTerminal } from '../active-terminal';
 import type { DesktopWindow, WindowManager } from './wm';
 import { GLYPHS } from './icons';
 import { activeProfile } from '../profile';
+import * as agentResume from '../agent-resume';
+import type { ResumeCommand } from '../agent-resume';
+import { bufferToString } from '../utils/copy-utils';
 
 export interface TerminalDeps {
   makeShell: () => Shell;
   /** Shell of the main terminal (its tab title follows this shell's cwd) */
   mainShell: Shell;
+}
+
+/** A terminal tab as session restore saves it (session.ts) */
+export interface TabState {
+  /** The page's main terminal */
+  main?: boolean;
+  active?: boolean;
+  cwd: string;
+  /** Exported variables that differ from a fresh shell's (null: unset) */
+  env?: Record<string, string | null>;
+  /** A program's OSC title */
+  osc?: string;
+  /** The line still running at the reload */
+  running?: string;
+  /** Claude Code or Codex running in it: how to resume that session (agent-resume.ts) */
+  agent?: ResumeCommand | null;
+  /** Its scrollback (stored apart, session-store.ts) */
+  screen?: string;
+}
+
+/** Lines of scrollback a tab keeps across a reload */
+export const SCROLLBACK_LINES = 2000;
+/** Variables never written to storage */
+const SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_KEY$|CREDENTIAL|COOKIE/i;
+/** Variables the shell keeps itself */
+const VOLATILE = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'COLUMNS', 'LINES', 'RANDOM', 'SECONDS', 'LINENO']);
+
+export function envDiff(env: Record<string, string>, base: Record<string, string>): Record<string, string | null> | undefined {
+  const out: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(env)) if (!VOLATILE.has(k) && !SECRET.test(k) && base[k] !== v) out[k] = v;
+  for (const k of Object.keys(base)) if (!(k in env) && !VOLATILE.has(k) && !SECRET.test(k)) out[k] = null;
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The text a tab shows, its last `n` lines, without the prompt line at the bottom when nothing runs */
+export function screenText(text: string, atPrompt: boolean, n = SCROLLBACK_LINES): string {
+  const lines = text.replace(/\s+$/, '').split('\n');
+  if (atPrompt) lines.pop();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.slice(-n).join('\n');
 }
 
 interface Tab {
@@ -26,6 +69,8 @@ interface Tab {
   main: boolean;
   /** Title a program set with OSC 0/2, if any */
   osc: string;
+  /** Output since the last save (session restore) */
+  dirty?: boolean;
 }
 
 const DARK = {
@@ -140,6 +185,7 @@ export class TerminalView {
   private wireTerm(tab: Tab, term: ShiroTerminal): void {
     term.onExit = () => this.closeTab(tab);
     term.term.onTitleChange((t: string) => { tab.osc = t; this.updateTitle(tab); });
+    term.term.onWriteParsed(() => { tab.dirty = true; });
     // The prompt's cwd: refresh after each line the shell prints
     term.term.onLineFeed(() => this.updateTitle(tab));
     term.term.textarea?.addEventListener('focus', () => { if (this.active === tab) setActiveTerminal(term); });
@@ -192,6 +238,67 @@ export class TerminalView {
 
   terminals(): ShiroTerminal[] {
     return this.tabs.map(t => t.term).filter((t): t is ShiroTerminal => !!t);
+  }
+
+  /** Any tab printed something since the last call (session restore saves then) */
+  takeDirty(): boolean {
+    let d = false;
+    for (const t of this.tabs) if (t.dirty) { d = true; t.dirty = false; }
+    return d;
+  }
+
+  /** The tabs as session restore saves them (`base`: a fresh shell's environment) */
+  tabStates(base: Record<string, string>, withScreen: boolean): TabState[] {
+    return this.tabs.map((t) => {
+      const term = t.term;
+      const running = term?.foregroundLine ?? undefined;
+      const st: TabState = { cwd: t.shell?.cwd ?? '/home/user' };
+      if (t.main) st.main = true;
+      if (t === this.active) st.active = true;
+      const env = t.shell ? envDiff(t.shell.env, base) : undefined;
+      if (env) st.env = env;
+      if (t.osc) st.osc = t.osc;
+      if (running) st.running = running;
+      const agent = term ? agentResume.forTerminal(term) : null;
+      if (agent) st.agent = agent;
+      if (withScreen && term) st.screen = screenText(bufferToString(term.term), !running);
+      return st;
+    });
+  }
+
+  /**
+   * Bring saved tabs back into this view (session.ts): the main tab (already
+   * here) or new tabs, each with its directory, environment and screen.
+   * `reuseFirst`: a new window already made its first tab (in the first saved
+   * tab's directory); the first saved tab goes there. `onReady(i, terminal)`
+   * runs once tab i is back (the caller resumes an agent or offers a command).
+   */
+  restoreTabs(saved: TabState[], noteFor: (i: number) => string, onReady: (i: number, term: ShiroTerminal) => void, reuseFirst = false): void {
+    let activeTab: Tab | null = null;
+    saved.forEach((st, i) => {
+      let tab: Tab | undefined;
+      if (st.main) tab = this.tabs.find((t) => t.main);
+      else if (i === 0 && reuseFirst && this.tabs.length === 1 && !this.tabs[0].main) tab = this.tabs[0];
+      else {
+        this.newTab({ cwd: st.cwd });
+        tab = this.tabs[this.tabs.length - 1];
+      }
+      if (!tab) return;
+      const shell = tab.shell;
+      if (shell) {
+        if (st.cwd) shell.cwd = st.cwd;
+        for (const [k, v] of Object.entries(st.env ?? {})) { if (v === null) delete shell.env[k]; else shell.env[k] = v; }
+      }
+      if (st.osc) tab.osc = st.osc;
+      const term = tab.term;
+      if (term) {
+        term.restoreScreen(st.screen ?? '', noteFor(i));
+        onReady(i, term);
+      }
+      this.updateTitle(tab);
+      if (st.active) activeTab = tab;
+    });
+    if (activeTab) this.select(activeTab);
   }
 
   /** Working directory of the active tab's shell (session restore) */

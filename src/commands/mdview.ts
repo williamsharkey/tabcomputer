@@ -7,7 +7,7 @@
  */
 
 import { Command } from './index';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 
 export const mdviewCmd: Command = {
   name: 'mdview',
@@ -44,6 +44,8 @@ export const mdviewCmd: Command = {
     const win = createServerWindow({
       mode: 'iframe',
       title: ctx.args[0] || 'mdview',
+      appId: 'mdview', appName: 'Markdown Viewer',
+      ...(ctx.args[0] ? { restore: { cmd: commandLine('mdview', ctx.args), cwd: ctx.cwd } } : {}),
       width: '48em',
       height: '32em',
     });

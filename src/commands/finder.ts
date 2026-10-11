@@ -5,7 +5,7 @@
 
 import { Command } from './index';
 import { readdirEntries, DirEntry } from './flags';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 import {
   injectFinderStyles, renderBreadcrumb, renderFileGrid,
   showContextMenu, getFileIcon, formatSize,
@@ -23,6 +23,8 @@ export const finderCmd: Command = {
     const win = createServerWindow({
       mode: 'terminal',
       title: 'Finder',
+      appId: 'finder', appName: 'Finder',
+      restore: { cmd: commandLine('finder', ctx.args), cwd: ctx.cwd },
       width: '36em',
       height: '26em',
       onClose: () => {},

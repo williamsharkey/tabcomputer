@@ -262,6 +262,11 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   `glSurface`.
 - Fallback present (and `XGetImage` on a GL window): read the front FBO
   back into the window's pixmap, so Xshiro composes it like any drawing.
+- Pbuffers (glXCreatePbuffer, GLX_SGIX_pbuffer; Qt and Krita use them for
+  offscreen GL): the vendor library takes an XID with XAllocID that the X
+  server never sees, maps it to itself in glvnd, and sends tcCreatePbuffer
+  with the size; the page gives it a framebuffer like a window's, and
+  tcDrawableGone frees it. glXQueryDrawable answers from the guest's table.
 - Frame pacing: the page acks a frame (`MSG_FRAME`) on the next animation
   frame (`pacedSend` in `present.ts`), and the vendor library blocks in
   `glXSwapBuffers` while it is more than two frames ahead. Apps run at the
@@ -359,8 +364,9 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
   - `gl-server.test.ts`: the socket server (batches split anywhere, one
     backend per connection, broken streams) and `setup.ts`.
   - `x11.test.ts` (gui's): the GLX requests glvnd sends.
-  - `gl-guest.test.ts`: glxinfo, glxgears and glbench in Blink against a
-    recording glshiro, with no vendor forced (`GL_PROBE_ROOT`); Neverball
+  - `gl-guest.test.ts`: glxinfo, glxgears, glbench and the pbuffer probe
+    (`scripts/gl/probes/`) in Blink against a recording glshiro, with no
+    vendor forced (`GL_PROBE_ROOT`); Neverball
     (`NB_ROOT`) and OpenSCAD (`SCAD_ROOT`) the same way.
 - Browser: `tests/browser/gl-apps.mjs --app glxgears|neverball` runs the app
   in the page, checks the window's pixels and that frames stop without

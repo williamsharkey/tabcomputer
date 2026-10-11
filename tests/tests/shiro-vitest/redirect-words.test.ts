@@ -88,6 +88,11 @@ describe('exec N<>', () => {
     expect(r.out).toBe('line=first\nfirst\nsecond\n');
   });
 
+  it('one position for reading and writing (and noclobber does not apply)', async () => {
+    const r = await sh('set -C; echo foo >| nc.txt; exec 3<> nc.txt; read -n 1 <&3; echo -n . >&3; exec 3>&-; cat nc.txt; set +C');
+    expect(r.out).toBe('f.o\n');
+  });
+
   it('creates a missing file', async () => {
     expect((await sh('exec 9<>new.txt; echo x >&9; exec 9>&-; cat new.txt')).out).toBe('x\n');
   });

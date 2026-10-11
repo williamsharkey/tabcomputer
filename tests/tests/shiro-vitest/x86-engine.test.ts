@@ -368,6 +368,10 @@ const haveSystime = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const pidfdBin = join(out, 'pidfd');
 const havePidfd = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_pidfd') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', pidfdBin, 'pidfd.c']);
+// Blink 0533: empty paths in the *at calls (faccessat2's flags, utimensat)
+const emptyatBin = join(out, 'emptyat');
+const haveEmptyat = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_emptyat') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', emptyatBin, 'emptyat.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1150,6 +1154,13 @@ it.skipIf(!havePidfd)('pidfds: PIDFD_GET_INFO, pidfd_send_signal, readable at ex
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('running 0 pid 1 ppid 1 poll 0 signal 0 poll 1 exited 0 exit 0 status 0\n' +
     'waitid 0 pid 1 code 1 reaped no mask -1 3 reaped 0 exit 1 status 15 file -1 25\n');
+}, 60_000);
+
+it.skipIf(!haveEmptyat)('an empty path in the *at calls is ENOENT, or dirfd itself with AT_EMPTY_PATH (O_PATH too); faccessat2 refuses unknown flags (tabcomputer#54\'s audit)', async () => {
+  const { shell } = await setup(readFileSync(emptyatBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('fchmodat 2\nfchownat 0 0 2\nfaccessat2 0 0 2 0\nfaccessat2 badflag 22\nfstatat 0 0 2\nstatx 0 2\n' +
+    'utimensat null 0 empty 2 emptyflag 0 opath 0\nmtime 2\nmknodat 2 unlinkat 2 mkdirat 2\nreadlinkat 2\nopenat 2\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

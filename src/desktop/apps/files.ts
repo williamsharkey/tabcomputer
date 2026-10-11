@@ -143,6 +143,9 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   function updateReposPanel(): void {
     const show = cwd === SRC;
     reposHost.hidden = !show;
+    // (the panel has its own Clone from URL: the toolbar's would be the same button twice)
+    const toolbarClone = root.querySelector<HTMLElement>('[data-act=clone]');
+    if (toolbarClone) toolbarClone.hidden = show;
     if (!show) { reposCleanup?.(); reposCleanup = null; return; }
     if (reposCleanup || reposLoading) return;
     reposLoading = true;

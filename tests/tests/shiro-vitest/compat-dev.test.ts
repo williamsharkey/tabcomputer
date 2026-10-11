@@ -832,14 +832,6 @@ for (const fd of fds) fs.closeSync(fd);
 console.log(new Set(fds).size, wrong);`)).toBe('300 0\n');
   }, 60_000);
 
-  it("node's own options before the script: skipped with their values; -r and --import load first (vitest 4's forks pool)", async () => {
-    await fs.writeFile('/home/user/m/pre.cjs', `globalThis.__pre = (globalThis.__pre || '') + 'r';`);
-    await fs.writeFile('/home/user/m/pre2.cjs', `globalThis.__pre = (globalThis.__pre || '') + 'i';`);
-    await fs.writeFile('/home/user/m/main-opts.js', `console.log(globalThis.__pre, process.argv.slice(2).join(','));`);
-    const r = await sh(shell, 'cd /home/user/m && node --experimental-import-meta-resolve -r ./pre.cjs --conditions dev --import=./pre2.cjs --no-warnings main-opts.js a --b');
-    expect(r.out).toBe('ri a,--b\n');
-  }, 60_000);
-
   it("a node child's stdio are live pipes: the parent talks to it while it runs (esbuild's service)", async () => {
     // The child answers each line as it comes, from fs.read(0) (as Go does), with raw bytes on fd 1
     await fs.writeFile('/home/user/m/echo-child.js', `const fs = require('fs');

@@ -46,10 +46,15 @@ function redeclared(src: string, inCode: (i: number) => boolean, locals: Map<str
   };
   for (const m of src.matchAll(/\bcatch\s*\(([^()]*)\)/g)) add(m[1], m.index!);
   for (const m of src.matchAll(/\bfunction\b\s*\*?\s*[\w$]*\s*\(([^()]*)\)/g)) add(m[1], m.index!);
+  // (a method's parameters: `getFullName(test, separator) {` beside an imported `separator`;
+  // an `if (…) {` condition's names come along, which only keeps them copies)
+  for (const m of src.matchAll(/[\w$]\s*\(([^()]*)\)\s*\{/g)) add(m[1], m.index!);
   for (const m of src.matchAll(/\(([^()]*)\)\s*=>/g)) add(m[1], m.index!);
   for (const m of src.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) if (inCode(m.index!) && locals.has(m[1])) found.add(m[1]);
   for (const m of src.matchAll(/\b(?:let|const|var|function\s*\*?|class)\s+([A-Za-z_$][\w$]*)/g)) if (inCode(m.index!) && locals.has(m[1])) found.add(m[1]);
   for (const m of src.matchAll(/\b(?:let|const|var)\s*([{[][^=;]*)=/g)) add(m[1], m.index!);
+  // (`for (const { x } of list)`: destructured with no `=`)
+  for (const m of src.matchAll(/\b(?:let|const|var)\s*([{[][^;=]*?)\s+(?:of|in)\b/g)) add(m[1], m.index!);
   return found;
 }
 
@@ -67,7 +72,8 @@ export function liveEsbuildChunk(src: string): string {
  * (`export let n`) and re-exports are getters too.
  */
 export function liveModule(src: string): string {
-  return liveBindings(src, true);
+  // (a byte order mark isn't a word's start: three's WebGLBindingStates.js begins with one)
+  return liveBindings(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src, true);
 }
 
 const STATIC_IMPORT = /(?<![\w$.])import\s*(?:[\w$*{][^;'"()]*?\bfrom\s*)?(['"])([^'"\n]+)\1/g;
@@ -84,6 +90,8 @@ function liveBindings(src: string, general: boolean): string {
   const imports: { items: [string, string][]; raw: string[]; quote: string; spec: string }[] = [];
   for (const m of src.matchAll(NAMED_IMPORT)) {
     if (!inCode(m.index!)) continue;
+    // (a node builtin's exports don't change under it: its imports stay copies)
+    if (general && m[3].startsWith('node:')) continue;
     const idx = modules.push(m[3]) - 1;
     const rec = { items: [] as [string, string][], raw: [] as string[], quote: m[2], spec: m[3] };
     for (const item of m[1].split(',')) {
@@ -91,6 +99,8 @@ function liveBindings(src: string, general: boolean): string {
       if (!t) continue;
       rec.raw.push(t);
       const as = /^([\w$]+)\s+as\s+([\w$]+)$/.exec(t);
+      // (general) `{ default as x }` is the default import, the module's exports themselves here: a copy
+      if (as && general && as[1] === 'default') continue;
       if (as) { locals.set(as[2], [idx, as[1]]); rec.items.push([as[2], t]); }
       else if (/^[\w$]+$/.test(t)) { locals.set(t, [idx, t]); rec.items.push([t, t]); }
     }
@@ -105,6 +115,8 @@ function liveBindings(src: string, general: boolean): string {
   // Local export lists become getters; the statements are removed
   const getters: string[] = [];
   const removals: [number, number][] = [];
+  // (export statements left to the transform as they are: names in them aren't rewritten)
+  const keep: [number, number][] = [];
   for (const m of src.matchAll(LOCAL_EXPORT)) {
     if (!inCode(m.index!)) continue;
     // `export { x } from 'y'` is a re-export, handled by the regular transform (in general
@@ -122,6 +134,14 @@ function liveBindings(src: string, general: boolean): string {
     }
     if (/^\s*from\b/.test(src.slice(m.index! + m[0].length))) continue;
     if (/\bfrom\s*['"]$/.test(m[0])) continue;
+    // (general) a list with the default export is the transform's: its default is the exports
+    // object itself (tinyrainbow's `export { b as default, … }`, which vitest imports as `c`)
+    if (general && /(?:^|[\s,])(?:default|[\w$]+\s+as\s+default)\s*(?:,|$)/.test(m[1])) {
+      keep.push([m.index!, m.index! + m[0].length]);
+      // (the transform exports these locals by name: an import among them stays a copy)
+      for (const item of m[1].split(',')) { const n = /^\s*([\w$]+)/.exec(item)?.[1]; if (n) locals.delete(n); }
+      continue;
+    }
     for (const item of m[1].split(',')) {
       const t = item.trim();
       if (!t) continue;
@@ -165,7 +185,8 @@ function liveBindings(src: string, general: boolean): string {
     const steps: string[] = [];
     const seen = new Set<string>();
     const assign = (spec: string, ks: number[] | undefined) => {
-      const load = `(__shiro_require)(${JSON.stringify(spec)})`;
+      // (a plain call, which a module whose import is still evaluating waits for: require.ts)
+      const load = `__shiro_require(${JSON.stringify(spec)})`;
       steps.push(ks ? `${ks.map((k) => `__shiro_live${k} = `).join('')}${load};` : `${load};`);
       if (ks) steps.push(`__shiro_require.relink?.(${JSON.stringify(spec)}, (__e) => { ${ks.map((k) => `__shiro_live${k} = `).join('')}__e; });`);
     };
@@ -187,7 +208,7 @@ function liveBindings(src: string, general: boolean): string {
   let prev = '';        // last significant code character ('w' after a word, 'a' after a literal)
   let prevWord = '';
   let classDepth = -1;  // stack depth where a `class` keyword's body `{` will open
-  let skipI = 0, remI = 0;
+  let skipI = 0, remI = 0, keepI = 0;
   const len = src.length;
   let i = 0;
   while (i < len) {
@@ -202,6 +223,7 @@ function liveBindings(src: string, general: boolean): string {
       continue;
     }
     if (remI < removals.length && i === removals[remI][0]) { emit(i, removals[remI][1], ''); i = removals[remI][1]; remI++; prev = ';'; continue; }
+    if (keepI < keep.length && i === keep[keepI][0]) { i = keep[keepI++][1]; prev = ';'; prevWord = ''; continue; }
     if (!inCode(i)) {
       // a comment keeps `prev`; a string, template or regex literal is a value
       const c0 = src[i];

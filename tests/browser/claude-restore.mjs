@@ -147,6 +147,15 @@ try {
     j.customApiKeyResponses = { approved: [key.slice(-20)], rejected: [] };
     await fs.writeFile('/home/user/.claude.json', JSON.stringify(j));
   }, { key: KEY });
+  // TOOL=1 runs with --dangerously-skip-permissions: its warning accepted beforehand
+  if (TOOL) await page.evaluate(async () => {
+    const fs = window.__tabcomputer.fs;
+    let st = {};
+    try { st = JSON.parse(await fs.readFile('/home/user/.claude/settings.json', 'utf8')); } catch {}
+    st.skipDangerousModePermissionPrompt = true;
+    await fs.mkdir('/home/user/.claude', { recursive: true }).catch(() => {});
+    await fs.writeFile('/home/user/.claude/settings.json', JSON.stringify(st));
+  });
   await sh(`printf '%s\\n' 'export ANTHROPIC_BASE_URL=${BASE}' 'export ANTHROPIC_API_KEY=${KEY}' >> ~/.profile`);
 
   await page.evaluate(() => window.__shiroDesktopCtx.openTerminal({ cwd: '/home/user/proj' }));

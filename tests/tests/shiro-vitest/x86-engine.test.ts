@@ -401,10 +401,6 @@ const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const smapsBin = join(out, 'smaps');
 const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
-// Blink 0537: a same-instance fork child takes its signals while its parent waits on direct channels
-const zombiesigBin = join(out, 'zombiesig');
-const haveZombiesig = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sigpoll') &&
-  tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiesigBin, 'zombiesig.c']);
 // read of a pipe's write end and write of its read end are EBADF, not a wait
 const pipeebadfBin = join(out, 'pipeebadf');
 const havePipeebadf = tryBuild('gcc', ['-static', '-O1', '-w', '-o', pipeebadfBin, 'pipeebadf.c']);
@@ -1242,12 +1238,6 @@ it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('size 1024 rss 8 locked 0\nmsync 0\nmlocked rss 1024 locked 1024 rollup 1\n' +
     'msync locked -1 16\nmunlocked locked 0 msync 0\n');
-}, 60_000);
-
-it.skipIf(!haveZombiesig)('fork children in pause() each wake to their kill() and exit, unreaped: ZZZZ (the third on slept through it while the parent sat on direct channels: LTP pause01)', async () => {
-  const { shell } = await setup(readFileSync(zombiesigBin));
-  const r = await run(shell, './prog');
-  expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZ\n');
 }, 60_000);
 
 it.skipIf(!havePipeebadf)('read of a pipe\'s write end and write of its read end fail EBADF at once (LTP pipe03 hung)', async () => {

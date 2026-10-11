@@ -510,7 +510,8 @@ function installHistoryFlush(): void {
 /** Cheap pre-check for expandPrefixAssignments: starts with NAME= and has another NAME= later (a superset: false hits just take the full pass) */
 const ORDERED_PREFIX_RE = /^\s*[A-Za-z_][A-Za-z0-9_]*\+?=[\s\S]*\s[A-Za-z_][A-Za-z0-9_]*\+?=/;
 
-class BreakSignal { constructor(public levels: number = 1) {} }
+/** (status: the loop's, for a break that failed: `break oops` ends the loop with 128, as bash) */
+class BreakSignal { constructor(public levels: number = 1, public status = 0) {} }
 /** Sentinel thrown by `continue [N]` inside loops */
 class ContinueSignal { constructor(public levels: number = 1) {} }
 /** Sentinel thrown by `return [N]` inside functions */
@@ -3546,7 +3547,21 @@ export class Shell {
         // Outside a loop (also in a subshell inside one) break and continue do nothing
         if (effectiveCmdName === 'break' || effectiveCmdName === 'continue') {
           if (this.loopDepth > 0) {
-            const levels = cmdArgs.length > 0 ? parseInt(cmdArgs[0], 10) || 1 : 1;
+            // As bash: a bad count ends the loop (status 128); extra arguments break out of it
+            if (cmdArgs.length > 1) {
+              stderrWriter(`tabcomputer: ${effectiveCmdName}: too many arguments\r\n`);
+              throw new BreakSignal(1, 1);
+            }
+            const arg = cmdArgs[0];
+            if (arg !== undefined && !/^\s*[-+]?\d+\s*$/.test(arg)) {
+              stderrWriter(`tabcomputer: ${effectiveCmdName}: ${arg}: numeric argument required\r\n`);
+              throw new BreakSignal(1, 128);
+            }
+            const levels = arg === undefined ? 1 : parseInt(arg, 10);
+            if (levels < 1) {
+              stderrWriter(`tabcomputer: ${effectiveCmdName}: ${arg}: loop count out of range\r\n`);
+              throw new BreakSignal(1, 1);
+            }
             throw effectiveCmdName === 'break' ? new BreakSignal(levels) : new ContinueSignal(levels);
           }
           stderrWriter(`tabcomputer: ${effectiveCmdName}: only meaningful in a \`for', \`while', or \`until' loop\r\n`);
@@ -6759,7 +6774,8 @@ export class Shell {
         quoted = true;
         const end = ansiCEnd(input, i);
         // (unterminated: the rest of the input)
-        current += decodeAnsiC(input.slice(i + 2, input[end - 1] === "'" && end > i + 2 ? end - 1 : end));
+        // (a \x01 byte in it is data, not the quoted-character marker: $'\001', $'\ca')
+        current += decodeAnsiC(input.slice(i + 2, input[end - 1] === "'" && end > i + 2 ? end - 1 : end)).replace(/\x01/g, '\uE00D');
         i = end;
         continue;
       }
@@ -7129,7 +7145,7 @@ export class Shell {
   // ─── ARITHMETIC EXPANSION ─────────────────────────────────────────────────
 
   private expandArithmetic(input: string): string {
-    if (!input.includes('$((')) return input;
+    if (!input.includes('$((') && !input.includes('$[')) return input;
     let result = '';
     let i = 0;
     let inSingle = false, inDouble = false;
@@ -7145,6 +7161,25 @@ export class Shell {
         result += input.slice(i, end);
         i = end;
         continue;
+      }
+      // $[expr]: the old form of $((expr))
+      if (!inSingle && ch === '$' && input[i + 1] === '[') {
+        let depth = 0;
+        let j = i + 1;
+        for (; j < input.length; j++) {
+          if (input[j] === '[') depth++;
+          else if (input[j] === ']' && --depth === 0) break;
+        }
+        if (j < input.length) {
+          try {
+            result += String(this.evalArithBig(input.slice(i + 2, j)));
+          } catch (e) {
+            if (e instanceof ArithError) throw new LineAbort(e.message);
+            throw e;
+          }
+          i = j + 1;
+          continue;
+        }
       }
       if (!inSingle && input[i] === '$' && input[i + 1] === '(' && input[i + 2] === '(') {
         // The matching )) by single-paren depth: $((a,(b+1))), $((!(1||2)))
@@ -8256,7 +8291,7 @@ export class Shell {
         status = 0;
         if (parsed.body.trim()) status = await this.execute(parsed.body, writeStdout, writeStderr, false, undefined, true);
       } catch (e) {
-        if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1); status = 0; break; }
+        if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1, e.status); status = e.status; break; }
         if (e instanceof ContinueSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new ContinueSignal(e.levels - 1); status = 0; continue; }
         throw e;
       }
@@ -8299,7 +8334,7 @@ export class Shell {
         try {
           if (parsed.body.trim()) status = await this.execute(parsed.body, writeStdout, writeStderr, false, undefined, true);
         } catch (e) {
-          if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1); status = 0; break; }
+          if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1, e.status); status = e.status; break; }
           if (e instanceof ContinueSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new ContinueSignal(e.levels - 1); status = 0; /* fall through to update */ }
           else throw e;
         }
@@ -8331,7 +8366,7 @@ export class Shell {
       try {
         if (parsed.body.trim()) status = await this.execute(parsed.body, writeStdout, writeStderr, false, undefined, true);
       } catch (e) {
-        if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1); status = 0; break; }
+        if (e instanceof BreakSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new BreakSignal(e.levels - 1, e.status); status = e.status; break; }
         if (e instanceof ContinueSignal) { if (e.levels > 1 && this.loopDepth > 1) throw new ContinueSignal(e.levels - 1); status = 0; continue; }
         throw e;
       }
@@ -8384,11 +8419,11 @@ export class Shell {
         const l = await this.expandScalar(n.l, writeStderr);
         switch (n.op) {
           case '=': case '==': case '!=': {
-            const re = await this.dbPattern(n.r, writeStderr);
+            const re = this.caseFold(await this.dbPattern(n.r, writeStderr));
             return re.test(l) !== (n.op === '!=');
           }
           case '=~': {
-            const re = await this.dbRegex(n.r, writeStderr);
+            const re = this.caseFold(await this.dbRegex(n.r, writeStderr));
             const m = re.exec(l);
             if (!m) { this.arrays.delete('BASH_REMATCH'); return false; }
             this.arrays.set('BASH_REMATCH', m.map((x) => x ?? ''));
@@ -8420,6 +8455,11 @@ export class Shell {
     } finally {
       if (!had) this.shoptopts.delete('extglob');
     }
+  }
+
+  /** shopt -s nocasematch: [[ == ]], [[ =~ ]] and case patterns match without regard to case */
+  private caseFold(re: RegExp): RegExp {
+    return this.shoptopts.has('nocasematch') && !re.flags.includes('i') ? new RegExp(re.source, re.flags + 'i') : re;
   }
 
   /** The right side of [[ x =~ REGEX ]]: an ERE whose quoted parts match literally */
@@ -8854,7 +8894,7 @@ export class Shell {
         const parts = await this.caseParts(p);
         // Quoted characters are marked literal, so a bracket can span them (*["$t"]*)
         const marked = parts.map((x) => (x.literal ? x.text.replace(/[\s\S]/g, '\x01$&') : x.text)).join('');
-        const re = new RegExp('^' + this.globToRegex(marked) + '$', 's');
+        const re = this.caseFold(new RegExp('^' + this.globToRegex(marked) + '$', 's'));
         if (re.test(word)) { matched = true; break; }
       }
       if (!matched) continue;

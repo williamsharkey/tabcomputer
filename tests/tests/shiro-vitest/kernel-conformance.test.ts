@@ -352,6 +352,11 @@ describe('kernel syscalls found by LTP', () => {
     // once the held signal is taken (sigwait), the overruns of that one are reported
     t.deferredSignals.delete(A.SIGUSR1);
     expect(await kernel.syscall(t, A.SYS_timer_getoverrun, [id], new Uint8Array(8))).toBeGreaterThanOrEqual(3);
+    // re-armed (or disarmed) while its signal is held: the signal goes (Linux 6.13)
+    await new Promise((r) => setTimeout(r, 50));
+    expect(t.deferredSignals.has(A.SIGUSR1)).toBe(true);
+    expect(await kernel.syscall(t, A.SYS_timer_settime, [id, 0], its(0, 0))).toBe(0);
+    expect(t.deferredSignals.has(A.SIGUSR1)).toBe(false);
     expect(await kernel.syscall(t, A.SYS_timer_delete, [id], new Uint8Array(8))).toBe(0);
     expect(await kernel.syscall(t, A.SYS_timer_delete, [id], new Uint8Array(8))).toBe(-A.EINVAL);
     kernel.kill(t.pid, A.SIGKILL);

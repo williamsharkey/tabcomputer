@@ -1391,6 +1391,10 @@ export class Shell {
     // ...and its own options; readonly is not passed on either
     this.options = new Set(DEFAULT_OPTIONS);
     this.shoptopts = new Set(SHOPT_DEFAULTS);
+    // and set -e applies again: the caller being in `CMD && …` or an if condition
+    // doesn't carry over (`true && bash -e s.sh` ran past a failure)
+    this.errexitSuppressed = 0;
+    this.failureIgnored = false;
     this.readonlyVars = new Set();
     // A shell starts with the default IFS, whatever its environment says (POSIX 2.5.3)
     this.env.IFS = ' \t\n';
@@ -1515,9 +1519,13 @@ export class Shell {
 
   /** The environment a program started from this shell gets: env minus unexported variables */
   exportedEnv(): Record<string, string> {
-    if (!this.localVars.size) return this.env;
-    const e = { ...this.env };
-    for (const n of this.localVars) delete e[n];
+    // Variables only: not $? $# $1…, LINENO and $_ (bash doesn't export them) or the shell's own
+    // __PIPE_STDIN (env - ./prog gave the program ?=0 and LINENO=1)
+    const e: Record<string, string> = {};
+    for (const k in this.env) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k === 'LINENO' || k === '_' || k === '__PIPE_STDIN' || k.startsWith('__shiro') || this.localVars.has(k)) continue;
+      e[k] = this.env[k];
+    }
     return e;
   }
 
@@ -1706,6 +1714,8 @@ export class Shell {
 
   /** Status of the last command substitution while expanding the current command */
   private substStatus: number | null = null;
+  /** injectedStdin is a pipe's input (runHeadedPipeline): read to EOF, even when empty */
+  private injectedPipe = false;
   /** Expanding the word of a ${x:-word} that is inside double quotes: no tilde expansion */
   private tildeOff = false;
 
@@ -2454,6 +2464,9 @@ export class Shell {
     // Stdin handed over by a pipeline whose head was a loop or subshell (see runHeadedPipeline)
     const injectedStdin = this.injectedStdin;
     this.injectedStdin = null;
+    // (the injected text is a pipe's whole input, even when empty: EOF, never the live stdin)
+    const pipeIn = this.injectedPipe;
+    this.injectedPipe = false;
     // Source text from the user, a script or `source` loses its comments first
     if (this.executeDepth === 0) line = stripComments(line, this.sourcing > 0 ? 'posix' : 'interactive');
     // Here-documents become `< MARKER` redirections (shell-heredoc.ts)
@@ -2970,7 +2983,7 @@ export class Shell {
             for (const o of parsedSh.off) child.options.delete(o);
             child.commandStringFlag = true;
             child.injectedStdin = nestedStdin;
-            if (!this.liveStdin(i, heredocStdin, hereString, redirects)) child.kernelStdinLive = false;
+            if (!(!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects))) child.kernelStdinLive = false;
             exitCode = await child.runScriptText(shellCmd, terminalOverride || this.terminal, writeStdout, stderrWriter);
           } else {
             // /bin/sh [OPTIONS] script.sh ARGS… (its arguments are its own, -x or not) or /bin/sh (no args)
@@ -2980,7 +2993,7 @@ export class Shell {
               try {
                 const content = await this.fs.readFile(scriptPath, 'utf8') as string;
                 const shCtx: CommandContext = { args: scripts.slice(1), fs: this.fs, cwd: this.cwd, env: this.env, stdin: nestedStdin, stdout: '', stderr: '', shell: this, terminal: terminalOverride || this.terminal,
-                  liveStdin: this.liveStdin(i, heredocStdin, hereString, redirects) };
+                  liveStdin: (!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects)) };
                 exitCode = await this.executeShellScript(content, scripts.slice(1), shCtx, writeStdout, stderrWriter, scripts[0], parsedSh);
               } catch (e: any) {
                 stderrWriter(`tabcomputer: ${scripts[0]}: ${e.message}\r\n`);
@@ -3370,7 +3383,7 @@ export class Shell {
             readInput = redirectInput;
           } else if (hasPipeStdin) {
             readInput = this.env['__PIPE_STDIN'];
-          } else if (readFd < 0 && this.liveStdin(i, heredocStdin, hereString, redirects)) {
+          } else if (readFd < 0 && (!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects))) {
             // One record from fd 0, leaving the rest for whatever reads it next
             liveRead = true;
             if (readTimeout !== 0) readInput = await this.kernelStdio!.readRecord(readDelim, readNchars, rawMode, readExact);
@@ -3488,7 +3501,7 @@ export class Shell {
               const f = this.fileDescriptors.get(fd)!;
               mapInput = f.content.slice(f.offset);
               f.offset = f.content.length;
-            } else if (fd === 0 && this.liveStdin(i, heredocStdin, hereString, redirects)) mapInput = await this.kernelStdio!.readAll();
+            } else if (fd === 0 && (!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects))) mapInput = await this.kernelStdio!.readAll();
           } else if (hereString !== undefined) {
             mapInput = hereString;
           } else if (inRedirect) {
@@ -3505,7 +3518,7 @@ export class Shell {
           } else if (i === 0 && '__PIPE_STDIN' in this.env) {
             mapInput = this.env['__PIPE_STDIN'];
             this.env['__PIPE_STDIN'] = '';
-          } else if (this.liveStdin(i, heredocStdin, hereString, redirects)) {
+          } else if ((!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects))) {
             mapInput = await this.kernelStdio!.readAll();
           } else {
             mapInput = i > 0 ? lastOutput : (heredocStdin || '');
@@ -4825,8 +4838,8 @@ export class Shell {
         // pipe's remainder, once it actually reads (`echo a; cat` leaves it for cat)
         const fromEnclosingPipe = i === 0 && !stdin && !heredocStdin && hereString === undefined &&
           !redirects.some(r => r.type === '<') && '__PIPE_STDIN' in this.env;
-        const hasShellStdin = i > 0 || hereString !== undefined || (i === 0 && !!heredocStdin) || redirects.some(r => r.type === '<') || fromEnclosingPipe;
-        const live = this.liveStdin(i, heredocStdin, hereString, redirects);
+        const hasShellStdin = i > 0 || hereString !== undefined || (i === 0 && (!!heredocStdin || pipeIn)) || redirects.some(r => r.type === '<') || fromEnclosingPipe;
+        const live = (!pipeIn && this.liveStdin(i, heredocStdin, hereString, redirects));
 
         const pwdBefore = this.env['PWD'], cwdBefore = this.cwd;
         const ctx: CommandContext = {
@@ -4967,6 +4980,14 @@ export class Shell {
           if (liveOut.out) ctx.streamStdout = liveOut.out;
           if (liveOut.err) ctx.streamStderr = liveOut.err;
         }
+        // `cmd 2>&1 | …` (stdout not to a file): one stream for both, so what a
+        // command writes as it goes (sh -c, a script, node) keeps its order; it
+        // came out as all of stdout, then all of stderr (tabcomputer#30)
+        const mergeErr = !liveOut && redirects.some(r => r.type === '2>&1') &&
+          !redirects.some(r => r.type === '>' || r.type === '>>' || r.type === '2>' || r.type === '2>>');
+        if (mergeErr && !ctx.streamStdout && !ctx.streamStderr) {
+          ctx.streamStdout = ctx.streamStderr = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
+        }
         if (cmd) {
           try {
             exitCode = live
@@ -5009,7 +5030,7 @@ export class Shell {
               const toCtxErr = (t: string) => { ctx.stderr += t.replace(/\r\n/g, '\n'); };
               exitCode = await this.executeScript(executable, cmdArgs, ctx,
                 outRedirected || i !== pipeline.length - 1 ? toCtxOut : writeStdout,
-                outRedirected ? toCtxErr : stderrWriter, effectiveCmdName);
+                mergeErr ? toCtxOut : outRedirected ? toCtxErr : stderrWriter, effectiveCmdName);
             } catch (e: any) {
               ctx.stderr += e.message + '\n';
               exitCode = 1;
@@ -5188,7 +5209,9 @@ export class Shell {
     const appender = (path: string) => {
       let pending = '';
       let busy: Promise<void> | null = null;
-      const w = Object.assign((t: string) => { if (!t) return; w.used = true; pending += t; busy ??= pump(); },
+      // (what streams here comes through the shell's writers, whose lines end in \r\n for
+      // the terminal: `sh -c '…' > f 2>&1` put \r\n in f)
+      const w = Object.assign((t: string) => { if (!t) return; w.used = true; pending += t.replace(/\r\n/g, '\n'); busy ??= pump(); },
         { flush: () => busy ?? Promise.resolve(), used: false });
       const pump = async () => {
         while (pending) {
@@ -6529,7 +6552,10 @@ export class Shell {
         if (ch === '}') {
           // Its } ends a command list (`{ echo }; }`: the first } is an argument)
           const before = current.replace(/[ \t]+$/, '');
-          const closes = /(^|[;&\n{}]|\bdone|\bfi|\besac)$/.test(before) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
+          // After a { or } only when that is a word of its own, apart from this one
+          // (`{ find . -exec echo {} \; ; }`, `-I{}`: the {} is an argument)
+          const afterBrace = /\s/.test(line[i - 1] ?? '') && /(^|[\s;&|()])[{}]$/.test(before);
+          const closes = (afterBrace || /(^|[;&\n]|\bdone|\bfi|\besac)$/.test(before)) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
           if (braceDepth > 0 && closes) { depth--; braceDepth--; }
           current += ch; i++; continue;
         }
@@ -7505,9 +7531,14 @@ export class Shell {
         : sub.execControlStructurePiped(last, input, writeStdout, writeStderr)));
       this.arrays.set('PIPESTATUS', [String(code), String(restCode)]);
     } else {
+      // (the head's output is the rest's whole input, even if it wrote nothing: an
+      // empty one is EOF, not the shell's live stdin, which an agent tool's sh -c
+      // never closes: `time { …; } 2>&1 | tail` hung, tabcomputer#48)
       this.injectedStdin = captured.replace(/\r\n/g, '\n');
+      this.injectedPipe = true;
       restCode = await this.execute(rest, writeStdout, writeStderr, false, terminalOverride || this.terminal, true);
       this.injectedStdin = null;
+      this.injectedPipe = false;
       this.arrays.set('PIPESTATUS', [String(code), ...(this.arrays.get('PIPESTATUS') ?? [String(restCode)])]);
     }
     if (this.options.has('pipefail')) {
@@ -9902,15 +9933,18 @@ function compoundEnd(cmd: string): number {
     while (j < cmd.length && !/[\s;&|()'"\\]/.test(cmd[j])) j++;
     if (j === i) j = i + 1;
     const word = cmd.slice(i, j);
+    let closed = false;
     if (paren === 0 && cmdPos) {
       if (OPEN[word]) blocks.push(OPEN[word]);
       else if (word === '{') blocks.push('}');
       else if (blocks.length && word === blocks[blocks.length - 1]) {
         blocks.pop();
         if (!blocks.length) return j;
+        closed = true;
       }
     }
-    cmdPos = ['do', 'then', 'else', 'elif', '{', '!', 'if', 'while', 'until', 'time'].includes(word);
+    // (after a compound's closing word another can follow: `{ { echo; } }`, `fi }`)
+    cmdPos = closed || ['do', 'then', 'else', 'elif', '{', '!', 'if', 'while', 'until', 'time'].includes(word);
     i = j;
   }
   return -1;

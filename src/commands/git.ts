@@ -14,9 +14,13 @@ import { getShiroOrigin } from '../utils/shiro-origin';
 import { activeProfile } from '../profile';
 import { gitPlumbing } from './git-plumbing';
 import { packageShadows } from '../pkg-manager';
+import { installPackIndexer } from '../git-pack-indexer';
 import { builtinCloneHandles } from './git-clone-route';
 import { splitShortOptions, unknownOption, realGit, PREFER_REAL } from './git-route';
 import { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig } from './git-config';
+
+// git clone's pack indexing in a worker (vite-plugin-isogit.ts calls it from fromPack)
+installPackIndexer();
 
 // --- Main command ---
 
@@ -710,6 +714,8 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             ]);
           } catch (cloneErr: any) {
             await undo();
+            // isomorphic-git reads the pack back for the checkout and gets null when that read fails (#43)
+            if (/null \(reading 'slice'\)/.test(String(cloneErr?.message))) cloneErr = new Error('could not read the downloaded pack back (browser storage or memory full?)');
             const httpStatus = cloneErr?.data?.statusCode;
             // The full git is there: it gets a clone the built-in couldn't do (not one refused for credentials)
             if (asFullGit && httpStatus !== 401 && httpStatus !== 403) {
@@ -827,7 +833,13 @@ async function gitMain(ctx: CommandContext): Promise<number> {
               return 1;
             }
           } catch (e: any) {
-            if (e.code === 'HttpError' || e.statusCode === 401 || e.statusCode === 403) {
+            const http = e.statusCode || e.data?.statusCode;
+            if (http === 413) {
+              // nginx in front of the git proxy takes requests up to 100 MB; the built-in git
+              // sends more than the new objects (all of history for a new branch of a big repo)
+              ctx.stderr = `error: push failed: the upload was too large for tabcomputer's git proxy (HTTP 413, over 100 MB).\n`
+                + `The full git sends only what the remote lacks: pkg install git, then git push again.\n`;
+            } else if (e.code === 'HttpError' || e.statusCode === 401 || e.statusCode === 403) {
               ctx.stderr = `error: authentication failed (HTTP ${e.statusCode || e.data?.statusCode || ''})\nSign in again with: gh auth login (or gh auth refresh if the token lacks access)\n`;
             } else if (e.code === 'PushRejectedError') {
               ctx.stderr = `error: push rejected — remote has new commits. Pull first.\n`;

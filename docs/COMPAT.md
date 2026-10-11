@@ -964,6 +964,15 @@ described here:
   the shell's ELF path (Blink, with the terminal's pty). In Chromium:
   `--version` 2.7 s; `-p "say hi"` to the API's answer 139 s, 105 s with
   `BUN_JSC_useJIT=0`.
+- Known (low priority, not yet investigated): without the full git, the
+  auto-install of Claude's official plugin marketplace logs
+  `spawn ENOENT /usr/local/bin/git` in `~/.claude/debug` (that path is the
+  builtin git's `#!/bin/sh` wrapper); nothing else is affected.
+  `pkg install git` removes the wrapper (git is then `/usr/bin/git`), which
+  likely avoids it; unverified.
+- The "Try the new fullscreen renderer?" offer works since the kernel's
+  `/dev/tty` honours `O_NONBLOCK` (tabcomputer#41: Claude drains stdin through
+  a non-blocking `/dev/tty` before it relaunches, and the read blocked).
 
 What the official native installer (`claude.ai/install.sh`) installs, as of
 2.1.295 (`downloads.claude.ai/claude-code-releases/<version>/<platform>/claude`,

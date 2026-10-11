@@ -58,7 +58,7 @@ any Linux, WSL included.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
 | pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
-| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | crashes (below) | 14.5 / 13.0 s (20 groups) |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 8.1 s total, `-p -g 1 -l 20` (after Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
@@ -85,8 +85,15 @@ What each row measures:
   and channel contention across 20 Worker-backed processes passing 100-byte
   messages through pipes. ~580 µs per message, so per-message cost is the
   same wake-up path as ping-pong, with no batching. Debian's `perf bench sched
-  messaging -p -g 1 -l 20` crashes the page in Blink ("WebAssembly.Table.get():
-  Argument 0 must be convertible to a valid number"; reported to perf-blink).
+  messaging -p -g 1 -l 20` crashed the page in Blink ("WebAssembly.Table.get():
+  Argument 0 must be convertible to a valid number"): its 40 processes in one
+  Blink instance push wasm memory past 2 GiB, and pointers above that arrived
+  negative in Blink's JS glue. Blink patch 0129 (unix/perf-blink 191817f4)
+  fixes it; the run then takes 8.1 s (perf-blink's Chromium run, not this
+  table's machine). `-g 2` (80 processes) still fails with fork(): ENOMEM,
+  because same-instance children fill the 4 GiB wasm memory. That is a
+  structural limit, and the reason the WSL figure (20 groups) has no
+  tabcomputer counterpart.
 - **memcpy.** How Blink runs glibc's memcpy, which picks its copy routine by
   CPUID: ~0.55 GB/s against 8.9 GB/s natively. perf's own unrolled copy
   reaches 1.25 GB/s in Blink. The same copy as wasm `memory.copy` in a WASI
@@ -2873,3 +2880,48 @@ command; git's lazy stub carries it.
 
 Boot A/B baba09d0 → HEAD (`--suites boot`, 2 rounds): 23 same, the bundle
 1 KiB larger.
+
+### unix/perf-fs-shell 20 — main-thread stalls (#19, #28); experiments not shipped
+
+**Stalls** (`bench/fs-stalls.mjs`: the page's main thread profiled, every
+long task ≥ 50 ms attributed to its functions; unminified build). A flush now
+issues its IndexedDB requests 8 ms at a time (one transaction still), and
+calls answered from memory let the page run every 20 ms. Byte copies use
+`Uint8Array.prototype.slice`: a Node Buffer's `slice` is a view, so each
+1 MiB block of a cloned pack was stored with the whole 265 MB pack buffer.
+isomorphic-git is transformed at build (`vite-plugin-isogit.ts`): objects of
+64 KB or more inflate with DecompressionStream (pako as fallback), with turns
+while indexing and checking out.
+
+| longest main-thread task | before | after |
+|---|---:|---:|
+| `npm i` (express, lodash, react, react-dom, typescript) | 144 ms | < 50 ms |
+| writing 30,000 small files | 410 ms | < 50 ms |
+| `find` over 30,000 files | 156 ms | < 50 ms |
+| `git clone --depth 1` of the tabcomputer repo | 155 s, then ENOSPC | 0.3 s, 16–18 s total |
+
+**Experiment: IndexedDB writes in a Worker** (not shipped). Main-thread time
+to hand records over, Chromium:
+
+| records | `store.put` | `postMessage` | copy + transfer |
+|---|---:|---:|---:|
+| 2000 × 10 KB | 62 ms | 28 ms | 16 ms |
+| 50 × 1 MB | 105 ms | 56 ms | 35 ms |
+| 5000 × 2 KB | 79 ms | 15 ms | 16 ms |
+
+About 50–60 ms less per `npm i`, but that time is already split into ≤ 8 ms
+slices, and records still in a postMessage are lost when the page goes away,
+where an issued transaction completes.
+
+**Experiment: compressing cold files** (not shipped). deflate-raw of files of
+64 KB or more, skipping already compressed formats by magic bytes:
+
+| tree | size | saved |
+|---|---:|---:|
+| node_modules (express, lodash, react, typescript, vite) | 73 MiB | 60%; 17% without the 3 native binaries over 4 MB |
+| tabcomputer checkout with .git | 538 MiB | 1% (515 MiB already compressed) |
+
+DecompressionStream reads at 150–220 MB/s: +3.5 ms for lodash.js (0.5 MB),
++6.4 ms for react-dom (1.1 MB), +103 ms for a 23 MB binary on the first read
+after eviction. The saving is in block-stored native binaries, and the stored
+format change touches every reader: held until storage quota is the problem.

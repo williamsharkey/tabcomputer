@@ -728,8 +728,13 @@ function completeEmitter(obj: any, table: Record<string, Function[]>): any {
  */
 function exportedOnly(ctx: CommandContext): Record<string, string> {
   const sh = ctx.shell as { localVars?: Set<string>; env?: Record<string, string> } | undefined;
-  if (!sh?.localVars?.size) return ctx.env;
-  const env = { ...ctx.env };
-  for (const n of sh.localVars) if (env[n] === sh.env?.[n]) delete env[n];
+  // Variables only: not the shell's $? $# $1…, LINENO, $_ or its own __PIPE_STDIN
+  // (env -i node saw ?=0 and LINENO=1), nor unexported ones
+  const env: Record<string, string> = {};
+  for (const k in ctx.env) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k === 'LINENO' || k === '_' || k === '__PIPE_STDIN' || k.startsWith('__shiro')) continue;
+    if (sh?.localVars?.has(k) && ctx.env[k] === sh.env?.[k]) continue;
+    env[k] = ctx.env[k];
+  }
   return env;
 }

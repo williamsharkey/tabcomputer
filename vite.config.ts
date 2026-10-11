@@ -5,6 +5,7 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { inlineAssets } from './vite-plugin-inline';
 import { hashEngineWasm, versionBlinkEngine } from './vite-plugin-engines';
 import { hotswapLiveModules, hotswapSource } from './vite-plugin-hotswap';
+import { isogitPackOffMainThread } from './vite-plugin-isogit';
 import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,6 +37,7 @@ export default defineConfig({
         process: true,
       },
     }),
+    isogitPackOffMainThread(),
     inlineAssets(),
     hashEngineWasm(),
     versionBlinkEngine(),
@@ -53,7 +55,11 @@ export default defineConfig({
     },
   },
   // module workers (src/gui/deb-worker.ts) that import code-split chunks
-  worker: { format: 'es' },
+  worker: {
+    format: 'es',
+    // the git pack worker (src/git-pack-worker.ts) runs isomorphic-git: Node's Buffer and the build transform
+    plugins: () => [nodePolyfills({ globals: { Buffer: true, process: true } }), isogitPackOffMainThread()],
+  },
   resolve: {},
   server: {
     headers: isolationHeaders,

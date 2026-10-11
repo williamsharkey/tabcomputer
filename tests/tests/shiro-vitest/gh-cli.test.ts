@@ -27,6 +27,7 @@ beforeEach(() => {
     if (path.startsWith('/repos/o/r/issues?')) return json(200, [ISSUE]);
     if (path === '/repos/o/r/issues/12') return json(200, ISSUE);
     if (path === '/repos/o/r/pulls' && init.method === 'POST') return json(201, { number: 5, html_url: 'https://github.com/o/r/pull/5', title: body.title });
+    if (path.startsWith('/repos/o/r/git/') && init.method === 'POST') return json(201, { sha: 'abc123', received: body });
     if (path.startsWith('/repos/o/r/labels')) return json(200, [{ name: 'bug', color: 'f00', description: 'x', node_id: 'L1', default: true }]);
     return json(404, { message: 'Not Found' });
   }));
@@ -107,12 +108,36 @@ describe('gh: flags a subcommand lacks are errors', () => {
       ['gh issue view 12 -R o/r -z', "unknown shorthand flag: 'z' in -z"],
       ['gh issue create -R o/r --title', 'flag needs an argument: --title'],
       ['gh issue view 12 -R o/r --json title --template "{{.title}}"', '--template is not supported'],
-      ['gh api repos/o/r --input f.json', 'unknown flag: --input'],
+      ['gh api repos/o/r --hostname example.com', 'unknown flag: --hostname'],
     ] as const) {
       const r = await gh(cmd);
       expect(r.code, cmd).toBe(1);
       expect(r.err, cmd).toContain(msg);
     }
     expect(calls).toEqual([]); // nothing was sent
+  });
+});
+
+// tabcomputer#45: a git tree's nested array needs the body from a file or stdin
+describe('gh api --input', () => {
+  const tree = { base_tree: 'b0', tree: [{ path: 'a.txt', mode: '100644', type: 'blob', sha: 's1' }] };
+  it('sends stdin (-) or a file as the body, POST by default, with --jq', async () => {
+    let r = await gh(`echo '{"content":"aGkK","encoding":"base64"}' | gh api repos/o/r/git/blobs --input - --jq .sha`);
+    expect(r).toEqual({ code: 0, out: 'abc123\n', err: '' });
+    expect(calls).toEqual([{ method: 'POST', path: '/repos/o/r/git/blobs', body: { content: 'aGkK', encoding: 'base64' } }]);
+    calls = [];
+    r = await gh(`printf '%s' '${JSON.stringify(tree)}' > t.json && gh api -X POST repos/o/r/git/trees --input=t.json -q .received.tree[0].path`);
+    expect(r.out).toBe('a.txt\n');
+    expect(calls[0].body).toEqual(tree);
+  });
+
+  it('fields go to the query string; a missing file is an error and sends nothing', async () => {
+    await gh(`echo '{}' | gh api repos/o/r/git/refs --input - -f x=1`);
+    expect(calls[0]).toMatchObject({ method: 'POST', path: '/repos/o/r/git/refs?x=1', body: {} });
+    calls = [];
+    const r = await gh('gh api repos/o/r/git/trees --input nope.json');
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('open nope.json: no such file or directory');
+    expect(calls).toEqual([]);
   });
 });

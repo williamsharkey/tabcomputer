@@ -1310,6 +1310,10 @@ describe('worker guests over the SAB channel', () => {
     expect(text(`/proc/${p.pid}/task/${p.pid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x0 0x10 `));
     expect(text(`/proc/${p.pid}/task/${t.tid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x3 0x10 `));
     expect(text(`/proc/${p.pid}/task/${t.tid}/wchan`)).toBe('pipe_read');
+    // (a channel's blocked read waits on readiness, not in kernel.syscall: the process still counts as in it)
+    expect(text(`/proc/${p.pid}/stat`).split(' ')[2]).toBe('S');
+    expect(text(`/proc/${p.pid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x`));
+    expect(text(`/proc/${p.pid}/wchan`)).toBe('pipe_read');
     const st = text(`/proc/${p.pid}/task/${t.tid}/status`);
     expect(st).toContain(`\nState:\tS (sleeping)\nTgid:\t${p.pid}\nNgid:\t0\nPid:\t${t.tid}\n`);
     expect(st).toMatch(/\nThreads:\t2\n/);
@@ -1386,6 +1390,47 @@ describe('worker guests over the SAB channel', () => {
     expect(task()).toEqual([String(p.pid)]);
     kernel.kill(p.pid, A.SIGKILL);
     await p.wait();
+  });
+
+  it('a channel with procOf serves each request as the process it names (a hosted fork child), -ESRCH for none', async () => {
+    const { KernelChannel, createChannelBuffer } = await import('@shiro/kernel/channel');
+    const parent = kernel.spawn({ path: '/bin/blinkish', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+    const child = kernel.spawn({ path: '/bin/blinkish', cwd: '/tmp', fds: {}, parent, run: () => new Promise<number>(() => {}) });
+    const sab = createChannelBuffer(4096);
+    let as = 0;
+    const ch = new KernelChannel(sab, kernel, parent, { listen: false, procOf: () => (as ? kernel.procs.get(as) : parent) });
+    const i32 = new Int32Array(sab, 0, A.CH_DATA / 4);
+    const call = async (nr: number, args: number[] = []) => {
+      for (let i = 0; i < A.CH_NARGS; i++) i32[A.CH_ARGS + i] = args[i] ?? 0;
+      i32[A.CH_SYSNO] = nr;
+      Atomics.store(i32, A.CH_STATE, A.STATE_REQUEST);
+      await ch.handle();
+      for (let i = 0; i < 200 && Atomics.load(i32, A.CH_STATE) !== A.STATE_REPLY; i++) await new Promise((r) => setTimeout(r, 5));
+      expect(Atomics.load(i32, A.CH_STATE)).toBe(A.STATE_REPLY);
+      Atomics.store(i32, A.CH_STATE, 0);
+      return i32[A.CH_RESULT];
+    };
+    expect(await call(A.SYS_getpid)).toBe(parent.pid);
+    as = child.pid;
+    expect(await call(A.SYS_getpid)).toBe(child.pid);
+    expect(await call(A.SYS_getppid)).toBe(parent.pid);
+    expect(await call(A.SYS_gettid)).toBe(child.pid);
+    // a blocking call is the child's: its own /proc/PID/task record shows it
+    const [r, w] = createPipe();
+    const fd = child.fds.alloc(r);
+    const reading = call(A.SYS_read, [fd, 4]);
+    await new Promise((res) => setTimeout(res, 20));
+    expect(kernel.threadStates(child.pid)[0]).toMatchObject({ tid: child.pid, nr: A.SYS_read, waitKind: 'read', fd });
+    expect(kernel.threadStates(parent.pid)[0].nr).toBe(-1);
+    expect(ch.servingProc).toBe(child);
+    await w.write(bytes('ok'));
+    expect(await reading).toBe(2);
+    expect(kernel.threadStates(child.pid)[0].syscalls).toBeGreaterThanOrEqual(4);
+    // a process that's gone: ESRCH
+    as = 99999;
+    expect(await call(A.SYS_getpid)).toBe(-A.ESRCH);
+    ch.stop();
+    for (const p of [child, parent]) { kernel.kill(p.pid, A.SIGKILL); await p.wait(); }
   });
 
   it("Blink's threads and calls (data.engineThreads, data.engineCalls) show in task/ and threadStates", async () => {

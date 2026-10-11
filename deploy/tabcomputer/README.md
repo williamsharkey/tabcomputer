@@ -12,8 +12,11 @@ droplet are not involved.
 - **Settings and build steps** live in this directory: `release.sh` builds a
   release and `profiles/tabcomputer/server.env` is the server's environment (TCP relay on, GitHub
   sign-in off for now). Both ship with the commit, so changing them is a push.
-- **Deploy:** push a commit to the `deploy` branch of github.com/williamsharkey/tabcomputer:
-  `git push origin <commit>:refs/heads/deploy`. Within about 2
+- **Deploy:** github.com/williamsharkey/tabcomputer is the source repository;
+  `main` is its integration branch. The coordinator ships by fast-forwarding
+  `deploy` to a tested `main` commit: `git push origin <commit>:refs/heads/deploy`,
+  and records the release (build number, commit, date) in docs/RELEASES.md
+  (git tags are blocked by the proxy). Workers never push `main` or `deploy`. Within about 2
   minutes the droplet notices, runs `npm ci && npm run build`, and switches
   `/opt/tabcomputer/current` to the new release; building takes several
   minutes on this size. `https://tabcomputer.com/deployed.txt` shows the live

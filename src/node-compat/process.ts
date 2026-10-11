@@ -1,4 +1,4 @@
-import { LiveStdin } from './live-stdin';
+import { LiveStdin, STDIN_HOLD } from './live-stdin';
 import { asyncContext } from './async-context';
 import type { CommandContext } from '../commands/index';
 import type { SharedState } from './types';
@@ -435,7 +435,8 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
   const loadStdin = (): Promise<void> => {
     if (!loaded) {
       loaded = ctx.readStdin!().then((t) => { ctx.stdin = t; }, () => {});
-      pendingPromises.push(loaded);
+      // (until it ends, as the pipe's other reads: process.exit() doesn't wait for it)
+      pendingPromises.push(Object.assign(loaded, { [STDIN_HOLD]: true }));
     }
     return loaded;
   };

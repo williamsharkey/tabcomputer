@@ -34,6 +34,7 @@ import { createUrlModule } from './modules/url';
 import { createUtilModule } from './modules/util';
 import { createFsModule, createFsPromisesModule } from './modules/fs';
 import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
+import { STDIN_HOLD } from './live-stdin';
 import { createWasiModule } from './modules/wasi';
 import { createTestModule } from './modules/test-runner';
 import { createStreamModule } from './modules/stream';
@@ -944,14 +945,15 @@ export async function executeNodeScript(
     // Clean up script timeout
     if (_st.scriptTimeoutId) { clearTimeout(_st.scriptTimeoutId); _st.scriptTimeoutId = null; }
 
-    // Wait for pending async operations (after process.exit(), not for running children:
-    // node exits and they live on)
+    // Wait for pending async operations (after process.exit(), not for running children,
+    // which live on as node's do, nor for stdin reads still waiting for input)
+    const held = (p: Promise<unknown>) => CHILD_HOLD in p || STDIN_HOLD in p;
     const drainPending = async () => {
       while (pendingPromises.length > 0) {
-        const current = pendingPromises.splice(0).filter((p) => !(_st.exitCalled && CHILD_HOLD in p));
+        const current = pendingPromises.splice(0).filter((p) => !(_st.exitCalled && held(p)));
         const all = Promise.all(current);
-        // (an exit while it waits for a child ends that wait; what else was in flight is waited for)
-        if (_st.exitCalled || !current.some((p) => CHILD_HOLD in p)) await all;
+        // (an exit while it waits for a child or for input ends that wait; what else was in flight is waited for)
+        if (_st.exitCalled || !current.some(held)) await all;
         else if (await Promise.race([all.then(() => false), deferredExitPromise.then(() => true)])) pendingPromises.unshift(...current);
       }
     };

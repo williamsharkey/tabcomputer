@@ -12,6 +12,13 @@
  * every chunk; otherwise fd reads take what they asked for and the rest stays
  * queued. An outstanding read keeps the process alive, as an open pipe does.
  */
+/**
+ * On the reads that wait for input: they keep the process alive, as an open pipe does,
+ * but process.exit() doesn't wait for them (execution.ts drainPending, as CHILD_HOLD).
+ * A pipe that never closes held `process.stdin.once('data', () => process.exit(0))` forever.
+ */
+export const STDIN_HOLD = Symbol('stdin hold');
+
 export interface StdinStream {
   /** The next chunk, or null at EOF */
   read(): Promise<Uint8Array | null>;
@@ -87,7 +94,7 @@ export class LiveStdin {
       else if (c.length) this.queue.push(c);
       this.deliver();
     }, () => { this.reading = false; this.ended = true; this.deliver(); });
-    this.keepAlive(p);
+    this.keepAlive(Object.assign(p, { [STDIN_HOLD]: true }));
   }
 
   private deliver(): void {

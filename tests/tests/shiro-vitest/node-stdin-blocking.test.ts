@@ -5,7 +5,9 @@
  * x.js` started only when the producer ended, and on a pipe that stays open
  * (an agent's shell) it never started. A guest in a Worker now reads fd 0
  * when the script reads it, blocking then.
- * Also: process.exit() in a stdin 'data' listener printed "Error: process.exit(0)".
+ * Also: process.exit() in a stdin 'data' listener printed "Error: process.exit(0)";
+ * then it waited for the next read, which a pipe that stays open never answers
+ * (repro 4 hung): a read still waiting for input doesn't hold an exit (STDIN_HOLD).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestShell } from './helpers';
@@ -89,5 +91,15 @@ describe('node as a guest: stdin read when the script reads it', () => {
     const r = await agentSh(`node -e 'process.stdin.once("data", () => process.exit(0))'`, { input: 'hi\n' });
     expect(r.status).toBe(0);
     expect(r.out).toBe('');
+  }, 60_000);
+
+  it.each([
+    ['a timer exits while a data listener waits', `node -e 'process.stdin.on("data", () => {}); setTimeout(() => { console.log("bye"); process.exit(0); }, 300)'`],
+    ['a timer exits while a second fs.read(0) waits', `node -e 'const fs = require("fs"), b = Buffer.alloc(9); fs.read(0, b, 0, 9, null, () => fs.read(0, b, 0, 9, null, () => {})); setTimeout(() => { console.log("bye"); process.exit(0); }, 300)'`],
+    ['exit() in a data listener that stays on', `node -e 'process.stdin.on("data", () => { console.log("bye"); process.exit(0); })'`],
+  ])('%s, on a pipe that stays open: the exit ends it', async (_name, cmd) => {
+    const r = await agentSh(cmd, { input: 'hi\n' });
+    expect(r.status).toBe(0);
+    expect(r.out).toBe('bye\n');
   }, 60_000);
 });

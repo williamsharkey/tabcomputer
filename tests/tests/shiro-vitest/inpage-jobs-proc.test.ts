@@ -26,8 +26,8 @@ async function sh(cmd: string) {
 
 describe('in-page background jobs as processes', () => {
   it('ps and /proc/$! show the job while it runs', async () => {
-    const r = await sh('sleep 30 & p=$!; ps; cat /proc/$p/comm; tr "\\0" " " < /proc/$p/cmdline; echo; grep ^State /proc/$p/status; kill $p; wait $p; echo st=$?');
-    const pid = r.out.match(/^\s+(\d+)\s+running\s+\S+\s+sleep 30$/m)?.[1];
+    const r = await sh('sleep 30 & p=$!; ps -o pid,stat,args; cat /proc/$p/comm; tr "\\0" " " < /proc/$p/cmdline; echo; grep ^State /proc/$p/status; kill $p; wait $p; echo st=$?');
+    const pid = r.out.match(/^\s+(\d+)\s+S\s+sleep 30$/m)?.[1];
     expect(pid).toBeDefined();
     expect(r.out).toContain('\nsleep\nsleep 30 \nState:\tS (sleeping)\n');
     expect(r.out).toContain('st=143');

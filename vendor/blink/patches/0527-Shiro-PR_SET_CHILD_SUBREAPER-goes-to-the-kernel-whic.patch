@@ -1,0 +1,57 @@
+From c76aa5dd8898c166546f5a467c92630f40c4ef59 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 05:56:59 +0000
+Subject: [PATCH] Shiro: PR_SET_CHILD_SUBREAPER goes to the kernel, which
+ reparents orphans to the subreaper (LTP prctl03)
+
+---
+ blink/shiro.inc | 8 ++++++++
+ blink/syscall.c | 3 +++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 2cb214c..aaa73d2 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2715,6 +2715,14 @@ static void ShiroSetComm(struct Machine *m, const char *name) {
+   ShiroCall(m, 157, A12(15, (int)strnlen(buf, 15)), buf, (int)strnlen(buf, 15), 0, false, false);
+ }
+ 
++// PR_SET_CHILD_SUBREAPER: the kernel reparents an orphaned descendant to
++// the nearest living ancestor that set it (LTP prctl03)
++EMSCRIPTEN_KEEPALIVE int blink_shiro_subreaper(void) { return 1; }
++
++static void ShiroSetSubreaper(struct Machine *m, bool on) {
++  if (g_shiro_pid) KS(m, 157, A12(36, on));
++}
++
+ // Whether tid is one of this process's threads
+ static bool ShiroOwnTid(struct Machine *m, int tid) {
+   struct Dll *e;
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 22597e8..4c4e35e 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -792,9 +792,11 @@ static bool ShiroCpuTimes(struct Machine *, i64 *, i64 *);
+ static struct timespec CpuClockNow(struct Machine *, int);
+ static void ShiroCommitPages(struct Machine *, i64, i64);
+ static void ShiroSetComm(struct Machine *, const char *);
++static void ShiroSetSubreaper(struct Machine *, bool);
+ static i64 ShiroEuid(struct Machine *);
+ #else
+ #define ShiroSleeping(m, n) (void)0
++#define ShiroSetSubreaper(m, on) (void)0
+ #define ShiroSyncMask(m) (void)0
+ #define ShiroInterruptThread(m) (void)0
+ #endif
+@@ -1394,6 +1396,7 @@ static int SysPrctl(struct Machine *m, int op, i64 arg2, i64 arg3, i64 arg4,
+       return 0;
+     case 36:  // PR_SET_CHILD_SUBREAPER
+       m->subreaper = !!arg2;
++      ShiroSetSubreaper(m, m->subreaper);  // (the kernel reparents orphans to it)
+       return 0;
+     case 37:  // PR_GET_CHILD_SUBREAPER
+       Write32((u8 *)name, m->subreaper);
+-- 
+2.43.0
+

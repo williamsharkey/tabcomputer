@@ -9,7 +9,8 @@
 // 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
 // 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage;
 //    their node:fs reads the checkout (fixtures included) and writes only in memory.
-// 7. `hotswap watch -d`: each save of src/shell.ts is live in the main shell; --wait reports; a broken save changes nothing.
+// 7. `hotswap watch -d`: each save of src/shell.ts is live in the main shell without long tasks; --wait reports;
+//    a broken save changes nothing; --test runs a suite after a save.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let chromium;
@@ -149,6 +150,12 @@ check(kept.file === 'mine' && kept.ls === 'mine', "the tab's own files and local
 // 7. The save loop: `hotswap watch -d`, edit, `hotswap watch --wait`
 r = await sh(page, 'cd /home/user/tabcomputer && hotswap revert --all >/dev/null; hotswap watch -d --ttl 20s');
 check(r.code === 0 && /watching \/home\/user\/tabcomputer\/src/.test(r.out), 'hotswap watch -d', r.out);
+// The page's long tasks during the saves: esbuild builds in a worker, so a save doesn't stall the page
+await page.evaluate(() => {
+  window.__longTasks = [];
+  window.__ltObs = new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__longTasks.push(Math.round(e.duration)); });
+  window.__ltObs.observe({ type: 'longtask' });
+});
 const latencies = [];
 for (const v of ['8.8.1', '8.8.2', '8.8.3']) {
   latencies.push(await page.evaluate(async (v) => {
@@ -166,6 +173,9 @@ for (const v of ['8.8.1', '8.8.2', '8.8.3']) {
   }, v));
 }
 check(latencies.every((ms) => ms > 0), `each save is live in the main shell (edit->live ms: ${latencies.join(', ')})`);
+const lt = await page.evaluate(() => { window.__ltObs.disconnect(); return window.__longTasks; });
+const blocking = lt.reduce((a, ms) => a + Math.max(0, ms - 50), 0);
+check(blocking < 200, `the saves barely block the page (long tasks: ${lt.length ? lt.join(', ') + ' ms' : 'none'}; blocking ${blocking} ms)`);
 r = await sh(page, 'hotswap watch --wait');
 check(r.code === 0 && (r.out.match(/^✓ #\d+ src\/shell\.ts \(Shell/gm) ?? []).length === 3 && /live \d+ ms after the save/.test(r.out), 'hotswap watch --wait prints one line per save', r.out);
 r = await sh(page, 'hotswap status');
@@ -199,6 +209,9 @@ r = await page.evaluate(async () => {
 });
 check(r.live === '8.8.5' && /^✓ #\d+ src\/shell\.ts/m.test(r.out) && /stopped watching/.test(r.out) && !/reverted/.test(r.out) && r.code === 130, 'hotswap watch in the foreground, stopped by Ctrl-C', JSON.stringify(r));
 await sh(page, 'hotswap revert --all');
+// --test: the suites for a save run after it, and --wait reports them
+r = await sh(page, `cd /home/user/tabcomputer && hotswap watch -d --test --test-max 1 --ttl 20s >/dev/null && sed -i "s/result += '8.8.5'/result += '8.8.6'/" src/shell.ts && hotswap watch --wait --timeout 90s; hotswap watch --stop >/dev/null; hotswap revert --all >/dev/null`);
+check(/^\u2713 #\d+ src\/shell\.ts/m.test(r.out) && /^\u2713 tests after #\d+: shell-[\w-]+ \(1 of \d+\): \d+ passed/m.test(r.out), 'hotswap watch --test runs a suite after the save', r.out);
 
 await browser.close();
 console.log(failures ? `${failures} failure(s)` : 'all ok');

@@ -1,0 +1,38 @@
+From fac88ad653eaa5f32a94fe0125f52d6a6c41f3cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 05:41:59 +0000
+Subject: [PATCH] Shiro: fallocate goes to the kernel (LTP memfd_create01,
+ fallocate*)
+
+---
+ blink/shiro.inc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index d3d4b0a..9006ef0 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3714,6 +3714,8 @@ static void ShiroMarkShared(struct Machine *m, i64 addr, u64 size, u64 bits) {
+ // not write is EACCES (LTP memfd_create01); Blink's own calls skip this
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_maywrite(void) { return 1; }
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_fallocate(void) { return 1; }
++
+ static int ShiroMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
+   bool nomw = false;
+   i64 v;
+@@ -4871,7 +4873,10 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+     case 0x126: r = KS(m, 294, A12((int)a)); break;                   // inotify_init1
+     case 0x0FE: r = ShiroAtCall(m, 254, (int)a, b, (int)c, 0); break; // inotify_add_watch
+     case 0x0FF: r = KS(m, 255, A12((int)a, (int)b)); break;           // inotify_rm_watch
+-    case 0x11D: r = -EOPNOTSUPP_LINUX; break;                         // fallocate (Go's linker then writes)
++    case 0x11D:  // fallocate: the kernel's (one without it: EOPNOTSUPP, and Go's linker writes)
++      r = KS(m, 285, A12((int)a, (int)b, (int)c, (int)((i64)c >> 32), (int)d, (int)((i64)d >> 32)));
++      if (r == -ENOSYS_LINUX) r = -EOPNOTSUPP_LINUX;
++      break;
+     case 0x11B: r = KS(m, 283, A12(a, b)); break;                     // timerfd_create
+     case 0x11E:                                                       // timerfd_settime
+       // TFD_TIMER_ABSTIME and TFD_TIMER_CANCEL_ON_SET only (LTP timerfd_settime01)
+-- 
+2.43.0
+

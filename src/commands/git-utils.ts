@@ -3,91 +3,210 @@
  *
  * Extracted from git.ts to keep command implementations focused.
  */
-import git, { TREE, STAGE } from './git-cached';
-
-// --- Types ---
-
-export interface DiffOpts {
-  nameOnly?: boolean;
-  nameStatus?: boolean;
-  stat?: boolean;
-}
-
-export interface ChangedFile {
-  filepath: string;
-  oldContent: string | null;
-  newContent: string | null;
-}
+import git from './git-cached';
 
 // --- Diff helpers ---
 
-/** Simple greedy unified diff between two arrays of lines */
-export function unifiedDiff(oldLines: string[], newLines: string[]): string {
-  let out = '';
-  const ctx_lines = 3;
-  const n = oldLines.length, m = newLines.length;
-  const edits: { type: number; old?: string; new?: string; oldIdx?: number; newIdx?: number }[] = [];
-  let oi = 0, ni = 0;
-  while (oi < n || ni < m) {
-    if (oi < n && ni < m && oldLines[oi] === newLines[ni]) {
-      edits.push({ type: 0, old: oldLines[oi], oldIdx: oi, newIdx: ni });
-      oi++; ni++;
+/** A line's text as unifiedDiff shows it (the marker for a last line without its newline taken off) */
+export const NO_EOL = '\u0000noeol';
+
+/**
+ * The edit script between two line arrays, Myers' O(ND) algorithm as git's
+ * xdiff runs it: -1 a deletion, 1 an insertion, 0 a kept line. Groups of
+ * changes are then slid down as far as the lines allow, as git does.
+ */
+export function diffEdits(a: string[], b: string[]): number[] {
+  const n = a.length, m = b.length;
+  // common prefix and suffix first: most diffs are small
+  let pre = 0;
+  while (pre < n && pre < m && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (suf < n - pre && suf < m - pre && a[n - 1 - suf] === b[m - 1 - suf]) suf++;
+  const A = a.slice(pre, n - suf), B = b.slice(pre, m - suf);
+  const N = A.length, M = B.length, max = N + M;
+  const mid: number[] = [];
+  // (each step keeps only its diagonals -d..d; past MAX_D steps the rest is one replacement, as xdiff gives up on cost)
+  const MAX_D = 4000;
+  if (N && M) {
+    const v = new Int32Array(2 * max + 2);
+    const trace: Int32Array[] = [];
+    let found = false;
+    for (let d = 0; d <= Math.min(max, MAX_D) && !found; d++) {
+      trace.push(v.slice(max - d, max + d + 2));
+      for (let k = -d; k <= d; k += 2) {
+        let x = k === -d || (k !== d && v[max + k - 1] < v[max + k + 1]) ? v[max + k + 1] : v[max + k - 1] + 1;
+        let y = x - k;
+        while (x < N && y < M && A[x] === B[y]) { x++; y++; }
+        v[max + k] = x;
+        if (x >= N && y >= M) { found = true; break; }
+      }
+    }
+    if (!found) {
+      for (let i = 0; i < N; i++) mid.push(-1);
+      for (let i = 0; i < M; i++) mid.push(1);
     } else {
-      let bestOld = -1, bestNew = -1, bestDist = Infinity;
-      const maxLook = Math.min(50, Math.max(n - oi, m - ni));
-      for (let look = 0; look < maxLook && bestDist > 0; look++) {
-        if (oi + look < n) {
-          for (let j = ni; j < Math.min(ni + maxLook, m); j++) {
-            if (oldLines[oi + look] === newLines[j] && look + (j - ni) < bestDist) {
-              bestDist = look + (j - ni); bestOld = oi + look; bestNew = j;
-            }
-          }
+      // walk the trace back to the edit script (trace[d][j] is v[k] for k = j - d)
+      let x = N, y = M;
+      const rev: number[] = [];
+      for (let d = trace.length - 1; d > 0; d--) {
+        const vv = trace[d];
+        const at = (k: number) => vv[k + d];
+        const k = x - y;
+        const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+        const px = at(prevK), py = px - prevK;
+        while (x > px && y > py) { rev.push(0); x--; y--; }
+        if (x === px) { rev.push(1); y--; } else { rev.push(-1); x--; }
+      }
+      while (x > 0 && y > 0) { rev.push(0); x--; y--; }
+      mid.push(...rev.reverse());
+    }
+  } else {
+    for (let i = 0; i < N; i++) mid.push(-1);
+    for (let i = 0; i < M; i++) mid.push(1);
+  }
+  const edits = [...new Array(pre).fill(0), ...mid, ...new Array(suf).fill(0)];
+  // deletions before insertions within a run of changes, as git prints them
+  for (let i = 0; i < edits.length;) {
+    if (edits[i] === 0) { i++; continue; }
+    let j = i;
+    while (j < edits.length && edits[j] !== 0) j++;
+    const dels = edits.slice(i, j).filter((e) => e === -1).length;
+    for (let k = i; k < j; k++) edits[k] = k - i < dels ? -1 : 1;
+    i = j;
+  }
+  return slideDown(edits, a, b);
+}
+
+/** A group of only insertions or only deletions moves down while the line after it equals its first */
+function slideDown(edits: number[], a: string[], b: string[]): number[] {
+  const e = edits.slice();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    let ai = 0, bi = 0;
+    for (let i = 0; i < e.length;) {
+      if (e[i] === 0) { ai++; bi++; i++; continue; }
+      let j = i;
+      while (j < e.length && e[j] === e[i]) j++;
+      const kind = e[i];
+      const len = j - i;
+      // the group is followed by a kept line equal to the group's first line: slide by one
+      if (j < e.length && e[j] === 0 && (i === 0 || e[i - 1] === 0 || e[i - 1] === kind)) {
+        const seq = kind === -1 ? a : b;
+        const start = kind === -1 ? ai : bi;
+        if (seq[start] === seq[start + len] && (j + 1 >= e.length || e[j + 1] !== -kind)) {
+          e[i] = 0; e[j] = kind;
+          changed = true;
         }
       }
-      if (bestOld === -1) {
-        while (oi < n) { edits.push({ type: -1, old: oldLines[oi], oldIdx: oi }); oi++; }
-        while (ni < m) { edits.push({ type: 1, new: newLines[ni], newIdx: ni }); ni++; }
-      } else {
-        while (oi < bestOld) { edits.push({ type: -1, old: oldLines[oi], oldIdx: oi }); oi++; }
-        while (ni < bestNew) { edits.push({ type: 1, new: newLines[ni], newIdx: ni }); ni++; }
-      }
+      if (kind === -1) ai += len; else bi += len;
+      i = j;
     }
   }
+  return e;
+}
+
+/** git's default funcname: a line that starts with a letter, `_` or `$` (at most 80 bytes, trailing blanks off) */
+function funcLine(line: string): string | null {
+  if (!/^[A-Za-z_$]/.test(line)) return null;
+  return line.replace(NO_EOL, '').slice(0, 80).replace(/\s+$/, '');
+}
+
+/**
+ * Unified diff hunks between two arrays of lines, as git prints them: `context`
+ * lines around each change (3), and the hunk header's funcname from the old side.
+ * A line ending in NO_EOL is a last line without its newline.
+ */
+export function unifiedDiff(oldLines: string[], newLines: string[], opts: { context?: number; funcname?: boolean } = {}): string {
+  const ctxLines = opts.context ?? 3;
+  const edits = diffEdits(oldLines, newLines);
+  // each edit's position in old and new
+  const pos: [number, number][] = [];
+  let oi = 0, ni = 0;
+  for (const e of edits) { pos.push([oi, ni]); if (e <= 0) oi++; if (e >= 0) ni++; }
+  let out = '';
   let i = 0;
+  const show = (l: string) => (l.endsWith(NO_EOL) ? l.slice(0, -NO_EOL.length) + '\n\\ No newline at end of file' : l);
   while (i < edits.length) {
-    if (edits[i].type === 0) { i++; continue; }
-    const hunkStart = Math.max(0, i - ctx_lines);
-    let hunkEnd = i;
-    while (hunkEnd < edits.length) {
-      if (edits[hunkEnd].type !== 0) { hunkEnd++; continue; }
-      let nextChange = hunkEnd;
-      while (nextChange < edits.length && edits[nextChange].type === 0) nextChange++;
-      if (nextChange < edits.length && nextChange - hunkEnd <= ctx_lines * 2) {
-        hunkEnd = nextChange + 1;
-      } else {
-        hunkEnd = Math.min(hunkEnd + ctx_lines, edits.length);
-        break;
-      }
+    if (edits[i] === 0) { i++; continue; }
+    const start = Math.max(0, i - ctxLines);
+    let end = i;
+    // extend over changes closer than 2*context kept lines
+    for (;;) {
+      while (end < edits.length && edits[end] !== 0) end++;
+      let next = end;
+      while (next < edits.length && edits[next] === 0) next++;
+      if (next < edits.length && next - end <= ctxLines * 2) { end = next; continue; }
+      end = Math.min(edits.length, end + ctxLines);
+      break;
     }
-    let oldCount = 0, newCount = 0, oldBefore = 0, newBefore = 0;
-    for (let j = 0; j < hunkStart; j++) {
-      if (edits[j].type <= 0) oldBefore++;
-      if (edits[j].type >= 0) newBefore++;
-    }
-    for (let j = hunkStart; j < hunkEnd; j++) {
-      if (edits[j].type <= 0) oldCount++;
-      if (edits[j].type >= 0) newCount++;
-    }
+    let oldCount = 0, newCount = 0;
+    for (let j = start; j < end; j++) { if (edits[j] <= 0) oldCount++; if (edits[j] >= 0) newCount++; }
+    const [o0, n0] = pos[start];
     // as git writes it: "-5" for one line, "-4,0" (the line before) for none
     const range = (before: number, count: number) => `${count ? before + 1 : before}${count === 1 ? '' : ',' + count}`;
-    out += `@@ -${range(oldBefore, oldCount)} +${range(newBefore, newCount)} @@\n`;
-    for (let j = hunkStart; j < hunkEnd; j++) {
-      const e = edits[j];
-      if (e.type === 0) out += ` ${e.old}\n`;
-      else if (e.type === -1) out += `-${e.old}\n`;
-      else if (e.type === 1) out += `+${e.new}\n`;
+    let fn = '';
+    if (opts.funcname !== false) {
+      for (let k = o0 - 1; k >= 0; k--) { const f = funcLine(oldLines[k]); if (f !== null) { fn = ' ' + f; break; } }
     }
-    i = hunkEnd;
+    out += `@@ -${range(o0, oldCount)} +${range(n0, newCount)} @@${fn}\n`;
+    for (let j = start; j < end; j++) {
+      const [ox, nx] = pos[j];
+      if (edits[j] === 0) out += ` ${show(oldLines[ox])}\n`;
+      else if (edits[j] === -1) out += `-${show(oldLines[ox])}\n`;
+      else out += `+${show(newLines[nx])}\n`;
+    }
+    i = end;
+  }
+  return out;
+}
+
+/** Lines of a file's text for unifiedDiff: a last line without its newline carries NO_EOL */
+export function diffLines(text: string): string[] {
+  if (!text) return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  else lines[lines.length - 1] += NO_EOL;
+  return lines;
+}
+
+/** Lines added and removed between two texts */
+export function diffCounts(a: string, b: string): [number, number] {
+  let plus = 0, minus = 0;
+  for (const e of diffEdits(diffLines(a), diffLines(b))) { if (e === 1) plus++; else if (e === -1) minus++; }
+  return [plus, minus];
+}
+
+/** --stat's lines as git draws them for an 80-column pipe: names, counts and a +/- graph scaled to fit */
+export function formatStatRows(rows: { name: string; add: number; del: number; binary?: string }[], width = 80): string {
+  if (!rows.length) return '';
+  const maxChange = Math.max(0, ...rows.map((r) => (r.binary ? 0 : r.add + r.del)));
+  let numberWidth = Math.max(String(maxChange).length, rows.some((r) => r.binary) ? 3 : 0);
+  let nameWidth = Math.max(...rows.map((r) => r.name.length));
+  if (width < 16 + 6 + numberWidth) width = 16 + 6 + numberWidth;
+  let graphWidth = maxChange;
+  if (nameWidth + numberWidth + 6 + graphWidth > width) {
+    if (graphWidth > Math.floor((width * 3) / 8) - numberWidth - 6) graphWidth = Math.max(6, Math.floor((width * 3) / 8) - numberWidth - 6);
+    if (nameWidth > width - numberWidth - 6 - graphWidth) nameWidth = width - numberWidth - 6 - graphWidth;
+    else graphWidth = width - numberWidth - 6 - nameWidth;
+  }
+  const scale = (k: number) => (maxChange <= graphWidth || !k ? k : 1 + Math.floor((k * (graphWidth - 1)) / maxChange));
+  let out = '';
+  for (const r of rows) {
+    let name = r.name;
+    if (name.length > nameWidth) {
+      // "...tail", cut at a directory when it can be
+      let tail = name.slice(name.length - (nameWidth - 3));
+      const slash = tail.indexOf('/');
+      if (slash >= 0) tail = tail.slice(slash);
+      name = '...' + tail;
+    }
+    if (r.binary) { out += ` ${name.padEnd(nameWidth)} | ${'Bin'.padStart(numberWidth)} ${r.binary}\n`; continue; }
+    const total = r.add + r.del;
+    let add = scale(r.add), del = scale(r.del);
+    if (maxChange > graphWidth && add + del > graphWidth) { if (add > del) add = graphWidth - del; else del = graphWidth - add; }
+    const graph = '+'.repeat(add) + '-'.repeat(del);
+    out += ` ${name.padEnd(nameWidth)} | ${String(total).padStart(numberWidth)}${graph ? ' ' + graph : ''}\n`;
   }
   return out;
 }
@@ -140,298 +259,4 @@ export async function resolveRevision(fs: any, dir: string, ref: string): Promis
   }
 
   return oid;
-}
-
-/** Read file content at a specific commit OID */
-export async function readFileAtRef(fs: any, dir: string, oid: string, filepath: string): Promise<string | null> {
-  try {
-    const { blob } = await git.readBlob({ fs, dir, oid, filepath });
-    return new TextDecoder().decode(blob);
-  } catch { return null; }
-}
-
-// --- Commit diff helpers ---
-
-/** Diff two commits by walking their trees */
-export async function diffCommits(fs: any, dir: string, oid1: string | null, oid2: string, opts?: DiffOpts): Promise<string> {
-  let out = '';
-  const changes: ChangedFile[] = [];
-
-  if (oid1 === null) {
-    const files = await git.walk({
-      fs, dir,
-      trees: [TREE({ ref: oid2 })],
-      map: async (filepath: string, [entry]: any[]) => {
-        if (filepath === '.' || filepath === '..') return undefined;
-        if (!entry) return undefined;
-        const type = await entry.type();
-        if (type === 'tree') return undefined;
-        return filepath;
-      },
-    });
-    for (const fp of files) {
-      if (!fp) continue;
-      const content = await readFileAtRef(fs, dir, oid2, fp);
-      changes.push({ filepath: fp, oldContent: null, newContent: content });
-    }
-  } else {
-    const results = await git.walk({
-      fs, dir,
-      trees: [TREE({ ref: oid1 }), TREE({ ref: oid2 })],
-      map: async (filepath: string, [entry1, entry2]: any[]) => {
-        if (filepath === '.' || filepath === '..') return undefined;
-        const o1 = entry1 ? await entry1.oid() : null;
-        const o2 = entry2 ? await entry2.oid() : null;
-        if (o1 === o2) return undefined;
-        const t1 = entry1 ? await entry1.type() : null;
-        const t2 = entry2 ? await entry2.type() : null;
-        if (t1 === 'tree' || t2 === 'tree') return undefined;
-        return { filepath, hasEntry1: !!entry1, hasEntry2: !!entry2 };
-      },
-    });
-    for (const r of results) {
-      if (!r) continue;
-      const oldContent = r.hasEntry1 ? await readFileAtRef(fs, dir, oid1, r.filepath) : null;
-      const newContent = r.hasEntry2 ? await readFileAtRef(fs, dir, oid2, r.filepath) : null;
-      changes.push({ filepath: r.filepath, oldContent, newContent });
-    }
-  }
-
-  if (opts?.nameOnly) {
-    for (const c of changes) out += c.filepath + '\n';
-    return out;
-  }
-
-  if (opts?.nameStatus) {
-    for (const c of changes) {
-      let status = 'M';
-      if (c.oldContent === null) status = 'A';
-      else if (c.newContent === null) status = 'D';
-      out += `${status}\t${c.filepath}\n`;
-    }
-    return out;
-  }
-
-  if (opts?.stat) {
-    let totalAdd = 0, totalDel = 0;
-    const stats: { filepath: string; add: number; del: number }[] = [];
-    for (const c of changes) {
-      const oldLines = c.oldContent ? c.oldContent.split('\n') : [];
-      const newLines = c.newContent ? c.newContent.split('\n') : [];
-      let add = 0, del = 0;
-      if (!c.oldContent) { add = newLines.length; }
-      else if (!c.newContent) { del = oldLines.length; }
-      else {
-        const diff = unifiedDiff(oldLines, newLines);
-        for (const line of diff.split('\n')) {
-          if (line.startsWith('+') && !line.startsWith('+++') && !line.startsWith('@@')) add++;
-          else if (line.startsWith('-') && !line.startsWith('---') && !line.startsWith('@@')) del++;
-        }
-      }
-      stats.push({ filepath: c.filepath, add, del });
-      totalAdd += add; totalDel += del;
-    }
-    const maxPath = Math.max(...stats.map(s => s.filepath.length), 0);
-    for (const s of stats) {
-      const total = s.add + s.del;
-      const bar = '+'.repeat(Math.min(s.add, 30)) + '-'.repeat(Math.min(s.del, 30));
-      out += ` ${s.filepath.padEnd(maxPath)} | ${String(total).padStart(4)} ${bar}\n`;
-    }
-    out += ` ${changes.length} file${changes.length !== 1 ? 's' : ''} changed`;
-    if (totalAdd > 0) out += `, ${totalAdd} insertion${totalAdd !== 1 ? 's' : ''}(+)`;
-    if (totalDel > 0) out += `, ${totalDel} deletion${totalDel !== 1 ? 's' : ''}(-)`;
-    out += '\n';
-    return out;
-  }
-
-  for (const c of changes) {
-    out += `diff --git a/${c.filepath} b/${c.filepath}\n`;
-    if (c.oldContent === null) {
-      out += `new file\n--- /dev/null\n+++ b/${c.filepath}\n`;
-      const lines = (c.newContent || '').split('\n');
-      out += `@@ -0,0 +1,${lines.length} @@\n`;
-      for (const line of lines) out += `+${line}\n`;
-    } else if (c.newContent === null) {
-      out += `deleted file\n--- a/${c.filepath}\n+++ /dev/null\n`;
-      const lines = c.oldContent.split('\n');
-      out += `@@ -1,${lines.length} +0,0 @@\n`;
-      for (const line of lines) out += `-${line}\n`;
-    } else {
-      out += `--- a/${c.filepath}\n+++ b/${c.filepath}\n`;
-      out += unifiedDiff(c.oldContent.split('\n'), c.newContent.split('\n'));
-    }
-  }
-  return out;
-}
-
-/** Diff staged changes vs HEAD */
-export async function diffStaged(fs: any, dir: string, opts?: DiffOpts): Promise<string> {
-  let out = '';
-  const changes: ChangedFile[] = [];
-
-  let hasHead = true;
-  try {
-    await git.resolveRef({ fs, dir, ref: 'HEAD' });
-  } catch {
-    hasHead = false;
-  }
-
-  const trees = hasHead ? [TREE({ ref: 'HEAD' }), STAGE()] : [STAGE()];
-  const results = await git.walk({
-    fs, dir,
-    trees,
-    map: async (filepath: string, entries: any[]) => {
-      if (filepath === '.' || filepath === '..') return undefined;
-      if (!hasHead) {
-        const entry = entries[0];
-        if (!entry) return undefined;
-        const type = await entry.type();
-        if (type === 'tree') return undefined;
-        return { filepath, hasOld: false, hasNew: true };
-      }
-      const [entry1, entry2] = entries;
-      const o1 = entry1 ? await entry1.oid() : null;
-      const o2 = entry2 ? await entry2.oid() : null;
-      if (o1 === o2) return undefined;
-      const t1 = entry1 ? await entry1.type() : null;
-      const t2 = entry2 ? await entry2.type() : null;
-      if (t1 === 'tree' || t2 === 'tree') return undefined;
-      return { filepath, hasOld: !!entry1, hasNew: !!entry2 };
-    },
-  });
-
-  for (const r of results) {
-    if (!r) continue;
-    let oldContent: string | null = null;
-    let newContent: string | null = null;
-    if (r.hasOld && hasHead) {
-      const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-      oldContent = await readFileAtRef(fs, dir, headOid, r.filepath);
-    }
-    if (r.hasNew) {
-      try {
-        const oids = await git.walk({
-          fs, dir,
-          trees: [STAGE()],
-          map: async (fp: string, [entry]: any[]) => {
-            if (fp !== r.filepath) return undefined;
-            if (!entry) return undefined;
-            const content = await entry.content();
-            return content ? new TextDecoder().decode(content) : null;
-          },
-        });
-        newContent = oids.find((x: any) => x != null) ?? null;
-      } catch {
-        newContent = null;
-      }
-    }
-    changes.push({ filepath: r.filepath, oldContent, newContent });
-  }
-
-  if (opts?.nameOnly) {
-    for (const c of changes) out += c.filepath + '\n';
-    return out;
-  }
-
-  if (opts?.nameStatus) {
-    for (const c of changes) {
-      let status = 'M';
-      if (c.oldContent === null) status = 'A';
-      else if (c.newContent === null) status = 'D';
-      out += `${status}\t${c.filepath}\n`;
-    }
-    return out;
-  }
-
-  if (opts?.stat) {
-    let totalAdd = 0, totalDel = 0;
-    const stats: { filepath: string; add: number; del: number }[] = [];
-    for (const c of changes) {
-      const oldLines = c.oldContent ? c.oldContent.split('\n') : [];
-      const newLines = c.newContent ? c.newContent.split('\n') : [];
-      let add = 0, del = 0;
-      if (!c.oldContent) { add = newLines.length; }
-      else if (!c.newContent) { del = oldLines.length; }
-      else {
-        const diff = unifiedDiff(oldLines, newLines);
-        for (const line of diff.split('\n')) {
-          if (line.startsWith('+') && !line.startsWith('+++') && !line.startsWith('@@')) add++;
-          else if (line.startsWith('-') && !line.startsWith('---') && !line.startsWith('@@')) del++;
-        }
-      }
-      stats.push({ filepath: c.filepath, add, del });
-      totalAdd += add; totalDel += del;
-    }
-    const maxPath = Math.max(...stats.map(s => s.filepath.length), 0);
-    for (const s of stats) {
-      const total = s.add + s.del;
-      const bar = '+'.repeat(Math.min(s.add, 30)) + '-'.repeat(Math.min(s.del, 30));
-      out += ` ${s.filepath.padEnd(maxPath)} | ${String(total).padStart(4)} ${bar}\n`;
-    }
-    out += ` ${changes.length} file${changes.length !== 1 ? 's' : ''} changed`;
-    if (totalAdd > 0) out += `, ${totalAdd} insertion${totalAdd !== 1 ? 's' : ''}(+)`;
-    if (totalDel > 0) out += `, ${totalDel} deletion${totalDel !== 1 ? 's' : ''}(-)`;
-    out += '\n';
-    return out;
-  }
-
-  for (const c of changes) {
-    out += `diff --git a/${c.filepath} b/${c.filepath}\n`;
-    if (c.oldContent === null) {
-      out += `new file\n--- /dev/null\n+++ b/${c.filepath}\n`;
-      const lines = (c.newContent || '').split('\n');
-      out += `@@ -0,0 +1,${lines.length} @@\n`;
-      for (const line of lines) out += `+${line}\n`;
-    } else if (c.newContent === null) {
-      out += `deleted file\n--- a/${c.filepath}\n+++ /dev/null\n`;
-      const lines = c.oldContent.split('\n');
-      out += `@@ -1,${lines.length} +0,0 @@\n`;
-      for (const line of lines) out += `-${line}\n`;
-    } else {
-      out += `--- a/${c.filepath}\n+++ b/${c.filepath}\n`;
-      out += unifiedDiff(c.oldContent.split('\n'), c.newContent.split('\n'));
-    }
-  }
-  return out;
-}
-
-// --- Formatting helpers ---
-
-/** Format relative time from unix timestamp */
-export function timeAgoFromTimestamp(ts: number): string {
-  const secs = Math.floor((Date.now() / 1000) - ts);
-  if (secs < 60) return `${secs} seconds ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins} minute${mins !== 1 ? 's' : ''} ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hour${hrs !== 1 ? 's' : ''} ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days} day${days !== 1 ? 's' : ''} ago`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 4) return `${weeks} week${weeks !== 1 ? 's' : ''} ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months} month${months !== 1 ? 's' : ''} ago`;
-  const years = Math.floor(days / 365);
-  return `${years} year${years !== 1 ? 's' : ''} ago`;
-}
-
-/** Apply format specifiers to a commit */
-export function formatCommit(c: { oid: string; commit: any }, fmt: string): string {
-  let result = fmt;
-  result = result.replace(/%H/g, c.oid);
-  result = result.replace(/%h/g, c.oid.slice(0, 7));
-  result = result.replace(/%s/g, c.commit.message.split('\n')[0].trim());
-  result = result.replace(/%an/g, c.commit.author.name);
-  result = result.replace(/%ae/g, c.commit.author.email);
-  result = result.replace(/%ad/g, new Date(c.commit.author.timestamp * 1000).toISOString());
-  result = result.replace(/%ar/g, timeAgoFromTimestamp(c.commit.author.timestamp));
-  result = result.replace(/%cn/g, c.commit.committer?.name || c.commit.author.name);
-  result = result.replace(/%ce/g, c.commit.committer?.email || c.commit.author.email);
-  const committerTs = c.commit.committer?.timestamp || c.commit.author.timestamp;
-  result = result.replace(/%cr/g, timeAgoFromTimestamp(committerTs));
-  result = result.replace(/%cd/g, new Date(committerTs * 1000).toString());
-  result = result.replace(/%ci/g, new Date(committerTs * 1000).toISOString());
-  result = result.replace(/%n/g, '\n');
-  result = result.replace(/%%/g, '%');
-  return result;
 }

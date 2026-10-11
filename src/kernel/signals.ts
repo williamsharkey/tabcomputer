@@ -446,6 +446,20 @@ export class JobControl {
       targets = this.group(-pid);
     }
     targets = targets.filter((p) => p.runState !== 'zombie' || pid > 0);
+    // An in-page background job leads the group its kernel programs run in
+    // (shell.ts executeBackground): `kill -TERM -- -PID` from any shell (an
+    // agent's next sh -c) reaches it through the process table, as kernel.kill does (#63)
+    if (pid < -1 && !this.procs.has(-pid)) {
+      const leader = processTable.get(-pid);
+      if (leader && leader.status === 'running') {
+        if (sig !== 0) {
+          for (const p of targets) this.send(p, sig);
+          // (its programs have it now: the job only ends, it doesn't signal them again)
+          processTable.kill(-pid, sig, { group: true });
+        }
+        return 0;
+      }
+    }
     if (targets.length === 0) return -ESRCH;
     for (const p of targets) this.send(p, sig);
     return 0;

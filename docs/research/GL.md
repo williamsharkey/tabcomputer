@@ -303,6 +303,10 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   It only inserts text, so line numbers hold; a conversion inside a macro
   inlines that one use. Source it can't parse goes on unchanged. Krita's
   shaders don't need it; Blender's and hand-written GL 2/3 apps' do.
+- `in`/`out` interface blocks between stages (Blender's generated shaders)
+  become one varying per member, `_tc_<Block>_<member>`, matching across
+  stages by name; `inst.member` and an anonymous block's bare members are
+  renamed (`flattenInterfaceBlocks`).
 - The rest of the full front end below is the plan:
 - Desktop GLSL 110–330 to GLSL ES 3.00, in `src/gl/glsl/`: preprocessor,
   parser, a type checker for the built-in function set, and a printer.
@@ -322,6 +326,25 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   fallback for core-profile shaders only.
 - Translated shaders are cached by source hash (IndexedDB), like Mesa's disk
   cache.
+
+### GL 3.3 core in the guest (stage 4 so far)
+
+`scripts/gl/probes/glcore.c` (gl-apps.mjs `--app glcore`) checks what
+Blender's GPU module needs first, in the page: a 3.3 core context from
+glXCreateContextAttribsARB, interface blocks, a std140 uniform block and its
+queries, an instanced draw with glVertexAttribDivisor, primitive restart,
+glReadPixels. The uniform block queries (glGetActiveUniformBlockiv/Name,
+glGetActiveUniformsiv, glGetActiveUniformName, glGetUniformIndices) are
+answered in the guest from the program info it already fetches; a block
+member's location there is `-2 - block index`. GL_UNIFORM_OFFSET and the
+strides aren't sent (apps that lay out std140 themselves don't ask).
+
+Blender 3.4.1 (gui's catalog, Debian's) in the page: past the libraries
+(a kernel fast-path bug in symlink chains, fixed in src/filesystem.ts) and
+Python (its closure lacked libpython3.11-minimal/-stdlib, gui's manifest),
+it gets a 3.3 core context, reports "Renderer: tabcomputer WebGL2 (…)",
+compiles its shaders, creates its viewport textures, then runs at 100% CPU
+in the guest for minutes before its first full frame.
 
 ### GL 3.3 core gaps on WebGL2
 

@@ -2102,7 +2102,8 @@ export class Executor {
     for (let i = 0; i < nu; i++) {
       const u = gl.getActiveUniform(o.prog, i);
       if (!u || u.name.startsWith('_tc_')) continue;
-      if (blockIndex[i] >= 0) { o.uniforms.push({ name: u.name, type: u.type, size: u.size, loc: -1 }); continue; }
+      // a block member has no location: its loc tells the guest its block (-2 - index)
+      if (blockIndex[i] >= 0) { o.uniforms.push({ name: u.name, type: u.type, size: u.size, loc: -2 - blockIndex[i] }); continue; }
       const base = o.locs.length;
       const arrayBase = u.name.endsWith('[0]') ? u.name.slice(0, -3) : null;
       for (let k = 0; k < u.size; k++) {

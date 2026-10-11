@@ -6,7 +6,7 @@
 // its view is dragged instead, and the frames that answer are counted.
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
-//   GL_PROBE_ROOT=DIR node tests/browser/gl-apps.mjs [URL] [--app glxgears|neverball|openscad] [--seconds N] [--profile N] [--json FILE]
+//   GL_PROBE_ROOT=DIR node tests/browser/gl-apps.mjs [URL] [--app glxgears|neverball|openscad|glcore] [--seconds N] [--profile N] [--json FILE]
 //
 // GL_PROBE_ROOT is an x86-64 rootfs with the app (mesa-utils' glxgears,
 // neverball and its data, or openscad), libglvnd (libGL.so.1, libGLX.so.0,
@@ -36,6 +36,13 @@ const APPS = {
   neverball: {
     cmd: 'HOME=/tmp/nb SDL_AUDIODRIVER=dummy /usr/games/neverball', title: /neverball/i, gears: false,
     files: { '/tmp/nb/.neverball/neverballrc': `fullscreen 0\nwidth ${process.env.NB_W ?? 640}\nheight ${process.env.NB_H ?? 480}\n` },
+  },
+  // GL 3.3 core in the page (scripts/gl/probes/glcore.c): runs to its end, then its lines are checked
+  glcore: {
+    cmd: '/usr/bin/glcore', title: null, files: {},
+    expect: [/core context created, current 1/, /version 3\.3/, /^linked$/m, /blocks 1: Tint index 0, name length 5, (20|32) bytes, 2 uniforms/,
+      /block uniform Tint\.color in block 0/, /block uniform Tint\.scale in block 0/, /uniform indices found missing/,
+      /instance 0 0 255 0, instance 1 0 255 0, outside 255 0 0/, /error 0x0/],
   },
   // OpenSCAD's GUI (Qt 5, a QOpenGLWidget in the main window): SCAD_ROOT-style rootfs as GL_PROBE_ROOT
   openscad: {
@@ -215,6 +222,15 @@ try {
     s.cwd = '/';
     window.__glDone = s.execute(cmd, (x) => { window.__glOut += x; }, (x) => { window.__glOut += x; });
   }, process.env.GL_CMD ?? app.cmd);
+  if (app.expect) {
+    // a probe: no window, its output is the result
+    const status = await page.evaluate(() => window.__glDone);
+    const out = await page.evaluate(() => window.__glOut);
+    console.log(`${appName} (status ${status}):\n${out}`);
+    check(status === 0, `${appName} exits 0`);
+    for (const re of app.expect) check(re.test(out), `${appName} says ${re.source}`);
+    throw Object.assign(new Error('probe done'), { probeDone: true });
+  }
   const tStart = Date.now();
   const title = app.title.source;
   await page.waitForFunction((t) => window.__tabcomputer.desktop.windows().some((w) => new RegExp(t, 'i').test(w.title) && w.surface) || /Error/.test(window.__glOut), title, { timeout: 300_000 });
@@ -341,9 +357,11 @@ try {
   check(r2.frames - r1.frames > 5, 'frames resume with animation frames');
   }
 } catch (e) {
+  if (!e.probeDone) {
   console.log(`FAIL ${e.message}`);
   failed++;
   await page.screenshot({ path: process.env.GL_SHOT ?? `/tmp/gl-${appName}.png` }).catch(() => {});
+  }
 } finally {
   if (errors.length) console.log(`page errors: ${[...new Set(errors)].slice(0, 60).join(' | ')}`);
   const out = await page.evaluate(() => window.__glOut).catch(() => '');

@@ -49,6 +49,36 @@ const TYPE_RENAMES: [RegExp, string][] = [
   [/\bisampler1D\b/g, 'isampler2D'], [/\busampler1D\b/g, 'usampler2D'],
 ];
 
+/**
+ * `in`/`out` interface blocks between stages (GLSL 1.50+; Blender's shaders
+ * use them) aren't in GLSL ES 3.00: each member becomes its own varying,
+ * `_tc_<Block>_<member>`, which matches across stages by name as blocks do.
+ * `inst.member` (or the bare member, for a block without an instance name)
+ * is renamed; member interpolation qualifiers go with them.
+ */
+export function flattenInterfaceBlocks(src: string): string {
+  const re = /(^|[;}\n])([ \t]*(?:layout\s*\([^)]*\)\s*)?(?:(?:flat|smooth|noperspective|centroid)\s+)*)\b(in|out)\s+([A-Za-z_]\w*)\s*\{([^{}]*)\}\s*([A-Za-z_]\w*)?\s*;/g;
+  const renames: [RegExp, string][] = [];
+  src = src.replace(re, (_m, pre: string, quals: string, dir: string, block: string, body: string, inst: string | undefined) => {
+    const outer = quals.replace(/layout\s*\([^)]*\)/, '').trim();
+    const decls: string[] = [];
+    for (const raw of body.split(';')) {
+      const m = /^\s*((?:(?:flat|smooth|noperspective|centroid|highp|mediump|lowp|invariant)\s+)*)(\w+)\s+(\w+)\s*(\[[^\]]*\])?\s*$/.exec(raw);
+      if (!m) { if (raw.trim()) return _m; continue; } // something else: leave the block for the compiler to report
+      const [, mq, type, name, arr] = m;
+      const flat = `_tc_${block}_${name}`;
+      // interpolation qualifiers before in/out (centroid in/out are dropped later, as for plain varyings)
+      decls.push(`${[outer, mq.trim()].filter(Boolean).join(' ')} ${dir} ${type} ${flat}${arr ?? ''};`.replace(/^ +/, ''));
+      renames.push(inst ? [new RegExp(`\\b${inst}\\s*\\.\\s*${name}\\b`, 'g'), flat] : [new RegExp(`(?<![.\\w])${name}\\b`, 'g'), flat]);
+    }
+    return `${pre}${decls.join(' ')}`;
+  });
+  if (!renames.length) return src;
+  // rename uses after the declarations (the declarations' own names start with _tc_, so they aren't touched)
+  for (const [re, to] of renames) src = src.replace(re, (m, off: number) => (src.slice(Math.max(0, off - 4), off) === '_tc_' ? m : to));
+  return src;
+}
+
 /** Removes comments, keeping line structure (so error line numbers still match). */
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/\/\/[^\n]*/g, '');
@@ -71,6 +101,7 @@ export function translateShader(input: string, stage: 'vertex' | 'fragment' | 'g
   src = src.replace(/^[ \t]*#[ \t]*extension[^\n]*$/gm, '').replace(/^[ \t]*#[ \t]*pragma[^\n]*$/gm, '');
   // precision qualifiers are fine in ES; desktop `#ifdef GL_ES` blocks expect ES
   const legacy = out.version < 130;
+  src = flattenInterfaceBlocks(src);
 
   const attribs = new Set<string>();
   const uniforms = new Set<string>();

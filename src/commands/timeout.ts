@@ -86,15 +86,32 @@ export const timeout: Command = {
     const live = !!ctx.liveStdin && !!ctx.shell.kernelStdio;
     const sink = (s: string) => { out += s; };
     const errSink = (s: string) => { err += s; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired: Promise<'timeout'> | null = null;
+    const arm = () => {
+      expired ??= duration === 0 ? null : new Promise<'timeout'>((resolve) => {
+        timer = (globalThis as any).setTimeout(() => resolve('timeout'), duration * 1000);
+      });
+      return expired;
+    };
+    // Input still to come (`< fifo`): read inside the time allowed, as COMMAND would
+    // (ctx.stdin only off the live path: reading it there waits for the pipe to close)
+    let input: string | undefined;
+    if (!live && ctx.readFifoStdin) {
+      const late = Symbol('timeout');
+      const limit = arm();
+      const got = await (limit ? Promise.race([ctx.readFifoStdin(), limit.then(() => late)]) : ctx.readFifoStdin());
+      if (typeof got !== 'string') {
+        if (verbose) ctx.stderr += `timeout: sending signal ${signalName(sig)} to command '${command[0]}'\n`;
+        return preserveStatus ? 128 + sig : 124;
+      }
+      input = got;
+    }
     const run = live
       ? child.execute(quoteArgsForShell(command), ctx.streamStdout ?? sink, ctx.streamStderr ?? errSink, false, undefined, true)
-      : child.executeWithStdin(quoteArgsForShell(command), ctx.stdin || '', sink, errSink);
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = duration === 0 ? null : new Promise<'timeout'>((resolve) => {
-      timer = (globalThis as any).setTimeout(() => resolve('timeout'), duration * 1000);
-    });
-    const result = await (expired ? Promise.race([run, expired]) : run);
+      : child.executeWithStdin(quoteArgsForShell(command), input ?? (ctx.stdin || ''), sink, errSink);
+    const limit = arm();
+    const result = await (limit ? Promise.race([run, limit]) : run);
     (globalThis as any).clearTimeout(timer);
 
     const flush = () => {

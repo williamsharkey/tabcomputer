@@ -43,6 +43,8 @@ export interface CommandContext {
    * so a program that never reads doesn't wait for a pipe that stays open
    */
   readStdin?: () => Promise<string>;
+  /** `< fifo` not yet read (set for timeout only): reading it may wait for a writer, inside the time allowed */
+  readFifoStdin?: () => Promise<string>;
   /** stdin is the terminal, not a pipe, file or here-doc (set by the shell; unset: the terminal if there is one) */
   stdinIsTTY?: boolean;
   /**

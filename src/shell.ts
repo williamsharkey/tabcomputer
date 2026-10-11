@@ -920,6 +920,8 @@ export class Shell {
   set options(v: Set<string>) { this._options = this.watchOptions(v); this.syncOptionVars(); }
   /** $BASHPID: 1 (= $$) in the top shell, a new number in each subshell */
   bashPid = 1;
+  /** performance.now() when $SECONDS was 0: this shell's start, or as `SECONDS=n` set it */
+  private secondsBase = performance.now();
   /** $$ (a subshell keeps its parent's) and $PPID */
   shellPid = 1;
   parentPid = 0;
@@ -1597,6 +1599,7 @@ export class Shell {
     child.shoptopts = new Set(this.shoptopts);
     child.readonlyVars = new Set(this.readonlyVars);
     child.logicalPwd = this.logicalPwd;
+    child.secondsBase = this.secondsBase;
     child.bashPid = nextInPagePid++;
     child.isSubshell = true;
     child.scriptShell = this.scriptShell; // a subshell of a script is non-interactive too
@@ -4801,9 +4804,20 @@ export class Shell {
 
         // Handle stdin redirect (<)
         let stdin = i > 0 ? lastOutput : '';
+        // `timeout N cmd < fifo`: the FIFO is read inside timeout's window (reading it
+        // here first waited for its writer before the clock started)
+        let lazyStdin: (() => Promise<string>) | undefined;
         for (const redir of redirects) {
           if (redir.type === '<') {
+            lazyStdin = undefined;
             if (redir.target === '/dev/null') {
+              stdin = '';
+              continue;
+            }
+            if (effectiveCmdName === 'timeout' && fdOfRef(redir.target) === null && !this.heredocs.lookup(redir.target) &&
+              await fifo.isFifo(this, this.fs.resolvePath(redir.target, this.cwd))) {
+              const target = redir.target;
+              lazyStdin = () => this.readInputRedirect(target);
               stdin = '';
               continue;
             }
@@ -4854,6 +4868,7 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          ...(lazyStdin ? { readFifoStdin: lazyStdin } : {}),
           stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
             // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
             : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
@@ -5721,7 +5736,7 @@ export class Shell {
           if (varName === 'BASHPID') { result += String(this.bashPid); i += m[0].length; continue; }
           if (varName === 'BASH_SUBSHELL' && this.env['BASH_SUBSHELL'] === undefined) { result += '0'; i += m[0].length; continue; }
           if (varName === 'LINENO') { result += (this.env['LINENO'] || '1'); i += m[0].length; continue; }
-          if (varName === 'SECONDS') { result += String(Math.floor(performance.now() / 1000)); i += m[0].length; continue; }
+          if (varName === 'SECONDS') { result += this.secondsValue(); i += m[0].length; continue; }
           if (varName === 'EPOCHSECONDS') { result += String(Math.floor(Date.now() / 1000)); i += m[0].length; continue; }
           if (varName === 'EPOCHREALTIME') { const now = Date.now(); result += `${Math.floor(now / 1000)}.${String(now % 1000).padStart(3, '0')}`; i += m[0].length; continue; }
           // Resolve namerefs: if varName is a nameref, follow it
@@ -6354,6 +6369,8 @@ export class Shell {
     // Simple ${VAR}
     const simpleMatch = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)$/);
     if (simpleMatch) {
+      // (the dynamic ones, as $NAME has them: ${RANDOM} ${SECONDS} ${BASHPID} …)
+      if (/^(?:RANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME|BASHPID|PPID|UID|EUID)$/.test(simpleMatch[1])) return this.expandVars('$' + simpleMatch[1]);
       return this.env[simpleMatch[1]] ?? this.scalarOf(simpleMatch[1]) ?? '';
     }
 
@@ -7306,8 +7323,14 @@ export class Shell {
     return n;
   }
 
+  /** $SECONDS: whole seconds since this shell started (or since `SECONDS=n`, plus n) */
+  private secondsValue(): string {
+    return String(Math.floor((performance.now() - this.secondsBase) / 1000));
+  }
+
   /** Value of NAME (element 0 of an array) or NAME[SUB]; undefined if unset */
   getVar(name: string, sub?: string): string | undefined {
+    if (name === 'SECONDS' && (sub === undefined || sub === '0')) return this.secondsValue();
     if (this.namerefs.has(name)) {
       const ref = this.derefName(name);
       if (!ref) return undefined;
@@ -7345,6 +7368,11 @@ export class Shell {
       name = ref.name;
     }
     if (this.readonlyVars.has(name)) return `${name}: readonly variable`;
+    // SECONDS=n: counts on from n (bash takes the value's leading integer)
+    if (name === 'SECONDS' && (sub === undefined || sub === '0')) {
+      this.secondsBase = performance.now() - (parseInt(value, 10) || 0) * 1000;
+      return null;
+    }
     const attrs = this.varAttrs.get(name);
     if (attrs) {
       if (attrs.has('i')) {

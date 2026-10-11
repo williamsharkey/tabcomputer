@@ -41,6 +41,13 @@ in §6 are for reference only (the user may archive them).
 
 ## 0a. Final state from the old coordinator (2026-10-10 ~11:50 UTC)
 
+> **Historical.** This section records the handoff on 2026-10-10. It is not the current state. Since then the
+> new coordinator has run integration cycles through Build 963. The current workers are unix/perf-blink,
+> perf-kernel, perf-fs-shell, conformance, shell-stdio, compat-dev, compat-tools, agent-clis, gui, gl, docs,
+> debian, bench, remote-debug and hot-swap. Live state: `git log origin/unix/integration`, the open issues on
+> williamsharkey/tabcomputer, and each worker's branch. The old account's last branches
+> (unix/gui-fin, unix/perf-blink-fin) were handed to gui and perf-blink to fold in.
+
 The old coordinator (session 01AcE1vJZcwt64s5QkThfEFt) stopped at the user's
 request. Before stopping it interrupted every worker. Its only follow-up was
 asking workers to commit and push work they already had; nothing new was

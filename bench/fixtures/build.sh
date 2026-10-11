@@ -4,6 +4,6 @@
 # built at bench time into bench/.cache (see bench/lib/fixtures.mjs).
 set -e
 cd "$(dirname "$0")"
-clang --target=wasm32 -O2 -nostdlib -ffreestanding -fno-builtin \
+clang --target=wasm32 -mbulk-memory -O2 -nostdlib -ffreestanding -fno-builtin \
   -Wl,--export=_start -Wl,--no-entry -Wl,--strip-all -o kbench.wasm kbench.c
 ls -l kbench.wasm

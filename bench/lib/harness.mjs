@@ -212,6 +212,29 @@ export class Harness {
   }
 
 
+  /**
+   * Host CPU of the whole Chromium tree (browser, renderers with their Workers,
+   * GPU, utility processes) from /proc/<pid>/stat utime/stime, in seconds.
+   * Processes that exit between two reads take their CPU with them.
+   */
+  async hostCpu() {
+    let pids = [];
+    try { pids = (await this.browserCdp.send('SystemInfo.getProcessInfo')).processInfo.map((p) => p.id); } catch {}
+    const out = new Map();
+    for (const pid of pids) { const t = procCpu(pid); if (t) out.set(pid, t); }
+    return out;
+  }
+
+  /** Run `fn`; returns { result, user, sys } (s) of the Chromium tree while it ran (see hostCpu). */
+  async withHostCpu(fn) {
+    const a = await this.hostCpu();
+    const result = await fn();
+    const b = await this.hostCpu();
+    let user = 0, sys = 0;
+    for (const [pid, t] of b) { const s0 = a.get(pid) ?? { user: 0, sys: 0 }; user += t.user - s0.user; sys += t.sys - s0.sys; }
+    return { result, user, sys };
+  }
+
   /** In-page evaluate with a readable error. */
   eval(fn, arg) { return this.page.evaluate(fn, arg); }
   sh(cmd) { return this.page.evaluate((c) => window.__bench.sh(c), cmd); }
@@ -266,6 +289,16 @@ export function procRss(pid) {
     const s = readFileSync(`/proc/${pid}/status`, 'utf8');
     const m = /VmRSS:\s+(\d+) kB/.exec(s);
     return m ? Number(m[1]) * 1024 : null;
+  } catch { return null; }
+}
+
+const TICK = 100; // USER_HZ: /proc/<pid>/stat times are in 1/100 s on Linux
+/** utime/stime of `pid` in seconds, or null. */
+export function procCpu(pid) {
+  try {
+    const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const f = s.slice(s.lastIndexOf(')') + 2).split(' ');
+    return { user: Number(f[11]) / TICK, sys: Number(f[12]) / TICK };
   } catch { return null; }
 }
 

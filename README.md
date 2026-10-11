@@ -136,7 +136,7 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   1428/1448 (only tests that pass natively as uid 1000 are scored; the LTP set grew from 322
   tests, of which 285 pass, to 534 with harder ones, so its percentage fell from 87.9% to 80.7%
   without a regression); the busybox testsuite
-  625/635; the oils shell spec tests 2105/2417; smoosh's POSIX shell tests 159/162; the
+  625/635; the oils shell spec tests 2136/2417; smoosh's POSIX shell tests 159/162; the
   wasi-testsuite 71/72 ([docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **GUI apps.** `gui` lists Debian X11 apps (xterm, GTK and Qt editors and viewers, GIMP,
   Inkscape, Krita, VLC, NetSurf). They open as desktop windows. Of the 29 in the scoreboard,

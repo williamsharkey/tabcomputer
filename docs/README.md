@@ -32,6 +32,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 | Doc | What it covers |
 | --- | --- |
 | [KERNEL_ABI.md](KERNEL_ABI.md) | The kernel's syscall contract, with a changelog |
+| [HOTSWAP.md](HOTSWAP.md) | Developing tabcomputer from inside tabcomputer: `hotswap` swaps core code into a running tab |
 | [X86_ENGINES.md](X86_ENGINES.md) | Why Blink, its patches (fork, signals, the wasm JIT, SSE4, `/proc/self/maps`), speed |
 | [UNIX_COMPAT.md](UNIX_COMPAT.md) | The plan toward full Unix compatibility, phase by phase (written 2026-10-07) |
 | [DOM-RENDERING.md](DOM-RENDERING.md) | Design note: X11 and GTK text as DOM text |

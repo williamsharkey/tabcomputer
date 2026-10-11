@@ -23,6 +23,7 @@ import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
 import { redirectWordSpans } from './shell-redirect-words';
+import { commandStarted, commandEnded, watchdogCheckpoint } from './watchdog';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -156,7 +157,7 @@ const fdOfRef = (target: string): number | null => (target.startsWith(FD_REF) ? 
  * `fifo`: a named pipe's write end this shell opened (exec N>fifo); `owner`
  * closes it when the entry goes.
  */
-type OutFd = { path: string; fifo?: import('./kernel/fd').OpenFile; owner?: Shell } | { dup: 1 | 2 } | { writer: (s: string) => void };
+type OutFd = { path: string; fifo?: import('./kernel/fd').OpenFile; owner?: Shell; rw?: { content: string; offset: number } } | { dup: 1 | 2 } | { writer: (s: string) => void };
 
 export interface BackgroundJob {
   id: number;
@@ -563,6 +564,10 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** Expansions that change shell state: `${x=v}`, `${x:=v}`, `$((…))` (an assignment or ++ in it) */
+const SIDE_EFFECT_EXPANSION_RE = /\$\{[^}]*?:?=|\$\(\(/;
+/** Kernel fd kinds a command reads as data when given no file (ripgrep's is_readable_stdin) */
+const READABLE_STDIN_KINDS = new Set(['file', 'pipe', 'socket']);
 /** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
 const PREFIX_REDIR_RE = /^\s*(\d*(?:&>>?|>>|>\||<>|>&|<&|>|<)\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+)(?=\s)/;
 /** A command word as it stands after expansion */
@@ -708,20 +713,66 @@ function withoutTty<T extends object>(term: T): T {
 
 /** Runaway-loop guard for while/until/for((;;)); high enough for `while read` over big files */
 const LOOP_ITERATION_LIMIT = 10_000_000;
-/** Let the page paint and handle input during long shell loops */
-const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-/** When the shell last let the page run (timers, input, rendering) */
-let lastYield = 0;
 /**
- * Yield to the event loop if the shell has held it for a while: function
- * calls and `source` (deep recursion, a ~/.profile and ~/.bashrc sourcing
- * each other) otherwise never give the page a turn. Cheap when not due.
+ * Let the page paint and handle input during long shell work: one turn of the
+ * event loop. A message task, not setTimeout(0), which browsers clamp to 4 ms
+ * when nested (+28% on a 1000-iteration loop, bench/ab.mjs). (Not
+ * setImmediate: node-compat defines the page's as setTimeout(0).) Under Node
+ * the ports are unref'd so they don't keep the process alive.
+ */
+const yieldResolvers: (() => void)[] = [];
+let yieldPort: MessagePort | null = null;
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => {
+  if (typeof MessageChannel !== 'function') { setTimeout(resolve, 0); return; }
+  if (!yieldPort) {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => yieldResolvers.shift()?.();
+    (ch.port1 as any).unref?.();
+    (ch.port2 as any).unref?.();
+    yieldPort = ch.port2;
+  }
+  yieldResolvers.push(resolve);
+  yieldPort.postMessage(null);
+});
+/**
+ * Since when the shell has held the event loop without the page getting a
+ * turn. A marker timer says a turn happened (and that timers ran). Measuring
+ * from the last yield instead made the first command after any idle moment
+ * wait a timer turn (+50% on `true`, bench/ab.mjs).
+ */
+let busySince = 0;
+let hadTurn = true;
+let markerPending = false;
+let lastTimerTurn = 0;
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+function markTurn(): void {
+  if (markerPending) return;
+  markerPending = true;
+  setTimeout(() => { markerPending = false; hadTurn = true; lastTimerTurn = clockMs(); }, 0);
+}
+/** Timers must run at least this often while the shell is busy (`timeout`, the watchdog's heartbeat) */
+const TIMER_TURN_MS = 50;
+/**
+ * Yield to the event loop if the shell has held it for 30 ms: function calls,
+ * `source`, loop iterations and pipeline segments otherwise never give the
+ * page a turn. Cheap when not due (no await of a timer). The yield is a
+ * message task (paint, input), or a timer turn when timers haven't run for
+ * TIMER_TURN_MS (message tasks can starve them).
  */
 async function maybeYield(): Promise<void> {
-  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  if (now - lastYield < 30) return;
-  await yieldToEventLoop();
-  lastYield = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  watchdogCheckpoint(); // the watchdog's kill switch (an outside agent, or `watchdog abort-after`)
+  if (hadTurn) {
+    hadTurn = false;
+    busySince = clockMs();
+    markTurn();
+    return;
+  }
+  const t = clockMs();
+  if (t - busySince < 30) return;
+  if (t - lastTimerTurn >= TIMER_TURN_MS) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  else await yieldToEventLoop();
+  busySince = clockMs();
+  markTurn();
 }
 
 /**
@@ -1654,6 +1705,8 @@ export class Shell {
 
   /** Status of the last command substitution while expanding the current command */
   private substStatus: number | null = null;
+  /** Expanding the word of a ${x:-word} that is inside double quotes: no tilde expansion */
+  private tildeOff = false;
 
   private async subshellExec(cmd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const child = this.fork();
@@ -1799,13 +1852,21 @@ export class Shell {
     const outerInCommand = this.inCommand;
     this.activeTerminal = terminalOverride;
     this.inCommand = 0;
+    // In flight for the watchdog: a freeze report names the innermost line
+    const watch = commandStarted(line, this.watchDepth++, this);
+    let status: number | undefined;
     try {
-      return await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
+      return status = await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
     } finally {
+      this.watchDepth--;
+      commandEnded(watch, status);
       this.activeTerminal = outerTerminal;
       this.inCommand = outerInCommand;
     }
   }
+
+  /** execute() calls in progress on this shell, for the watchdog (0: a top-level line) */
+  private watchDepth = 0;
 
   /** `exec -a NAME prog`: argv[0] for the next kernel program named `name` */
   execArgv0?: { name: string; argv0: string };
@@ -2262,14 +2323,16 @@ export class Shell {
         case '2>&1': this.userFds.set(2, this.resolveOutFd(1)!); break;
         case 'open':
           if (r.mode === '<' && r.rw) {
-            // N<> file: read from the start, writes go after what is there (made if missing)
+            // N<> file: opened at its start for reading and writing, one position for both
+            // (made if missing; not truncated, so noclobber doesn't apply)
             const fd = r.fd!;
             const path = this.fs.resolvePath(r.target, this.cwd);
             if (await fifo.isFifo(this, path)) { err = openOut(fd, r.target, false); break; }
             this.dropFd(fd);
-            this.userFds.set(fd, { path });
+            const rw = { content: '', offset: 0 };
+            this.userFds.set(fd, { path, rw });
             pending.push(this.fs.appendFile(path, '').then(() => this.readInputRedirect(r.target))
-              .then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
+              .then((content) => { rw.content = content; this.fileDescriptors.set(fd, rw); }));
           } else if (r.mode === '<') {
             const fd = r.fd!;
             pending.push(this.readInputRedirect(r.target).then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
@@ -2349,6 +2412,16 @@ export class Shell {
     await this.pendingFdOps;
     if (e.fifo) {
       if (text) await fifo.writeOpenFifo(e.fifo, text.replace(/\r\n/g, '\n'));
+      return true;
+    }
+    if (text && e.rw) {
+      // N<>: written at the shared position (what was read moved it), over what is there
+      const t = text.replace(/\r\n/g, '\n');
+      const cur = await this.fs.readFile(e.path, 'utf8').catch(() => '') as string;
+      const at = Math.min(e.rw.offset, cur.length);
+      e.rw.content = cur.slice(0, at) + t + cur.slice(at + t.length);
+      e.rw.offset = at + t.length;
+      await this.fs.writeFile(e.path, e.rw.content);
       return true;
     }
     if (text) await this.fs.appendFile(e.path, text.replace(/\r\n/g, '\n'));
@@ -2436,10 +2509,10 @@ export class Shell {
       return lastExit;
     }
 
-    // Handle heredocs before anything else
-    const heredoc = this.parseHeredoc(trimmed);
-    const effectiveLine = heredoc ? heredoc.command : trimmed;
-    const heredocStdin = heredoc ? heredoc.body : (injectedStdin ?? '');
+    // (here-documents are `< MARKER` redirections by now: extractHeredocs above;
+    // a `<<` still here is quoted, as in `eval 'cat <<E …'`, and stays as written)
+    const effectiveLine = trimmed;
+    const heredocStdin = injectedStdin ?? '';
 
     // Strip control characters from history entries (ink UI can leak ANSI/DEL chars)
     // Only record user-typed commands (not programmatic calls from child_process, spawn, etc.)
@@ -2676,15 +2749,27 @@ export class Shell {
         // checking that first keeps a tokenizer pass and an await off every other command
         const ordered = rawSegments.length === 1 && ORDERED_PREFIX_RE.test(cmdText) && /[$`]/.test(cmdText)
           ? await this.expandPrefixAssignments(cmdText, stderrWriter) : null;
-        pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        if (rawSegments.length > 1 && !ordered && SIDE_EFFECT_EXPANSION_RE.test(cmdText)) {
+          // Each element of a pipeline is a subshell: what its words assign (`${x=v}`,
+          // `$((i++))`) stays there (the last one's here with shopt -s lastpipe)
+          pipeline = [];
+          for (const [k, seg] of rawSegments.entries()) {
+            const here = k === rawSegments.length - 1 && this.shoptopts.has('lastpipe');
+            pipeline.push(await (here ? this : this.fork()).expandWords(quoteAssignmentValues(seg), stderrWriter));
+          }
+        } else {
+          pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        }
       }
 
       // Check for ! negation prefix
       let negateExit = false;
-      if (pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
+      // (a `!` that came from an expansion, `v='!'; $v cmd`, is a command word, not negation)
+      const rawBang = /^\s*!(\s|$)/.test(cmdText);
+      if (rawBang && pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
         negateExit = true;
         pipeline[0] = pipeline[0].trim().slice(2);
-      } else if (pipeline.length > 0 && pipeline[0].trim() === '!') {
+      } else if (rawBang && pipeline.length > 0 && pipeline[0].trim() === '!') {
         // Bare ! with pipeline after
         negateExit = true;
         pipeline.shift();
@@ -2726,6 +2811,7 @@ export class Shell {
         segCount = i + 1;
         // A builtin that captured its output `continue`d here: pipe/redirect it now
         await flushCapture();
+        if (i > 0) await maybeYield(); // a long line of builtins lets the page run (and the watchdog's abort in)
 
         // Check for SIGINT (abort)
         if (this.abortController?.signal.aborted) {
@@ -2806,6 +2892,12 @@ export class Shell {
               // ...as plain assignments: a new or unexported variable stays unexported
               for (const [k, v] of prefixEnvSaved) if (v === undefined || prefixWasLocal.has(k)) this.localVars.add(k);
             }
+            this.lastExitCode = exitCode;
+            this.env['?'] = String(exitCode);
+          } else {
+            // Words that expanded to nothing (`$(false)`, `` `false` ``, `$empty`): the status
+            // is the last command substitution's, else 0
+            exitCode = this.substStatus ?? 0;
             this.lastExitCode = exitCode;
             this.env['?'] = String(exitCode);
           }
@@ -4106,9 +4198,17 @@ export class Shell {
             }
           }
           if (cmdArgs.length === 0) {
-            // Bare `set` lists shell variables, quoted so they can be read back
-            const names = Object.keys(this.env).filter(k => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !k.startsWith('__')).sort();
+            // Bare `set` lists shell variables, quoted so they can be read back; arrays as
+            // bash's name=([0]="1" …) (not the shell's own __PIPE_STDIN and __shiro_* scratch)
+            const internal = (k: string) => k === '__PIPE_STDIN' || k.startsWith('__shiro');
+            const names = [...new Set([...Object.keys(this.env), ...this.arrays.keys(), ...this.assocArrays.keys()])]
+              .filter(k => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !internal(k)).sort();
             for (const k of names) {
+              if (this.arrays.has(k) || this.assocArrays.has(k)) {
+                const line = this.declareLine(k);
+                if (line) writeStdout(line.replace(/^declare -\S* /, '') + '\r\n');
+                continue;
+              }
               const v = this.env[k];
               writeStdout(`${k}=${/^[A-Za-z0-9_\-.,/:@%+=]*$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`}\r\n`);
             }
@@ -4726,6 +4826,10 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
+            // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
+            : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
+              !redirects.some(r => r.type === '<' && /^\/dev\/(null|zero|tty)$/.test(r.target)),
           // (not when the caller collects stdout: $(...), a builtin's own sink)
           stdoutIsTTY: i === pipeline.length - 1 && !redirects.some(r => r.type === '>' || r.type === '>>') &&
             !(terminalOverride || this.terminal)?.captureStdout,
@@ -5500,7 +5604,7 @@ export class Shell {
                 if (operand[k] === '\\' && k + 1 < operand.length) { text += operand[k] + operand[++k]; continue; }
                 if (operand[k] !== '"') text += operand[k];
               }
-              const word = this.expandVars(text, true).replace(/\\([$`"\\}])/g, '$1');
+              const word = this.expandVars(this.expandArithmetic(text), true).replace(/\\([$`"\\}])/g, '$1');
               if (op === '?') throw new Error(`${name}: ${restoreExpansion(word) || 'parameter not set'}`);
               if (op === '=') { const err = this.setVar(name, restoreExpansion(word)); if (err) throw new Error(err); }
               result += protectExpansion(word);
@@ -5508,7 +5612,12 @@ export class Shell {
             i = j + 1;
             continue;
           }
-          const ref = this.expandArrayRef(inner);
+          // ${@%a} ${*//x/y} ${@^^}: the operator on each positional parameter, as for ${a[@]%a}
+          const posOp = /^([@*])((?:##?|%%?|\/[\/#%]?|\^\^?|,,?)[\s\S]*)$/.exec(inner);
+          const POS = '__shiro_pos';
+          if (posOp) { this.arrays.set(POS, this.getPositionalArgs()); inner = `${POS}[${posOp[1]}]${posOp[2]}`; }
+          let ref: ReturnType<Shell['expandArrayRef']>;
+          try { ref = this.expandArrayRef(inner); } finally { if (posOp) this.arrays.delete(POS); }
           if (ref && 'list' in ref) {
             const vals = ref.list;
             if (inDouble && !ref.star) {
@@ -5542,7 +5651,11 @@ export class Shell {
             const set = v !== undefined && (wo[2] === '' || v !== '');
             wordUsed = wo[3] === '+' ? set : !set;
           }
-          const expanded = this.expandParamExpression(inner);
+          // ("${x:-~}": the word is in double quotes too, so no tilde expansion)
+          const tildeWas = this.tildeOff;
+          this.tildeOff = inDouble;
+          let expanded: string | null;
+          try { expanded = this.expandParamExpression(inner); } finally { this.tildeOff = tildeWas; }
           if (expanded !== null) {
             // The value is data, except for ${x-word} ${x=word} ${x+word} ${x?word},
             // whose word was expanded as shell text (its quotes still to be removed)
@@ -5586,7 +5699,7 @@ export class Shell {
       }
 
       // Tilde expansion (only unquoted, not inside operators like =~)
-      if (ch === '~' && !inDouble) {
+      if (ch === '~' && !inDouble && !this.tildeOff) {
         const before = i === 0 ? '' : line[i - 1];
         const after = line[i + 1] || '';
         // Only expand after = in assignment context (VAR=~), not in operators like =~
@@ -5611,6 +5724,17 @@ export class Shell {
             result += tildeText(home);
             i++;
             continue;
+          }
+          // ~NAME: that user's home (root's and this user's are known; another stays as written)
+          const user = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(line.slice(i + 1))?.[0];
+          const end = user ? line[i + 1 + user.length] ?? '' : '';
+          if (user && (end === '' || /[\/\s;|&>]/.test(end) || (end === ':' && (afterColon || before === '=')))) {
+            const dir = user === 'root' ? '/root' : user === (this.env['USER'] || 'user') ? (this.env['HOME'] ?? '/home/user') : null;
+            if (dir !== null) {
+              result += tildeText(dir);
+              i += 1 + user.length;
+              continue;
+            }
           }
         }
       }
@@ -6099,7 +6223,10 @@ export class Shell {
     }
 
     // ${VAR/pat/rep}, ${VAR//pat/rep}, ${VAR/#pat/rep}, ${VAR/%pat/rep}
-    const subst = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/([/#%]?)((?:[^/\\]|\\.)*)(?:\/([\s\S]*))?$/);
+    // (a / in quotes is part of the pattern; after the // operator a / is the pattern's
+    // first character: ${x////c} replaces each / with c, ${x///} removes them)
+    const subst = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/(\/)(\/?(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^/\\'"]|\\.)*)(?:\/([\s\S]*))?$/)
+      ?? inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\/([#%]?)((?:'[^']*'|"(?:[^"\\]|\\.)*"|[^/\\'"]|\\.)*)(?:\/([\s\S]*))?$/);
     if (subst) {
       const [, name, mode, pat, repRaw] = subst;
       const val = this.env[name] ?? this.scalarOf(name) ?? '';
@@ -6129,7 +6256,7 @@ export class Shell {
     }
 
     // ${VAR#pat}, ${VAR##pat}, ${VAR%pat}, ${VAR%%pat}
-    const strip = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)(##?|%%?)([\s\S]+)$/);
+    const strip = inner.match(/^([A-Za-z_][A-Za-z0-9_]*|[0-9]+)(##?|%%?)([\s\S]*)$/);
     if (strip) {
       const [, name, op, pat] = strip;
       const val = this.env[name] ?? this.scalarOf(name) ?? '';
@@ -6150,20 +6277,22 @@ export class Shell {
       const isUnset = val === undefined;
       const isEmpty = val === '';
       const check = colon ? (isUnset || isEmpty) : isUnset;
-      const expandedOperand = this.expandVars(operand);
+      // (the word is expanded only when used: ${x:-$((i++))} leaves i alone when x is set)
+      const word = () => this.expandVars(this.expandArithmetic(operand));
       switch (op) {
-        case '-': return check ? expandedOperand : (val ?? '');
+        case '-': return check ? word() : (val ?? '');
         case '=':
           if (check) {
             // The variable gets the word's value: its quotes removed
+            const expandedOperand = word();
             const err = this.setVar(varName, restoreExpansion(removeQuoting(expandedOperand)));
             if (err) throw new Error(err);
             return expandedOperand;
           }
           return val ?? '';
-        case '+': return check ? '' : expandedOperand;
+        case '+': return check ? '' : word();
         case '?':
-          if (check) throw new Error(`${varName}: ${restoreExpansion(removeQuoting(expandedOperand)) || 'parameter not set'}`);
+          if (check) throw new Error(`${varName}: ${restoreExpansion(removeQuoting(word())) || 'parameter not set'}`);
           return val ?? '';
       }
     }
@@ -6308,56 +6437,6 @@ export class Shell {
     }
     alts.push(s.slice(start));
     return alts;
-  }
-
-  private parseHeredoc(input: string): { command: string; body: string } | null {
-    // Match <<DELIM, <<'DELIM', <<"DELIM", or <<-DELIM patterns
-    const lines = input.split(/\r?\n/);
-    if (lines.length < 2) return null;
-
-    // Find <<DELIM on the first line (could be anywhere in the command)
-    const heredocMatch = lines[0].match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))/);
-    if (!heredocMatch) return null;
-
-    const delimiter = heredocMatch[1] || heredocMatch[2] || heredocMatch[3];
-    const quoted = !!(heredocMatch[1] || heredocMatch[2]);
-    const stripTabs = lines[0].match(/<<-/) !== null;
-
-    // Remove the <<DELIM token from the command line
-    const command = lines[0].replace(/<<-?\s*(?:'[^']+'|"[^"]+"|(\S+))/, '').trim();
-
-    // Collect body lines until we find the delimiter on its own line
-    const bodyLines: string[] = [];
-    let found = false;
-    let delimiterIndex = -1;
-    for (let i = 1; i < lines.length; i++) {
-      const line = stripTabs ? lines[i].replace(/^\t+/, '') : lines[i];
-      if (line.trim() === delimiter) {
-        found = true;
-        delimiterIndex = i;
-        break;
-      }
-      bodyLines.push(line);
-    }
-
-    if (!found) return null;
-
-    // Capture any commands after the closing delimiter line
-    let finalCommand = command;
-    const remaining = lines.slice(delimiterIndex + 1).map(l => l.trim()).filter(Boolean);
-    if (remaining.length > 0) {
-      finalCommand = finalCommand + ' && ' + remaining.join(' && ');
-    }
-
-    let body = bodyLines.join('\n');
-    // If delimiter was not quoted, expand variables
-    if (!quoted) {
-      body = restoreExpansion(this.expandVars(body));
-    }
-    // Add trailing newline (standard heredoc behavior)
-    body += '\n';
-
-    return { command: finalCommand, body };
   }
 
   private parseCompound(line: string): { operator: '' | '&&' | '||' | ';'; command: string }[] {
@@ -7060,6 +7139,13 @@ export class Shell {
       if (ch === '\\' && !inSingle) { result += input.slice(i, i + 2); i += 2; continue; }
       if (ch === "'" && !inDouble) { inSingle = !inSingle; result += ch; i++; continue; }
       if (ch === '"' && !inSingle) { inDouble = !inDouble; result += ch; i++; continue; }
+      // ${x:-word} ${x+word}…: the word is expanded only if it is used (expandParamExpression)
+      if (!inSingle && ch === '$' && input[i + 1] === '{' && /^\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-]):?[-=+?]/.test(input.slice(i, i + 80))) {
+        const end = skipParamBrace(input, i + 1);
+        result += input.slice(i, end);
+        i = end;
+        continue;
+      }
       if (!inSingle && input[i] === '$' && input[i + 1] === '(' && input[i + 2] === '(') {
         // The matching )) by single-paren depth: $((a,(b+1))), $((!(1||2)))
         let depth = 0;
@@ -7144,6 +7230,8 @@ export class Shell {
    * end). Out of range below 0: an error when assigning, -1 (unset) when reading.
    */
   private arrayIndex(name: string, sub: string, forRead = false): number {
+    // (double quotes in it are removed, as bash does: a["1"]=x, a[2 + "3"]; single quotes stay an error)
+    if (sub.includes('"')) sub = sub.replace(/"((?:[^"\\]|\\.)*)"/g, '$1');
     let n = Number(this.evalArithBig(sub));
     if (n < 0) {
       const arr = this.arrays.get(name);
@@ -7446,6 +7534,8 @@ export class Shell {
   private compoundsBalanced(src: string): boolean {
     const close: Record<string, string> = { for: 'done', while: 'done', until: 'done', select: 'done', if: 'fi', case: 'esac' };
     const stack: string[] = [];
+    // (here-document bodies are data: `if`, `case`, `{` there aren't keywords)
+    if (hasHeredoc(src)) src = extractHeredocs(src, new HeredocStore());
     for (const { word } of this.shellTokenScan(src)) {
       if (close[word]) stack.push(close[word]);
       else if (word === 'done' || word === 'fi' || word === 'esac') { if (stack.pop() !== word) return false; }
@@ -7486,6 +7576,10 @@ export class Shell {
 
   private async inSubshell(fn: (sub: Shell) => Promise<number>): Promise<number> {
     const child = this.fork();
+    // (what fn runs is nested: an `exit` or set -e failure in a loop body unwinds to
+    // here, ending the subshell, instead of being taken as the end of a script
+    // by the body's own execute() and the loop going on)
+    child.executeDepth = 1;
     try {
       return await fn(child);
     } catch (e) {
@@ -7570,7 +7664,7 @@ export class Shell {
    */
   private async expandRedirectTarget(raw: string, writeStderr: (s: string) => void): Promise<string | null> {
     if (/^[<>]\(/.test(raw) || /^&(\d+|-)$/.test(raw)) return raw;
-    if (!/[$`'"\\{]/.test(raw)) return raw;
+    if (!/[$`'"\\{]/.test(raw) && !raw.startsWith('~')) return raw;
     const words = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
     if (words.length !== 1) { writeStderr(`tabcomputer: ${raw}: ambiguous redirect\r\n`); return null; }
     return words[0];
@@ -7858,7 +7952,7 @@ export class Shell {
         case '-e': case '-r': case '-w': case '-x':
           try { await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return 0; } catch { return 1; }
         case '-f':
-          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'file' ? 0 : 1; } catch { return 1; }
+          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.isFile() ? 0 : 1; } catch { return 1; }
         case '-d':
           try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'dir' ? 0 : 1; } catch { return 1; }
         case '-s':
@@ -8113,6 +8207,11 @@ export class Shell {
     return results;
   }
 
+  /** Ctrl-C (or the watchdog's abort) reached the command this loop belongs to */
+  private loopAborted(): boolean {
+    return !!(this.abortController ?? this.inheritedAbort)?.signal.aborted;
+  }
+
   private async execWhile(
     input: string, writeStdout: (s: string) => void, writeStderr: (s: string) => void,
     pipeStdin?: string,
@@ -8147,7 +8246,9 @@ export class Shell {
     let status = 0;
     let iter = 0;
     while (iter++ < LOOP_ITERATION_LIMIT) {
-      if (iter % 1000 === 0) await yieldToEventLoop(); // keep the page responsive in long loops
+      // Give the page a turn every 30 ms, whatever an iteration costs; Ctrl-C ends the loop
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       try {
         // Expand vars in condition each iteration (loop vars like $X change)
         const expandedCond = await this.conditionText(parsed.condition, writeStderr);
@@ -8190,7 +8291,8 @@ export class Shell {
       let status = 0;
       let iter = 0;
       while (iter++ < LOOP_ITERATION_LIMIT) {
-        if (iter % 1000 === 0) await yieldToEventLoop();
+        await maybeYield();
+        if (this.loopAborted()) return 130;
         // Evaluate test — 0 means false (stop)
         if (test && this.evalArithmetic(test) === 0) break;
         // Execute body
@@ -8218,6 +8320,8 @@ export class Shell {
       : this.getPositionalArgs();
     let status = 0;
     for (const item of items) {
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       const err = this.setVar(varName, item);
       if (err) {
         writeStderr(`tabcomputer: ${err}\r\n`);
@@ -8345,11 +8449,14 @@ export class Shell {
   }
 
   /** One word, expanded without field splitting or globbing (an assignment value) */
-  private async expandScalar(raw: string, writeStderr: (s: string) => void): Promise<string> {
+  private async expandScalar(raw: string, writeStderr: (s: string) => void, assignment = false): Promise<string> {
     if (!/[$`'"\\~]/.test(raw)) return raw;
     this.suppressSplit++;
     try {
-      const args = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
+      // An assignment's value: a ~ after : expands too (a[0]=foo:~), as in NAME=value
+      const pre = assignment && raw.includes(':~') ? 'x=' : '';
+      const args = this.parseSegment(await this.expandWords(pre + raw, writeStderr)).args;
+      if (pre && args.length) args[0] = args[0].slice(pre.length);
       return args.map((a) => unmark(a)).join(' ');
     } finally {
       this.suppressSplit--;
@@ -8409,7 +8516,7 @@ export class Shell {
       try {
         if (isArrayWord(a)) err = await this.assignArrayWord(a, writeStderr);
         else if (!decl) {
-          const value = await this.expandScalar(a.value, writeStderr);
+          const value = await this.expandScalar(a.value, writeStderr, true);
           err = a.append ? this.appendVar(a.name, value) : this.setVar(a.name, value);
         }
       } catch (e) {
@@ -8428,7 +8535,7 @@ export class Shell {
     const name = this.refTarget(a.name);
     if (this.readonlyVars.has(name)) return `${name}: readonly variable`;
     if (!a.list) {
-      const value = await this.expandScalar(a.value, writeStderr);
+      const value = await this.expandScalar(a.value, writeStderr, true);
       return a.append ? this.appendVar(name, value, a.sub) : this.setVar(name, value, a.sub);
     }
     if (a.sub !== undefined) return `${a.name}[${a.sub}]: cannot assign list to array member`;
@@ -8797,6 +8904,11 @@ export class Shell {
       else if (r.type === '2>' || r.type === '2>>') err2 = path(r.target);
       else if (r.type === '2>&1') err2 = out1;
     }
+    // A new `> file` is made by the command's one write at its end; a command looking
+    // at its fds (stat -L /proc/self/fd/1) sees it exist already, as on Linux
+    for (const p of new Set([out1, err2])) {
+      if (p.startsWith('/') && !p.startsWith('/dev/') && this.fs.lookupCached?.(p) === null) void this.fs.writeNow(p, new Uint8Array(0)).catch(() => {});
+    }
     return [[0, in0], [1, out1], [2, err2]];
   }
 
@@ -8870,8 +8982,14 @@ export class Shell {
       handled = true;
       for (const x of lastRedirects) {
         const file = { path: this.fs.resolvePath(x.target, this.cwd), append: x.type.endsWith('>>') };
-        if (x.type === '2>&1') { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
-        else if (x.type.startsWith('2') || x.fd === 2) stderrTo = file;
+        const toErr = x.type.startsWith('2') || x.fd === 2;
+        // `2> /dev/stdout` after `> f` is `2>&1`; `> /dev/stderr` after `2> f` is that file
+        // (before them, the job's own stdout/stderr: runKernelPipeline)
+        const std = /^\/(?:dev\/(?:std(out|err)|fd\/([12]))|proc\/self\/fd\/([12]))$/.exec(file.path);
+        const stdN = std ? (std[1] === 'out' || std[2] === '1' || std[3] === '1' ? 1 : 2) : 0;
+        if (x.type === '2>&1' || (toErr && stdN === 1 && stdoutTo)) { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
+        else if (!toErr && stdN === 2 && stderrTo && stderrTo !== 'stdout') stdoutTo = stderrTo; // (one open file for both)
+        else if (toErr) stderrTo = file;
         else stdoutTo = file;
       }
       if (!handled) { stdoutTo = undefined; stderrTo = undefined; }
@@ -9622,6 +9740,40 @@ function splitRawWords(text: string): string[] {
  * something (`y=$x`, `export P=$HOME/bin:$PATH`), for leading assignments and
  * declaration builtins; anything with quotes, parens, or spaces outside ${…} is left alone.
  */
+/**
+ * An assignment's value in double quotes, but its tilde prefixes (at the start
+ * and after each top-level :) outside them, so they still expand: x=~:$y
+ */
+function quoteKeepingTildes(value: string): string {
+  if (!value.includes('~')) return `"${value}"`;
+  let out = '';
+  let chunk = '';
+  let depth = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === '$' && value[i + 1] === '{') { depth++; chunk += '${'; i++; continue; }
+    if (c === '}' && depth > 0) { depth--; chunk += c; continue; }
+    if (c === '~' && depth === 0 && (i === 0 || value[i - 1] === ':')) {
+      const t = /^~[A-Za-z0-9_.+-]*/.exec(value.slice(i))![0];
+      const next = value[i + t.length];
+      if (next === undefined || next === '/' || next === ':') {
+        // (the : before it stays unquoted: the tilde code looks at the character before)
+        const colon = chunk.endsWith(':') ? ':' : '';
+        if (colon) chunk = chunk.slice(0, -1);
+        if (chunk) out += `"${chunk}"`;
+        out += colon;
+        chunk = '';
+        // (the : after it too: the tilde is expanded when a / or : follows)
+        out += next === ':' ? t + ':' : t;
+        i += t.length - (next === ':' ? 0 : 1);
+        continue;
+      }
+    }
+    chunk += c;
+  }
+  return chunk ? `${out}"${chunk}"` : out;
+}
+
 export function quoteAssignmentValues(cmd: string): string {
   const lead = cmd.match(/^\s*(?:(?:local|export|declare|typeset|readonly)(?:\s+-\w+)*\s+)?/)![0];
   let out = lead;
@@ -9632,7 +9784,7 @@ export function quoteAssignmentValues(cmd: string): string {
     const m = re.exec(cmd);
     if (!m || m[0] === '') break;
     let value = m[2];
-    if (value.includes('$')) value = `"${value}"`;
+    if (value.includes('$')) value = quoteKeepingTildes(value);
     out += m[1] + value + m[3];
     pos = re.lastIndex;
     if (!m[3]) break;

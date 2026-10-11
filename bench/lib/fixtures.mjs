@@ -26,6 +26,15 @@ function goBuild(src, out, log) {
   return true;
 }
 
+function gccStatic(src, out, log) {
+  // rebuilt when the source is newer (pbench.c changes with the suite that parses it)
+  if (existsSync(out) && statSync(out).mtimeMs >= statSync(src).mtimeMs) return true;
+  if (!have('gcc')) return false;
+  log?.(`[fixtures] gcc -static ${src.split('/').pop()}`);
+  execFileSync('gcc', ['-O2', '-static', '-o', out, src], { stdio: 'pipe' });
+  return true;
+}
+
 /** Returns { name: absolutePath } of every fixture available, and copies them to `publishDir`. */
 export function prepareFixtures({ cacheDir, publishDir, netcache, log, withGh = true }) {
   const fx = join(cacheDir, 'fixtures');
@@ -39,14 +48,8 @@ export function prepareFixtures({ cacheDir, publishDir, netcache, log, withGh = 
     ['hello-go', () => goBuild(join(X86_SRC, 'hello.go'), join(fx, 'hello-go'), log)],
     ['nethttp', () => goBuild(join(X86_SRC, 'nethttp.go'), join(fx, 'nethttp'), log)],
     ['cpuloop', () => goBuild(join(ROOT, 'vendor/blink/bench/cpuloop.go'), join(fx, 'cpuloop'), log)],
-    ['hello-glibc', () => {
-      const o = join(fx, 'hello-glibc');
-      if (existsSync(o)) return true;
-      if (!have('gcc')) return false;
-      log?.('[fixtures] gcc -static hello.c');
-      execFileSync('gcc', ['-O2', '-static', '-o', o, join(X86_SRC, 'hello.c')], { stdio: 'pipe' });
-      return true;
-    }],
+    ['hello-glibc', () => gccStatic(join(X86_SRC, 'hello.c'), join(fx, 'hello-glibc'), log)],
+    ['pbench', () => gccStatic(join(X86_SRC, 'pbench.c'), join(fx, 'pbench'), log)],
   ];
   for (const [name, build] of tries) {
     try { if (build()) out[name] = join(fx, name); } catch (e) { log?.(`[fixtures] ${name}: ${String(e.stderr || e.message).slice(0, 300)}`); }

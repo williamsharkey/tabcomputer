@@ -13,6 +13,7 @@ export const rgCmd: Command = {
     let ignoreCase = false;
     let invertMatch = false;
     let lineNumbers = true; // rg shows line numbers by default
+    let lineNumbersGiven = false; // -n or -N (stdin alone: off unless -n)
     let countOnly = false;
     let filesOnly = false;
     let listFiles = false; // --files mode (Glob tool)
@@ -63,8 +64,8 @@ export const rgCmd: Command = {
       if (arg === '--') { i++; while (i < ctx.args.length) paths.push(ctx.args[i++]); break; }
       if (arg === '-i' || arg === '--ignore-case') { ignoreCase = true; }
       else if (arg === '-v' || arg === '--invert-match') { invertMatch = true; }
-      else if (arg === '-n' || arg === '--line-number') { lineNumbers = true; }
-      else if (arg === '-N' || arg === '--no-line-number') { lineNumbers = false; }
+      else if (arg === '-n' || arg === '--line-number') { lineNumbers = true; lineNumbersGiven = true; }
+      else if (arg === '-N' || arg === '--no-line-number') { lineNumbers = false; lineNumbersGiven = true; }
       else if (arg === '-c' || arg === '--count') { countOnly = true; }
       else if (arg === '-l' || arg === '--files-with-matches') { filesOnly = true; }
       else if (arg === '-w' || arg === '--word-regexp') { wordMatch = true; }
@@ -134,8 +135,8 @@ export const rgCmd: Command = {
         for (const ch of arg.slice(1)) {
           if (ch === 'i') ignoreCase = true;
           else if (ch === 'v') invertMatch = true;
-          else if (ch === 'n') lineNumbers = true;
-          else if (ch === 'N') lineNumbers = false;
+          else if (ch === 'n') { lineNumbers = true; lineNumbersGiven = true; }
+          else if (ch === 'N') { lineNumbers = false; lineNumbersGiven = true; }
           else if (ch === 'c') countOnly = true;
           else if (ch === 'l') filesOnly = true;
           else if (ch === 'w') wordMatch = true;
@@ -173,7 +174,7 @@ export const rgCmd: Command = {
             const stat = await ctx.fs.stat(childPath);
             if (stat.isDirectory()) {
               await collectFiles(childPath, displayPath, depth + 1);
-            } else {
+            } else if (stat.isFile()) { // (not a FIFO: reading one would wait)
               if (matchesFilters(displayPath)) {
                 files.push({ path: displayPath, mtime: stat.mtime?.getTime?.() || 0 });
               }
@@ -284,15 +285,19 @@ export const rgCmd: Command = {
     };
 
     let found = false;
+    // No path and stdin is a pipe or file (`cmd | rg PAT`, `rg PAT < f`): search
+    // stdin, as ripgrep does; a terminal or /dev/null means the working directory
+    const fromStdin = paths.length === 0 && !!ctx.stdinReadable;
+    if (fromStdin && !lineNumbersGiven) lineNumbers = false;
     const searchPaths = paths.length > 0 ? paths : [ctx.cwd];
-    const multiFile = true; // rg always shows filenames by default
+    const multiFile = !fromStdin; // rg shows filenames, except for stdin
     const showFilename = !noFilename && (forceFilename || multiFile);
 
-    const searchFile = async (filePath: string, displayPath: string) => {
-      if (!matchesFilters(displayPath)) return;
+    const searchFile = async (filePath: string, displayPath: string, text?: string) => {
+      if (text === undefined && !matchesFilters(displayPath)) return;
       let content: string;
       try {
-        content = await ctx.fs.readFile(filePath, 'utf8') as string;
+        content = text ?? await ctx.fs.readFile(filePath, 'utf8') as string;
       } catch { return; }
       // Skip binary files (check for null bytes)
       if (content.includes('\0')) return;
@@ -332,7 +337,7 @@ export const rgCmd: Command = {
       const sorted = [...allLineNums].sort((a, b) => a - b);
       let lastLn = -2;
       for (const ln of sorted) {
-        if (lastLn >= 0 && ln > lastLn + 1) ctx.stdout += '--\n'; // separator
+        if ((afterCtx || beforeCtx) && lastLn >= 0 && ln > lastLn + 1) ctx.stdout += '--\n'; // separator between context groups
         const prefix = showFilename ? displayPath + ':' : '';
         const lineNum = lineNumbers ? (ln + 1) + ':' : '';
         const sep = matchedLineNums.has(ln) ? '' : '';
@@ -366,12 +371,19 @@ export const rgCmd: Command = {
           const stat = await ctx.fs.stat(childPath);
           if (stat.isDirectory()) {
             await searchDir(childPath, displayPath);
-          } else {
+          } else if (stat.isFile()) { // (not a FIFO: reading one would wait)
             await searchFile(childPath, displayPath);
           }
         } catch { /* skip */ }
       }
     };
+
+    if (fromStdin) {
+      const text = ctx.liveStdin && ctx.shell?.kernelStdio ? await ctx.shell.kernelStdio.readAll()
+        : ctx.readStdin ? await ctx.readStdin() : ctx.stdin;
+      await searchFile('-', '<stdin>', text.replace(/\n$/, ''));
+      return found ? 0 : 1;
+    }
 
     for (const p of searchPaths) {
       const resolved = ctx.fs.resolvePath(p, ctx.cwd);

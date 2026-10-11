@@ -15,8 +15,13 @@ import type { Command, CommandContext } from './commands/index';
 import { decodeBytes, encodeText } from './utils/byte-text';
 import { programFromStdin as nodeProgramFromStdin } from './commands/jseval/node-args';
 
+/** Output queued past this makes a loop wait (drain): a pipe nobody reads doesn't fill memory */
+const DRAIN_AT = 64 << 10;
+
 export class KernelStdio {
   private chain: Promise<void> = Promise.resolve();
+  /** Bytes written by out/err not yet on the fds */
+  private queued = 0;
   private readonly one = new Uint8Array(1);
 
   constructor(readonly kernel: Kernel, readonly proc: Process) {}
@@ -44,9 +49,15 @@ export class KernelStdio {
   private write(fd: number, s: string): void {
     if (!s) return;
     const bytes = encodeText(s.replace(/\r\n/g, '\n'));
+    this.queued += bytes.length;
     this.chain = this.chain.then(async () => {
       if (!this.proc.exiting) await this.kernel.writeAll(this.proc, fd, bytes);
-    });
+    }).finally(() => { this.queued -= bytes.length; });
+  }
+
+  /** Wait while more than DRAIN_AT bytes are queued (a loop's turn: a full pipe holds the writer, as write() blocks) */
+  drain(): Promise<void> | undefined {
+    return this.queued > DRAIN_AT ? this.chain : undefined; // (false for NaN: an instance from before a hotswap)
   }
 
   /** Resolves once everything written so far has reached the fds (before a kernel program writes to them itself) */

@@ -7580,6 +7580,9 @@ export class Shell {
     parts: string[], stdin: string,
     writeStdout: (s: string) => void, writeStderr: (s: string) => void, terminalOverride?: any,
   ): Promise<number> {
+    if (!this.shoptopts.has('lastpipe') && this.env.TABCOMPUTER_STREAM_PIPES !== '0' && this.injectedStdin === null && !this.env.__PIPE_STDIN) {
+      return this.runStreamedPipeline(parts, stdin, writeStdout, writeStderr, terminalOverride);
+    }
     const head = parts[0].trim();
     let captured = '';
     const capture = (s: string) => { captured += s; };
@@ -7623,6 +7626,94 @@ export class Shell {
       return lastBad ?? 0;
     }
     return restCode;
+  }
+
+  /**
+   * A pipeline headed by a loop, if, case, { … } or ( … ) (tabcomputer#72):
+   * each element runs as a subshell that is a kernel process, as bash forks
+   * one per element, joined by kernel pipes and all running at once. Output
+   * reaches the next element as it is written, a full pipe makes the writer
+   * wait (KernelStdio.drain in loops), and a reader that exits early ends the
+   * writer with SIGPIPE (`while :; do echo y; done | head -1` ends, status 141
+   * for the loop in PIPESTATUS). Before, the head ran to its end and its
+   * output was the rest's input as one string. TABCOMPUTER_STREAM_PIPES=0
+   * keeps that; so does shopt -s lastpipe (the last element runs in this shell).
+   */
+  private async runStreamedPipeline(
+    parts: string[], stdin: string,
+    writeStdout: (s: string) => void, writeStderr: (s: string) => void, terminalOverride?: any,
+  ): Promise<number> {
+    const { runKernelPipeline } = _shellKernel ?? await loadShellKernel();
+    const { KernelStdio } = await import('./shell-stdio');
+    const terminal = terminalOverride || this.terminal;
+    const captureStdout = !!terminal?.captureStdout;
+    const captureStderr = !!terminal?.captureStderr;
+    const programs = parts.map((p, i) => {
+      const text = p.trim();
+      // The last element writing to the screen keeps the terminal, as before (`… | less`)
+      const stageTerminal = i === parts.length - 1 && !captureStdout ? terminal : undefined;
+      return {
+        argv: ['sh', '-c', text],
+        builtin: true,
+        run: async (proc: import('./kernel/process').Process, kernel: import('./kernel/kernel').Kernel) => {
+          // A subshell (variables, functions and options as here) on the process's fds
+          const child = this.fork();
+          const stdio = new KernelStdio(kernel, proc);
+          child.kernelStdio = stdio;
+          child.kernelStdinLive = true;
+          child.kernelHost = { kernel, proc };
+          // (its input is its fd 0, not piped input this shell was given as a string)
+          delete child.env.__PIPE_STDIN;
+          stdio.adoptFds(child);
+          // Its own abort, fired when the process ends (SIGPIPE, the job's Ctrl-C): its loops stop
+          const abort = new AbortController();
+          child.inheritedAbort = abort;
+          proc.onTerminate(() => abort.abort());
+          try {
+            return await child.runSubshell(text, stdio.out, stdio.err, stageTerminal);
+          } finally {
+            await stdio.flush();
+          }
+        },
+      };
+    });
+    // In a shell that is a kernel process, the job gets its fds when nothing here needs the data as a string
+    const ks = this.kernelStdio;
+    // (empty piped input, `< /dev/null` around the script: nothing to read, not the live fd 0)
+    const emptyIn = '__PIPE_STDIN' in this.env;
+    let fds: { 0?: import('./kernel/fd').OpenFile; 1?: import('./kernel/fd').OpenFile; 2?: import('./kernel/fd').OpenFile } | undefined;
+    if (ks) {
+      fds = {
+        0: !stdin && !emptyIn && this.kernelStdinLive ? ks.file(0) : undefined,
+        1: !captureStdout && writesTo(writeStdout, ks.out) ? ks.file(1) : undefined,
+        2: !captureStderr && writesTo(writeStderr, ks.err) ? ks.file(2) : undefined,
+      };
+      await ks.flush();
+    }
+    const crlf = (w: (s: string) => void) => (t: string) => w(t.replace(/\r?\n/g, '\r\n'));
+    const r = await runKernelPipeline(this, programs, {
+      stdin: stdin || (emptyIn || (ks && !fds?.[0]) ? '' : undefined),
+      captureStdout,
+      captureStderr,
+      writeStdout: crlf(writeStdout),
+      writeStderr: crlf(writeStderr),
+      terminal: this.kernelTty ?? (ks ? undefined : terminal),
+      fds,
+      command: parts.map((p) => p.trim()).join(' | '),
+      cwd: this.cwd,
+      env: this.exportedEnv(),
+      inheritFds: this.inheritableFds(writeStdout, writeStderr),
+      // Its own process group, signalled by this shell's abort (an inherited one too:
+      // timeout's, or the host process ending): a signal to the job never reaches
+      // the shell that runs it
+      abort: this.abortController ?? this.inheritedAbort ?? null,
+      ownGroup: true,
+    });
+    if (r.stdout) crlf(writeStdout)(r.stdout);
+    if (r.stderr) crlf(writeStderr)(r.stderr);
+    this.arrays.set('PIPESTATUS', r.statuses.map(String));
+    if (this.options.has('pipefail')) return [...r.statuses].reverse().find((c) => c !== 0) ?? 0;
+    return r.exitCode;
   }
 
   /** Run fn on a forked child; exit (and a stray break/continue) end only the child */
@@ -8390,6 +8481,7 @@ export class Shell {
     while (iter++ < LOOP_ITERATION_LIMIT) {
       // Give the page a turn every 30 ms, whatever an iteration costs; Ctrl-C ends the loop
       await maybeYield();
+      await this.kernelStdio?.drain();
       if (this.loopAborted()) return 130;
       try {
         // Expand vars in condition each iteration (loop vars like $X change)
@@ -8434,6 +8526,7 @@ export class Shell {
       let iter = 0;
       while (iter++ < LOOP_ITERATION_LIMIT) {
         await maybeYield();
+        await this.kernelStdio?.drain();
         if (this.loopAborted()) return 130;
         // Evaluate test — 0 means false (stop)
         if (test && this.evalArithmetic(test) === 0) break;
@@ -8463,6 +8556,7 @@ export class Shell {
     let status = 0;
     for (const item of items) {
       await maybeYield();
+      await this.kernelStdio?.drain();
       if (this.loopAborted()) return 130;
       const err = this.setVar(varName, item);
       if (err) {

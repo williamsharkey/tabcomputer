@@ -648,6 +648,22 @@ export const SO_DONTROUTE = 5;
 export const SO_BROADCAST = 6;
 export const SO_SNDBUF = 7;
 export const SO_RCVBUF = 8;
+export const SO_SNDBUFFORCE = 32;
+export const SO_RCVBUFFORCE = 33;
+/**
+ * Socket buffer sizes (/proc/sys/net/core): setsockopt(SO_SNDBUF/SO_RCVBUF, v)
+ * sets min(v, *MEM_MAX) * 2 (Linux doubles it for its bookkeeping), at least
+ * the minimum; the FORCE options skip the max (up to SOCK_BUF_HARD_MAX).
+ * The max is Linux's 212992 raised so a client can queue a frame's worth
+ * (GL texture uploads to glshiro: 2-8 MB).
+ */
+export const WMEM_MAX = 8 << 20;
+export const RMEM_MAX = 8 << 20;
+export const WMEM_DEFAULT = 212992;
+export const RMEM_DEFAULT = 212992;
+export const SOCK_MIN_SNDBUF = 4608;
+export const SOCK_MIN_RCVBUF = 2304;
+export const SOCK_BUF_HARD_MAX = 64 << 20;
 export const SO_KEEPALIVE = 9;
 export const SO_OOBINLINE = 10;
 export const SO_LINGER = 13;

@@ -1675,12 +1675,25 @@ describe('Blink engine: CPU and syscall fixes', () => {
   // serves the next process running the same code
   it.skipIf(!haveRounding)('compiled code\'s modules reach the page\'s cache, and the same program compiles to the same keys', async () => {
     const { keptCompiledModules } = await import('@shiro/x86-engine/blink');
+    // the modules come in batches the guest's threads post, which can still be
+    // on their way when the process has exited (a loaded machine): wait until
+    // the count holds still
+    const settled = async () => {
+      let n = keptCompiledModules().count, still = 0;
+      for (let i = 0; i < 100 && still < 5; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        const m = keptCompiledModules().count;
+        still = m === n ? still + 1 : 0;
+        n = m;
+      }
+      return n;
+    };
     const { shell } = await setup(readFileSync(roundingBin));
     await run(shell, './prog > /dev/null');
-    const once = keptCompiledModules();
-    expect(once.count).toBeGreaterThan(0);
+    const once = await settled();
+    expect(once).toBeGreaterThan(0);
     await run(shell, './prog > /dev/null');
-    expect(keptCompiledModules().count).toBe(once.count); // (same bytes: the same keys)
+    expect(await settled()).toBe(once); // (same bytes: the same keys)
   }, 120_000);
 
   // a signal that comes while the guest is between kernel calls wakes the

@@ -64,9 +64,22 @@ any Linux, WSL included.
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
 | `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
 | `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
+| native Claude Code 2.1.296: `claude` → idle prompt | 40.6–43.9 s | — | — | 0.54 s | ~80× | — | — |
+| native Claude Code: key → echo on the input line (p50 / p90 / p99) | 189–204 / 231–266 ms / 1.6–1.8 s | — | — | 6.3 / 12.3 / 22–26 ms | ~30× (p50) | — | — |
 
 What each row measures:
 
+- **Native Claude Code** (opt-in suite `claude`, bench/README.md; two runs
+  of one round, [a](../bench/results/bench-27-claude-a.json),
+  [b](../bench/results/bench-27-claude-b.json), at 2e2e3c3). Anthropic's
+  linux-x64-musl build in Blink, typed at the real terminal of a fresh
+  profile, against a local mock Messages API; native is the same binary in a
+  pty on this VM. In the tab the start is 41–44 s whether or not the page has
+  run it before (the warm launch is no faster), the first key after the prompt
+  takes 2.8 s, a key 150 ms after the previous echo takes ~200 ms (a few take
+  1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
+  is 17 s. Native numbers stop at the pty, without a terminal emulator; in
+  the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to

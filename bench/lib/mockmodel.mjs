@@ -55,8 +55,10 @@ export async function startMockModel(host, port = 0) {
       if (paths.length < 200) paths.push(`${req.method} ${path}`);
       if (/\/v1\/messages\/count_tokens/.test(path)) { res.writeHead(200, { ...cors, 'content-type': 'application/json' }); res.end('{"input_tokens":12}'); return; }
       if (/\/v1\/messages/.test(path)) {
-        const last = JSON.stringify(body.messages?.slice(-1) ?? '');
-        const turn = /bench turn (\d+)/.exec(last)?.[1];
+        // the newest "bench turn N" anywhere in the request: builds differ in where the user's text
+        // sits (native 2.1.x appends reminder blocks after it)
+        const turns = [...raw.matchAll(/bench turn (\d+)/g)].map((m) => Number(m[1]));
+        const turn = turns.length ? Math.max(...turns) : null;
         const text = turn ? `BENCH-REPLY-${turn} ` + 'Here is a mocked answer with a few sentences of text so the terminal renders a streamed reply. '.repeat(4) : 'ok';
         n++;
         const m = mockMessage(body, text);

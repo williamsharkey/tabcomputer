@@ -130,7 +130,7 @@ export async function executeNodeScript(
   const _baseST = PAGE_SET_TIMEOUT;
   const _baseCT = PAGE_CLEAR_TIMEOUT;
 
-  const { activity, trackAsync, trackModule } = createActivity();
+  const { activity, trackAsync, trackModule, trackResponse } = createActivity();
   // Cleanup for resources a script holds until it ends (fs watchers)
   const exitHooks: (() => void)[] = [];
   const atExit = (fn: () => void) => { exitHooks.push(fn); };
@@ -617,7 +617,8 @@ export async function executeNodeScript(
 
     // A kernel guest routes too (its own servers on localhost), wherever it runs
     if (corsProxyOrigin || nodeGuestOf(ctx)) {
-      globalThis.fetch = _st.installedFetch = (input: RequestInfo | URL, init?: RequestInit) => trackAsync(routedFetch(input, init));
+      // (its body reads count as activity too, not just the headers: #50)
+      globalThis.fetch = _st.installedFetch = (input: RequestInfo | URL, init?: RequestInit) => trackAsync(routedFetch(input, init).then(trackResponse));
       const routedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         let url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
         if (isBlocked(url)) return Promise.resolve(new Response('{}', { status: 200 }));

@@ -333,17 +333,21 @@ int getaddrinfo(const char *__restrict node, const char *__restrict serv, const 
   struct addrinfo *head = NULL, **tail = &head;
   unsigned char a4[4], a6[16];
   if (!node) {
-    /* passive: the wildcard address; otherwise loopback */
+    /* passive: the wildcard address; otherwise loopback. IPv4 first, as glibc
+     * orders them where IPv6 isn't usable (RFC 3484's sort puts unusable
+     * destinations last): a caller that takes the first answer (python's
+     * http.server, built without IPv6 here) gets an address it can bind, and
+     * localhost resolves to 127.0.0.1 alone (tabcomputer#64) */
     int passive = flags & AI_PASSIVE;
-    if (family != AF_INET) {
-      memset(a6, 0, 16);
-      if (!passive) a6[15] = 1;
-      if ((e = push_addr(&tail, AF_INET6, a6, port, hints))) goto fail;
-    }
     if (family != AF_INET6) {
       uint32_t v = htonl(passive ? INADDR_ANY : INADDR_LOOPBACK);
       memcpy(a4, &v, 4);
       if ((e = push_addr(&tail, AF_INET, a4, port, hints))) goto fail;
+    }
+    if (family != AF_INET) {
+      memset(a6, 0, 16);
+      if (!passive) a6[15] = 1;
+      if ((e = push_addr(&tail, AF_INET6, a6, port, hints))) goto fail;
     }
   } else if (inet_pton(AF_INET, node, a4) == 1) {
     if (family == AF_INET6) return EAI_NONAME;

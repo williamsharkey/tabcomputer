@@ -157,7 +157,7 @@ const fdOfRef = (target: string): number | null => (target.startsWith(FD_REF) ? 
  * `fifo`: a named pipe's write end this shell opened (exec N>fifo); `owner`
  * closes it when the entry goes.
  */
-type OutFd = { path: string; fifo?: import('./kernel/fd').OpenFile; owner?: Shell } | { dup: 1 | 2 } | { writer: (s: string) => void };
+type OutFd = { path: string; fifo?: import('./kernel/fd').OpenFile; owner?: Shell; rw?: { content: string; offset: number } } | { dup: 1 | 2 } | { writer: (s: string) => void };
 
 export interface BackgroundJob {
   id: number;
@@ -2323,14 +2323,16 @@ export class Shell {
         case '2>&1': this.userFds.set(2, this.resolveOutFd(1)!); break;
         case 'open':
           if (r.mode === '<' && r.rw) {
-            // N<> file: read from the start, writes go after what is there (made if missing)
+            // N<> file: opened at its start for reading and writing, one position for both
+            // (made if missing; not truncated, so noclobber doesn't apply)
             const fd = r.fd!;
             const path = this.fs.resolvePath(r.target, this.cwd);
             if (await fifo.isFifo(this, path)) { err = openOut(fd, r.target, false); break; }
             this.dropFd(fd);
-            this.userFds.set(fd, { path });
+            const rw = { content: '', offset: 0 };
+            this.userFds.set(fd, { path, rw });
             pending.push(this.fs.appendFile(path, '').then(() => this.readInputRedirect(r.target))
-              .then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
+              .then((content) => { rw.content = content; this.fileDescriptors.set(fd, rw); }));
           } else if (r.mode === '<') {
             const fd = r.fd!;
             pending.push(this.readInputRedirect(r.target).then((content) => { this.fileDescriptors.set(fd, { content, offset: 0 }); }));
@@ -2410,6 +2412,16 @@ export class Shell {
     await this.pendingFdOps;
     if (e.fifo) {
       if (text) await fifo.writeOpenFifo(e.fifo, text.replace(/\r\n/g, '\n'));
+      return true;
+    }
+    if (text && e.rw) {
+      // N<>: written at the shared position (what was read moved it), over what is there
+      const t = text.replace(/\r\n/g, '\n');
+      const cur = await this.fs.readFile(e.path, 'utf8').catch(() => '') as string;
+      const at = Math.min(e.rw.offset, cur.length);
+      e.rw.content = cur.slice(0, at) + t + cur.slice(at + t.length);
+      e.rw.offset = at + t.length;
+      await this.fs.writeFile(e.path, e.rw.content);
       return true;
     }
     if (text) await this.fs.appendFile(e.path, text.replace(/\r\n/g, '\n'));
@@ -4186,9 +4198,17 @@ export class Shell {
             }
           }
           if (cmdArgs.length === 0) {
-            // Bare `set` lists shell variables, quoted so they can be read back
-            const names = Object.keys(this.env).filter(k => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !k.startsWith('__')).sort();
+            // Bare `set` lists shell variables, quoted so they can be read back; arrays as
+            // bash's name=([0]="1" …) (not the shell's own __PIPE_STDIN and __shiro_* scratch)
+            const internal = (k: string) => k === '__PIPE_STDIN' || k.startsWith('__shiro');
+            const names = [...new Set([...Object.keys(this.env), ...this.arrays.keys(), ...this.assocArrays.keys()])]
+              .filter(k => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && !internal(k)).sort();
             for (const k of names) {
+              if (this.arrays.has(k) || this.assocArrays.has(k)) {
+                const line = this.declareLine(k);
+                if (line) writeStdout(line.replace(/^declare -\S* /, '') + '\r\n');
+                continue;
+              }
               const v = this.env[k];
               writeStdout(`${k}=${/^[A-Za-z0-9_\-.,/:@%+=]*$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`}\r\n`);
             }

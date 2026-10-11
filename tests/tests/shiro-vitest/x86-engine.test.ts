@@ -335,36 +335,36 @@ const haveMapthreads = readFileSync(resolve(__dirname, '../../../public/engines/
 const timerqueueBin = join(out, 'timerqueue');
 const haveTimerqueue = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_timerq') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', timerqueueBin, 'timerqueue.c', '-lrt']);
-// Blink 0522: /proc/self/maps marks shared and write-only mappings
+// Blink 0523: /proc/self/maps marks shared and write-only mappings
 const mapspermBin = join(out, 'mapsperm');
 const haveMapsperm = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapsperm') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapspermBin, 'mapsperm.c']);
-// Blink 0523: a shared map of a file it may not write can't be made writable
+// Blink 0524: a shared map of a file it may not write can't be made writable
 const maywriteBin = join(out, 'maywrite');
 const haveMaywrite = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_maywrite') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', maywriteBin, 'maywrite.c']);
-// Blink 0524/0525: fallocate is the kernel's; F_SEAL_WRITE on a writably mapped memfd is EBUSY
+// Blink 0525/0526: fallocate is the kernel's; F_SEAL_WRITE on a writably mapped memfd is EBUSY
 const haveFallocate = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_fallocate');
 const memfdfallocBin = join(out, 'memfdfalloc');
 const haveMemfdfalloc = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sealbusy') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', memfdfallocBin, 'memfdfalloc.c']);
-// Blink 0526/0527: PR_SET_CHILD_SUBREAPER is the kernel's; a fork child's calls restart after SA_RESTART
+// Blink 0527/0528: PR_SET_CHILD_SUBREAPER is the kernel's; a fork child's calls restart after SA_RESTART
 const subreaperBin = join(out, 'subreaper');
 const haveSubreaper = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_forkrestart') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', subreaperBin, 'subreaper.c']);
-// Blink 0528: RLIMIT_SIGPENDING for tkill/tgkill of a real-time signal
+// Blink 0529: RLIMIT_SIGPENDING for tkill/tgkill of a real-time signal
 const sigpendingBin = join(out, 'sigpending');
 const haveSigpending = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sigpending') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', sigpendingBin, 'sigpending.c']);
-// Blink 0529: timer_getoverrun is the overruns of the signal taken last
+// Blink 0530: timer_getoverrun is the overruns of the signal taken last
 const overrunBin = join(out, 'overrun');
 const haveOverrun = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_overrun') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', overrunBin, 'overrun.c', '-lrt']);
-// Blink 0530: system time is the time in quick kernel calls
+// Blink 0531: system time is the time in quick kernel calls
 const systimeBin = join(out, 'systime');
 const haveSystime = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_systime') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', systimeBin, 'systime.c']);
-// Blink 0531: pidfds are the kernel's (pidfd_open, pidfd_send_signal, PIDFD_GET_INFO, waitid P_PIDFD)
+// Blink 0532: pidfds are the kernel's (pidfd_open, pidfd_send_signal, PIDFD_GET_INFO, waitid P_PIDFD)
 const pidfdBin = join(out, 'pidfd');
 const havePidfd = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_pidfd') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', pidfdBin, 'pidfd.c']);

@@ -5,7 +5,7 @@
 //   getifaddrs), when the kernel has netlink
 // - /proc/self/exe is the resolved path when started through a symlink
 //   (ld.so's $ORIGIN: uv's python venvs)
-// - fallocate extends the file (an engine before Blink 0524: EOPNOTSUPP,
+// - fallocate extends the file (an engine before Blink 0525: EOPNOTSUPP,
 //   which Go's linker falls back from)
 #define _GNU_SOURCE
 #include <errno.h>

@@ -960,6 +960,13 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    byte, which a page-crossing access's entry doesn't. The entry keeps
    host page − guest page, so the host address is one add.
 
+   A system call no longer drops the JIT's caches. It only makes the
+   interpreter's TLB miss, so that the call's accesses lock their pages
+   (its own flag, `tlbsys`), and that TLB is dropped in O(1) by a
+   generation in its tags. Mapping changes still reset everything
+   (InvalidateSystem). With the bigger caches reset on every call,
+   getppid's round trip had doubled (bench/ab.mjs syscall_rt).
+
    Under Blink in Node (fixtures/x86/calls.c):
    - a 2-call chain: 65 → 24 ns (native 2.2 ns);
    - a load+store loop: 7.4 → 6.4–7 ns.

@@ -688,6 +688,12 @@ function capturing<T extends object>(term: T, stdout: boolean, stderr: boolean):
 
 /** Builtins that may run a server that never ends: their redirect files are created before they start */
 const STREAM_REDIRECT_CMDS = new Set(['node', 'nodejs', 'npm', 'npx']);
+/**
+ * Commands that run other commands and pass their output on as it comes when given
+ * stream writers (ctx.streamStdout). Not every command: cat follows a /dom event
+ * file for as long as it has one.
+ */
+const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo']);
 
 /** Is fd 2 still the terminal after these redirects? (`stdoutTty`: fd 1 is, before them) */
 function stderrIsTty(redirects: Redirect[], stdoutTty: boolean): boolean {
@@ -5010,10 +5016,10 @@ export class Shell {
         if (mergeErr && !ctx.streamStdout && !ctx.streamStderr) {
           ctx.streamStdout = ctx.streamStderr = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
         }
-        // The last command, with its output going straight to the writers: what it
-        // writes as it goes (sh, timeout, node) gets there then, not when it ends
+        // The last command, a shell or a wrapper with its output going straight to the
+        // writers: what runs in it gets there as it writes it, not when it ends
         // (`timeout 90 sh run.sh > log &` left log empty until the end, #53)
-        if (cmd && !live && i === pipeline.length - 1 && !redirects.some(r => r.type !== '<') && !ctx.stdout && !ctx.stderr) {
+        if (cmd && PASS_THROUGH_CMDS.has(effectiveCmdName) && !live && i === pipeline.length - 1 && !redirects.some(r => r.type !== '<') && !ctx.stdout && !ctx.stderr) {
           ctx.streamStdout ??= (t) => writeStdout(t.replace(/\r?\n/g, '\r\n'));
           ctx.streamStderr ??= (t) => stderrWriter(t.replace(/\r?\n/g, '\r\n'));
         }

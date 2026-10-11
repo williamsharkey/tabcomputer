@@ -253,6 +253,7 @@ reverts by itself after 90 s unless you run \`hotswap confirm\`, so a broken
 shell fixes itself. \`hotswap test shell-posix\` runs a suite here, and
 \`hotswap push BRANCH -m MSG\` pushes the changes as a new branch of
 williamsharkey/tabcomputer (your own \`gh auth login\` account; never main).
+~/shiro/docs/DEVELOP_IN_TAB.md walks through it, up to reporting a fix;
 ~/shiro/docs/HOTSWAP.md says what can and can't be swapped.
 
 ## Known issues

@@ -147,6 +147,7 @@ export const myCmd: Command = {
 - Safety: every apply reverts by itself after its TTL (default 90 s) unless confirmed, so a swap that breaks the shell undoes itself. `hotswap revert`, `hotswap status`, and `window.__tabcomputer.hotswap.revert(true)` out of band. Only confirmed swaps can be persisted (`confirm --persist`); boot re-applies them on the same build only. Safe mode and `?hotswap=0` skip them, and a load after a watchdog wedge drops them. `hotswap push` only makes new branches (never main, deploy or unix/*, never a force push).
 - `hotswap test SUITE...` runs vitest suites from the checkout in the tab (`src/hotswap/test-runner.ts`, a vitest subset), in fresh copies of the modules, with IndexedDB names prefixed and localStorage in memory. The shell suites run there. `node:fs` isn't available to them.
 - Stable handles for patches: `window.__tabcomputer.{hotswap, live, esbuild, Shell, ShiroTerminal, Kernel, FileSystem}`. When you add a core class with long-lived instances, export it, and call `trackInstance` if migrateFrom should reach its instances.
+- Walkthrough for an agent in a tab, from checkout to an issue and a branch the coordinator merges: [docs/DEVELOP_IN_TAB.md](docs/DEVELOP_IN_TAB.md).
 - Tests: `hotswap.test.ts`, `tests/browser/hotswap.mjs`.
 
 ## Git And GitHub

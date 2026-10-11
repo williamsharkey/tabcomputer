@@ -74,7 +74,7 @@ export function hotswapLiveModules(root: string): Plugin {
 
 /** What `hotswap checkout` gets: the source of this build (src/hotswap/source.ts) */
 const SOURCE_DIRS = ['src', 'profiles', 'tests/tests/shiro-vitest'];
-const SOURCE_FILES = ['tsconfig.json', 'package.json', 'build-number.txt', 'vite.config.ts', 'vite-plugin-hotswap.ts', 'AGENTS.md', 'CLAUDE.md', 'docs/HOTSWAP.md'];
+const SOURCE_FILES = ['tsconfig.json', 'package.json', 'build-number.txt', 'vite.config.ts', 'vite-plugin-hotswap.ts', 'AGENTS.md', 'CLAUDE.md', 'docs/HOTSWAP.md', 'docs/DEVELOP_IN_TAB.md'];
 const SOURCE_SKIP = /^tests\/tests\/shiro-vitest\/fixtures\//;
 
 /** The tarball's name for a build ('' sha: outside a git checkout) */

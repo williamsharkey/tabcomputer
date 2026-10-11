@@ -364,6 +364,10 @@ const haveOverrun = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const systimeBin = join(out, 'systime');
 const haveSystime = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_systime') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', systimeBin, 'systime.c']);
+// Blink 0531: pidfds are the kernel's (pidfd_open, pidfd_send_signal, PIDFD_GET_INFO, waitid P_PIDFD)
+const pidfdBin = join(out, 'pidfd');
+const havePidfd = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_pidfd') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', pidfdBin, 'pidfd.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1139,6 +1143,13 @@ it.skipIf(!haveSystime)('system calls count as system time: tms_stime, ru_stime,
   const { shell } = await setup(readFileSync(systimeBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('stime 1 rusage 1 cstime 1\n');
+}, 60_000);
+
+it.skipIf(!havePidfd)('pidfds: PIDFD_GET_INFO, pidfd_send_signal, readable at exit, waitid(P_PIDFD), the exit status once reaped; ENOTTY on /proc/self/exe (LTP ioctl_pidfd01)', async () => {
+  const { shell } = await setup(readFileSync(pidfdBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('running 0 pid 1 ppid 1 poll 0 signal 0 poll 1 exited 0 exit 0 status 0\n' +
+    'waitid 0 pid 1 code 1 reaped no mask -1 3 reaped 0 exit 1 status 15 file -1 25\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

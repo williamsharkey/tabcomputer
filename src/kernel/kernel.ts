@@ -572,6 +572,9 @@ export class Kernel {
       umask: parent.umask,
     });
     if (opts.setsid) { proc.sid = pid; proc.pgid = pid; }
+    // a program the page runs as ./prog: /proc/PID/exe is absolute, so that
+    // open("/proc/self/exe") finds it (execve resolves its own path)
+    if (opts.path.includes('/') && !opts.path.startsWith('/')) proc.data.exe = normalize(`${proc.cwd}/${opts.path}`);
     proc.uid = opts.uid ?? parent.uid;
     // sudo's root gets root's group too; dropping back to the user gets the user's
     proc.gid = opts.uid === undefined ? parent.gid : opts.uid === 0 ? 0 : 1000;
@@ -2382,15 +2385,23 @@ export class Kernel {
           if (args[1] & ~(A.O_NONBLOCK | A.PIDFD_THREAD) || pid <= 0) return -A.EINVAL;
           const target = args[1] & A.PIDFD_THREAD ? this.processOfTid(pid) : this.procs.get(pid);
           if (!target) return -A.ESRCH;
-          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK)), 0, true);
+          return fds.alloc(new PidFdFile(target, A.O_RDONLY | (args[1] & A.O_NONBLOCK), () => this.procs.get(target.pid) !== target), 0, true);
         }
         case A.SYS_pidfd_send_signal: {
-          // (pidfd, sig, siginfo, flags)
+          // (pidfd, sig, siginfo given, flags); data = the siginfo. Its signal
+          // must be sig, and only the kernel's si_codes (SI_USER and up) or
+          // SI_TKILL may not be claimed for another process (EPERM)
           if (args[3]) return -A.EINVAL;
           const f = file(args[0]);
           if (!f) return -A.EBADF;
           if (!(f instanceof PidFdFile)) return -A.EBADF;
           if (f.exited) return -A.ESRCH;
+          if (args[2] && data.length >= 12) {
+            const dv = new DataView(data.buffer, data.byteOffset, 12);
+            if (dv.getInt32(0, true) !== args[1]) return -A.EINVAL;
+            const code = dv.getInt32(8, true);
+            if ((code >= 0 || code === -6) && f.target !== proc) return -A.EPERM;
+          }
           return this.kill(f.target.pid, args[1], proc);
         }
         case A.SYS_signalfd:

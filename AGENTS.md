@@ -59,10 +59,12 @@ PORT=5299 STATIC_DIR=$PWD/dist node server.mjs                     # serve a bui
 
 ## Branches and integration
 
-- Work happens on `unix/<area>` branches of williamsharkey/shiro (unix/desktop, unix/debian, unix/gui, unix/conformance, unix/agent-clis, unix/perf-blink, ...). Each merges `origin/unix/integration` into itself before it is merged back.
-- `unix/integration` is the trunk. It is mirrored to the `main` branch of williamsharkey/tabcomputer.
-- Merge, don't rebase, shared branches. Merge `origin/unix/integration` again right before pushing.
-- Shipping: push a commit to the `deploy` branch of the tabcomputer repo (deploy/tabcomputer/README.md). Bump `build-number.txt` with `node increment-build.js` in the commit you ship. shiro.computer is deployed from the Shiro repository.
+- **williamsharkey/tabcomputer is the source repository.** Work happens on its `unix/<area>` branches (unix/perf-blink, unix/gui, unix/conformance, unix/agent-clis, ...). Each merges `origin/main` into itself before it is merged back.
+- `main` is the trunk. Only the coordinator merges into it, fast-forward from a tested integration commit.
+- `deploy` is the release trigger: the coordinator fast-forwards it to a tested `main` commit (with `build-number.txt` bumped by `node increment-build.js`), and the droplet builds and switches within minutes, rolling back on a failed build (deploy/tabcomputer/README.md). docs/RELEASES.md logs each build, since the git proxy refuses tag pushes.
+- Merge, don't rebase, shared branches. Merge `origin/main` again right before pushing. Never force-push, never push `main` or `deploy` from a worker.
+- **williamsharkey/shiro is a separate product**: shiro.computer, the lightweight terminal without the full x86 emulator, deployed by hand from shiro `main`. Never push tabcomputer work to shiro `main`. Its `unix/*` branches are history from before the move (and a temporary staging transport for sessions that could not yet push to tabcomputer); shiro takes changes from tabcomputer only by a deliberate, separate port, if at all.
+- Pushing from a session: the tabcomputer repo has to be attached to the session with push access (add_repo). Clone it as its own checkout (`git clone https://github.com/williamsharkey/tabcomputer`), not as a second remote of a shiro clone, and run `git fetch origin main` before pushing a branch from a shallow clone (a stale shallow clone uploads the whole tree and gets HTTP 413).
 
 ## Profiles and internal names
 

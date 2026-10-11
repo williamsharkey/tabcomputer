@@ -109,6 +109,16 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
     if (k.startsWith('..') || k.startsWith('/')) throw new Error(`${k}: not inside ${root}`);
   }
   const swapSet = new Set(keys);
+  // A swapped module the page hasn't loaded yet (a lazy command): load it first, so there is a
+  // live one to patch and the modules it imports are live too; a persisted bundle loads it at boot
+  if (!testFile) {
+    for (const k of keys) {
+      if (live.has(k) || !loaders.has(k)) continue;
+      needs.add(k);
+      const ns = await loaders.get(k)!();
+      if (!live.has(k)) live.set(k, ns);
+    }
+  }
   const copied = new Set<string>();
   const warnings: string[] = [];
 

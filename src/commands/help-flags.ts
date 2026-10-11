@@ -54,13 +54,14 @@ const WRAPPED = Symbol('help-flags');
 /** `cmd` with --help/--version answered when it can't (CommandRegistry.register). */
 export function withHelpFlags(cmd: Command): Command {
   if (FLAG_IS_ARGUMENT.has(cmd.name) || (cmd as any)[WRAPPED]) return cmd;
-  const exec = cmd.exec;
+  // (cmd.exec read at each call: a hot-swap patches the command object in place)
+  const exec = (ctx: CommandContext) => cmd.exec.call(cmd, ctx);
   return {
     ...cmd,
     [WRAPPED]: true,
     async exec(ctx: CommandContext): Promise<number> {
       const answer = helpFlagAnswer(cmd, ctx.args);
-      if (answer === null) return exec.call(cmd, ctx);
+      if (answer === null) return exec(ctx);
       if (ACTS_INSTEAD.has(cmd.name)) {
         ctx.stdout += answer;
         return 0;
@@ -69,7 +70,7 @@ export function withHelpFlags(cmd: Command): Command {
       const out0 = ctx.stdout.length, err0 = ctx.stderr.length;
       let code: number;
       try {
-        code = await exec.call(cmd, ctx);
+        code = await exec(ctx);
       } catch (e) {
         if (e instanceof NeedStdin) throw e; // execLazyStdin's signal: it runs the command again with stdin
         code = 1; // the flag taken for a file that isn't there, ...

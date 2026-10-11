@@ -97,8 +97,10 @@ perf-kernel use the same definitions.
 | `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
 | `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
 | `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |
+| `claude_native.echo.stage.{read,compute,render}.*` | the same keys split by the kernel's pty trace (`kernel.startProfile()`, Build 975+; left out on older builds): pty input → Claude's `read`, → its first write back, → the echo matched |
 | `claude_native.echo_burst.total` | 10 keys typed at once → the last echoed |
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
+| `claude_npm.*` | the same for `claude --npm` (installed before the round) |
 
 `claude_native.native.*` runs the same binary on this machine's Linux in a
 pty (`lib/native-pty.py`; needs musl's loader at `/lib/ld-musl-x86_64.so.1`,

@@ -152,20 +152,30 @@ const startClaude = (h, cmd, limitMs) => guarded(h, 'claude start', () => h.eval
 }, [cmd, limitMs, PROMPT_RE.source]));
 
 /** Types `keys` one at a time, waiting for each echo; [{ parsed, frame }]. */
-const echoKeys = (h, keys, gapMs, limitMs) => h.eval(async ([keys, gapMs, limitMs]) => {
+const echoKeys = (h, keys, gapMs, limitMs, profile = false) => h.eval(async ([keys, gapMs, limitMs, profile]) => {
   const { until, screen, echoed } = window.__cn;
+  // the kernel's pty trace (Build 975+) times each key's stages: pty input → the guest's read
+  // (readMs) → its first write back (firstWriteMs); feature-detected
+  const kernel = window.__tabcomputer.kernel;
+  const prof = profile && typeof kernel?.startProfile === 'function';
+  if (prof) kernel.startProfile();
+  const stages = () => {
+    if (!prof) return null;
+    const keys = (kernel.stopProfile()?.keys ?? []).filter((k) => k.readMs >= 0);
+    return keys.map((k) => ({ read: k.readMs, compute: k.firstWriteMs }));
+  };
   const out = [];
   let typed = '';
   for (const k of keys) {
     typed += k;
     const want = typed;
     const r = await until(k, (s) => echoed(s, want), limitMs);
-    if (!r) return { out, error: `no echo of ${JSON.stringify(want)} in ${limitMs} ms: ${screen().slice(-600)}` };
+    if (!r) { stages(); return { out, error: `no echo of ${JSON.stringify(want)} in ${limitMs} ms: ${screen().slice(-600)}` }; }
     out.push(r);
     await new Promise((res) => setTimeout(res, gapMs));
   }
-  return { out };
-}, [keys, gapMs, limitMs]);
+  return { out, stages: stages() };
+}, [keys, gapMs, limitMs, profile]);
 
 /** Clears Claude's input line: Ctrl-U until the input line no longer starts with `typed`. */
 const clearInput = (h, typed) => h.eval(async (typed) => {
@@ -174,16 +184,20 @@ const clearInput = (h, typed) => h.eval(async (typed) => {
 }, typed);
 
 async function exitClaude(h) {
-  // Ctrl-C twice exits from an empty prompt; then wait for the shell
-  await h.eval(async () => {
+  // /exit (its Enter on its own: text and CR in one input are a paste), then the shell's prompt
+  // must come back: a marker echoed by the shell, alone on its line
+  const ok = await h.eval(async () => {
     const { until, T } = window.__cn;
-    T.input('\x03', true);
-    await new Promise((r) => setTimeout(r, 400));
-    T.input('\x03', true);
-    await until('', () => T.buffer.active.type === 'normal', 30000);
+    T.input('\x15', true);
+    await new Promise((r) => setTimeout(r, 300));
+    T.input('/exit', true);
     await new Promise((r) => setTimeout(r, 500));
-    await until('echo @@cn-exit\r', (s) => /^@@cn-exit$/m.test(s), 30000);
+    T.input('\r', true);
+    await until('', () => T.buffer.active.type === 'normal', 30000);
+    await new Promise((r) => setTimeout(r, 1000));
+    return !!await until('echo @@cn-$((6*7))\r', (s) => /^@@cn-42$/m.test(s), 60000);
   });
+  if (!ok) throw new Error(`claude did not exit on /exit: ${(await h.eval(() => window.__cn.screen())).split('\n').filter((l) => l.trim()).slice(-6).join(' | ').slice(-400)}`);
 }
 
 async function round(h, add, mock, { cold, build }) {
@@ -204,9 +218,16 @@ async function round(h, add, mock, { cold, build }) {
     await clearInput(h, ECHO_KEYS[0]);
     // steady state: after the startup work (MCP, hooks, the first render passes) is done
     await h.page.waitForTimeout(SETTLE_MS);
-    const e = await guarded(h, 'echo', () => echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000));
+    const e = await guarded(h, 'echo', () => echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000, true));
     if (e.error) throw new Error(e.error);
     for (const r of e.out) { add('echo', r.parsed); add('echo.frame', r.frame); }
+    // one trace entry per key typed: the rest of each echo is the write → xterm → the match
+    if (e.stages?.length === e.out.length) {
+      e.stages.forEach((st, i) => {
+        add('echo.stage.read', st.read); add('echo.stage.compute', st.compute);
+        add('echo.stage.render', e.out[i].parsed - st.read - st.compute);
+      });
+    } else if (e.stages) h.log(`    echo stages: ${e.stages.length} traced keys for ${e.out.length} typed; not recorded`);
     await clearInput(h, ECHO_KEYS);
     await h.page.waitForTimeout(500);
     // a burst: every key in one go (fast typing), first key → the last one echoed
@@ -310,6 +331,9 @@ async function measureBuild(h, build, mock, rounds) {
   S('echo.first.frame', 'ms', 'same, painted');
   percentiles(h, `${pre}.echo`, R.echo, `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
   percentiles(h, `${pre}.echo.frame`, R['echo.frame'], 'key → the painted frame showing it');
+  percentiles(h, `${pre}.echo.stage.read`, R['echo.stage.read'], "stage 1 of the same keys (kernel pty trace, Build 975+): pty input → Claude's read of it");
+  percentiles(h, `${pre}.echo.stage.compute`, R['echo.stage.compute'], 'stage 2: that read → its first write to the pty');
+  percentiles(h, `${pre}.echo.stage.render`, R['echo.stage.render'], 'stage 3: the rest of the echo (the pty write → xterm parse → the input line matched)');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');

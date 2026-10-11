@@ -1133,12 +1133,37 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
 
     case 'worktree': {
       if (args[0] !== 'list') return null;
-      const h = await headOid(fs, dir);
-      const b = await currentBranch(fs, dir);
+      // The main work tree, then the linked ones by path, as git lists them: each is
+      // .git/worktrees/NAME (gitdir: its .git file's path, HEAD, locked)
+      type Tree = { path: string; head: string | null; branch?: string; locked?: string; prunable: boolean };
+      const trees: Tree[] = [{ path: dir, head: await headOid(fs, dir), branch: await currentBranch(fs, dir), prunable: false }];
+      const admin = `${dir === '/' ? '' : dir}/.git/worktrees`;
+      const linked: Tree[] = [];
+      for (const name of await ctx.fs.readdir(admin).catch(() => [] as string[])) {
+        const read = (f: string) => ctx.fs.readFile(`${admin}/${name}/${f}`, 'utf8').then((s) => (s as string).trim()).catch(() => null);
+        const gitdir = await read('gitdir');
+        const headText = await read('HEAD');
+        if (gitdir === null || headText === null) continue;
+        const path = gitdir.replace(/\/\.git$/, '');
+        const ref = headText.startsWith('ref: ') ? headText.slice(5) : null;
+        const head = ref ? await git.resolveRef({ fs, dir, ref }).catch(() => null) : headText;
+        const branch = ref?.startsWith('refs/heads/') ? ref.slice(11) : undefined;
+        const locked = await read('locked');
+        linked.push({ path, head, branch, locked: locked ?? undefined, prunable: !(await ctx.fs.exists(gitdir)) });
+      }
+      trees.push(...linked.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
       if (args.includes('--porcelain')) {
-        ctx.stdout += `worktree ${dir}\nHEAD ${h ?? ZERO}\n${b ? `branch refs/heads/${b}` : 'detached'}\n\n`;
+        for (const t of trees) {
+          ctx.stdout += `worktree ${t.path}\nHEAD ${t.head ?? ZERO}\n${t.branch ? `branch refs/heads/${t.branch}` : 'detached'}\n`
+            + (t.locked !== undefined ? `locked${t.locked ? ` ${t.locked}` : ''}\n` : '')
+            + (t.prunable ? 'prunable gitdir file points to non-existent location\n' : '') + '\n';
+        }
       } else {
-        ctx.stdout += `${dir}  ${(h ?? ZERO).slice(0, 7)} ${b ? `[${b}]` : '(detached HEAD)'}\n`;
+        const width = Math.max(...trees.map((t) => t.path.length));
+        for (const t of trees) {
+          ctx.stdout += `${t.path.padEnd(width)} ${(t.head ?? ZERO).slice(0, 7)} ${t.branch ? `[${t.branch}]` : '(detached HEAD)'}`
+            + (t.locked !== undefined ? ' locked' : '') + (t.prunable ? ' prunable' : '') + '\n';
+        }
       }
       return 0;
     }

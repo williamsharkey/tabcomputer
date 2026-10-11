@@ -91,6 +91,8 @@ APPS = {
     'vlc': (['vlc'], ['/usr/bin/vlc'], ['usr/lib/x86_64-linux-gnu/vlc/plugins/gui/libqt_plugin.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/platforms/libqxcb.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/imageformats/*.so'], [], 'Media player (Qt5)', 'qt5'),
     'audacity': (['audacity'], ['/usr/bin/audacity'], ['usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/*.so'], ['libglib2.0-bin', 'shared-mime-info'], 'Audio editor (wxWidgets/GTK3)', 'gtk3'),
     'blender': (['blender'], ['/usr/bin/blender'], [], [], '3D creation suite (OpenGL)', 'gl'),
+    # mesa-utils: glxgears is the app; glxinfo, eglinfo, es2_info and glxheads come for the terminal
+    'glxgears': (['mesa-utils'], ['/usr/bin/glxgears', '/usr/bin/glxinfo', '/usr/bin/eglinfo', '/usr/bin/es2_info', '/usr/bin/es2gears_x11', '/usr/bin/glxheads'], [], [], 'OpenGL gears demo, with glxinfo (mesa-utils)', 'gl'),
     # its resources live in an SQLite database: Qt's SQLite driver (a plugin, so not in the ELF closure)
     'krita': (['krita', 'libqt5sql5-sqlite'], ['/usr/bin/krita'], ['usr/lib/x86_64-linux-gnu/qt5/plugins/platforms/libqxcb.so', 'usr/lib/x86_64-linux-gnu/qt5/plugins/imageformats/*.so',
               'usr/lib/x86_64-linux-gnu/qt5/plugins/sqldrivers/libqsqlite.so',

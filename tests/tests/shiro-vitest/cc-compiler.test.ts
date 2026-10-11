@@ -283,6 +283,47 @@ describe('C Compiler (cc/gcc)', () => {
     });
   });
 
+  // ─── Libraries: -l and -L (#58) ───────────────────────────────
+
+  describe('libraries (-l, -L)', () => {
+    it('-lm and -lc are dropped (xcc\'s libc has them); -L paths too; other -l\'s are reported', async () => {
+      const { splitLibraryFlags } = await import('@shiro/commands/cc');
+      expect(splitLibraryFlags(['-O2', '-o', 'hello', 'hello.c', '-lm'])).toEqual({ rest: ['-O2', '-o', 'hello', 'hello.c'], missing: [] });
+      expect(splitLibraryFlags(['-lm', '-l', 'c', 'a.c', '-L/opt/lib', '-L', '/usr/lib'])).toEqual({ rest: ['a.c'], missing: [] });
+      expect(splitLibraryFlags(['a.c', '-lpthread', '-l', 'z', '-lm'])).toEqual({ rest: ['a.c'], missing: ['pthread', 'z'] });
+      // (-o's value is a file name, whatever it looks like)
+      expect(splitLibraryFlags(['-o', '-lfoo', 'a.c'])).toEqual({ rest: ['-o', '-lfoo', 'a.c'], missing: [] });
+    });
+
+    it('-lm never fails the command as a library (it used to: "(null): library not found")', async () => {
+      await fs.writeFile('/tmp/lm.c', '#include <math.h>\nint main(void) { return (int)sqrt(4.0) - 2; }\n');
+      for (const cmd of ['cc -o /tmp/lm /tmp/lm.c -lm', 'gcc -lm -o /tmp/lm /tmp/lm.c', 'cc /tmp/lm.c -o /tmp/lm -lc -L/usr/lib']) {
+        const { output } = await run(shell, cmd);
+        // (it compiles where the xcc toolchain can be fetched; either way no library error)
+        expect(output, cmd).not.toContain('library not found');
+        expect(output, cmd).not.toContain('cannot find -l');
+      }
+    });
+
+    it('another library is a clear error before compiling', async () => {
+      await fs.writeFile('/tmp/lz.c', 'int main(void) { return 0; }\n');
+      const { exitCode, output } = await run(shell, 'cc -o /tmp/lz /tmp/lz.c -lz -lm');
+      expect(exitCode).toBe(1);
+      expect(output).toContain('cannot find -lz');
+      expect(output).not.toContain('cannot find -lm');
+      expect(output).not.toContain('downloading compiler'); // (nothing fetched for a link that can't succeed)
+    });
+
+    it('-c doesn\'t link: its -l\'s don\'t matter, and no input is still "no input files"', async () => {
+      await fs.writeFile('/tmp/lzc.c', 'int f(void) { return 0; }\n');
+      const { output } = await run(shell, 'cc -c /tmp/lzc.c -lz');
+      expect(output).not.toContain('cannot find -lz');
+      const none = await run(shell, 'cc -lm');
+      expect(none.exitCode).toBe(1);
+      expect(none.output).toContain('no input files');
+    });
+  });
+
   // ─── Command Metadata ─────────────────────────────────────────
 
   describe('command metadata', () => {

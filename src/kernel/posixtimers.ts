@@ -151,15 +151,20 @@ export class PosixTimers {
     const ms = tm.deadline - now();
     tm.handle = setTimeout(() => {
       if (proc.exiting || tm.deadline === 0) return;
-      if (tm.deadline - now() > 1) { this.arm(proc, tm); return; } // (a long one waits in steps)
+      if (tm.deadline > now()) { this.arm(proc, tm); return; } // (never early; a long one waits in steps)
       this.fire(proc, tm);
     }, Math.min(0x7fffffff, Math.max(0, ms)));
     (tm.handle as { unref?: () => void })?.unref?.();
   }
 
-  /** What `abs` (ms on the timer's clock) is on performance.now()'s */
+  /**
+   * What `abs` (ms on the timer's clock) is on performance.now()'s. Blink's
+   * CLOCK_REALTIME follows Date.now() to within 2 ms, and Date.now() is
+   * whole ms: an absolute realtime timer waits 3 ms more, so the guest never
+   * reads a time before its expiry (Open POSIX timer_settime_9-2)
+   */
   private toNow(clock: number, absMs: number): number {
-    const at = clock === 0 || clock === 5 ? Date.now()
+    const at = clock === 0 || clock === 5 ? Date.now() - 3
       : clock === 7 ? Date.now() - this.bootMs
       : performance.timeOrigin + performance.now(); // emscripten's CLOCK_MONOTONIC in Blink's threads
     return now() + (absMs - at);

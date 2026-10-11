@@ -184,7 +184,11 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
   const mtime = typeof st.mtime === 'number' ? st.mtime : st.mtime.getTime();
   let bin: Uint8Array | null = null;
   let sha = index[binPath]?.size === st.size && index[binPath]?.mtime === mtime ? index[binPath].sha256 : '';
+  // (a first launch takes ~40 s: a line per stage so it doesn't look hung)
+  const t0 = Date.now();
+  const secs = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
   if (!sha) {
+    say(`claude --vm: reading the native build (${Math.round(st.size / 2 ** 20)} MB)...\n`);
     bin = await fs.readFile(binPath) as Uint8Array;
     sha = await sha256Hex(bin);
   }
@@ -207,6 +211,7 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     const { withEsbuild } = await import('../commands/build');
     let n = 0;
     const jsCount = graph.modules.filter((m) => m.loader === BunLoader.js).length;
+    say(`  ${jsCount} modules, ${graph.modules.length - jsCount} assets; converting to CommonJS (${secs()})\n`);
     await withEsbuild(async (esbuild) => {
       for (const m of graph.modules) {
         if (!m.name.startsWith(BUNFS)) continue;
@@ -216,7 +221,7 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
         files.push({ rel, loader: m.loader });
         if (m.loader === BunLoader.js) {
           await fs.writeFile(path, await toCommonJS(esbuild as any, adaptModule(dec.decode(m.contents), ROOT_TOKEN)));
-          if (++n % 500 === 0) say(`  ${n}/${jsCount} modules\n`);
+          if (++n % 500 === 0) say(`  ${n}/${jsCount} modules (${secs()})\n`);
         }
         // zstd assets (skills, docs; the code checks the magic, not the name) stored
         // decompressed: node's sync reads find text in its cache, and no zstd at run time
@@ -226,6 +231,7 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     });
     await fs.writeFile(`${cjs}/files.json`, JSON.stringify(files));
     await fs.writeFile(`${cjs}/complete`, String(VM_LAYOUT));
+    say(`  extracted (${secs()})\n`);
     extracted = true;
   }
 
@@ -238,6 +244,8 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     ]);
     const assets: Record<string, number> = {};
     const bundle: string[] = [PRETRANSFORMED, bundleHeader(dir)];
+    const jsCount = files.filter((f) => f.loader === BunLoader.js).length;
+    let n = 0;
     for (const f of files) {
       const path = `${dir}/${f.rel}`;
       await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
@@ -246,6 +254,7 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
         const done = transformESModules(code, carriesAsyncContext(code) ? carryAsyncContext : undefined);
         await fs.writeFile(path, PRETRANSFORMED + done);
         bundle.push(bundleEntry(path, done));
+        if (++n % 500 === 0) say(`  ${n}/${jsCount} modules (${secs()})\n`);
       } else {
         assets[path] = f.loader;
         await fs.writeFile(path, await fs.readFile(`${cjs}/${f.rel}`) as Uint8Array);
@@ -260,6 +269,7 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
     await fs.writeFile(`${dir}/bundle.js`, bundle.join(''));
     await fs.writeFile(launcher, launcherSource());
     await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
+    say(`  ready (${secs()}); starting Claude Code\n`);
     // an earlier build's tree is no longer used
     for (const name of await (fs as any).readdir?.(base).catch?.(() => []) ?? []) {
       if (name.startsWith('nc-') && `${base}/${name}` !== dir) await (fs as any).rm?.(`${base}/${name}`, { recursive: true, force: true }).catch?.(() => {});

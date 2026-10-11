@@ -4,11 +4,16 @@
  * CommonJS with live imports (Bun's chunks assign exports in lazy
  * initializers and import each other in cycles).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { transform } from 'esbuild';
-import { adaptModule, toCommonJS, launcherSource, bundleHeader, bundleEntry } from '@shiro/claude-vm/extract';
+import { adaptModule, toCommonJS, launcherSource, bundleHeader, bundleEntry, ensureClaudeVm } from '@shiro/claude-vm/extract';
+import { BunLoader } from '@shiro/claude-vm/bun-graph';
+import { fakeBunElf } from './fake-bun-elf';
 import { PRETRANSFORMED } from '@shiro/node-compat/require';
 import { createTestShell, run } from './helpers';
+
+// (native esbuild for extraction's own: esbuild-wasm wants the page's asset URL)
+vi.mock('@shiro/commands/build', () => ({ withEsbuild: async (f: (e: unknown) => unknown) => f(esbuild) }));
 
 const esbuild = { transform: (code: string, opts: object) => transform(code, opts as any) };
 
@@ -74,5 +79,24 @@ describe('claude --vm: the extracted modules', () => {
     const [a, b, c] = module.exports;
     expect([a.a, a.fromB(), b.seenA(), a.os]).toEqual([1, 2, 1, 'fake-os']);
     expect(await c).toBe(2);
+  });
+
+  it('a first launch says what each stage is doing; the next one says nothing', async () => {
+    const { fs } = await createTestShell();
+    const bin = fakeBunElf([
+      { name: '/$bunfs/root/chunk-a.js', contents: '// @bun\nexport const a = 1;\n', loader: BunLoader.js },
+      { name: '/$bunfs/root/cli', contents: '// @bun\nimport{a}from"/$bunfs/root/chunk-a.js";console.log(a);\n', loader: BunLoader.js },
+      { name: '/$bunfs/root/SKILL.md', contents: '# a skill\n', loader: BunLoader.text },
+    ], 1);
+    await fs.mkdir('/home/t/.local/bin', { recursive: true });
+    await fs.writeFile('/home/t/.local/bin/claude', bin);
+    const lines: string[] = [];
+    const first = await ensureClaudeVm(fs as any, '/home/t/.local/bin/claude', '/home/t', (s) => lines.push(s));
+    const said = lines.join('');
+    expect(first.extracted).toBe(true);
+    for (const re of [/reading the native build/, /extracting/, /2 modules, 1 assets/, /extracted \(\d+\.\d s\)/, /preparing/, /ready \(\d+\.\d s\)/]) expect(said).toMatch(re);
+    lines.length = 0;
+    const again = await ensureClaudeVm(fs as any, '/home/t/.local/bin/claude', '/home/t', (s) => lines.push(s));
+    expect([again.extracted, again.dir, lines]).toEqual([false, first.dir, []]);
   });
 });

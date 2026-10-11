@@ -31,7 +31,7 @@ import { globCmd } from './commands/glob';
 import { jsEvalCmd } from './commands/jseval/js-eval-cmd';
 import './node-compat/page-globals'; // before anything can patch fetch/timers; node-compat loads lazily
 import { npxCmd } from './commands/npx';
-import { viCmd } from './commands/vi';
+import { viCmd, exCmd } from './commands/vi';
 import { sourceCmd, dotCmd } from './commands/source';
 import { jobsCmd, fgCmd, bgCmd, waitCmd } from './commands/jobs';
 import { testCmd } from './commands/test';
@@ -301,6 +301,7 @@ async function main() {
   registerCommand(commands, lazyCommand('build', 'Bundle TypeScript/JavaScript using esbuild-wasm',
     () => import('./commands/build').then(m => m.buildCmd)), 'src/commands/build.ts');
   registerCommand(commands, viCmd, 'src/commands/vi.ts');
+  registerCommand(commands, exCmd, 'src/commands/vi.ts');
   registerCommand(commands, lazyCommand('nano', 'Simple text editor (Ctrl+O save, Ctrl+X exit)',
     () => import('./commands/nano').then(m => m.nanoCmd)), 'src/commands/nano.ts');
   registerCommand(commands, lazyCommand('upload', 'Upload files from host machine into virtual filesystem',

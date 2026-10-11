@@ -1,4 +1,5 @@
 import { Command, CommandContext } from './index';
+import { ExBuffer, ExIO, runExCommand } from './vi-ex';
 
 /**
  * vi: Minimal vi-like text editor for the terminal
@@ -33,6 +34,13 @@ import { Command, CommandContext } from './index';
  *   :q       - Quit (if no changes)
  *   :q!      - Quit without saving
  *   :wq      - Write and quit
+ *   other ex commands (:N, :%s/a/b/g, :g/re/d, ...): src/commands/vi-ex.ts
+ *
+ * Without a terminal, and with -e/-s (or as `ex`), it is an ex script runner:
+ * the -c and +CMD commands run in order, then (ex mode) the lines of stdin,
+ * so `vi -c '%s/a/b/g' -c wq FILE` and `vi -es FILE < script` work in
+ * scripts and agents' shells (tabcomputer#62). With a terminal, -c commands
+ * run before the editor opens (and a :wq among them never opens it).
  *
  * Insert mode:
  *   ESC      - Return to normal mode
@@ -55,25 +63,125 @@ interface EditorState {
   searchBuffer: string;
 }
 
-export const viCmd: Command = {
-  name: 'vi',
-  description: 'Minimal vi-like text editor',
+interface ViOptions { commands: string[]; ex: boolean; silent: boolean; readonly: boolean; files: string[] }
 
-  async exec(ctx: CommandContext): Promise<number> {
-    if (ctx.args.length === 0) {
-      ctx.stderr += 'Usage: vi <file>\n';
-      return 1;
+const USAGE = 'Usage: vi [-c CMD | +CMD]... [-e] [-s] [-R] [FILE]\n'
+  + '  -c CMD, +CMD  run ex command CMD after loading FILE (+ alone: the last line; +N: line N)\n'
+  + '  -e, -E        ex mode: run the commands, then the lines of stdin, with no screen (ex)\n'
+  + '  -s            silent (with -e: -es): no messages, only :p output and errors\n'
+  + '  -R            read-only (:w! writes all the same)\n';
+
+function parseViArgs(args: string[], ex: boolean): ViOptions | string {
+  const o: ViOptions = { commands: [], ex, silent: false, readonly: false, files: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { o.files.push(...args.slice(i + 1)); break; }
+    if (a === '--cmd') { if (i + 1 >= args.length) return 'argument missing after --cmd'; o.commands.push(args[++i]); continue; }
+    if (a === '-h' || a === '--help') return '';
+    if (a.startsWith('--')) continue; // --clean, --noplugin, --not-a-term, ...: nothing to do here
+    if (a.startsWith('+')) { o.commands.push(a.length === 1 ? '$' : a.slice(1)); continue; }
+    if (a.startsWith('-') && a.length > 1) {
+      for (let j = 1; j < a.length; j++) {
+        const f = a[j];
+        if (f === 'c') {
+          const cmd = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+          if (cmd === undefined) return 'argument missing after -c';
+          o.commands.push(cmd);
+          break;
+        }
+        if (f === 'e' || f === 'E') o.ex = true;
+        else if (f === 's') o.silent = true;
+        else if (f === 'R') o.readonly = true;
+        else if ('uUiTwW'.includes(f)) { if (j === a.length - 1) i++; break; } // options with an argument: ignored
+        else if (!'nNXbylmMZv'.includes(f)) return `unknown option -${f}`;
+      }
+      continue;
     }
+    o.files.push(a);
+  }
+  if (o.silent && !o.ex) return '-s SCRIPTIN (normal-mode keys) is not supported; for an ex script use -es';
+  return o;
+}
 
-    // Check if terminal is available for interactive mode
-    if (!ctx.terminal) {
-      ctx.stderr += 'vi: terminal not available for interactive editing\n';
-      ctx.stderr += 'Use ed for line-based editing, or cat > file << EOF for file creation.\n';
-      return 1;
+/** ExIO on the command's fs and output. */
+function exIO(ctx: CommandContext, silent: boolean): ExIO {
+  return {
+    read: async (path) => (await ctx.fs.readFile(path, 'utf8')) as string,
+    write: async (path, text, append) => {
+      if (append) {
+        let old = '';
+        try { old = (await ctx.fs.readFile(path, 'utf8')) as string; } catch {}
+        text = old + text;
+      }
+      await ctx.fs.writeFile(path, text);
+    },
+    resolve: (path) => ctx.fs.resolvePath(path, ctx.cwd),
+    out: (t) => { ctx.stdout += t; },
+    err: (t) => { ctx.stderr += t; },
+    msg: (t) => { if (!silent) ctx.stderr += t; },
+  };
+}
+
+async function viExec(ctx: CommandContext, asEx: boolean): Promise<number> {
+  const name = asEx ? 'ex' : 'vi';
+  const opts = parseViArgs(ctx.args, asEx);
+  if (typeof opts === 'string') {
+    ctx.stderr += (opts ? `${name}: ${opts}\n` : '') + USAGE;
+    return opts ? 2 : 0;
+  }
+  const batch = opts.ex || !ctx.terminal;
+  if (!batch && !opts.commands.length && !opts.files.length) {
+    ctx.stderr += 'Usage: vi <file>\n';
+    return 1;
+  }
+  if (!ctx.terminal && !opts.ex && !opts.commands.length) {
+    ctx.stderr += 'vi: terminal not available for interactive editing\n';
+    ctx.stderr += 'Run ex commands instead: vi -c \'%s/old/new/g\' -c wq FILE, or vi -es FILE < script (ed works too).\n';
+    return 1;
+  }
+
+  // The -c commands (and, in ex mode, stdin's lines) on an ex buffer
+  let seeded: ExBuffer | null = null;
+  if (batch || opts.commands.length) {
+    const buf = new ExBuffer();
+    buf.filename = opts.files[0] ?? null;
+    buf.readonly = opts.readonly;
+    if (buf.filename) {
+      try { buf.setText((await ctx.fs.readFile(ctx.fs.resolvePath(buf.filename, ctx.cwd), 'utf8')) as string); }
+      catch { if (!opts.silent && batch) ctx.stderr += `"${buf.filename}" [New]\n`; }
     }
+    buf.cur = opts.ex ? buf.lines.length : Math.min(1, buf.lines.length);
+    const io = exIO(ctx, opts.silent);
+    for (const cmd of opts.commands) {
+      await runExCommand(buf, cmd, io);
+      if (buf.quit !== null) break;
+    }
+    if (buf.quit === null && opts.ex && !ctx.stdinIsTTY) {
+      const text = ctx.stdin || (ctx.readStdin ? await ctx.readStdin() : '');
+      const lines = text ? text.replace(/\n$/, '').split('\n') : [];
+      let at = 0;
+      io.input = () => (at < lines.length ? lines[at++] : null);
+      for (let l = io.input(); l !== null && buf.quit === null; l = io.input()) await runExCommand(buf, l, io);
+    }
+    if (buf.quit !== null) return buf.quit || (opts.ex && buf.errors ? 1 : 0);
+    if (batch) {
+      // The end of the commands without :q (vim would wait for more)
+      if (buf.modified) {
+        ctx.stderr += `${name}: E37: No write since last change: the changes were not saved (end the commands with :wq, or :q! to discard)\n`;
+        return 1;
+      }
+      if (!opts.ex) ctx.stderr += 'vi: no terminal: the -c commands ran; end them with :wq or :q!\n';
+      return opts.ex && !buf.errors ? 0 : 1;
+    }
+    seeded = buf;
+  }
 
-    const filename = ctx.args[0];
-    const filepath = ctx.fs.resolvePath(filename, ctx.cwd);
+  const filename = opts.files[0];
+  if (!filename) {
+    ctx.stderr += 'Usage: vi <file>\n';
+    return 1;
+  }
+  const filepath = ctx.fs.resolvePath(filename, ctx.cwd);
 
     // Read file or create new
     let initialContent = '';
@@ -99,6 +207,17 @@ export const viCmd: Command = {
       searchPattern: '',
       searchBuffer: '',
     };
+
+    if (seeded) {
+      state.lines = [...seeded.lines, ''];
+      state.cursorRow = Math.max(0, seeded.cur - 1);
+      state.modified = seeded.modified;
+      if (seeded.modified) state.message = `"${filename}" [Modified]`;
+    }
+    // Ex commands typed at ':' beyond w/q (vi-ex.ts), on the editor's lines
+    const ex = seeded ?? new ExBuffer();
+    ex.filename = filename;
+    ex.readonly = opts.readonly;
 
     const terminal = ctx.terminal!;
     const { rows: termHeight, cols: termWidth } = terminal.getSize();
@@ -482,8 +601,31 @@ export const viCmd: Command = {
             cleanup();
             resolve(0);
             return;
-          } else {
-            state.message = `Not an editor command: ${cmd}`;
+          } else if (cmd) {
+            // The editor's lines end with '' when the file ends with a newline
+            ex.lines = state.lines.length > 1 && state.lines[state.lines.length - 1] === '' ? state.lines.slice(0, -1)
+              : state.lines.length === 1 && state.lines[0] === '' ? [] : [...state.lines];
+            ex.cur = Math.min(state.cursorRow + 1, ex.lines.length);
+            ex.modified = state.modified;
+            ex.quit = null;
+            let said = '';
+            await runExCommand(ex, cmd, {
+              ...exIO(ctx, false),
+              out: (t) => { said = t.trimEnd().split('\n').pop() ?? ''; },
+              err: (t) => { said = t.trim(); },
+              msg: (t) => { said = t.trim(); },
+            });
+            state.lines = [...ex.lines, ''];
+            state.cursorRow = Math.max(0, Math.min(ex.cur - 1, state.lines.length - 1));
+            state.cursorCol = 0;
+            state.modified = ex.modified;
+            if (said) state.message = said;
+            if (ex.quit !== null) {
+              running = false;
+              cleanup();
+              resolve(ex.quit);
+              return;
+            }
           }
 
           state.mode = 'normal';
@@ -544,5 +686,17 @@ export const viCmd: Command = {
       // The promise resolves when :q, :q!, or :wq is executed
       // The handleCommandMode function calls cleanup() and resolve() when quitting
     });
-  },
+}
+
+export const viCmd: Command = {
+  name: 'vi',
+  description: 'Minimal vi-like text editor',
+  exec: (ctx) => viExec(ctx, false),
+};
+
+/** ex: vi in ex mode (vi -e). */
+export const exCmd: Command = {
+  name: 'ex',
+  description: 'Line-oriented text editor (vi -e): ex commands from -c and stdin',
+  exec: (ctx) => viExec(ctx, true),
 };

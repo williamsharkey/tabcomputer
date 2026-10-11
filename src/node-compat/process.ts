@@ -7,6 +7,7 @@ import { getShiroOrigin } from '../utils/shiro-origin';
 import { CLAUDE_CODE_DEFAULT_MODEL } from '../claude-code-version';
 import { TtyStdin, ttySessionOf } from './tty-stdin';
 import { nodeGuestOf } from '../node-worker/hooks';
+import { encodeText } from '../utils/byte-text';
 
 /**
  * Create the fake process object for the Node.js compat layer.
@@ -25,6 +26,8 @@ export function createFakeProcess(
   _st: SharedState,
   processEvents: Record<string, Function[]>,
   pendingPromises: Promise<any>[],
+  /** The script's Buffer: process.stdin's chunks without setEncoding() */
+  FakeBuffer?: any,
 ): any {
   const processEnv: Record<string, string> = {
     ...exportedOnly(ctx),
@@ -105,7 +108,7 @@ export function createFakeProcess(
     versions: { node: '22.12.0', v8: '12.4.254.21-node.21', modules: '127', openssl: '3.0.13', uv: '1.46.0', zlib: '1.3.0.1-motley-71660e1', brotli: '1.1.0', napi: '9', llhttp: '8.1.1', unicode: '15.1', icu: '74.1', cldr: '44.1', tz: '2024a' },
     stdout: createStdout(ctx, stdoutBuf, _st),
     stderr: createStderr(ctx, stderrBuf, _st),
-    stdin: createStdin(ctx, _st, processEvents, pendingPromises),
+    stdin: createStdin(ctx, _st, processEvents, pendingPromises, FakeBuffer),
     on: (event: string, fn: Function) => {
       (processEvents[event] ??= []).push(fn);
       return fp;
@@ -408,7 +411,7 @@ function createStderr(ctx: CommandContext, stderrBuf: string[], _st: SharedState
 }
 
 /** Create process.stdin stream */
-function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Record<string, Function[]>, pendingPromises: Promise<any>[]): any {
+function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Record<string, Function[]>, pendingPromises: Promise<any>[], FakeBuffer?: any): any {
   const stdinEvents: Record<string, Function[]> = {};
   // Whether stdin is the terminal (a kernel guest knows it apart from stdout's: `echo x | node` on a terminal)
   const stdinTTY: boolean = ctx.stdinIsTTY ?? !!ctx.terminal;
@@ -426,10 +429,24 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
   let stdinRawMode = false;
   let stdinEncoding: string | null = null;
   let stdinDataTaken = false; // piped input already went to 'data' listeners
-  const stdinReadBuffer: string[] = [];
-  const emitData = (data: string) => {
-    stdinReadBuffer.push(data);
-    (stdinEvents['data'] || []).forEach(f => f(data));
+  const stdinReadBuffer: any[] = [];
+  // A chunk as node gives it: a Buffer of the bytes as they came, or after
+  // setEncoding() a string (decoded across chunks). Text from the terminal
+  // and piped input that arrived whole are byte-exact strings (byte-text.ts).
+  let decoder: TextDecoder | null = null;
+  const chunkOf = (data: string | Uint8Array): any => {
+    const bytes = typeof data === 'string' ? encodeText(data) : data;
+    if (stdinEncoding) {
+      decoder ??= new TextDecoder();
+      return decoder.decode(bytes, { stream: true });
+    }
+    return FakeBuffer ? FakeBuffer.from(bytes) : bytes;
+  };
+  const emitData = (data: string | Uint8Array) => {
+    const chunk = chunkOf(data);
+    if (stdinEncoding && chunk === '') return;
+    stdinReadBuffer.push(chunk);
+    (stdinEvents['data'] || []).forEach(f => f(chunk));
     (stdinEvents['readable'] || []).forEach(f => f());
   };
   const forceExit = (code = 130) => {
@@ -503,7 +520,7 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
         if (done) return null;
         done = true;
         await loadStdin();
-        return ctx.stdin ? new TextEncoder().encode(ctx.stdin) : null;
+        return ctx.stdin ? encodeText(ctx.stdin) : null;
       };
     })(),
   }, (p) => pendingPromises.push(p));
@@ -512,10 +529,9 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
     if (stdinTTY || stdinEnded) return;
     stdinEnded = true;
     if (ctx.stdinStream && fd0) {
-      const dec = new TextDecoder();
       fd0.flow((b) => {
-        if (b) { const t = dec.decode(b, { stream: true }); if (t) emitData(t); return; }
-        const t = dec.decode();
+        if (b) { if (b.length) emitData(b); return; }
+        const t = decoder?.decode() ?? '';
         if (t) emitData(t);
         (stdinEvents['end'] || []).forEach(f => f());
         (stdinEvents['close'] || []).forEach(f => f());
@@ -524,10 +540,8 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
     }
     void loadStdin().then(() => {
       if (ctx.stdin) {
-        stdinReadBuffer.push(ctx.stdin);
         if (stdinEvents['data']?.length) stdinDataTaken = true;
-        (stdinEvents['data'] || []).forEach(f => f(ctx.stdin));
-        (stdinEvents['readable'] || []).forEach(f => f());
+        emitData(ctx.stdin);
       }
       (stdinEvents['end'] || []).forEach(f => f());
       (stdinEvents['close'] || []).forEach(f => f());
@@ -577,17 +591,18 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
           if (data.includes('\x03')) {
             try { (processEvents['SIGINT'] || []).forEach(fn => fn('SIGINT')); } catch (_) {}
           }
-          stdinReadBuffer.push(data);
-          (stdinEvents['data'] || []).forEach(f => f(data));
-          (stdinEvents['readable'] || []).forEach(f => f());
+          emitData(data);
         }, forceExit);
       }
       return stdinObj;
     },
     pause: () => { if (ttyIn?.reading) releaseTerminal(); return stdinObj; },
+    // (what has come since the last read, joined: a Buffer, or a string after setEncoding)
     read: (_size?: number) => {
       if (stdinReadBuffer.length === 0) return null;
-      return stdinReadBuffer.shift()!;
+      const all = stdinReadBuffer.splice(0);
+      if (all.length === 1) return all[0];
+      return typeof all[0] === 'string' ? all.join('') : FakeBuffer ? FakeBuffer.concat(all) : all[0];
     },
     setRawMode: (mode: boolean) => {
       stdinRawMode = mode;
@@ -610,9 +625,7 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
           if (data.includes('\x03')) {
             try { (processEvents['SIGINT'] || []).forEach(fn => fn('SIGINT')); } catch (_) {}
           }
-          stdinReadBuffer.push(data);
-          (stdinEvents['data'] || []).forEach(f => f(data));
-          (stdinEvents['readable'] || []).forEach(f => f());
+          emitData(data);
         }, forceExit);
       } else if (!mode && ctx.terminal) {
         ctx.terminal.exitStdinPassthrough();
@@ -636,7 +649,7 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
       let done = false;
       let wake: (() => void) | null = null;
       const onData = (d: any) => {
-        chunks.push(stdinEncoding || typeof d !== 'string' ? d : new TextEncoder().encode(d));
+        chunks.push(d);
         wake?.();
       };
       const onEnd = () => { done = true; wake?.(); };
@@ -644,7 +657,7 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
         // piped input that an earlier 'end' listener set flowing: what no
         // 'data' listener took is still unread (once a live stdin has arrived)
         void loadStdin().then(() => {
-          if (ctx.stdin && !stdinDataTaken) { stdinDataTaken = true; stdinReadBuffer.length = 0; onData(ctx.stdin); }
+          if (ctx.stdin && !stdinDataTaken) { stdinDataTaken = true; stdinReadBuffer.length = 0; onData(chunkOf(ctx.stdin)); }
           done = true;
           wake?.();
         });

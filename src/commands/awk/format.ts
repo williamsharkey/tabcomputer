@@ -224,11 +224,11 @@ export function awkSprintf(fmt: string, args: FmtArgs, charOf: (n: number) => st
     if (fmt[i] === '%') { out += '%'; i++; continue; }
     {
       // `%5%` prints a plain % (gawk)
-      const pct = /^[-+ #0]*(\d+|\*)?(\.(\d+|\*)?)?%/.exec(fmt.slice(i, i + 40));
+      const pct = /^[-+ #0']*(\d+|\*)?(\.(\d+|\*)?)?%/.exec(fmt.slice(i, i + 40));
       if (pct) { out += '%'; i += pct[0].length; continue; }
     }
     let flags = '';
-    while (i < n && '-+ #0'.includes(fmt[i])) flags += fmt[i++];
+    while (i < n && "-+ #0'".includes(fmt[i])) flags += fmt[i++];
     let width = 0;
     if (fmt[i] === '*') {
       i++;

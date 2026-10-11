@@ -836,7 +836,11 @@ function kernelTarget(kernel: Kernel, proc: Process, jc: JobControl): SignalTarg
       const t = jc.get(proc.pid);
       if (t) t.signals.pending = sigset.del(t.signals.pending, sig);
       const info = proc.data.sigInFlight as SigInfo | undefined;
-      proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      // (the pending setter queued this instance already when the signal was
+      // pending before it: another real-time instance, not taken yet)
+      if (!(info?.signo === sig && proc.siginfo.get(sig)?.includes(info))) {
+        proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      }
       proc.pendingSignals.add(sig);
       proc.interruptSyscalls();
       (proc.data.onSignal as ((s: number) => void) | undefined)?.(sig);
@@ -892,3 +896,11 @@ export function attachKernel(kernel: Kernel, jc: JobControl = jobControl): () =>
 export function targetOf(proc: Process, jc: JobControl = jobControl): SignalTarget | undefined {
   return jc.get(proc.pid);
 }
+
+/**
+ * The event `timeout` dispatches on its AbortSignal when its time is up but
+ * the signal was aborted already (by the shell around it, #53): abort() can't
+ * fire twice, so the job's handler (shell-kernel.ts) hears this instead. Its
+ * detail is the abort reason's { signal, killAfter }.
+ */
+export const TIMEOUT_EXPIRED_EVENT = 'tabcomputer-timeout-expired';

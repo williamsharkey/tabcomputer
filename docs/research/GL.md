@@ -260,8 +260,10 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   no readback, no copy through Xshiro's pixmaps. Front-buffer drawing, and
   `glReadPixels` from either buffer, work because both are FBOs. The FBO
   follows the window's size at the next swap or MakeCurrent, as DRI does.
-  The window's own pixmap keeps what X drew under it, so `XGetImage` and
-  the desktop's window previews don't show the GL frame (not needed so far).
+  The window's own pixmap keeps what X drew under it. `XGetImage` of a GL
+  window reads the frame back from its surface only when asked
+  (`GLSurface.pixels()`, through the server's `glFrame` hook) and lays it
+  over those pixels; frames themselves are never read back.
   A window made current before it can take a surface (not mapped yet) is
   tried again with each batch and frame.
 - Fallback present: read the front FBO back into the window's pixmap, so

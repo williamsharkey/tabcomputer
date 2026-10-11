@@ -17,6 +17,9 @@ import { diagnostics, formatDiagnostics, clearWatchdog, WATCHDOG_OFF_KEY, watchd
  *   watchdog abort         Abort the foreground commands everywhere (like Ctrl-C in every terminal)
  *   watchdog abort-after N Abort them by itself after the page has been frozen N s (off: never; from the next load)
  *   watchdog off | on      Turn it off from the next load on (safe mode too), or back on
+ *   watchdog profile start [-d S] [-i MS] [-p RE] [LABEL]   Capture long tasks, input/echo latency,
+ *                          syscalls and Blink lock stats for S seconds (src/live-profile.ts)
+ *   watchdog profile stop|status|mark TEXT|save FILE         End it, show it, note a moment, write the JSON
  */
 export const watchdogCmd: Command = {
   name: 'watchdog',
@@ -43,6 +46,7 @@ export const watchdogCmd: Command = {
       ctx.stdout = `abort-after ${n ? n + ' s' : 'off'} from the next load\n`;
       return 0;
     }
+    if (args[0] === 'profile') return profileCmd(ctx, args.slice(1));
     let limit = 40;
     let kind: string | undefined;
     let since: number | undefined;
@@ -62,7 +66,7 @@ export const watchdogCmd: Command = {
         return 0;
       }
       else if (a === '-h' || a === '--help') {
-        ctx.stdout = 'usage: watchdog [--prev] [-n N] [-k KINDS] [--since SECONDS] [--json] [--clear] | watchdog --kernel [RE] | watchdog abort | watchdog abort-after N|off | watchdog off|on\n';
+        ctx.stdout = 'usage: watchdog [--prev] [-n N] [-k KINDS] [--since SECONDS] [--json] [--clear] | watchdog --kernel [RE] | watchdog abort | watchdog abort-after N|off | watchdog off|on | watchdog profile start|stop|status|mark|save\n';
         return 0;
       } else {
         ctx.stderr = `watchdog: unknown option ${a}\n`;
@@ -75,3 +79,47 @@ export const watchdogCmd: Command = {
     return 0;
   },
 };
+
+async function profileCmd(ctx: CommandContext, a: string[]): Promise<number> {
+  const lp = await import('../live-profile');
+  const show = async () => {
+    const p = await lp.fullProfile();
+    return p ? lp.summarizeProfile(p).join('\n') + '\n' : 'no profile captured in this load\n';
+  };
+  switch (a[0]) {
+    case 'start': {
+      const o: { durationMs?: number; sampleMs?: number; procGrep?: string; label?: string } = {};
+      const words: string[] = [];
+      for (let i = 1; i < a.length; i++) {
+        if (a[i] === '-d') o.durationMs = 1000 * (parseFloat(a[++i]) || 60);
+        else if (a[i] === '-i') o.sampleMs = parseInt(a[++i]) || undefined;
+        else if (a[i] === '-p') o.procGrep = a[++i];
+        else words.push(a[i]);
+      }
+      if (words.length) o.label = words.join(' ');
+      const m = await lp.startProfile(o);
+      ctx.stdout = `profile ${m.id} started: ${m.durationMs / 1000} s, sample ${m.sampleMs} ms${m.procGrep ? `, processes /${m.procGrep}/` : ''}\n`;
+      return 0;
+    }
+    case 'stop':
+      if (!lp.stopProfile()) { ctx.stderr = 'watchdog: no profile running\n'; return 1; }
+      ctx.stdout = await show();
+      return 0;
+    case 'status':
+    case undefined:
+      ctx.stdout = await show();
+      return 0;
+    case 'mark':
+      if (!lp.markProfile(a.slice(1).join(' '))) { ctx.stderr = 'watchdog: no profile running\n'; return 1; }
+      return 0;
+    case 'save': {
+      const p = await lp.fullProfile();
+      if (!p || !a[1]) { ctx.stderr = p ? 'usage: watchdog profile save FILE\n' : 'watchdog: no profile captured in this load\n'; return p ? 2 : 1; }
+      await ctx.fs.writeFile(ctx.fs.resolvePath(a[1], ctx.cwd), JSON.stringify(p));
+      return 0;
+    }
+    default:
+      ctx.stderr = 'usage: watchdog profile start [-d SECONDS] [-i SAMPLE_MS] [-p PROC_RE] [LABEL] | stop | status | mark TEXT | save FILE\n';
+      return 2;
+  }
+}

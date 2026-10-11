@@ -1,0 +1,156 @@
+From 8da86bd1727605f60710566caa14bb0722ca5ce3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 21:37:09 +0000
+Subject: [PATCH] Shiro: direct channels are each thread's own
+ SharedArrayBuffer, not in the wasm memory
+
+---
+ blink/shiro.inc | 96 ++++++++++++++++++-------------------------------
+ 1 file changed, 35 insertions(+), 61 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index a00d502..cccf9f1 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -119,78 +119,58 @@ static void *ShiroAlloc(struct Machine *m, size_t n) {
+ static void ShiroSyncMask(struct Machine *);
+ 
+ // ── direct channels ─────────────────────────────────────────────────────
+-// Channels in this wasm memory that Blink's threads use themselves: host.mjs
+-// allocates them and the page serves them by watching their state words
+-// (KernelChannel.watch), the same protocol as a WASI guest's channel. A
+-// call skips emscripten's proxy to host.mjs's thread and its two messages
+-// (getppid in Node: ~110 us -> ~10 us). The process's own calls only (`as` 0);
+-// when all are busy or the page closed them, shiro_ksys's pool as before.
+-#define SHIRO_DCH_MAX 8
++// Each Blink thread's own kernel channel: a small SharedArrayBuffer the page
++// made and serves by watching its state word (KernelChannel.watch), the same
++// protocol as a WASI guest's channel. host.mjs hands one to each thread's
++// Worker before the thread runs (shiro-kernel.js: shiro_dch_*), so a call
++// skips emscripten's proxy to host.mjs's thread and its two messages
++// (getppid in Node: ~120 us -> ~5-10 us), and the page never holds this
++// process's wasm memory (patch 0065's channels lived in it, which kept a
++// finished process's memory until the page's next GC). The process's own
++// calls only (`as` 0); a thread without one uses shiro_ksys's pool.
+ #include <emscripten/threading.h>
+ void blink_shiro_signal(int);
+-static u8 *g_dch[SHIRO_DCH_MAX];
+-static _Atomic(int) g_dch_busy[SHIRO_DCH_MAX];
+-static int g_dch_n, g_dch_size;
+-static _Atomic(bool) g_dch_dead, g_dch_dying;
+-
+-EMSCRIPTEN_KEEPALIVE void blink_shiro_direct(u8 *base, int n, int stride, int size) {
+-  int i;
+-  if (n > SHIRO_DCH_MAX) n = SHIRO_DCH_MAX;
+-  for (i = 0; i < n; ++i) g_dch[i] = base + i * stride;
+-  g_dch_size = size;
+-  g_dch_n = n;
+-}
++extern int shiro_dch_size(void);
++extern int shiro_dch_post(int nr, const int *args, const void *data, int inlen);
++extern int shiro_dch_state(void);
++extern int shiro_dch_cas(int old, int now);
++extern void shiro_dch_wait(int val, int ms);
++extern int shiro_dch_finish(int *args, void *data, int outcap, int *sig);
++static _Thread_local bool t_dch_dead;
++static _Atomic(bool) g_dch_dying;
+ 
+ extern void shiro_kick(void);  // host.mjs: the page interrupts our blocking calls
+ 
+-// a signal was queued for one of our threads (ShiroSignalSystem): threads
+-// waiting on a direct channel look whether it's theirs
++// a signal was queued for one of our threads (ShiroSignalSystem): a thread
++// waiting on its channel looks every few ms (it can't be woken from here:
++// its channel isn't in this memory)
+ void ShiroDirectWake(void) {
+-  int i;
+-  for (i = 0; i < g_dch_n; ++i) emscripten_futex_wake(g_dch[i], INT_MAX);
+ }
+ 
+ // the guest's process is ending (ShiroQuiesce): calls waiting on a direct
+ // channel give up, as host.mjs answers the pool's with EINTR
+ static void ShiroDirectDying(void) {
+-  int i;
+   atomic_store(&g_dch_dying, true);
+-  for (i = 0; i < g_dch_n; ++i) emscripten_futex_wake(g_dch[i], INT_MAX);
+ }
+ 
+-// One call on a free direct channel: false if there is none (or they're
+-// closed). Sets *r, args[0] (the high word) and *sig as the channel does.
++// One call on this thread's channel: false if it has none (or it's closed).
++// Sets *r, args[0] (the high word) and *sig as the channel does.
+ static bool ShiroDirectCall(int nr, int args[12], void *data, int inlen,
+                             int outcap, int *r, int *sig) {
+-  int i, k = -1, st;
+-  i32 *ch;
+-  _Atomic(int) *w;
++  int size;
+   double end;
+-  if (!g_dch_n || atomic_load(&g_dch_dead) || inlen > g_dch_size || outcap > g_dch_size) return false;
+-  for (i = 0; i < g_dch_n; ++i) {
+-    int z = 0;
+-    if (atomic_compare_exchange_strong(&g_dch_busy[i], &z, 1)) { k = i; break; }
+-  }
+-  if (k < 0) return false;
+-  ch = (i32 *)g_dch[k];
+-  w = (_Atomic(int) *)ch;
+-  if (inlen) memcpy(g_dch[k] + 64, data, inlen);
+-  ch[1] = nr;
+-  for (i = 0; i < 12; ++i) ch[4 + i] = args[i];
+-  st = 0;
+-  if (!atomic_compare_exchange_strong(w, &st, 3)) {  // STATE_DEAD: the page closed them
+-    atomic_store(&g_dch_dead, true);
+-    atomic_store(&g_dch_busy[k], 0);
++  if (t_dch_dead || !(size = shiro_dch_size()) || inlen > size || outcap > size) return false;
++  if (!shiro_dch_post(nr, args, data, inlen)) {  // the page closed it
++    t_dch_dead = true;
+     return false;
+   }
+-  emscripten_futex_wake((void *)w, INT_MAX);  // the page's watch() waits on it
+   // spin briefly (no wake-up needed for a quick reply), then sleep
+   end = emscripten_get_now() + 0.1;
+-  while (atomic_load(w) == 3 && emscripten_get_now() < end) {}
+-  st = 3;
+-  if (atomic_compare_exchange_strong(w, &st, 1)) {
+-    while (atomic_load(w) == 1) {
++  while (shiro_dch_state() == 3 && emscripten_get_now() < end) {}
++  if (shiro_dch_cas(3, 1)) {
++    while (shiro_dch_state() == 1) {
+       if (atomic_load(&g_dch_dying)) {  // abandoned: the channel stays busy
++        t_dch_dead = true;
+         *r = -EINTR_LINUX, args[0] = -1, *sig = 0;
+         return true;
+       }
+@@ -199,24 +179,18 @@ static bool ShiroDirectCall(int nr, int args[12], void *data, int inlen,
+       // interrupted it). Ask the page to interrupt it, until it ends.
+       if (g_machine && (g_machine->signals & ~g_machine->sigmask)) {
+         shiro_kick();
+-        emscripten_futex_wait((void *)w, 1, 5);
++        shiro_dch_wait(1, 5);
+       } else {
+-        emscripten_futex_wait((void *)w, 1, 100);  // ShiroDirectWake ends it early
++        shiro_dch_wait(1, 10);
+       }
+     }
+   }
+-  if (atomic_load(w) == 4) {  // closed while we waited: the process is gone
+-    atomic_store(&g_dch_dead, true);
++  if (shiro_dch_state() == 4) {  // closed while we waited: the process is gone
++    t_dch_dead = true;
+     *r = -EINTR_LINUX, args[0] = -1, *sig = 0;
+     return true;
+   }
+-  *r = ch[2];
+-  args[0] = ch[4];
+-  st = 2;
+-  atomic_compare_exchange_strong(w, &st, 0);
+-  *sig = atomic_exchange((_Atomic(int) *)&ch[3], 0);
+-  if (outcap) memcpy(data, g_dch[k] + 64, outcap);
+-  atomic_store(&g_dch_busy[k], 0);
++  *r = shiro_dch_finish(args, data, outcap, sig);
+   return true;
+ }
+ 
+-- 
+2.43.0
+

@@ -382,6 +382,10 @@ const haveEmptyat = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const forkmapsBin = join(out, 'forkmaps');
 const haveForkmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_hostaddr') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', forkmapsBin, 'forkmaps.c']);
+// Blink 0535: a SIGEV_THREAD_ID timer's signal for an exited thread is dropped
+const tiddropBin = join(out, 'tiddrop');
+const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_tiddrop') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', tiddropBin, 'tiddrop.c', '-lrt']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1186,6 +1190,12 @@ it.skipIf(!haveForkmaps)('a process with 984 private file mappings forks and exe
   const r = await run(shell, 'BLINK_WJIT=0 ./prog 984 100');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('ok 984 100\n');
 }, 180_000);
+
+it.skipIf(!haveTiddrop)('a SIGEV_THREAD_ID timer whose thread exited signals no one: the process lives on (SIGRTMIN killed it; 0521\'s test under load)', async () => {
+  const { shell } = await setup(readFileSync(tiddropBin));
+  const r = await run(shell, './prog; echo rc $?');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('alive\nrc 0\n');
+}, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));

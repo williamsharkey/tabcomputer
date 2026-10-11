@@ -149,3 +149,10 @@ it('turns GL on only with WebGL2, writing the vendor library once', async () => 
   expect(new Uint8Array(await fs.readFile(VENDOR_LIBRARY) as Uint8Array)).toEqual(lib);
   expect(fetches).toBe(1);
 });
+
+it('finds the windows a batch makes current (present.ts routes their frames)', async () => {
+  const { windowsMadeCurrent } = await import('@shiro/gl/present');
+  const { ab } = await import('./gl-encode');
+  const b = concat(batch(0, [['tcCreateContext', 1, 0, 2, 1, 0], ['tcMakeCurrent', 1, 0x400002, 0x400002, 0x100]]), batch(1, [['glClear', 1], ['tcMakeCurrent', 1, 0x400003, 0x400004, 0x100]]));
+  expect(windowsMadeCurrent(ab(b))).toEqual([0x400002, 0x400003, 0x400004]);
+});

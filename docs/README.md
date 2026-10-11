@@ -13,6 +13,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [NETWORKING.md](NETWORKING.md) | Kernel sockets, the WebSocket-to-TCP relay, its security model and how to run it |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
+| [RELEASES.md](RELEASES.md) | Each build shipped to tabcomputer.com: its commit, date and what changed |
 
 ## Scoreboards (measured)
 

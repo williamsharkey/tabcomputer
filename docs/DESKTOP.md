@@ -120,8 +120,10 @@ destroyed), and the next Terminal window adopts it again.
   - Terminal windows: every tab with its working directory, the exported
     variables it changed (secrets never stored), a program's title and its
     last 2000 lines of scrollback, then a dim "— restored after reload —".
-    A line still running at the reload is printed ("was running: …") and
-    typed on the prompt, not run. Known-safe servers (`RESTARTABLE`: `serve`,
+    A line still running at the reload is typed on the prompt, not run,
+    under that one note: as it was when short, else as `source
+    /tmp/restore-N.sh` (the script holds the line, `cat` shows it), and
+    `claude --continue` for a claude whose session wasn't found. Known-safe servers (`RESTARTABLE`: `serve`,
     `npm run dev`, `vite`, `python -m http.server`) start again, and Claude
     Code or Codex resume their own session (`agent-resume.ts`).
   - Files (its folder), Settings (its pane), Activity, About.

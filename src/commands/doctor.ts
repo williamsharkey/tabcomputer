@@ -141,7 +141,7 @@ async function relayChecks(ctx: CommandContext): Promise<Check[]> {
     if (!url) out.push({ label: 'relay token', status: 'OK', detail: `own relay ${own!.url} (no token URL)` });
     else {
       const r = await fetch(url, { method: 'POST', credentials: own ? 'omit' : 'same-origin', ...(cred && !own ? { headers: { Authorization: `Bearer ${cred}` } } : {}) });
-      const why = r.status === 401 ? ' (sign in to use the internet: Network in the menu bar)' : r.status === 404 ? ' (this server has no internet relay)' : '';
+      const why = r.status === 401 ? ' (sign in to use the internet: the globe icon in the menu bar)' : r.status === 404 ? ' (this server has no internet relay)' : '';
       out.push({ label: 'relay token', status: r.ok ? 'OK' : r.status === 401 ? 'WARN' : 'FAIL', detail: `${own ? `own relay ${own.url}: ` : ''}POST ${url} → ${r.status}${why}, ${ms(t0)}` });
     }
   } catch (e: any) {
@@ -190,12 +190,12 @@ async function signInChecks(ctx: CommandContext): Promise<Check[]> {
       ? { label: 'network', status: 'OK', detail: `signed in as ${r.login}` }
       : { label: 'network', status: 'WARN', detail: `a saved sign-in that GitHub doesn't accept (HTTP ${r.status || 'error'}): sign in again` });
   }
-  if (!ghTok) out.push({ label: 'github', status: 'INFO', detail: 'gh: not logged in (gh auth login)' });
+  if (!ghTok) out.push({ label: 'github', status: 'INFO', detail: 'gh: not logged in (the globe icon in the menu bar, or gh auth login)' });
   else {
     const r = await who(ghTok).catch(() => ({ status: 0 } as { login?: string; status: number }));
     out.push(r.login
       ? { label: 'github', status: 'OK', detail: `gh: logged in to github.com as ${r.login}` }
-      : { label: 'github', status: 'FAIL', detail: `gh: token rejected (HTTP ${r.status || 'error'}): gh auth login` });
+      : { label: 'github', status: 'FAIL', detail: `gh: token rejected (HTTP ${r.status || 'error'}): sign in again with the globe icon in the menu bar, or gh auth login` });
   }
   const { hasClaudeCredentials } = await import('../claude-signin');
   out.push(await hasClaudeCredentials(ctx.fs)

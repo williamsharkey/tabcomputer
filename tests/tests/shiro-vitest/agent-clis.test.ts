@@ -200,12 +200,35 @@ describe('claude --native', () => {
     expect(r.output).toContain('hello from c');
     // its search tools opt-in comes first (tabcomputer#42), then the user's arguments
     expect(r.output.replace(/\r\n/g, '\n')).toContain('arg1=--allowedTools=Grep,Glob\narg2=a\narg3=b c\n');
-    // no "Try the new fullscreen renderer?": accepting relaunched it with execve, which hung (tabcomputer#41)
-    expect(JSON.parse(await fs.readFile('/home/user/.claude/settings.json', 'utf8') as string).tui).toBe('default');
     // (the user's own --tools: nothing added, so the fixture's argv[1] is "fail")
     r = await run(shell, 'CLAUDE_NATIVE=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail --tools=Bash < /dev/null; echo "status=$?"');
     expect(r.output).toContain('status=7');
   }, 60_000);
+
+  // tabcomputer#40: like the npm build, no self-install copy of the 250 MB binary,
+  // updater or official-marketplace clone at start, unless the user exported one
+  it('launches with the updater, install checks and marketplace auto-install off', async () => {
+    const { fs, shell } = await createTestShell();
+    shell.commands.register(claudeCmd);
+    await fs.mkdir('/opt/n', { recursive: true });
+    await fs.writeFile('/opt/n/claude', readFileSync(resolve(__dirname, 'fixtures/x86/hello-musl')), { mode: 0o755 });
+    const lines: string[] = [];
+    const execute = shell.execute.bind(shell);
+    const spy = vi.spyOn(shell, 'execute').mockImplementation((line: string, ...rest: any[]) => {
+      if (line.includes('TABCOMPUTER_CLAUDE_BUILD=native')) { lines.push(line); return Promise.resolve(0); }
+      return (execute as any)(line, ...rest);
+    });
+    try {
+      await run(shell, 'CLAUDE_NATIVE_PATH=/opt/n/claude claude --native -p hi');
+      await run(shell, 'export DISABLE_AUTOUPDATER=0; CLAUDE_NATIVE_PATH=/opt/n/claude claude --native -p hi; unset DISABLE_AUTOUPDATER');
+    } finally { spy.mockRestore(); }
+    expect(lines).toHaveLength(2);
+    for (const k of ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']) {
+      expect(lines[0]).toContain(`${k}=1 `);
+    }
+    expect(lines[1]).not.toContain('DISABLE_AUTOUPDATER=1');
+    expect(lines[1]).toContain('DISABLE_INSTALLATION_CHECKS=1 ');
+  });
 });
 
 describe('claude install --native', () => {

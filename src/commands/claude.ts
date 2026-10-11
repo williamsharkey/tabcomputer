@@ -81,9 +81,7 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // allow rule older Shiro seeded, which current Claude Code warns about)
   try {
     const { ensureClaudeBootstrap } = await import('../claude-config');
-    // tui "default" when unset: accepting 2.1.296's "Try the new fullscreen renderer?"
-    // relaunches it with execve, which hangs under Blink from a threaded process (tabcomputer#41)
-    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user', defaultTui: 'default' });
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user' });
   } catch { /* settings are Claude's own business; never block the run */ }
   // JSC's JIT costs more than it saves under Blink: -p took 85 s without it
   // and 107 s with it (musl build, docs/COMPAT.md). Export BUN_JSC_useJIT=1 to keep it.

@@ -59,10 +59,35 @@ export function createCryptoModule(deps: CryptoDeps): any {
     return obj;
   };
 
+  /**
+   * Random bytes into `view`'s bytes [start, start + length): getRandomValues
+   * gives at most 65536 at a time (QuotaExceededError above), node's
+   * randomBytes/randomFill any number
+   */
+  const fillRandom = (view: ArrayBufferView | ArrayBuffer, start = 0, length?: number) => {
+    const bytes = view instanceof ArrayBuffer ? new Uint8Array(view) : new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const end = length === undefined ? bytes.length : start + length;
+    for (let i = start; i < end; i += 65536) crypto.getRandomValues(bytes.subarray(i, Math.min(i + 65536, end)));
+  };
+  /** randomFill's offset and size: in elements, checked as node checks them; returned in bytes */
+  const fillRange = (buf: any, offset?: number, size?: number): [number, number] => {
+    const el = buf?.BYTES_PER_ELEMENT || 1;
+    const total = buf instanceof ArrayBuffer ? buf.byteLength : buf?.byteLength;
+    if (typeof total !== 'number') throw new TypeError('The "buf" argument must be an instance of ArrayBuffer or ArrayBufferView');
+    const off = (offset ?? 0) * el;
+    if (!Number.isInteger(off) || off < 0 || off > total) throw new RangeError(`The value of "offset" is out of range. It must be >= 0 && <= ${total / el}. Received ${offset}`);
+    const len = size === undefined ? total - off : size * el;
+    if (!Number.isInteger(len) || len < 0 || off + len > total) throw new RangeError(`The value of "size" is out of range. It must be >= 0 && <= ${(total - off) / el}. Received ${size}`);
+    return [off, len];
+  };
+
   return {
     randomBytes: (n: number, cb?: Function) => {
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 2 ** 31 - 1) {
+        throw new RangeError(`The value of "size" is out of range. It must be >= 0 && <= ${2 ** 31 - 1}. Received ${n}`);
+      }
       const bytes = new Uint8Array(n);
-      crypto.getRandomValues(bytes);
+      fillRandom(bytes);
       Object.setPrototypeOf(bytes, FakeBuffer.prototype);
       if (cb) { setTimeout(() => cb(null, bytes), 0); return; }
       return bytes;
@@ -77,7 +102,31 @@ export function createCryptoModule(deps: CryptoDeps): any {
     randomUUID: () => crypto.randomUUID(),
     // (vite makes its dev server's WebSocket token with it)
     getRandomValues: <T extends ArrayBufferView>(a: T): T => crypto.getRandomValues(a as any) as T,
-    randomFillSync: (buf: Uint8Array) => { crypto.getRandomValues(buf); return buf; },
+    randomFillSync: <T extends ArrayBufferView | ArrayBuffer>(buf: T, offset?: number, size?: number): T => {
+      const [off, len] = fillRange(buf, offset, size);
+      fillRandom(buf, off, len);
+      return buf;
+    },
+    randomFill: (buf: any, ...rest: any[]) => {
+      const cb = rest.pop();
+      if (typeof cb !== 'function') throw new TypeError('The "callback" argument must be of type function');
+      const [off, len] = fillRange(buf, rest[0], rest[1]);
+      setTimeout(() => { fillRandom(buf, off, len); cb(null, buf); }, 0);
+    },
+    randomInt: (a: number, b?: any, cb?: Function) => {
+      // randomInt(max[, cb]) or randomInt(min, max[, cb]): an integer in [min, max), without modulo bias
+      if (typeof b === 'function') { cb = b; b = undefined; }
+      const [min, max] = b === undefined ? [0, a] : [a, b];
+      if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || max <= min || max - min > 2 ** 48) {
+        throw new RangeError(`The value of "max" is out of range. It must be greater than the value of "min" (${min}) and at most 2^48 above it. Received ${max}`);
+      }
+      const range = max - min, limit = 2 ** 48 - (2 ** 48 % range), six = new Uint8Array(6);
+      let x: number;
+      do { crypto.getRandomValues(six); x = six.reduce((n, v) => n * 256 + v, 0); } while (x >= limit);
+      const r = min + (x % range);
+      if (cb) { setTimeout(() => cb(null, r), 0); return; }
+      return r;
+    },
     timingSafeEqual: (a: Uint8Array, b: Uint8Array) => {
       if (a.length !== b.length) throw new RangeError('Input buffers must have the same byte length');
       let result = 0;

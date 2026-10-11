@@ -335,6 +335,19 @@ const haveMapthreads = readFileSync(resolve(__dirname, '../../../public/engines/
 const timerqueueBin = join(out, 'timerqueue');
 const haveTimerqueue = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_timerq') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', timerqueueBin, 'timerqueue.c', '-lrt']);
+// Blink 0522: /proc/self/maps marks shared and write-only mappings
+const mapspermBin = join(out, 'mapsperm');
+const haveMapsperm = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapsperm') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapspermBin, 'mapsperm.c']);
+// Blink 0523: a shared map of a file it may not write can't be made writable
+const maywriteBin = join(out, 'maywrite');
+const haveMaywrite = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_maywrite') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', maywriteBin, 'maywrite.c']);
+// Blink 0524/0525: fallocate is the kernel's; F_SEAL_WRITE on a writably mapped memfd is EBUSY
+const haveFallocate = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_fallocate');
+const memfdfallocBin = join(out, 'memfdfalloc');
+const haveMemfdfalloc = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sealbusy') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', memfdfallocBin, 'memfdfalloc.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1070,6 +1083,24 @@ it.skipIf(!haveTimerqueue)('a timer\'s signal held by its thread is queued once,
   expect(r.output.replace(/\r\n/g, '\n')).toBe('taken 1 overruns many queued behind 0 or 1\n');
 }, 60_000);
 
+it.skipIf(!haveMapsperm)('/proc/self/maps: a MAP_SHARED mapping is \'s\' and apart from a private neighbor, PROT_WRITE alone is "-w" (LTP mmap04)', async () => {
+  const { shell } = await setup(readFileSync(mapspermBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('---p ---s -w-p -wxs rw-s -w-p rw-p\n');
+}, 60_000);
+
+it.skipIf(!haveMaywrite)('mprotect(PROT_WRITE) of a shared map of a read-only fd or a write-sealed memfd is EACCES; a private map of it is fine (LTP memfd_create01)', async () => {
+  const { shell } = await setup(readFileSync(maywriteBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('unsealed 0 sealed 13 one page 13 read only 0 private 0 rdonly fd 13\n');
+}, 60_000);
+
+it.skipIf(!haveMemfdfalloc)('fallocate extends, keeps the size or punches zeros; memfd seals: F_SEAL_WRITE is EBUSY while mapped shared, F_SEAL_GROW refuses fallocate, F_SEAL_SHRINK an O_TRUNC reopen (LTP memfd_create01, fallocate*)', async () => {
+  const { shell } = await setup(readFileSync(memfdfallocBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('grow 0 100 keep 0 100 punch 0 0 100 no keep 95 bad 22 rdonly 9\nmapped 16 shrink 0 private 0 seals 14 grow 1 punch 1 trunc 1 size 8192\n');
+}, 60_000);
+
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));
   const r = await run(shell, './prog');
@@ -1334,7 +1365,7 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const { shell } = await setup(readFileSync(sockaddrsBin));
     const r = await run(shell, 'ln -s prog link; ./link');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('abstract bound 1 len 110 connect 1\nnetlink len 12 family 16\n' +
-      'exe /home/user/work/prog\nfallocate -1 EOPNOTSUPP\n');
+      `exe /home/user/work/prog\nfallocate ${haveFallocate ? '0 ok' : '-1 EOPNOTSUPP'}\n`);
   }, 60_000);
 
   // LTP nanosleep02; exit_group with threads parked in a futex, a sleep and a read (patch 0053)

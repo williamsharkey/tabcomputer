@@ -1135,7 +1135,9 @@ export class Kernel {
     }
     if (f instanceof MemFile) {
       const r = f.reopen(statusFlags);
-      if ((flags & A.O_TRUNC) && canWrite(flags)) await r.truncate(0);
+      // (F_SEAL_SHRINK refuses O_TRUNC: EPERM, LTP memfd_create01)
+      const t = (flags & A.O_TRUNC) && canWrite(flags) ? await r.truncate(0) : 0;
+      if (t < 0) { await r.close(); return t; }
       return r;
     }
     if (f instanceof PipeEnd || f instanceof FifoRdWr) {
@@ -2272,7 +2274,7 @@ export class Kernel {
           let initial: (() => Uint8Array | Promise<Uint8Array>) | undefined;
           let writeBack: ((b: Uint8Array) => void | Promise<void>) | undefined;
           let onRemote: ((sab: SharedArrayBuffer) => void) | undefined;
-          const kind = args[1] & ~A.SHMOBJ_EAGER;
+          const kind = args[1] & ~(A.SHMOBJ_EAGER | A.SHMOBJ_LOOKUP);
           if (kind & ~0xff) return -A.EINVAL;
           const f = kind === 0 ? proc.fds.get(args[0]) : undefined;
           if (kind === 0 && f instanceof MemFile) {
@@ -2326,6 +2328,7 @@ export class Kernel {
             key = `shm:${seg.id}`;
             size = seg.size;
           } else return -A.EINVAL;
+          if (args[1] & A.SHMOBJ_LOOKUP) return this.shmobj.idOf(key) ?? -A.ENOENT;
           const r = await this.shmobj.map(instance, key, size, initial, writeBack, { eager: !!(args[1] & A.SHMOBJ_EAGER), onRemote });
           if (typeof r === 'number') return r;
           if (data.length >= 4) new DataView(data.buffer, data.byteOffset, 4).setInt32(0, r.remote ? 1 : 0, true);
@@ -2688,6 +2691,48 @@ export class Kernel {
           if (!f) return -A.EBADF;
           if (!f.truncate) return -A.EINVAL;
           return await f.truncate(i64(args[1], args[2]));
+        }
+        case A.SYS_fallocate: {
+          // fd, mode, offset (lo, hi), len (lo, hi). In Linux's order: the
+          // arguments, the mode, a write fd, then the file's type. Space is
+          // never short, so it allocates nothing: mode 0 extends the file,
+          // KEEP_SIZE alone does nothing, PUNCH_HOLE and ZERO_RANGE write
+          // zeros (a memfd's seals refuse as for a write or a truncate).
+          const f = file(args[0]);
+          if (!f) return -A.EBADF;
+          const mode = args[1] >>> 0, off = i64(args[2], args[3]), len = i64(args[4], args[5]);
+          if (off < 0 || len <= 0) return -A.EINVAL;
+          if (mode & ~(A.FALLOC_FL_KEEP_SIZE | A.FALLOC_FL_PUNCH_HOLE | A.FALLOC_FL_ZERO_RANGE)) return -A.EOPNOTSUPP;
+          if ((mode & A.FALLOC_FL_PUNCH_HOLE) && !(mode & A.FALLOC_FL_KEEP_SIZE)) return -A.EOPNOTSUPP;
+          if ((mode & A.FALLOC_FL_PUNCH_HOLE) && (mode & A.FALLOC_FL_ZERO_RANGE)) return -A.EINVAL;
+          if ((f.flags & A.O_ACCMODE) === A.O_RDONLY) return -A.EBADF;
+          const st = await f.stat();
+          const type = st.mode & A.S_IFMT;
+          if (type === A.S_IFIFO) return -A.ESPIPE;
+          if (type === A.S_IFDIR) return -A.EISDIR;
+          if (type !== A.S_IFREG) return -A.ENODEV;
+          if (off + len > Number.MAX_SAFE_INTEGER) return -A.EFBIG;
+          if (!f.truncate || !f.pwrite) return -A.EOPNOTSUPP;
+          const end = off + len;
+          try {
+            if (mode & (A.FALLOC_FL_PUNCH_HOLE | A.FALLOC_FL_ZERO_RANGE)) {
+              const stop = mode & A.FALLOC_FL_KEEP_SIZE ? Math.min(end, st.size) : end;
+              const zeros = new Uint8Array(Math.min(Math.max(stop - off, 0), 1 << 20));
+              for (let p = off; p < stop;) {
+                const n = await f.pwrite(zeros.subarray(0, Math.min(zeros.length, stop - p)), p);
+                if (n < 0) return n;
+                p += n;
+              }
+              // (a punched hole past the end leaves the size alone; a memfd
+              // sealed against writes refuses even that)
+              if (stop <= off && (mode & A.FALLOC_FL_PUNCH_HOLE) && f instanceof MemFile && (f.seals & (A.F_SEAL_WRITE | A.F_SEAL_FUTURE_WRITE))) return -A.EPERM;
+              return 0;
+            }
+            if (mode & A.FALLOC_FL_KEEP_SIZE || end <= st.size) return 0;
+            return await f.truncate(end);
+          } catch {
+            return -A.ENOSPC;
+          }
         }
         case A.SYS_truncate: {
           const f = await this.open(proc, str(0, args[0]), A.O_WRONLY);

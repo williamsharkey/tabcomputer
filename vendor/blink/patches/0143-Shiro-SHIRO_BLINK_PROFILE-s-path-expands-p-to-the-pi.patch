@@ -1,0 +1,91 @@
+From 97e4e0b9cd231296f459f6f731e9af1260ecdde4 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 12:41:27 +0000
+Subject: [PATCH] Shiro: SHIRO_BLINK_PROFILE's path expands %p to the pid;
+ SHIRO_BLINK_PROFILE_TOP sets the address tables' rows
+
+Each child that inherits the variable (git's index-pack, dpkg-deb's xz,
+apt's methods) wrote the same file, and only the last process's profile
+survived. SHIRO_BLINK_PROFILE_TOP=n (default 40) lists n rows of the
+address tables, for bucketing them by library.
+---
+ blink/shiro.inc | 28 +++++++++++++++++++++++-----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 915efbe..d3b5cec 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -1243,6 +1243,8 @@ static i64 ShiroMsg(struct Machine *m, bool send, int fd, i64 msg, int flags) {
+ // every 5 s, at the first read of stdin and at exit.
+ bool g_shiro_prof;
+ static char g_shiro_prof_path[256];
++// SHIRO_BLINK_PROFILE_TOP: rows of the address tables (default 40)
++static int g_shiro_prof_top = 40;
+ static double g_shiro_prof_t0, g_shiro_prof_last, g_shiro_prof_jit;
+ static long g_shiro_prof_jitn;
+ static struct { long n; double ms, max; } g_shiro_prof_sys[512];
+@@ -1415,7 +1417,7 @@ static int ShiroProfDumpMore(char *b, int n, int cap, double now) {
+   qsort(idx, SHIRO_PROF_HOT, sizeof(idx[0]), ShiroProfByTime);
+   n += snprintf(b + n, cap - n, "\nwhere the time goes (samples at a compiled block's entry or an interpreted instruction)\n"
+                                  "address               samples  in jit  interpreted\n");
+-  for (i = 0; i < 40 && cap - n > 200; ++i) {
++  for (i = 0; i < g_shiro_prof_top && cap - n > 200; ++i) {
+     k = idx[i];
+     if (!g_shiro_prof_hot[k].jit && !g_shiro_prof_hot[k].interp) break;
+     n += snprintf(b + n, cap - n, "%#18" PRIx64 " %9u %7u %12" PRIu64 "\n", g_shiro_prof_hot[k].ip,
+@@ -1423,7 +1425,7 @@ static int ShiroProfDumpMore(char *b, int n, int cap, double now) {
+   }
+   qsort(idx, SHIRO_PROF_HOT, sizeof(idx[0]), ShiroProfByCount);
+   n += snprintf(b + n, cap - n, "\nmost interpreted addresses\naddress            instructions  opcode\n");
+-  for (i = 0; i < 40 && cap - n > 200; ++i) {
++  for (i = 0; i < g_shiro_prof_top && cap - n > 200; ++i) {
+     k = idx[i];
+     if (!g_shiro_prof_hot[k].n) break;
+     n += snprintf(b + n, cap - n, "%#18" PRIx64 " %12" PRIu64 "  %s\n", g_shiro_prof_hot[k].ip, g_shiro_prof_hot[k].n,
+@@ -1443,6 +1445,7 @@ static void ShiroProfInit(void) {
+   if (!e || !*e || strlen(e) >= sizeof(g_shiro_prof_path)) return;
+   strcpy(g_shiro_prof_path, e);
+   if ((e = getenv("SHIRO_BLINK_PROFILE_EVERY")) && atoi(e) > 0) g_shiro_prof_every = atoi(e);
++  if ((e = getenv("SHIRO_BLINK_PROFILE_TOP")) && atoi(e) > 0) g_shiro_prof_top = atoi(e) < SHIRO_PROF_HOT ? atoi(e) : SHIRO_PROF_HOT;
+   g_shiro_prof_t0 = g_shiro_prof_last = emscripten_get_now();
+   g_shiro_prof = true;
+ }
+@@ -1456,7 +1459,12 @@ void ShiroProfJit(double ms) {
+ 
+ static void ShiroProfDump(struct Machine *m, const char *why) {
+   char *b;
+-  int n = 0, i, k, fd, order[512], cap = 65536;
++  int n = 0, i, k, fd, order[512], cap = 65536, plen;
++  char path[sizeof(g_shiro_prof_path) + 16];
++  const char *e, *pp;
++  // (the address tables and SHIRO_BLINK_PROFILE_REGIONS' list, ~80 bytes a row)
++  cap += 2 * g_shiro_prof_top * 80;
++  if ((e = getenv("SHIRO_BLINK_PROFILE_REGIONS")) && atoi(e) > 0) cap += atoi(e) * 40;
+   double now = emscripten_get_now(), sys = 0;
+   if (!(b = (char *)malloc(cap))) return;
+   LOCK(&g_shiro_prof_lock);
+@@ -1483,8 +1491,18 @@ static void ShiroProfDump(struct Machine *m, const char *why) {
+   UNLOCK(&g_shiro_prof_lock);
+   n = ShiroProfDumpMore(b, n, cap, now);
+   g_shiro_prof = false;  // our own calls aren't counted
+-  fd = ShiroCall(m, 257, A12(-100, (int)strlen(g_shiro_prof_path), 01 | 0100 | 01000, 0644),
+-                 g_shiro_prof_path, strlen(g_shiro_prof_path), 0, false, false);
++  // %p: this process's pid (each child that inherits the variable writes
++  // its own file, rather than all of them the same one)
++  for (plen = 0, pp = g_shiro_prof_path; *pp && plen < (int)sizeof(path) - 12; ++pp) {
++    if (pp[0] == '%' && pp[1] == 'p') {
++      plen += snprintf(path + plen, sizeof(path) - plen, "%d", m->system->pid);
++      ++pp;
++    } else {
++      path[plen++] = *pp;
++    }
++  }
++  path[plen] = 0;
++  fd = ShiroCall(m, 257, A12(-100, plen, 01 | 0100 | 01000, 0644), path, plen, 0, false, false);
+   if (fd >= 0) {
+     ShiroCall(m, 1, A12(fd, n), b, n, 0, false, false);
+     KS(m, 3, A12(fd));
+-- 
+2.43.0
+

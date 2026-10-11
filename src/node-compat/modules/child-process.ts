@@ -5,6 +5,21 @@ import type { CommandContext } from '../../commands/index';
 import { parseShellArgs } from '../../shell-args';
 import { activeProfile } from '../../profile';
 import { writeClipboard } from '../../utils/clipboard';
+import type { Kernel } from '../../kernel/kernel';
+import { openKernelPty } from '../pty-page';
+import type { PtyHost } from '../../node-worker/hooks';
+
+/**
+ * child_process[PTY_ACCESS]: pseudo-terminals for this process's programs
+ * (Bun.Terminal in claude --vm, src/claude-vm/bun/terminal.ts). `open` is a
+ * kernel pty (-errno without one); `keepAlive` holds the process open until
+ * the returned function is called, as a ref()'d child does.
+ */
+export const PTY_ACCESS = Symbol.for('tabcomputer.pty');
+export interface PtyAccess {
+  open(opts: { cols: number; rows: number }): PtyHost | number;
+  keepAlive(): () => void;
+}
 
 /**
  * pipe/unpipe/pause/resume for a child's stdout or stderr stand-in, on its own
@@ -1113,6 +1128,20 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       return cpModule.spawn('node', nodeArgs, { ...o, stdio: o.stdio ?? (o.silent ? 'pipe' : ['pipe', 'inherit', 'inherit']) });
     },
   };
+  const ptyAccess: PtyAccess = {
+    open(opts) {
+      if (deps.guest) return deps.guest.openPty?.(opts) ?? -38; // ENOSYS
+      // (in the page: the page's kernel, when this is its filesystem; not imported: the guest's bundle has no kernel)
+      const k = (globalThis as { __tabcomputerKernel?: Kernel }).__tabcomputerKernel;
+      return k && k.fs === ctx.fs ? openKernelPty(k, opts) : -38;
+    },
+    keepAlive() {
+      let release: (() => void) | null = null;
+      pendingPromises.push(childWait(new Promise<void>((r) => { release = r; })));
+      return () => { const r = release; release = null; r?.(); };
+    },
+  };
+  Object.defineProperty(cpModule, PTY_ACCESS, { value: ptyAccess });
   // Add util.promisify.custom for exec/execFile to return { stdout, stderr }
   const customSym = Symbol.for('nodejs.util.promisify.custom');
   cpModule.exec[customSym] = (cmd: string, opts?: any) => {

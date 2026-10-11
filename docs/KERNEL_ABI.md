@@ -4,6 +4,15 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/vm-bun-apis)** — additive: a spawned session's controlling tty; `shiro_transform`.
+  - `SYS_spawn` (and `Kernel.spawn`) take `ctty: N` with `setsid`: the child's
+    fd N, a pty, becomes the new session's controlling terminal with the
+    child's group in the foreground (login_tty; Bun.spawn's `terminal`).
+  - `shiro_transform` 1040 `(len)`: data in, JSON `{ code, loader }` (js, jsx,
+    ts, tsx); data out, JSON `{ code }` or `{ errors: [{ message, line,
+    column }] }`; returns its length. The page's esbuild, for a guest that
+    needs it synchronously (registered by node-worker/host.ts).
+
 - **2026-10-11 (unix/perf-kernel)** — additive: per-socket SO_SNDBUF / SO_RCVBUF (KSocket: AF_UNIX and loopback/relay TCP).
   - setsockopt(SO_SNDBUF, v) sets max(min(v, wmem_max) * 2, 4608), as Linux
     does; SO_RCVBUF the same with rmem_max and 2304; SO_SNDBUFFORCE (32) and

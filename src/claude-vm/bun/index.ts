@@ -12,10 +12,13 @@ import { YAML, TOML } from './formats';
 import { zstdDecompressSync, zstdDecompress } from './zstd';
 import { which } from './which';
 import { sleepSync } from './sleep';
-import { spawn, BunFile, stdinOf, type SpawnEnv, type SpawnOptions } from './spawn';
+import { spawn, BunFile, stdinOf, terminalOf, type SpawnEnv, type SpawnOptions } from './spawn';
 import { CellSegmenter } from './cell-segmenter';
 import { serve } from './serve';
 import { listen, connect } from './sockets';
+import { ensureSelfExec } from './self-exec';
+import { imageClass } from './image';
+import { transpilerClass, type SyncTransform } from './transpiler';
 
 export interface BunEnv extends SpawnEnv {
   /** Bun.version, Bun.main */
@@ -24,6 +27,8 @@ export interface BunEnv extends SpawnEnv {
   /** The process's net and http, for Bun.listen/connect and Bun.serve */
   net?: any;
   http?: any;
+  /** TypeScript/JSX compiled synchronously by the page (node as a kernel guest), for Bun.Transpiler */
+  transform?: SyncTransform;
   /** The extracted bundle's embedded assets by path: Bun's loader number (bun-graph.ts BunLoader) */
   assets?: Record<string, number>;
 }
@@ -55,6 +60,9 @@ export function createBun(env: BunEnv): Record<string, unknown> {
   const toBuffer = (b: Uint8Array) => (env.Buffer ? env.Buffer.from(b.buffer, b.byteOffset, b.byteLength) : b);
   const hash: any = (data: unknown) => crc32(data); // (Bun's default is wyhash; nothing here calls it bare)
   hash.crc32 = crc32;
+  // Claude Code runs itself again through process.execPath: this launcher, not node (self-exec.ts)
+  const self = env.main ? ensureSelfExec(env.fs, env.main) : null;
+  if (self) { try { env.process.execPath = self; } catch { /* read-only: left as node's */ } }
   return {
     version: env.version ?? '1.3.0',
     main: env.main ?? '',
@@ -70,6 +78,7 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     sleepSync,
     sleep: (ms: number | Date) => new Promise((r) => setTimeout(r, ms instanceof Date ? ms.getTime() - Date.now() : ms)),
     spawn: (cmd: string[] | SpawnOptions, opts?: SpawnOptions) => spawn(env, cmd, opts),
+    Terminal: terminalOf(env),
     file: (target: string | number | URL, o?: { type?: string }) => new BunFile(env, target, o?.type),
     get stdin() { return stdinOf(env); },
     serve: (opts: any) => serve(env, opts),
@@ -79,8 +88,21 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     unsafe: { setJITPolicy() {} },
     generateHeapSnapshot: () => ({}),
     env: env.process.env,
-    // Anthropic's Bun build: the renderer's cell segmenter; the rest are optional there
-    ant: { CellSegmenter, memoryPressureLevel: () => 0, setDumpable() {} },
+    Image: imageClass(toBuffer),
+    Transpiler: transpilerClass(env.transform),
+    // `claude gateway`'s Postgres: not here (Bun's own client, wire protocol and all); a clear refusal
+    SQL: class SQL {
+      constructor() {
+        throw Object.assign(new Error('claude gateway needs a Postgres client (Bun.SQL), which claude --vm does not have; run it with claude --x86 gateway'), { code: 'ERR_POSTGRES_UNAVAILABLE' });
+      }
+    },
+    // Left out, so Claude Code takes its own path: JSONL.parseChunk (it splits lines itself),
+    // FetchSession (mTLS through agents), WebView (`'WebView' in Bun`), and ant.getPeerPid/
+    // getPeerUid (sockets here have no fd to ask; without getPeerPid it doesn't offer
+    // replies across socket directories, which need the peer's pid)
+    // Anthropic's Bun build: the renderer's cell segmenter; memory pressure (read on macOS
+    // only: 'normal'), and prctl(PR_SET_DUMPABLE, 0), which succeeds (nothing here dumps core)
+    ant: { CellSegmenter, memoryPressureLevel: () => 'normal', setDumpable: () => true },
     __require: bunRequire(env),
   };
 }

@@ -97,12 +97,16 @@ Counts are textual uses in the 45 MB of JS.
 | `Bun.file` | 1 | a socket path as a spawn's stdio | with `Bun.spawn` |
 | `Bun.sleepSync` | 1 | a short poll loop | Atomics.wait / busy wait |
 | `Bun.serve`, `Bun.listen`, `Bun.connect` | 4, 2, 2 | local servers (sign-in callback, previews), proxies, reachability probes | onto `http`/`net`; check which matter |
-| `Bun.Terminal` | 2 | background tasks in a pty | it already falls back ("Bun.Terminal unavailable (running under Node?)") |
+| `Bun.Terminal`, `Bun.spawn({ terminal })` | 2 | background sessions (`claude --bg`, `claude agents`): each runs under a pty host (`claude --bg-pty-host SOCK COLS ROWS -- CMD...`) that makes a terminal, starts Claude on it, and serves it to clients over a Unix socket | kernel ptys (`terminal.ts`) |
 | `Bun.version`, `.main`, `.isStandaloneExecutable` | 1 each | runtime checks | values |
 | `Bun.unsafe.setJITPolicy`, `Bun.gc`, `Bun.generateHeapSnapshot` | 4, 1, 1 | JIT hints, diagnostics | no-ops |
-| `Bun.JSONL?.parseChunk`, `Bun.FetchSession` | 1, 1 | optional (`?.`, `typeof` checks) | leave undefined |
-| `Bun.Image`, `Bun.WebView`, `Bun.SQL`, `Bun.Transpiler` | 2, 1, 1, 1 | images, a browser view, `claude gateway`, TS config files | later, or throw |
-| `Bun.ant.getPeerPid/getPeerUid/memoryPressureLevel/setDumpable` | 1 each | Anthropic's Bun fork: sockets' peers, memory pressure | optional; check each call site |
+| `Bun.JSONL?.parseChunk`, `Bun.FetchSession` | 1, 1 | transcript reading; mTLS fetch sessions | left undefined: optional (`?.`, `typeof` checks); Claude Code splits lines itself and uses agents |
+| `Bun.Image` | 2 | shrinking images before sending them (the Read tool, pasted images, clipboard BMPs, upload previews), sharp-like | `image.ts` |
+| `Bun.WebView` | 1 | `Bun.WebView.closeAll()` behind `'WebView' in Bun` | left undefined (the browser tool that opens one isn't in this build) |
+| `Bun.SQL` | 1 | `claude gateway`'s Postgres | refuses with what to do instead (`claude --x86 gateway`) |
+| `Bun.Transpiler` | 1 | a mod's hooks module in TypeScript or JSX (`transformSync`, classic `@jsx h` pragmas) | `transpiler.ts` |
+| `Bun.ant.getPeerPid/getPeerUid` | 1, 1 | the daemon's socket peers (from a socket's `_handle.fd`) | left undefined: node-compat's sockets have no fd, so the lookups are skipped (uid check: allowed; replies across socket directories: not offered) |
+| `Bun.ant.memoryPressureLevel`, `.setDumpable` | 1, 1 | low-memory check (macOS only), prctl(PR_SET_DUMPABLE, 0) | `'normal'`; `true` |
 | `bun:ffi` | 7 | dlopen of libc/libSystem/ntdll for ttyname, openat, login_tty… | every use is in try/catch with a fallback: a module that throws |
 | `bun:jsc` | 2 | `edenGC()`, `heapStats()` | optional: no-ops |
 
@@ -130,6 +134,10 @@ a module, tested against what Bun 1.4.2 returns for the same calls
 | `which.ts`, `sleep.ts` | `which`, `sleepSync` | PATH on the process's fs (a regular file counts: the tab's files rarely carry execute bits); Atomics.wait, or a spin on the page's main thread |
 | `spawn.ts` | `spawn`, `file`, `stdin` | child_process: Bun's stdio defaults, web streams, FileSink stdin, `exited`/`exitCode`/`signalCode`/`kill`/`onExit`, ENOENT thrown at once, `Bun.file(fd\|path)` as stdio |
 | `serve.ts` | `serve` | the process's `http`: `fetch(req, server)` and `routes` (exact, `:param`, `*`, per method), `error()`, a thrown handler a 500; `port`, `url`, `stop()` (a promise), `reload`, `fetch` without the network, `requestIP` |
+| `terminal.ts` | `Terminal`, `spawn({ terminal })` | a kernel pty from the process's `child_process` (node-worker/pty.ts as a kernel guest: /dev/ptmx and /dev/pts/N through syscalls; node-compat/pty-page.ts in the page). Options cols/rows/data/exit; `write` (bytes taken), `resize`, `setRawMode`, the termios flags, `ref`/`unref`, `close` (then `exit`), `await using`. A program starts in a session of its own with the slave as fds 0-2 and its controlling tty (the kernel's `ctty` spawn option), so ^C written to the terminal is SIGINT to it; its stdio on the Subprocess are null and `proc.terminal` is the terminal. The pty stays open after its programs exit, until `close()`, as Bun's |
+| `image.ts` | `Image` | size and format from the file's header (PNG, JPEG, GIF, WebP, BMP); resize (inside, fill, cover), rotate, jpeg/png/webp as one encode by the browser (createImageBitmap and OffscreenCanvas, in the page and the node worker); the error codes Claude Code tells apart (`ERR_IMAGE_UNKNOWN_FORMAT`, `_DECODE_FAILED`, `_TOO_MANY_PIXELS`, `_FORMAT_UNSUPPORTED`) |
+| `transpiler.ts` | `Transpiler` | as a kernel guest, the page's esbuild while the guest waits (`SYS_shiro_transform`, node-worker/host.ts); in the page, node-compat's own type stripping and JSX (which miss some syntax), with the pragmas' factory |
+| `self-exec.ts` | `process.execPath` | Claude Code runs itself again through its execPath (the pty host, the daemon, `/restart`, `claude plugin test`): `claude` beside vm-main.mjs, a `#!/usr/bin/env node` script that imports the launcher, padded past 64 KiB (Claude Code takes a smaller file there for an npm stub) |
 | `sockets.ts` | `listen`, `connect` | the process's `net`: Bun's handlers (open, data as a Buffer, drain, end, close, error, timeout, connectError), `write` returning the bytes taken, `readyState`; a refused connect rejects with "Failed to connect" and the system's code. On node-compat a listener's port is known when `listen`/`serve` returns, as in Bun |
 
 Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-clis'.
@@ -229,5 +237,10 @@ API), a Bash tool call, and the session resumed after a reload.
 
 - The page's memory: ~1.2 GB renderer RSS at the prompt.
 - Sign-in against claude.ai (the OAuth callback server runs on
-  `Bun.serve`; the browser's redirect to it is untried), background tasks (`Bun.Terminal`), the
+  `Bun.serve`; the browser's redirect to it is untried), the
   voice and clipboard addons (they fail to load, as Claude Code allows).
+- Background sessions in a real tab: their pieces work in the tests (the pty
+  host's terminal, its Unix socket, Claude Code started again through
+  execPath), the whole chain (`claude --bg`, its daemon, attaching) is
+  untried, and Claude Code only offers it when its agents gate is on.
+- `claude gateway` (Postgres through `Bun.SQL`) runs only under `--x86`.

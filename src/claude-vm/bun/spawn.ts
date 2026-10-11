@@ -8,6 +8,7 @@
  * a Response, a ReadableStream), written to the child and closed.
  */
 import { which } from './which';
+import { SIGNALS, spawnOnTerminal, terminalClass, type TerminalOptions } from './terminal';
 
 export interface SpawnEnv {
   fs: any;
@@ -16,7 +17,6 @@ export interface SpawnEnv {
   Buffer?: any;
 }
 
-const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGUSR1: 10, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15 };
 
 /** Bun.file(path | fd): a lazily read file */
 export class BunFile {
@@ -99,6 +99,8 @@ export interface SpawnOptions {
   argv0?: string;
   onExit?: (proc: any, exitCode: number | null, signalCode: number | null, error?: Error) => void;
   detached?: boolean;
+  /** A Bun.Terminal, or its options for a new one: the program's stdio and controlling tty (terminal.ts) */
+  terminal?: any;
 }
 
 export function spawn(env: SpawnEnv, cmdOrOpts: string[] | SpawnOptions, maybeOpts: SpawnOptions = {}): any {
@@ -106,8 +108,18 @@ export function spawn(env: SpawnEnv, cmdOrOpts: string[] | SpawnOptions, maybeOp
   const argv = (opts.cmd ?? []).map(String);
   if (!argv.length) throw new TypeError('Bun.spawn: cmd must not be empty');
   // a program that isn't there fails at once, as Bun's posix_spawn does
-  const found = argv[0].includes('/') ? (() => { try { return env.fs.statSync(argv[0]).isFile(); } catch { return false; } })()
-    : which(env.fs, argv[0], { PATH: opts.env?.PATH ?? env.process.env?.PATH, cwd: opts.cwd }, { cwd: env.process.cwd() }) !== null;
+  const found = argv[0].includes('/') ? (() => { try { return env.fs.statSync(argv[0]).isFile() ? argv[0] : null; } catch { return null; } })()
+    : which(env.fs, argv[0], { PATH: opts.env?.PATH ?? env.process.env?.PATH, cwd: opts.cwd }, { cwd: env.process.cwd() });
+  const childEnv = opts.env ? Object.fromEntries(Object.entries(opts.env).filter(([, v]) => v !== undefined)) as Record<string, string> : env.process.env;
+  // (on a terminal the kernel finds the program: a builtin needs no file)
+  if (opts.terminal) {
+    const Terminal = terminalOf(env);
+    const terminal = opts.terminal instanceof Terminal ? opts.terminal : new Terminal(opts.terminal as TerminalOptions);
+    return spawnOnTerminal(env, terminal, {
+      path: found ?? argv[0], argv: opts.argv0 ? [opts.argv0, ...argv.slice(1)] : argv,
+      cwd: opts.cwd ?? env.process.cwd(), env: childEnv, onExit: opts.onExit,
+    });
+  }
   if (!found) {
     throw argv[0].includes('/')
       ? Object.assign(new Error(`ENOENT: no such file or directory, posix_spawn '${argv[0]}'`), { code: 'ENOENT', errno: -2, syscall: 'posix_spawn', path: argv[0] })
@@ -117,7 +129,7 @@ export function spawn(env: SpawnEnv, cmdOrOpts: string[] | SpawnOptions, maybeOp
   const [i, o, e] = [0, 1, 2].map((k) => stdioOf(env, opts.stdio?.[k] ?? (k === 0 ? opts.stdin : k === 1 ? opts.stdout : opts.stderr), k as 0 | 1 | 2, opened));
   const child = env.childProcess.spawn(argv[0], argv.slice(1), {
     cwd: opts.cwd ?? env.process.cwd(),
-    env: opts.env ? Object.fromEntries(Object.entries(opts.env).filter(([, v]) => v !== undefined)) : env.process.env,
+    env: childEnv,
     stdio: [i.node, o.node, e.node],
     ...(opts.argv0 ? { argv0: opts.argv0 } : {}),
     ...(opts.detached ? { detached: true } : {}),
@@ -182,6 +194,13 @@ export function spawn(env: SpawnEnv, cmdOrOpts: string[] | SpawnOptions, maybeOp
   child.on('exit', (code: number | null, sig: string | null) => done(code, sig));
   child.on('error', (err: Error) => done(code127(err), null, err));
   return proc;
+}
+/** One Terminal class per process's Bun (instanceof works across its calls) */
+const terminals = new WeakMap<SpawnEnv, ReturnType<typeof terminalClass>>();
+export function terminalOf(env: SpawnEnv): ReturnType<typeof terminalClass> {
+  let T = terminals.get(env);
+  if (!T) { T = terminalClass(env); terminals.set(env, T); }
+  return T;
 }
 const code127 = (err: any) => (err?.code === 'ENOENT' ? 127 : 1);
 

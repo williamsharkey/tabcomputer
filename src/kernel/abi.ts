@@ -226,6 +226,12 @@ export const SYS_shiro_shmdt = 1014;
 export const SYS_shiro_shmobj_map = 1020;
 export const SYS_shiro_shmobj_unmap = 1021;
 export const SYS_shiro_shmobj_published = 1022;
+/**
+ * Shiro: compile TypeScript/JSX with the page's esbuild, for a guest that needs it
+ * synchronously (Bun.Transpiler in claude --vm; node-worker/host.ts). Data in:
+ * JSON { code, loader }; out: JSON { code } or { errors: [{ message, line, column }] }.
+ */
+export const SYS_shiro_transform = 1040;
 /** shiro_shmobj_map kind flag: remote from the first map (no publish round) */
 export const SHMOBJ_EAGER = 0x100;
 /** shiro_shmobj_map kind flag: map nothing, return the id of the fd's object if it has one (else ENOENT) */
@@ -705,6 +711,8 @@ export const SOCKADDR_UN_MAX = 110;
 
 // ── ioctl (just the ones the core needs; termios is pty.ts) ─────────────────
 export const TCGETS = 0x5401;
+/** Make this tty the caller's controlling terminal */
+export const TIOCSCTTY = 0x540e;
 export const TIOCGWINSZ = 0x5413;
 export const FIONREAD = 0x541b;
 export const FIONBIO = 0x5421;

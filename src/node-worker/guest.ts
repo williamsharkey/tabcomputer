@@ -13,6 +13,7 @@ import { setShiroOrigin } from '../utils/shiro-origin';
 import { runChild, runChildSync } from './child';
 import { GuestNetStack, installGuestPorts } from './net';
 import { GuestTtyStdin } from './tty';
+import { openGuestPty } from './pty';
 import type { GuestIpc, NodeGuestHooks, ThreadEvents } from './hooks';
 import { WasiGuest, runSync, ProcExit } from '../wasi/wasi-guest';
 import { programFromStdin } from '../commands/jseval/node-args';
@@ -121,6 +122,18 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       busy: () => net.busy,
       ids: { pid: sys.getpid(), ppid: sys.getppid() },
       kill: (pid, sig) => sys.kill(pid, sig),
+      openPty: (o) => openGuestPty(sys, o),
+      transformSync(code, loader) {
+        const req = new TextEncoder().encode(JSON.stringify({ code, loader }));
+        if (req.length > sys.ch.data.length) throw new Error('Bun.Transpiler: the source is too large to compile here');
+        sys.ch.data.set(req);
+        const n = sys.ch.call(A.SYS_shiro_transform, req.length);
+        if (n < 0) throw new Error(`Bun.Transpiler: the page could not compile it (errno ${-n})`);
+        const r = JSON.parse(dec.decode(sys.ch.data.slice(0, n))) as { code?: string; errors?: { message: string; line?: number; column?: number }[] };
+        if (typeof r.code === 'string') return r.code;
+        const errors = (r.errors ?? []).map((e) => ({ message: e.message, ...(e.line !== undefined ? { position: { line: e.line, column: e.column ?? 0 } } : {}) }));
+        throw Object.assign(new Error(errors.map((e) => e.message).join('; ') || 'Bun.Transpiler: transform failed'), { errors });
+      },
       wasi: {
         call: (req) => {
           if (req.data) sys.ch.data.set(req.data);

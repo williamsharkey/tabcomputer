@@ -1,0 +1,108 @@
+From 9e00dfa36fff74734368b8bb046eda5876e08b23 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 02:53:33 +0000
+Subject: [PATCH] Shiro: a timer's signal is queued once, its later expiries
+ overruns; timer_settime and timer_delete drop it (Linux 6.13)
+
+---
+ blink/shiro.inc | 56 +++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index a8ca819..2389212 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -1925,6 +1925,8 @@ struct ShiroSigInfo {
+ };
+ static pthread_mutex_t_ g_shiro_sigq_lock = PTHREAD_MUTEX_INITIALIZER_;
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_timerq(void) { return 1; }
++
+ void ShiroQueueSiginfo(struct System *s, int sig, const int *w) {
+   int n = 0;
+   struct ShiroSigInfo *q, **pp;
+@@ -1932,7 +1934,23 @@ void ShiroQueueSiginfo(struct System *s, int sig, const int *w) {
+   q->sig = sig;
+   memcpy(q->info, w, 32);
+   LOCK(&g_shiro_sigq_lock);
+-  for (pp = (struct ShiroSigInfo **)&s->shiro_sigq; *pp; pp = &(*pp)->next) ++n;
++  for (pp = (struct ShiroSigInfo **)&s->shiro_sigq; *pp; pp = &(*pp)->next) {
++    // A timer's signal is queued once (Linux keeps one sigqueue entry per
++    // timer): while it waits here, the timer's next expiries are its
++    // overruns. The kernel counts it taken once handed over, so without this
++    // a thread that took it late (glibc's SIGEV_THREAD helper on a loaded
++    // machine) got one per expiry, long after the timer stopped
++    struct ShiroSigInfo *e = *pp;
++    i32 *ei = (i32 *)e->info;
++    if (e->sig == sig && w[2] == -2 /* SI_TIMER */ && ei[2] == -2 && ei[4] == w[4]) {
++      i64 o = (i64)ei[5] + 1 + w[5];
++      ei[5] = o > 0x7fffffff ? 0x7fffffff : (i32)o;  // (DELAYTIMER_MAX)
++      UNLOCK(&g_shiro_sigq_lock);
++      free(q);
++      return;
++    }
++    ++n;
++  }
+   if (n < 1024) {
+     *pp = q;
+     q = 0;
+@@ -1941,6 +1959,37 @@ void ShiroQueueSiginfo(struct System *s, int sig, const int *w) {
+   free(q);
+ }
+ 
++// timer_settime or timer_delete of timer `id`: its signal still queued here
++// goes (Linux 6.13 drops a re-armed or disarmed timer's pending signal; the
++// kernel drops its own), and the signal stops pending if none of it is left
++static void ShiroDropTimerSiginfo(struct Machine *m, int id) {
++  struct System *s = m->system;
++  struct ShiroSigInfo *q, **pp, *gone = 0;
++  u64 sigs = 0, left = 0;
++  struct Dll *e;
++  if (!s->shiro_sigq) return;
++  LOCK(&g_shiro_sigq_lock);
++  for (pp = (struct ShiroSigInfo **)&s->shiro_sigq; (q = *pp);) {
++    i32 *qi = (i32 *)q->info;
++    if (qi[2] == -2 /* SI_TIMER */ && qi[4] == id) {
++      *pp = q->next;
++      q->next = gone, gone = q;
++      sigs |= (u64)1 << (q->sig - 1);
++    } else {
++      left |= (u64)1 << (q->sig - 1);
++      pp = &q->next;
++    }
++  }
++  UNLOCK(&g_shiro_sigq_lock);
++  for (; (q = gone); free(q)) gone = q->next;
++  if (!(sigs &= ~left)) return;
++  LOCK(&s->machines_lock);
++  for (e = dll_first(s->machines); e; e = dll_next(s->machines, e)) {
++    atomic_fetch_and_explicit(&MACHINE_CONTAINER(e)->signals, ~sigs, memory_order_acq_rel);
++  }
++  UNLOCK(&s->machines_lock);
++}
++
+ // Takes the oldest siginfo queued for `sig` into `si` (32 bytes; none: just
+ // drops it). With more of that signal queued, it stays pending in `m`.
+ bool ShiroTakeSiginfo(struct Machine *m, int sig, u8 *si) {
+@@ -4327,6 +4376,7 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       u8 its[32];
+       if (CopyFromUserRead(m, its, c, 32) == -1) { r = -EFAULT_LINUX; break; }
+       r = ShiroCall(m, 223, A12((int)a, (int)b), its, 32, 32, false, false);
++      if (r >= 0) ShiroDropTimerSiginfo(m, (int)a);
+       if (r >= 0 && d && CopyToUserWrite(m, d, its, 32) == -1) r = -EFAULT_LINUX;
+       break;
+     }
+@@ -4337,7 +4387,9 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       break;
+     }
+     case 0x0E1: r = KS(m, 225, A12((int)a)); break;                   // timer_getoverrun
+-    case 0x0E2: r = KS(m, 226, A12((int)a)); break;                   // timer_delete
++    case 0x0E2:                                                       // timer_delete
++      if ((r = KS(m, 226, A12((int)a))) >= 0) ShiroDropTimerSiginfo(m, (int)a);
++      break;
+     case 0x092: case 0x093:                                           // sched_get_priority_max/min
+       r = a == 1 || a == 2 ? (nr == 0x092 ? 99 : 1) : a == 0 || a == 3 || a == 5 ? 0 : -EINVAL_LINUX;
+       break;
+-- 
+2.43.0
+

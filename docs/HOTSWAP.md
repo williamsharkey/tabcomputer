@@ -5,8 +5,8 @@ An agent in a tab (Claude Code, or you at the prompt) can change tabcomputer's o
 ## The workflow
 
 ```sh
-hotswap checkout                         # this build's own source, in ~/shiro
-cd ~/shiro
+hotswap checkout                         # this build's own source, in ~/tabcomputer
+cd ~/tabcomputer
 vi src/shell.ts                          # edit
 hotswap build src/shell.ts               # optional: build only and report
 hotswap apply src/shell.ts               # swap it in; reverts by itself in 90 s
@@ -17,7 +17,7 @@ hotswap diff                             # what you changed
 hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build's commit
 ```
 
-- `hotswap checkout [DIR] [--force]` downloads `assets/hotswap-source-<sha>.tar.gz` from the page's own origin and unpacks it into DIR (`~/shiro` by default). A production build emits that tarball (`hotswapSource` in `vite-plugin-hotswap.ts`, about 3 MB). It holds the build's `src/`, `profiles/`, the vitest suites and the root files a build needs, plus `.hotswap-source.json`: the commit, the build number, and each file's git blob id. So the checkout matches the running page exactly. A dev server has no tarball. A deploy keeps older builds' tarballs for a week, like other assets. A `git clone` of the whole repository would also work but is several hundred MB (`public/pkg`), too much for a tab.
+- `hotswap checkout [DIR] [--force]` downloads `assets/hotswap-source-<sha>.tar.gz` from the page's own origin and unpacks it into DIR (`~/tabcomputer` by default; when that doesn't exist and `~/shiro` holds a checkout from an older build's default, `hotswap checkout` says so and uses it). A production build emits that tarball (`hotswapSource` in `vite-plugin-hotswap.ts`, about 3 MB). It holds the build's `src/`, `profiles/`, the vitest suites and the root files a build needs, plus `.hotswap-source.json`: the commit, the build number, and each file's git blob id. So the checkout matches the running page exactly. A dev server has no tarball. A deploy keeps older builds' tarballs for a week, like other assets. A `git clone` of the whole repository would also work but is several hundred MB (`public/pkg`), too much for a tab.
 - `hotswap diff [--stat] [FILE...]` compares the checkout with its manifest: modified, added (under the source directories) and deleted files, as unified diffs against the copy of the tarball kept in `.hotswap/`.
 - `hotswap push BRANCH -m MSG [--repo OWNER/NAME]` commits those changes on top of the build's commit as a new branch, with GitHub's REST API (blobs, a tree on the commit's tree, a commit, a ref; `src/hotswap/source.ts`). It uses your own `gh auth login` token and the name and email in `~/.gitconfig`, and prints the branch URL. The default repository is williamsharkey/tabcomputer, where tabcomputer is developed.
   - A second push to the same branch from the same checkout adds a commit on top of the first.

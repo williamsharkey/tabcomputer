@@ -214,7 +214,7 @@ do (small modules compiled at run time that share the memory):
   bsf/bsr/tzcnt/lzcnt, push/pop, call/ret/jmp/jcc/indirect call and jmp,
   setcc/cmovcc, cqo/cltq, 8/16/32/64-bit forms (16-bit shifts, lea and
   movzx go to Blink), and the SSE moves Go's memmove/memclr use
-  (movups/movdqu/movsd, register movaps/movdqa, pxor/xorps). Memory goes through a 256-entry
+  (movups/movdqu/movsd, register movaps/movdqa, pxor/xorps). Memory goes through a 4096-entry
   per-thread translation cache (`Machine::wjr/wjw`, guest page → host
   page). Each instruction resolves its memory operands before it changes
   anything; a miss calls a helper that refills the cache and never faults,
@@ -941,6 +941,81 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
 
    Test: fixtures/x86/fpjit.c (special values through compiled loops,
    against native's hash).
+117. Patch 0134: a region takes in the whole of each small function it
+   calls directly, and that function's ret goes back inside the region.
+   - Small means at most 6 blocks of 64 instructions in all, reached
+     through direct branches, with its own calls taken in likewise down to
+     two levels. A function that doesn't fit, or that leaves through an
+     indirect jump, isn't taken in at all. Running part of a function in
+     its caller's region exits the region in the middle of it, which costs
+     more than calling it through WjCall (native Claude got ~20% slower
+     when callees were taken in block by block).
+   - A ret whose address is one of the region's return points (the
+     instruction after one of its calls) branches there.
+   - `BLINK_WJIT_OFF=0x200000` turns this off.
+   - `BLINK_WJIT_TLB=n` (1–4096) and `BLINK_TLB=n` (1–1024), powers of
+     two, use only the first n entries of the two caches below (patch
+     0137), for A/B of their sizes: 256 and 32 are the sizes before 0134.
+     On Chrome for Apple Silicon, startup got slower with 0134 while it
+     got faster on x86 (Node −11%, Chromium −6%).
+
+   The JIT's translation caches grow from 256 to 4096 pages, and
+   FindPageTableEntry's TLB from 32 to 1024. A hit is one compare: the
+   entry for an access's first page has to hold the page of its last
+   byte, which a page-crossing access's entry doesn't. The entry keeps
+   host page − guest page, so the host address is one add.
+
+   A system call no longer drops the JIT's caches. It only makes the
+   interpreter's TLB miss, so that the call's accesses lock their pages
+   (its own flag, `tlbsys`), and that TLB is dropped in O(1) by a
+   generation in its tags. Mapping changes still reset everything
+   (InvalidateSystem). With the bigger caches reset on every call,
+   getppid's round trip had doubled (bench/ab.mjs syscall_rt).
+
+   Under Blink in Node (fixtures/x86/calls.c):
+   - a 2-call chain: 65 → 24 ns (native 2.2 ns);
+   - a load+store loop: 7.4 → 6.4–7 ns.
+
+   Native Claude Code 2.1.296 `-p` to "Not logged in" under Node,
+   interleaved, 3 rounds: 51.4 s → 46.5 s (−9.4%). The caches alone
+   gave 48.7 s.
+
+   SHIRO_BLINK_PROFILE also writes:
+   - the guest instructions run in compiled code per region
+     (`SHIRO_BLINK_PROFILE_REGIONS=n` lists the top n);
+   - region entries by path: the interpreter, WjExecute's chain, WjCall;
+   - TLB resets.
+
+   Its 1-ms "where the time goes" samples count steps, not time. The clock
+   is read every 32 steps, and interpreted instructions outnumber
+   compiled-region entries by an order of magnitude, so they take most
+   samples. Use the per-thread "in compiled code ms" for the split, or a
+   V8 CPU profile of the workers. Native Claude's start runs about 5 G
+   guest instructions in compiled code; that is 55% of busy time, not the
+   samples' 30%.
+
+   Tests: fixtures/x86/callret.c (recursion, a callee called from two
+   sites, longjmp out of nested calls, a callee that rewrites its return
+   address, calls through pointers) and fixtures/x86/calls.c, against
+   native output, with the JIT on, with this off, and with the JIT off.
+   Profiling harness: tests/tests/shiro-vitest/claude-native-profile.test.ts
+   (opt-in, CLAUDE_NATIVE_BIN=...).
+118. Patch 0138: a compiled loop that spends its budget (1024 backward
+   jumps) sets `m->wjspin`, the region chain stops there, and Actor gives
+   the GIL to a waiting thread at once. Actor yields every kGilSlice (4096)
+   of its iterations, and one compiled entry counted as one iteration
+   though it can run 64 chained regions of 1024 loop iterations: a compiled
+   spin-wait held the GIL for up to seconds per handoff while the thread it
+   waited for couldn't run (Blender's startup hung with the JIT on).
+   fixtures/x86/spinhandoff.c: 38.6 → 6.7 ms per handoff (interpreted 1.5).
+119. Patch 0139: movd/movq and scalar SSE add/sub/mul/div/min/max/sqrt
+   use L_X/L_Y as scratch, not L_CX/L_CY. A flag consumer fused with its
+   producer (cmp + setcc/jcc/cmov) recomputes the condition from the
+   producer's operands in those locals, across instructions that write no
+   flags, so `cmp; movd; setne` read the wrong flags. Firefox's parser
+   took `++i` for a pre-decrement (GeneralParser::unaryExpr; gui's bisect
+   with BLINK_WJIT_BISECT, which 0136 made work above 2 GiB).
+   fixtures/x86/flagfuse.c: 10 shapes, 0 wrong (JIT on and off, native).
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each
@@ -999,6 +1074,15 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
      control while another instance was already pending was queued twice
      (siginfo values 100 101 101 102 102 …). The listening channel used to
      take each one at once and hid it.
+
+   A hosted fork child's calls get their reply even while it exits
+   (`KernelChannel.finish`): the instance that runs it goes on, and the
+   child's thread waits for its exit_group's reply to end itself. A
+   request that got no reply (an exiting process's) isn't served again:
+   the page served the child's exit_group back to back (over a million
+   times in 4 s), so the next children's `blink-hosted` and signals waited
+   behind it and kill() missed children in pause() (LTP pause01).
+   Test: fixtures/x86/zombiekill.c.
 
    Numbered from 0600 at the integration coordinator's request (the new
    unix/perf-blink owner renumbers). Tests: x86-engine's siginfo,

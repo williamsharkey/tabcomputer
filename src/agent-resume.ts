@@ -8,7 +8,7 @@
  * while it runs: a poller finds the session it writes, so `forTerminal` can
  * answer synchronously (a pagehide save can't wait):
  *   - claude (native and --npm): ~/.claude/projects/<cwd, non-alphanumerics as ->/<id>.jsonl,
- *     resumed with `claude [--npm|--native] [kept flags] --resume <id>`;
+ *     resumed with `claude [--npm|--native|--vm] [kept flags] --resume <id>`;
  *   - codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl,
  *     resumed with `codex resume [kept flags] <id>`.
  * A session file another tracked terminal already has is never handed out
@@ -62,7 +62,7 @@ export function simpleWords(line: string): string[] | null {
 
 // Flags kept on resume: name → takes a value (codex's from `codex resume --help`, 0.162.1)
 const CLAUDE_KEEP: Record<string, boolean> = {
-  '--npm': false, '--native': false, '--dangerously-skip-permissions': false, '--verbose': false,
+  '--npm': false, '--native': false, '--vm': false, '--dangerously-skip-permissions': false, '--verbose': false,
   '--model': true, '--permission-mode': true, '--add-dir': true, '--fallback-model': true,
 };
 const CLAUDE_ONE_SHOT = new Set(['-p', '--print', '-v', '--version', '-h', '--help']);
@@ -81,7 +81,7 @@ export function agentOf(line: string): { agent: AgentId; argv: string[] } | null
   const name = words[0]?.slice(words[0].lastIndexOf('/') + 1);
   const args = words.slice(1);
   if (name === 'claude') {
-    const first = args.find((a) => a !== '--npm' && a !== '--native');
+    const first = args.find((a) => a !== '--npm' && a !== '--native' && a !== '--vm');
     if (args.some((a) => CLAUDE_ONE_SHOT.has(a)) || (first && CLAUDE_SUBCOMMANDS.has(first))) return null;
     return { agent: 'claude', argv: words };
   }

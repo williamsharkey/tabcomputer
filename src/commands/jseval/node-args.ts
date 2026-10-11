@@ -5,7 +5,7 @@
  *
  * An option node has that does nothing here (memory limits, source maps,
  * experimental features) is taken quietly; one whose work isn't done here
- * (--inspect, --watch, --test) or that isn't known is taken with a warning,
+ * (--inspect, --watch) or that isn't known is taken with a warning,
  * never as the script's name.
  */
 
@@ -31,6 +31,11 @@ export interface NodeArgs {
   noDeprecation: boolean;
   /** --disable-warning: codes or types not printed */
   disableWarnings: string[];
+  /** --test: run test files (the script and what follows are their paths or globs; none: node's defaults) */
+  test: boolean;
+  /** --test-reporter (spec, tap) and --test-name-pattern */
+  testReporter?: string;
+  testNamePattern?: string;
   /** One line each for stderr: options taken but not acted on */
   warnings: string[];
   /** node's own usage error (exit 9) */
@@ -78,8 +83,8 @@ const QUIET_PREFIX = ['--experimental-', '--no-experimental-', '--harmony', '--t
 /** Options whose work isn't done here: taken, with a warning */
 const UNSUPPORTED = new Set([
   '--inspect', '--inspect-brk', '--inspect-wait', '--inspect-port', '--inspect-publish-uid', '--debug', '--debug-brk', '--debug-port',
-  '--watch', '--watch-path', '--watch-preserve-output', '--test', '--test-only', '--test-reporter', '--test-reporter-destination',
-  '--test-name-pattern', '--test-skip-pattern', '--test-concurrency', '--test-timeout', '--test-coverage', '--experimental-test-coverage',
+  '--watch', '--watch-path', '--watch-preserve-output', '--test-reporter-destination',
+  '--test-skip-pattern', '--test-concurrency', '--test-timeout', '--test-coverage', '--experimental-test-coverage',
   '--prof', '--prof-process', '--cpu-prof', '--cpu-prof-dir', '--cpu-prof-name', '--cpu-prof-interval', '--heap-prof',
   '--heap-prof-dir', '--heap-prof-name', '--heap-prof-interval', '--loader', '--experimental-loader', '--snapshot-blob',
   '--build-snapshot', '--run', '--experimental-sea-config', '--completion-bash', '--v8-options', '--policy-integrity',
@@ -108,7 +113,7 @@ export function splitNodeOptions(s: string): string[] {
 /** `args`: node's arguments; `nodeOptions`: $NODE_OPTIONS (its options apply first, and stay out of execArgv) */
 export function parseNodeArgs(args: string[], nodeOptions?: string): NodeArgs {
   const r: NodeArgs = {
-    execArgv: [], print: false, check: false, interactive: false, version: false, help: false, scriptArgs: [],
+    execArgv: [], print: false, check: false, interactive: false, version: false, help: false, test: false, scriptArgs: [],
     preload: [], envFiles: [], noWarnings: false, noDeprecation: false, disableWarnings: [], warnings: [],
   };
   const warned = new Set<string>();
@@ -144,6 +149,10 @@ export function parseNodeArgs(args: string[], nodeOptions?: string): NodeArgs {
       case '--no-warnings': r.noWarnings = true; return used;
       case '--no-deprecation': r.noDeprecation = true; return used;
       case '--disable-warning': r.disableWarnings.push(value!); return used;
+      case '--test': r.test = true; return used;
+      case '--test-reporter': r.testReporter = value; return used;
+      case '--test-name-pattern': r.testNamePattern = value; return used;
+      case '--test-only': return used;
     }
     if (UNSUPPORTED.has(name) || UNSUPPORTED.has(base) || /^--(inspect|debug)(-|$)/.test(name)) { warn(name); return used; }
     if (QUIET.has(name) || QUIET.has(base) || QUIET_PREFIX.some((p) => name.startsWith(p))) return used;

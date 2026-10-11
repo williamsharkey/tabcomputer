@@ -265,7 +265,8 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   (`GLSurface.pixels()`, through the server's `glFrame` hook) and lays it
   over those pixels; frames themselves are never read back.
   A window made current before it can take a surface (not mapped yet) is
-  tried again with each batch and frame.
+  tried again with each batch and frame; pbuffers (whose XIDs the X server
+  never sees, tcCreatePbuffer) are not.
 - Fallback present: read the front FBO back into the window's pixmap, so
   Xshiro composes it like any drawing; asynchronously (a pixel-pack buffer
   and a fence), so the page doesn't wait for the GPU.
@@ -293,9 +294,20 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   qualifiers, renamed built-in functions, fragment outputs, and the
   compatibility built-ins mapped to `_tc_` attributes and uniforms. Every
   shader of the corpus in `tests/tests/shiro-vitest/fixtures/glsl` (Mesa
-  demos, glmark2, SuperTuxKart, OpenSCAD) compiles and links after it.
-  There is no type checker yet, so desktop-only implicit conversions are
-  still compile errors. The full front end below is the plan:
+  demos, glmark2, SuperTuxKart, OpenSCAD, Krita's canvas shaders) compiles
+  and links after it.
+- Implicit conversions (`src/gl/glsl/implicit.ts`) run on the result: a
+  preprocessor (as WebGL's compiler sees it), a parser, and a checker over
+  the declarations and the built-in functions, which wraps each int operand
+  where desktop GLSL converts to float (`float(2)`, `vec2(textureSize(s, 0))`).
+  It only inserts text, so line numbers hold; a conversion inside a macro
+  inlines that one use. Source it can't parse goes on unchanged. Krita's
+  shaders don't need it; Blender's and hand-written GL 2/3 apps' do.
+- `in`/`out` interface blocks between stages (Blender's generated shaders)
+  become one varying per member, `_tc_<Block>_<member>`, matching across
+  stages by name; `inst.member` and an anonymous block's bare members are
+  renamed (`flattenInterfaceBlocks`).
+- The rest of the full front end below is the plan:
 - Desktop GLSL 110–330 to GLSL ES 3.00, in `src/gl/glsl/`: preprocessor,
   parser, a type checker for the built-in function set, and a printer.
   The checker is there for what ES forbids and desktop GLSL ≥ 1.20 allows:
@@ -315,12 +327,34 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
 - Translated shaders are cached by source hash (IndexedDB), like Mesa's disk
   cache.
 
+### GL 3.3 core in the guest (stage 4 so far)
+
+`scripts/gl/probes/glcore.c` (gl-apps.mjs `--app glcore`) checks what
+Blender's GPU module needs first, in the page: a 3.3 core context from
+glXCreateContextAttribsARB, interface blocks, a std140 uniform block and its
+queries, an instanced draw with glVertexAttribDivisor, primitive restart,
+a texture buffer, glReadPixels. The uniform block queries (glGetActiveUniformBlockiv/Name,
+glGetActiveUniformsiv, glGetActiveUniformName, glGetUniformIndices) are
+answered in the guest from the program info it already fetches; a block
+member's location there is `-2 - block index`. GL_UNIFORM_OFFSET and the
+strides aren't sent (apps that lay out std140 themselves don't ask).
+
+Blender 3.4.1 (gui's catalog, Debian's) in the page: past the libraries
+(a kernel fast-path bug in symlink chains, fixed in src/filesystem.ts) and
+Python (its closure lacked libpython3.11-minimal/-stdlib, gui's manifest),
+it gets a 3.3 core context, reports "Renderer: tabcomputer WebGL2 (…)",
+compiles its shaders, creates its viewport textures, then its main thread
+spins at 100% CPU with no syscalls and no GL calls (25+ min). With
+`BLINK_WJIT=0` it doesn't: it goes on to the workbench shaders (texture
+buffers, and names with `__`, both handled now), so the spin looks like a
+Blink JIT problem (reported to perf-blink).
+
 ### GL 3.3 core gaps on WebGL2
 
 | Gap | Plan |
 |---|---|
 | Geometry shaders (Blender 3.4: wide lines, overlays) | Two passes. The vertex shader runs with transform feedback into a buffer (rasterizer discarded), copied to a texture. A generated vertex shader then runs the geometry shader's body per output vertex: `gl_VertexID` gives the primitive and the vertex k, it fetches the primitive's inputs with `texelFetch`, runs the body counting `EmitVertex()` and keeps the k-th vertex; strips become triangle lists by index; unemitted slots are culled. Needs a bounded `max_vertices` (Blender's are 4–6). Stage 4. |
-| Texture buffers (`samplerBuffer`) | A 2D texture 4096 wide fed from the buffer on the GPU (`PIXEL_UNPACK_BUFFER`) when it changed; `texelFetch(b, i)` rewritten to 2D coordinates. |
+| Texture buffers (`samplerBuffer`) | Done: a 2D texture 4096 wide, refilled from the buffer on the GPU (`PIXEL_UNPACK_BUFFER`) before a draw when the buffer's version changed; `texelFetch(b, i)` becomes `_tc_texelFetchBuffer(b, i)`, which reads `(i & 4095, i >> 12)`; `textureSize(b)` is the texture's area. TEXTURE_BUFFER data goes to WebGL through COPY_WRITE_BUFFER. |
 | `glPolygonMode(GL_LINE/POINT)` | Index buffer of edges/points built on the page (cached per buffer). |
 | `glDrawElementsBaseVertex`, `glDrawArrays` with `first` on client arrays | Re-point attributes by `baseVertex × stride`; the base-vertex extension when present. |
 | Persistent mapping (GL 4.4) | Not in 3.3; `glMapBufferRange` as above. |
@@ -393,7 +427,7 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | glxgears in Blink under Node, recording backend (guest and transport only) | 200–229 FPS |
 | glxinfo in Blink under Node | 0.7 s |
 | Round trip (glFinish) through the socket, Blink under Node | 2,964/s (337 µs) |
-| Bulk upload (glBufferSubData) | 210 MB/s |
+| Bulk upload (glBufferSubData) | 210 MB/s (300–321 MB/s since big arrays are sent from the caller's memory) |
 | Small calls (glVertex3f) | 0.43 M/s |
 | Frames rendered in 3 s without animation frames (a hidden tab) | 0 |
 | Neverball title screen in the page, 640×480: synchronous readback / async readback (3 runs each, alternating) | 6.4–7.2 / 7.9–8.5 frames/s (+20%) |
@@ -402,6 +436,33 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | Neverball in the page, 640×480: async readback / Worker with GL surfaces (3 runs each) | 8.7–9.2 / 8.7–9.4 frames/s |
 | Neverball in Blink under Node, recording backend (guest and transport only) | 24 FPS |
 | OpenSCAD 2021.01 (Blink 0119) PNG export: OpenCSG preview / full CGAL render | 3.8 s, 1,724 draws / 10.3 s (6.4 s CGAL) |
+| OpenSCAD 2021.01 GUI in the page (Ubuntu noble's, Qt 5.15 xcb_glx, 772×579 window): first preview / frames while the view is dragged (3 runs each) | ~4 s / 3.4–4.1 frames/s |
+| … per dragged frame: GL calls, bytes sent, executor time, guest waiting on replies, guest running | ~11,000 (≈5,000 glVertex3d), 2.0 MB (a 1.7 MB glTexImage2D of the whole window), ~50 ms, ~70 ms, ~190 ms |
+
+OpenSCAD's GUI is guest-bound: of ~260 ms per dragged frame, the guest runs
+~190 ms, and `SHIRO_BLINK_PROFILE` puts 92% of its main thread's samples in
+Blink's interpreter (instructions after a compiled block's exit, "not at a
+branch target"), so Blink's JIT coverage is the lever, not glshiro. Its
+queries (viewport, matrices, framebuffer binding, front face, scissor
+enable, framebuffer status: ~10 per frame) are answered from the
+executor's state; WebGL's checkFramebufferStatus waits for the GPU, so its
+answer is cached until a framebuffer's attachments or their images change
+(+8%, within noise). Qt re-specifies its whole window texture each frame:
+without MIT-SHM its xcb backing store still has a graphics buffer, and
+composeAndFlush binds it with `QPlatformGraphicsBufferHelper::lockAndBindToTexture`
+and no rect, which is a glTexImage2D of the whole window (Qt 5.15's design,
+not ours). In the guest that costs 9–15 ms of a ~210 ms frame at 772×579,
+and scales with the window (a 1920×1080 Qt GL window sends 8 MB per
+repaint). Most of it is the write: the kernel's AF_UNIX send buffer is
+256 KB, so 1.7 MB goes in ~7 handoffs to glshiro. The vendor library sends
+an array of 64 KB or more in a command too big for a batch straight from
+the caller's memory, and keeps that buffer between commands (it was a
+malloc, i.e. an mmap with fresh pages, each time): bulk upload in Blink
+under Node went from 230–275 to 300–321 MB/s (glbench, 3 runs each,
+alternating). Diagnostics:
+`TABCOMPUTER_GL_DEBUG=1` logs MakeCurrent, `=2` how 10 frames' time splits
+into reply waits and the swap throttle, `=3` each query; gl-apps.mjs
+`GL_OPS=1` counts commands per frame.
 
 The page numbers are SwiftShader's (a CPU renderer); a GPU only makes the
 WebGL2 side cheaper. With async readback the page's main thread is about 80%

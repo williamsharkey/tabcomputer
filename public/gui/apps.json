@@ -706,7 +706,7 @@
   },
   "blender": {
    "bin": "/usr/bin/blender",
-   "closureSize": 273280812,
+   "closureSize": 276247460,
    "description": "3D creation suite (OpenGL)",
    "dropped": [
     "gcc-12-base",
@@ -744,8 +744,7 @@
     "libabsl20220623",
     "fontconfig",
     "shared-mime-info",
-    "libwrap0",
-    "libnsl2"
+    "libwrap0"
    ],
    "icon": "gui/icons/blender.svg",
    "links": [
@@ -759,10 +758,34 @@
     ]
    ],
    "packages": [
-    "blender",
-    "zlib1g",
+    "libpython3.11-stdlib",
+    "libuuid1",
     "libc6",
     "libgcc-s1",
+    "libtirpc3",
+    "libtirpc-common",
+    "libgssapi-krb5-2",
+    "libkrb5support0",
+    "libkrb5-3",
+    "libssl3",
+    "libkeyutils1",
+    "libk5crypto3",
+    "libcom-err2",
+    "libtinfo6",
+    "libsqlite3-0",
+    "libreadline8",
+    "readline-common",
+    "libnsl2",
+    "libncursesw6",
+    "liblzma5",
+    "libffi8",
+    "libdb5.3",
+    "libcrypt1",
+    "libbz2-1.0",
+    "media-types",
+    "libpython3.11-minimal",
+    "blender",
+    "zlib1g",
     "libzstd1",
     "libxxf86vm1",
     "libxext6",
@@ -774,7 +797,6 @@
     "libmd0",
     "libxau6",
     "libxml2",
-    "liblzma5",
     "libicu72",
     "libstdc++6",
     "libxi6",
@@ -819,7 +841,6 @@
     "libwayland-egl1",
     "libwayland-cursor0",
     "libwayland-client0",
-    "libffi8",
     "libsamplerate0",
     "libpulse0",
     "libsystemd0",
@@ -847,7 +868,6 @@
     "liblog4cplus-2.0.5",
     "libimath-3-1-29",
     "libboost-iostreams1.74.0",
-    "libbz2-1.0",
     "libblosc1",
     "libsnappy1v5",
     "libopenjp2-7",
@@ -864,15 +884,12 @@
     "libquadmath0",
     "libblas3",
     "libglx0",
-    "libtinfo6",
     "libelf1",
     "libxcb-xfixes0",
     "libxcb-shm0",
     "libglvnd0",
     "libopencv-imgcodecs406",
     "libgdcm3.0",
-    "libuuid1",
-    "libssl3",
     "libjson-c5",
     "libcharls2",
     "libgdal32",
@@ -892,15 +909,7 @@
     "libnghttp2-14",
     "libldap-2.5-0",
     "libsasl2-2",
-    "libdb5.3",
-    "libgssapi-krb5-2",
-    "libkrb5support0",
-    "libkrb5-3",
-    "libkeyutils1",
-    "libk5crypto3",
-    "libcom-err2",
     "libbrotli1",
-    "libsqlite3-0",
     "libspatialite7",
     "librttopo1",
     "libgeos-c1v5",
@@ -920,8 +929,6 @@
     "fonts-dejavu-core",
     "libpcre2-8-0",
     "libogdi4.1",
-    "libtirpc3",
-    "libtirpc-common",
     "libodbcinst2",
     "libltdl7",
     "unixodbc-common",
@@ -1046,7 +1053,6 @@
     "libcdio-cdda2",
     "libcaca0",
     "libslang2",
-    "libncursesw6",
     "libavfilter8",
     "libzimg2",
     "libvidstab1.1",
@@ -1070,7 +1076,7 @@
     "blender-data"
    ],
    "pkg": "blender",
-   "size": 231512232,
+   "size": 234518360,
    "toolkit": "gl"
   },
   "dbus-session": {
@@ -7981,6 +7987,12 @@
    "size": 20044,
    "version": "1.47.0-2+b2"
   },
+  "libcrypt1": {
+   "filename": "pool/main/libx/libxcrypt/libcrypt1_4.4.33-2_amd64.deb",
+   "sha256": "f5f60a5cdfd4e4eaa9438ade5078a57741a7a78d659fcb0c701204f523e8bd29",
+   "size": 89464,
+   "version": "1:4.4.33-2"
+  },
   "libcups2": {
    "filename": "pool/main/c/cups/libcups2_2.4.2-3+deb12u9_amd64.deb",
    "sha256": "8dbfd3b7cd81166a2d79bb7e3898b0203fec05c7e927f60e207122a1e36b95c8",
@@ -9373,6 +9385,12 @@
    "size": 30144,
    "version": "0.8.1-1"
   },
+  "libnsl2": {
+   "filename": "pool/main/libn/libnsl/libnsl2_1.3.0-2_amd64.deb",
+   "sha256": "c0d83437fdb016cb289436f49f28a36be44b3e8f1f2498c7e3a095f709c0d6f8",
+   "size": 39480,
+   "version": "1.3.0-2"
+  },
   "libnspr4": {
    "filename": "pool/main/n/nspr/libnspr4_4.35-1_amd64.deb",
    "sha256": "6cca09767e94e4b5d2888ef31ad797bd3e7cec27fbbe98b49b10d4884746ce77",
@@ -9761,6 +9779,18 @@
    "filename": "pool/main/p/python3.11/libpython3.11_3.11.2-6+deb12u8_amd64.deb",
    "sha256": "63845d53d5f64d2362cfb6007ec175ad1c6044cebe60a1885eff76d2ce637c35",
    "size": 1988456,
+   "version": "3.11.2-6+deb12u8"
+  },
+  "libpython3.11-minimal": {
+   "filename": "pool/main/p/python3.11/libpython3.11-minimal_3.11.2-6+deb12u8_amd64.deb",
+   "sha256": "f3beaa03994ffedacf73c43a0843d53b062d347115d8af65bee2034552a4e6f9",
+   "size": 817740,
+   "version": "3.11.2-6+deb12u8"
+  },
+  "libpython3.11-stdlib": {
+   "filename": "pool/main/p/python3.11/libpython3.11-stdlib_3.11.2-6+deb12u8_amd64.deb",
+   "sha256": "890b3540dad8a1ccc0deeca025db735bcc82629a76adacbe3b50fcc06ed528ca",
+   "size": 1798560,
    "version": "3.11.2-6+deb12u8"
   },
   "libqhull-r8.0": {
@@ -11094,6 +11124,12 @@
    "sha256": "9c6218e7a85f388dfab90660a2ba089fb798b72116f1693534547fcd20b429c6",
    "size": 27040,
    "version": "1:10.11.18-0+deb12u1"
+  },
+  "media-types": {
+   "filename": "pool/main/m/media-types/media-types_10.0.0_all.deb",
+   "sha256": "aaa46dcb3b39948ae2e0fdb72cfcb2f48c0b59f19785a3da8045c05eb19955dd",
+   "size": 26136,
+   "version": "10.0.0"
   },
   "mousepad": {
    "filename": "pool/main/m/mousepad/mousepad_0.5.10-2_amd64.deb",

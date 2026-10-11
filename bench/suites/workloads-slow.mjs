@@ -141,6 +141,10 @@ export async function run(h) {
     const first = await timed(h, 'claude --native --version', 600, /\d+\.\d+\.\d+/);
     const ms = [], peak = [];
     for (let i = 0; i < Math.min(h.runs, 3); i++) { const r = await timed(h, 'claude --native --version', 600, /\d+\.\d+\.\d+/); ms.push(r.ms); peak.push(r.peak); }
+    // the JS bundle's start: signed out, `-p` ends at "Not logged in" (tabcomputer#52)
+    const pms = [];
+    for (let i = 0; i < Math.min(h.runs, 3); i++) pms.push((await timed(h, "(claude --native -p 'reply with the single word ok' </dev/null || true)", 600, /Not logged in|Invalid API key|\bok\b/)).ms);
+    h.sample('workload.claude_native.p_start', pms, 'ms', { notes: "`claude --native -p ...` signed out, to its \"Not logged in\" (Bun's start with JSC's JIT off)" });
     h.sample('workload.claude_native.version_first', [first.ms], 'ms', { notes: '`claude --native --version`, first run (linux-x64-musl build in Blink), one sample' });
     h.sample('workload.claude_native.version', ms, 'ms', { notes: 'warm runs' });
     h.sample('workload.peak_rss.claude_native', [first.peak, ...peak], 'MiB', { notes: 'renderer RSS peak above the pre-run level' });

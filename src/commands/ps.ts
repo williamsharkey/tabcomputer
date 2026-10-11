@@ -14,7 +14,7 @@ import { processTable } from '../process-table';
 
 const HZ = 100;
 
-interface Info {
+export interface Info {
   pid: number; ppid: number; pgid: number; sid: number;
   state: string; uid: number; user: string;
   cpuMs: number; startMs: number; tty: string;
@@ -122,6 +122,30 @@ async function infoOf(ctx: CommandContext, p: ReturnType<typeof processTable.lis
   return info;
 }
 
+/** Every process's fields, by pid: the kernel's (/proc) and the page's own */
+export async function processInfos(ctx: CommandContext): Promise<Info[]> {
+  const users = new Map<number, string>([[0, 'root'], [1000, 'user']]);
+  try {
+    const passwd = await ctx.fs.readFile('/etc/passwd', 'utf8') as string;
+    for (const l of passwd.split('\n')) { const f = l.split(':'); if (f.length > 2) users.set(Number(f[2]), f[0]); }
+  } catch { /* defaults */ }
+
+  // The kernel's processes (/proc), and the page's: live ones, and zombies until their
+  // parent reaps them; not the exited windows the table keeps a while
+  const procs = processTable.list().filter((p) => p.zombie || p.status === 'running' || p.status === 'stopped');
+  const known = new Set(procs.map((p) => p.pid));
+  try {
+    for (const e of await ctx.fs.readdir('/proc')) {
+      const pid = Number(e);
+      if (!/^\d+$/.test(e) || known.has(pid)) continue;
+      known.add(pid);
+      procs.push({ pid, command: '', status: 'running', startTime: Date.now() } as (typeof procs)[number]);
+    }
+  } catch { /* no /proc */ }
+  procs.sort((a, b) => a.pid - b.pid);
+  return (await Promise.all(procs.map((p) => infoOf(ctx, p, users)))).filter((p): p is Info => !!p);
+}
+
 const USAGE = '\nUsage:\n ps [options]\n\n Try \'ps --help <simple|list|output|threads|misc|all>\'\n';
 
 export const psCmd: Command = {
@@ -186,26 +210,7 @@ export const psCmd: Command = {
       cols.push(e < 0 ? col : { ...col, header: item.slice(e + 1) });
     }
 
-    const users = new Map<number, string>([[0, 'root'], [1000, 'user']]);
-    try {
-      const passwd = await ctx.fs.readFile('/etc/passwd', 'utf8') as string;
-      for (const l of passwd.split('\n')) { const f = l.split(':'); if (f.length > 2) users.set(Number(f[2]), f[0]); }
-    } catch { /* defaults */ }
-
-    // The kernel's processes (/proc), and the page's: live ones, and zombies until their
-    // parent reaps them; not the exited windows the table keeps a while
-    const procs = processTable.list().filter((p) => p.zombie || p.status === 'running' || p.status === 'stopped');
-    const known = new Set(procs.map((p) => p.pid));
-    try {
-      for (const e of await ctx.fs.readdir('/proc')) {
-        const pid = Number(e);
-        if (!/^\d+$/.test(e) || known.has(pid)) continue;
-        known.add(pid);
-        procs.push({ pid, command: '', status: 'running', startTime: Date.now() } as (typeof procs)[number]);
-      }
-    } catch { /* no /proc */ }
-    procs.sort((a, b) => a.pid - b.pid);
-    let infos = (await Promise.all(procs.map((p) => infoOf(ctx, p, users)))).filter((p): p is Info => !!p);
+    let infos = await processInfos(ctx);
     if (pids.size) infos = infos.filter((p) => pids.has(p.pid));
     if (names.size) infos = infos.filter((p) => names.has(p.comm));
 

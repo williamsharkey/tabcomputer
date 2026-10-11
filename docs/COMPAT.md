@@ -668,6 +668,9 @@ EIO (the browser's `TextDecoder` refuses the shared syscall buffer).
 | file (built-in, `builtin file`) | file 5.x output | builtin (`src/commands/file.ts`) | works | what runs until `pkg install file`: the inode first (directory, FIFO without opening it, symlink, `-L`), then magic numbers: ELF (class, byte order, type, machine, OS/ABI, interpreter or static/static-pie, BuildID, ABI tag, debug_info, stripped), PNG, JPEG, GIF, WebP, WAV, BMP, ICO, PDF, gzip, bzip2, xz, zstd, 7z, RAR, zip (method, JAR), tar, ar and .deb, WebAssembly, SQLite, Mach-O, PE, Java class; then text (ASCII, UTF-8, ISO-8859, shebang scripts, JSON, HTML, XML/SVG, PEM and SSH keys, unified diffs, CRLF/no line terminators, very long lines); `-b`, `-i`, `--mime-type`, `--mime-encoding`, `-N`; names aligned as file aligns them. Same output as file 5.45 for 175 of 189 files of a Linux system (`tests/tests/shiro-vitest/file-base64.test.ts`) | no magic database: the details file prints for JPEG, PDF and diffs, JavaScript/Python source without a shebang, and Go build ids |
 | xz, xzcat, unxz | 5.8.1 | pkg (Blink) | works | `-k`, `-l`, `xzcat`; `tar -J` | single-threaded |
 | zstd, zstdcat, unzstd | 1.5.7 | pkg (Blink) | works | `-19`, `zstdcat`; `tar --zstd` | |
+| vi (built-in) | Vim 9 | builtin (`src/commands/vi.ts`, `ex-engine.ts`) | works | Without a terminal it runs Vim's ex commands: `vi -c '%s/a/b/g' -c wq f`, `+CMD`, `-es` and `-e -s` scripts on stdin. `tests/vi-cases.txt` runs 112 command lines against Vim 9 on the same files: all leave the same files and exit statuses. s with Vim regexes (magic, `\v`, `\V`, `\c`, `\zs`/`\ze`, `\<\>`, `\{n,m}`; `& \1 \r \u \U` in the replacement; g i I e n), g/v, d, y, pu, m, t/co, j, `> <`, norm (A I a i o O x dd D J ...), sort (! i n u r /pat/), w/wq/x/up/q/cq, r (file or !cmd), `{range}!cmd`, p, nu, =, a/i/c, marks, `set ff=`, exe. The interactive editor's : line runs the same commands | no undo, registers beyond the unnamed one, or Vim script expressions; inline flags other than at the pattern's start |
+| top (built-in) | procps-ng 4 | builtin (`src/commands/top.ts`) | works | procps's layout from /proc; `-b` prints plain text, frames a blank line apart, cut to 80 columns (`-w`); `-n`, `-d`, `-p`, `-u`, `-c`; full-screen on a terminal (q, k, c, space) | %CPU, VIRT, RES and SHR are 0 (the kernel keeps no such accounting) |
+| zip, unzip (built-in) | Info-ZIP zip 3.0, unzip 6.0 | builtin (`src/commands/zip.ts`) | works | `tests/zip-cases.txt` runs 56 command lines in tabcomputer's shell and with Info-ZIP's tools on the same files: all print the same output and exit status. zip: bundled flags (`-qr`, `-rq`, `-r0`), `-r`, `-q`, `-j`, `-D`, `-0`, `-x`/`-i` patterns, `-d`, `-u`/`-f`, `-m`, `-T`, `-@`; adds to and updates an existing archive; directory entries, times and modes. unzip: `-l`, `-v`, `-Z1`, `-t`, `-p`, `-o`, `-n`, `-q`/`-qq`, `-j`, `-d`, member patterns and `-x`; restores times and modes | deflate is zlib's (CompressionStream), so a member can come out a byte or so bigger than Info-ZIP's and its percentage differs; no encryption, zip64, bzip2 method or `zip -` to stdout; unzip never prompts (as on EOF: `[N]one`) |
 | zip | 3.0 (Info-ZIP) | pkg (Blink) | works | `zip -qr` | no bzip2 method |
 | unzip, zipinfo | 6.0 (Info-ZIP, Debian patches) | pkg (Blink) | works | `-l`, `-t`, `-d`, `zipinfo -1` | no bzip2 method |
 | git | 2.56.0 | pkg (Blink) | works | init, add, commit, log, diff, branch, checkout, merge, stash, tag, describe, status; `git clone` of a local repository | Perl/Python/Tcl parts left out (`git add -i` is the C version; no `git svn`, `gitk`, `send-email`). Remote clones need https through the network relay (curl is linked in) — not in the automated test. Slow on big repositories |
@@ -682,6 +685,7 @@ EIO (the browser's `TextDecoder` refuses the shared syscall buffer).
 | jq | 1.8.1 | pkg (WASI) | works | filters, `-r`, `-s`, `gsub` (oniguruma), `-e` exit status | |
 | jq (built-in, `builtin jq`) | the jq 1.7 language | builtin (`src/commands/jq.ts`) | works | what runs until `pkg install jq`: `as` bindings and destructuring (`?//`), `reduce`/`foreach`, `def` with filter and `$` parameters, paths and assignment (`=`, `\|=`, `+=`, `//=`, `del`, `paths`, `pick`), `try`/`catch`, `label`/`break`, `?`, string interpolation and every `@format`, regexes (`test`/`match`/`capture`/`scan`/`sub`/`gsub`/`splits`), dates (`strptime`, `strftime`, `mktime`, `fromdate`, `todate`), `tostream`/`fromstream`, `limit`/`first`/`until`/`while`/`repeat` without a frame per step; the command line (`--arg`, `--argjson`, `--slurpfile`, `--rawfile`, `--args`, `--jsonargs`, `-f`, `-n` with `input`/`inputs`, `-R`, `-s`, `-e`, `-j`, `-a`, `-S`, `--tab`, `--indent`, `--seq`, `--stream`, `--raw-output0`, combined short flags). Checked against jq 1.7 on 559 programs (`tests/tests/shiro-vitest/jq-language.test.ts`). An unknown function, variable or syntax is a compile error (exit 3), a runtime error exits 5 and the next input still runs | number literals aren't kept as written (`3.0` prints `3`, integers past 2^53 lose precision, `-0` prints `0`); string `indices` are code points (as jq 1.8; jq 1.7 counts bytes); regexes are JavaScript's (Oniguruma-only syntax beyond `\A`, `\z`, `\h`, `(?i)` fails); no modules (`import`/`include`); `input_line_number` is 0 |
 | sed, awk, find, xargs, sort, grep, join, column, hexdump, stat, split, truncate and the other text tools (built-in) | GNU sed 4.9, gawk 5.2, grep 3.11, coreutils 9.4, findutils 4.9, util-linux 2.39 | builtin (`src/commands/`) | works | `tests/gnu-tools-cases.txt` runs 870 agent-style command lines in tabcomputer's shell and in bash with the GNU tools on the same files (`GNU_DIFF=1`, `tests/tests/shiro-vitest/gnu-tools-diff.test.ts`): 856 print the same output and exit status. gawk's `BEGINFILE`/`ENDFILE` and `PROCINFO["sorted_in"]`; `join` (`-a`, `-v`, `-e`, `-o`, `-t`); `hexdump` (`-C`, `-x`, `-c`, `-b`, `-d`, `-o`, `-n`, `-s`, `*` squeezing); `stat --format`/`--printf`; `grep -Z`/`-z`/`-b`; `find -newermt`; `split -n`/`-C`/`-d` | gawk's `FPAT`, coprocesses (`\|&`) and `@include`; sed's `e` command; `xargs -t`'s trace comes after the command's output under `2>&1`; `find -newer` can't tell files written in the same millisecond apart; `fmt` fills lines greedily; `cmp` says `char` where diffutils 3.10 says `byte` |
+| rg (built-in) | ripgrep 14.1 | builtin (`src/commands/rg.ts`) | works | `tests/rg-cases.txt` runs 189 command lines in tabcomputer's shell and with ripgrep 14.1 on the same files (`GNU_DIFF=1 GNU_DIFF_CASES=$PWD/../tests/rg-cases.txt`): all print the same output and exit status. ripgrep's output rules (line numbers and a heading per file only on a terminal, the path only for a directory or several paths, `-H`/`-I`), `-c`/`--count-matches`, `-r` with `$0`/`$1`/`${name}`, `--stats`, `--json`, `--vimgrep`, `--column`, `-b`, `-x`, `-S`, `-U`, `--passthru`, `-M`, `--trim`, `-q`, `-l`/`--files-without-match`, globs (last match wins, `{a,b}`, `--iglob`), `-t`/`-T`, `-f`, `--sort`/`--sortr`, `--max-depth`, `-u`/`-uu`/`-uuu`, colour | no `.gitignore` handling (the `/usr/bin/rg` package has it); Rust regex syntax is translated to JavaScript's (`(?P<n>)`, `[[:class:]]`, a leading `(?i)`), so other inline flags and look-around differ; only a subset of `--type-list` |
 | ripgrep | 15.2.0 | pkg (WASIX) | works as `/usr/bin/rg` | `.gitignore`, `-t`, `-g`, `-c`, `-l`, exit 1 on no match | plain `rg` is tabcomputer's builtin (the package doesn't take the name); no PCRE2; one search thread |
 | sqlite3 | 3.50.4 | pkg (WASI) | works | database file, queries, SQL on stdin, `-json`, the interactive shell on the tty | |
 | coreutils (uutils) | 0.12.0 | pkg (WASI) | works | `coreutils sha256sum`, `/usr/bin/factor`, `sort -n`, `tr`, `numfmt`, `seq` | builtins keep the plain names; use `/usr/bin/NAME` or `coreutils NAME` |
@@ -784,19 +788,35 @@ tabcomputer changes these programs needed (tests in `x86-engine.test.ts`,
 `git` without `pkg install git` is the built-in (isomorphic-git,
 `src/commands/git.ts`; the plumbing in `src/commands/git-plumbing.ts`). It
 answers what git UIs (tig, lazygit) and agents call; tests in
-`git.test.ts` (plumbing) and `compat-tools.test.ts` (tig, lazygit).
-`pkg install git` replaces it with the real git (in Blink).
+`git.test.ts` (plumbing), `git-gnu.test.ts` (agent sessions, against git's
+own output) and `compat-tools.test.ts` (tig, lazygit). `pkg install git`
+replaces it with the real git (in Blink).
+
+Against git 2.43: `tests/git-cases.txt` holds 252 agent-style sessions
+(status, diff, log, show, add, commit, branch, checkout/switch, merge with
+and without conflicts, stash, restore, reset, rm, mv, clean, rev-parse,
+ls-files, blame, tag, describe, remote, `.gitignore`), each run by the
+built-in and by git on the same files with fixed identities and dates
+(`GNU_DIFF=1 GNU_DIFF_NO_PKG=1 GNU_DIFF_CASES=$PWD/git-cases.txt
+GNU_DIFF_PRELUDE=$PWD/git-cases-prelude.sh`, `gnu-tools-diff.test.ts`):
+245 print the same output, commit hashes included, and exit status. The
+other seven: `reflog` (isomorphic-git keeps none), `count-objects`,
+`diff --color`, `config --list` (isomorphic-git's `init` writes
+`core.filemode=false` and `core.ignorecase=true`), the `Unmerged` row of
+`diff --stat` during a conflict, an empty `cherry-pick`'s "currently
+cherry-picking" state, and an ordering of stderr against stdout.
 
 What the built-in doesn't have goes to the real git: a subcommand it lacks
-(`blame`, `bisect`, `submodule`, `describe`, `restore`, `clean`,
-`worktree add`, ...), or an option it doesn't know (each subcommand lists
+(`bisect`, `submodule`, `worktree add`, `apply`, ...), or an option it doesn't know (each subcommand lists
 its options in `src/commands/git-route.ts`), runs `/usr/bin/git` with the
 same command line, installing the package on first use (a note on stderr;
 `pkg remove git` goes back). `rebase`, `cherry-pick` and `revert` go to it
-too, as the built-in's versions replay whole files. Without the x86 engine
-or offline, the built-in says what it didn't understand as git does
-(`error: unknown option`, exit 129; `git: 'blame' is not a git command`,
-exit 1) instead of ignoring it. Combined short options (`-qb NAME`,
+first too; without it the built-in's `cherry-pick` and `revert` apply a
+commit only where HEAD hasn't changed the same files since (no three-way
+merge), and say so otherwise. Without the x86 engine or offline, the
+built-in says what it didn't understand as git does (`error: unknown
+option`, exit 129; `git: 'bisect' is not a git command`, exit 1) instead
+of ignoring it. Combined short options (`-qb NAME`,
 `-qam MSG`) are split first. tig and lazygit only use what the built-in
 has (their tests check that nothing went to the full git).
 
@@ -817,14 +837,18 @@ login`), not git's credential helpers.
 | --- | --- |
 | global options | `-C DIR`, `-c k=v`, `--no-pager`/`-P`, `--no-optional-locks`, `--literal-pathspecs`, `--git-dir=`, `--work-tree=`; from a subdirectory (the nearest `.git` up) |
 | `rev-parse` | `--show-toplevel --git-dir --absolute-git-dir --git-common-dir --is-inside-work-tree --is-bare-repository --show-cdup --show-prefix`, `--abbrev-ref`, `--symbolic-full-name`, `--verify -q`, `--short[=N]`; revisions `X~N X^N @ @{u} X^{commit}`; several in one call, in order |
-| `status` | `--porcelain[=v1\|v2]`, `-z`, `-b`/`-sb`, `-u[no\|normal\|all]` |
+| `status` | git's long format (hints, upstream ahead/behind, `No commits yet`, detached HEAD, a merge in progress with `Unmerged paths`), `-s`, `--porcelain[=v1\|v2]`, `-z`, `-b`/`-sb`, `-u[no\|normal\|all]`; staged exact renames (`R  a -> b`); paths with spaces quoted |
 | `log`, `show` | `--format`/`--pretty` (`%H %h %T %t %P %p %s %b %B %f %d %D %m %n %x00`, `%a*`/`%c*` with `n e d D i I t r s`, `%gd %gs`), oneline/short/medium/full/fuller/raw, `-z`, `--decorate`, `--date=`, `--parents`, ranges `A..B A...B ^A`, `--all --branches --tags`, `-n --skip --reverse --no-merges --first-parent --author --grep -- paths`, `--name-status --numstat --stat -p --patch-with-stat`; `log -g` reads `.git/logs/HEAD` (isomorphic-git keeps no reflog, so it is empty) |
-| `diff`, `diff-files`, `diff-index` | the patch (index lines, `@@ -1 +1,2 @@` hunks, binary files), `--cached`, revisions and ranges, `--name-status --name-only --numstat --stat --shortstat --raw --patch-with-stat`, `-z`, `--quiet --exit-code`; untracked files are not in a diff |
+| `diff`, `diff-files`, `diff-index` | the patch (Myers diff with git's sliding of change groups; index lines, hunk headers with the function line, `-U N`, `\ No newline at end of file`, binary files), `--cached`, revisions and ranges, `--no-index`, `--name-status --name-only --numstat --stat --shortstat --raw --patch-with-stat` (`--stat` scaled to 80 columns as git does), `-z`, `--quiet --exit-code`; untracked files are not in a diff. Git's indent heuristic isn't: a hunk can place an inserted block one line apart from git's |
 | refs | `for-each-ref --format` (`refname[:short\|lstrip=N]`, `objectname[:short]`, `objecttype`, `HEAD`, `subject`, `body`, author/committer name/email/date, `upstream[:short\|track\|trackshort\|remotename]`), `--sort`, `--count`, `--points-at`; `show-ref`; `symbolic-ref`; `branch -v -vv --format --show-current` |
 | objects, index | `cat-file -t -s -p -e`, `REV:path`, `--batch[-check]`; `ls-files -z -m -o -d -s --exclude-standard`; `update-index --add --remove [--stdin -z]`; `merge-base [--is-ancestor\|--all]`; `rev-list [--count --left-right --parents]`; `worktree list [--porcelain]` |
 | `config` | `--get --get-all --get-regexp --list -z/--null --name-only --type=bool\|int --default`, `--global/--local/--system`, `/etc/gitconfig` and `-c` overrides |
-| porcelain fixes | `merge --no-ff --ff-only -m -q` (the work tree follows the merge); `log --graph` (topo order); `ls-remote URL` outside a repository; `fetch -q`; `push -f -u`; `clone --branch --depth=N`; `commit -am`/`-qam` (`-a` stages tracked changes), `-q`, `-F`; `checkout -q -b NAME [START]`, `-qb`, `-B`, `checkout REV -- paths` (HEAD stays on the branch), a remote branch, a commit; `switch`; `add -u`/`-A`/`--`/deletions; `stash -q`, `stash push -m`, `stash list --format/-z` (`%gd %gs %ct`), `stash@{N}` from the newest; `fetch --all` with no remotes |
-| the full git's | `apply` (hunk staging), `rebase`, `cherry-pick`, `revert`, `blame`, `bisect`, `describe`, `restore`, `clean`, `submodule`, `worktree add`, `notes`, signing, `log --since`, ...: run by `/usr/bin/git`, installed on first use |
+| `commit` | `-m`/`-F`/`-a`/`-q`/`--amend`/`--no-edit`/`--allow-empty`; nothing staged is refused with the status (exit 1), as git; the summary (`[main (root-commit) abc1234]`, totals, `create mode`); the author and committer from `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (names, emails, `*_DATE`) before the config, as git; `--amend` keeps the author; concluding a merge (MERGE_HEAD's parent, MERGE_MSG) |
+| `merge` | fast-forward and merge commits with git's diffstat, `--no-ff --ff-only -m -q`; a conflict leaves the markers (`<<<<<<< HEAD`), the index's stages (`UU`), MERGE_HEAD and MERGE_MSG, and stages the cleanly merged files; `merge --abort`; `git add` then `git commit` concludes it |
+| work tree | `rm [-r --cached -f -n -q]` (refusing local changes as git), `mv [-f -k -n -v]` (directories too), `restore [--staged --worktree --source]`, `checkout [REV] -- paths`, `reset [--soft\|--mixed\|--hard] [REV] [paths]` (git's messages, ORIG_HEAD), `clean [-n -f -d -x -X -e]`; pathspecs are files, directories, `.` and globs |
+| branches, tags | `branch` create/`-d` (unmerged refused)/`-D`/`-m`/list (detached HEAD), `checkout`/`switch` (`-b -c -B --detach`, local changes that would be overwritten stop it); `tag` (`-a -m -F -f -d -l PATTERN -n[N] --sort=[-]v:refname --contains --points-at`), `describe [--tags --always --long --abbrev=N --dirty --exact-match]` |
+| more | `stash` (push/save `-u -m -q`, pop/apply `--index`, list, show `-p`, drop, clear) as stash commits on refs/stash with its reflog, as git keeps them; `blame` (`-L -s -e -l --porcelain`, the work tree's changes as `Not Committed Yet`); `check-ignore [-v -q -n]`; `remote add/remove/rename/get-url/set-url -v`; `shortlog [-s -n -e]`; `log --graph` (topo order); `ls-remote URL` outside a repository; `fetch -q`; `push -f -u`; `clone --branch --depth=N`; `add -u`/`-A`/`--`/deletions (an ignored path refused without `-f`); `fetch --all` with no remotes |
+| the full git's | `apply` (hunk staging), `rebase`, `bisect`, `submodule`, `worktree add`, `notes`, signing, `log --since`, ...: run by `/usr/bin/git`, installed on first use |
 
 ### Popular CLI tools from Debian (apt)
 

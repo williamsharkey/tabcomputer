@@ -25,6 +25,7 @@ import { getconfCmd } from '@shiro/commands/getconf';
 import { edCmd } from '@shiro/commands/ed';
 import { iconvCmd } from '@shiro/commands/iconv';
 import { zipCmd, unzipCmd } from '@shiro/commands/zip';
+import { viCmd } from '@shiro/commands/vi';
 import { wasiCmd } from '@shiro/commands/wasi';
 import { pkgCmd, aptCmd, aptGetCmd } from '@shiro/commands/pkg';
 import { xpkgCmd } from '@shiro/commands/xpkg';
@@ -100,6 +101,7 @@ export async function createTestShell(): Promise<{ fs: FileSystem; shell: Shell 
   commands.register(edCmd);
   commands.register(iconvCmd);
   commands.register(zipCmd);
+  commands.register(viCmd);
   commands.register(unzipCmd);
   commands.register(wasiCmd);
   commands.register(pkgCmd);

@@ -50,8 +50,44 @@ interface Tex {
   levels: { w: number; h: number; d: number; fmt: TexFormat; internal: number }[];
   immutable: boolean;
   params: Map<number, number | Float32Array>;
+  /** a buffer texture (glTexBuffer): a 2D texture TEXBUF_WIDTH texels wide, refilled from the buffer when it changed */
+  buf?: { name: number; ifmt: number; offset: number; size: number; version: number; w: number; h: number };
 }
-interface Buf { buf: WebGLBuffer; size: number; usage: number; target: number }
+interface Buf { buf: WebGLBuffer; size: number; usage: number; target: number; /** bumped by every write */ version: number }
+/** A buffer texture's row length: texelFetch(b, i) reads (i & 4095, i >> 12) (glsl/translate.ts) */
+const TEXBUF_WIDTH = 4096;
+/** glTexBuffer's internal formats: WebGL internal format, format, type, bytes per texel */
+function bufferTexFormat(ifmt: number): [number, number, number, number] | null {
+  switch (ifmt) {
+    case E.R8: return [E.R8, E.RED, E.UNSIGNED_BYTE, 1];
+    case E.RG8: return [E.RG8, E.RG, E.UNSIGNED_BYTE, 2];
+    case E.RGBA8: return [E.RGBA8, E.RGBA, E.UNSIGNED_BYTE, 4];
+    case E.R16F: return [E.R16F, E.RED, E.HALF_FLOAT, 2];
+    case E.RG16F: return [E.RG16F, E.RG, E.HALF_FLOAT, 4];
+    case E.RGBA16F: return [E.RGBA16F, E.RGBA, E.HALF_FLOAT, 8];
+    case E.R32F: return [E.R32F, E.RED, E.FLOAT, 4];
+    case E.RG32F: return [E.RG32F, E.RG, E.FLOAT, 8];
+    case E.RGB32F: return [E.RGB32F, E.RGB, E.FLOAT, 12];
+    case E.RGBA32F: return [E.RGBA32F, E.RGBA, E.FLOAT, 16];
+    case E.R8I: return [E.R8I, E.RED_INTEGER, E.BYTE, 1];
+    case E.R8UI: return [E.R8UI, E.RED_INTEGER, E.UNSIGNED_BYTE, 1];
+    case E.R16I: return [E.R16I, E.RED_INTEGER, E.SHORT, 2];
+    case E.R16UI: return [E.R16UI, E.RED_INTEGER, E.UNSIGNED_SHORT, 2];
+    case E.R32I: return [E.R32I, E.RED_INTEGER, E.INT, 4];
+    case E.R32UI: return [E.R32UI, E.RED_INTEGER, E.UNSIGNED_INT, 4];
+    case E.RG32I: return [E.RG32I, E.RG_INTEGER, E.INT, 8];
+    case E.RG32UI: return [E.RG32UI, E.RG_INTEGER, E.UNSIGNED_INT, 8];
+    case E.RGB32I: return [E.RGB32I, E.RGB_INTEGER, E.INT, 12];
+    case E.RGB32UI: return [E.RGB32UI, E.RGB_INTEGER, E.UNSIGNED_INT, 12];
+    case E.RGBA8I: return [E.RGBA8I, E.RGBA_INTEGER, E.BYTE, 4];
+    case E.RGBA8UI: return [E.RGBA8UI, E.RGBA_INTEGER, E.UNSIGNED_BYTE, 4];
+    case E.RGBA16I: return [E.RGBA16I, E.RGBA_INTEGER, E.SHORT, 8];
+    case E.RGBA16UI: return [E.RGBA16UI, E.RGBA_INTEGER, E.UNSIGNED_SHORT, 8];
+    case E.RGBA32I: return [E.RGBA32I, E.RGBA_INTEGER, E.INT, 16];
+    case E.RGBA32UI: return [E.RGBA32UI, E.RGBA_INTEGER, E.UNSIGNED_INT, 16];
+  }
+  return null;
+}
 interface ShaderObj { kind: 'shader'; type: number; sh: WebGLShader | null; source: string; translated: Translated | null; compiled: boolean; log: string }
 interface Loc { wl: WebGLUniformLocation; type: number }
 interface Var { name: string; type: number; size: number; loc: number }
@@ -196,6 +232,9 @@ export class Executor {
   private inflight: { xid: number; frame: number; width: number; height: number; pbo: WebGLBuffer; sync: WebGLSync }[] = [];
   private spare: { pbo: WebGLBuffer; size: number }[] = [];
   private pumping = false;
+  /** bumped when any framebuffer's attachments or their images may have changed */
+  private fbEpoch = 0;
+  private fbStatus = new WeakMap<object, [number, number]>();
   /** commands executed (for tests and stats) */
   executed = 0;
 
@@ -357,6 +396,7 @@ export class Executor {
     return this.configs.get(id) ?? variants[v >= 0 ? v : 0];
   }
   tcMakeCurrent(id: number, draw: number, read: number, fbconfig: number) {
+    this.fbEpoch++;
     const c = this.contexts.get(id);
     if (!c) return;
     const cfg = this.configOf(fbconfig);
@@ -621,6 +661,7 @@ export class Executor {
   }
 
   tcSwapBuffers(xid: number, frame: number) {
+    this.fbEpoch++;
     const d = this.drawables.get(xid);
     this.frames++;
     if (d && this.host.presentMode === 'async-pixels') this.presentAsync(d, frame);
@@ -898,11 +939,13 @@ export class Executor {
     this.bindDrawFb(c);
   }
   glDrawBuffers(bufs: Uint32Array) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     if (c.drawFb) this.gl.drawBuffers(Array.from(bufs));
     else { c.drawBuffers = [bufs[0] ?? E.BACK]; this.bindDrawFb(c); }
   }
   glReadBuffer(b: number) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     if (c.readFb) this.gl.readBuffer(b);
     else c.readBuffer = b;
@@ -1215,6 +1258,7 @@ export class Executor {
    * the built-in uniforms of the app's program. False to skip the draw.
    */
   private prepareDraw(c: Ctx, points: boolean): boolean {
+    this.syncBufferTextures(c);
     if (c.program) {
       const p = c.share.objects.get(c.program) as ProgObj | undefined;
       if (!p || p.kind !== 'program' || !p.linked) return false;
@@ -1484,6 +1528,7 @@ export class Executor {
     }
   }
   glDeleteTextures(n: number, names: Uint32Array) {
+    this.fbEpoch++;
     const c = this.cur; if (!c || !names) return;
     for (const name of names.subarray(0, n)) {
       const t = c.share.textures.get(name);
@@ -1539,6 +1584,9 @@ export class Executor {
     if (t.immutable) { this.error(E.INVALID_OPERATION); return; }
     const tf = texFormat(ifmt, format, type);
     const face = glTarget >= E.TEXTURE_CUBE_MAP_POSITIVE_X && glTarget <= E.TEXTURE_CUBE_MAP_NEGATIVE_Z ? glTarget - E.TEXTURE_CUBE_MAP_POSITIVE_X : 0;
+    const was = t.levels[level * 6 + face];
+    // a texture attached to a framebuffer can change its completeness (Qt re-specifies the same size every frame)
+    if (!was || was.w !== w || was.h !== h || was.d !== d || was.internal !== ifmt) this.fbEpoch++;
     t.levels[level * 6 + face] = { w, h, d, fmt: tf, internal: ifmt };
     if (level === 0 && !face) t.levels[0] = { w, h, d, fmt: tf, internal: ifmt };
     const target = glTarget >= E.TEXTURE_CUBE_MAP_POSITIVE_X && glTarget <= E.TEXTURE_CUBE_MAP_NEGATIVE_Z ? glTarget : wTarget;
@@ -1600,6 +1648,7 @@ export class Executor {
     }
   }
   glTexStorage2D(target: number, levels: number, ifmt: number, w: number, h: number) {
+    this.fbEpoch++;
     const t = this.boundTex(target); if (!t) return;
     const tf = texFormat(ifmt, 0, 0);
     this.gl.texStorage2D(t.webglTarget, levels, tf.internal, w, h);
@@ -1607,6 +1656,7 @@ export class Executor {
     t.immutable = true;
   }
   glTexStorage3D(target: number, levels: number, ifmt: number, w: number, h: number, d: number) {
+    this.fbEpoch++;
     const t = this.boundTex(target); if (!t) return;
     const tf = texFormat(ifmt, 0, 0);
     this.gl.texStorage3D(t.webglTarget, levels, tf.internal, w, h, d);
@@ -1710,7 +1760,7 @@ export class Executor {
   private bufferObj(name: number, target: number): Buf | null {
     const c = this.cur; if (!c || !name) return null;
     let b = c.share.buffers.get(name);
-    if (!b) { b = { buf: this.gl.createBuffer()!, size: 0, usage: E.STATIC_DRAW, target }; c.share.buffers.set(name, b); }
+    if (!b) { b = { buf: this.gl.createBuffer()!, size: 0, usage: E.STATIC_DRAW, target, version: 0 }; c.share.buffers.set(name, b); }
     return b;
   }
   glBindBuffer(target: number, name: number) {
@@ -1766,22 +1816,77 @@ export class Executor {
     const name = this.boundBufferName(target);
     const b = c.share.buffers.get(name);
     if (!b) { this.error(E.INVALID_OPERATION); return; }
-    b.size = size; b.usage = usage;
-    if (target === E.TEXTURE_BUFFER) return;
+    b.size = size; b.usage = usage; b.version++;
     const u = webglUsage(usage);
-    if (data) this.gl.bufferData(target, data, u);
-    else this.gl.bufferData(target, size, u);
+    this.viaTarget(target, (t) => { if (data) this.gl.bufferData(t, data, u); else this.gl.bufferData(t, size, u); });
   }
   glBufferSubData(target: number, offset: number, _size: number, data: Uint8Array | null) {
-    if (!this.cur || !data || target === E.TEXTURE_BUFFER) return;
-    this.gl.bufferSubData(target, offset, data);
+    const c = this.cur;
+    if (!c || !data) return;
+    const b = c.share.buffers.get(this.boundBufferName(target));
+    if (b) b.version++;
+    this.viaTarget(target, (t) => this.gl.bufferSubData(t, offset, data));
   }
   glGetBufferSubData(target: number, offset: number, size: number): Uint8Array {
     const out = new Uint8Array(Math.max(0, size));
-    if (this.cur && size > 0 && target !== E.TEXTURE_BUFFER) this.gl.getBufferSubData(target, offset, out);
+    if (this.cur && size > 0) this.viaTarget(target, (t) => this.gl.getBufferSubData(t, offset, out));
     return out;
   }
-  glCopyBufferSubData(r: number, w: number, ro: number, wo: number, size: number) { this.gl.copyBufferSubData(r, w, ro, wo, size); }
+  /** WebGL has no TEXTURE_BUFFER target: its buffer goes through COPY_WRITE_BUFFER for the call */
+  private viaTarget(target: number, f: (t: number) => void) {
+    const c = this.cur!;
+    if (target !== E.TEXTURE_BUFFER) { f(target); return; }
+    const gl = this.gl;
+    gl.bindBuffer(gl.COPY_WRITE_BUFFER, c.share.buffers.get(c.textureBuffer)?.buf ?? null);
+    try { f(gl.COPY_WRITE_BUFFER); } finally { gl.bindBuffer(gl.COPY_WRITE_BUFFER, c.share.buffers.get(c.copyWrite)?.buf ?? null); }
+  }
+  glCopyBufferSubData(r: number, w: number, ro: number, wo: number, size: number) {
+    const c = this.cur; if (!c) return;
+    const b = c.share.buffers.get(this.boundBufferName(w));
+    if (b) b.version++;
+    if (r === E.TEXTURE_BUFFER || w === E.TEXTURE_BUFFER) { this.warnOnce('glCopyBufferSubData with TEXTURE_BUFFER'); return; }
+    this.gl.copyBufferSubData(r, w, ro, wo, size);
+  }
+  glTexBuffer(_target: number, ifmt: number, name: number) { this.texBufferRange(ifmt, name, 0, -1); }
+  private texBufferRange(ifmt: number, name: number, offset: number, size: number) {
+    const t = this.boundTex(E.TEXTURE_BUFFER); if (!t) return;
+    if (!bufferTexFormat(ifmt)) { this.warnOnce(`glTexBuffer format 0x${ifmt.toString(16)}`); this.error(E.INVALID_ENUM); return; }
+    t.buf = name ? { name, ifmt, offset, size, version: -1, w: t.buf?.w ?? 0, h: t.buf?.h ?? 0 } : undefined;
+  }
+  /** Refill buffer textures bound on any unit whose buffer changed (before a draw). */
+  private syncBufferTextures(c: Ctx) {
+    const gl = this.gl;
+    for (let unit = 0; unit < c.textures.length; unit++) {
+      const name = c.textures[unit].get(E.TEXTURE_BUFFER);
+      if (name === undefined) continue;
+      const t = c.share.textures.get(name);
+      const b = t?.buf ? c.share.buffers.get(t.buf.name) : undefined;
+      if (!t?.buf || !b || b.version === t.buf.version) continue;
+      t.buf.version = b.version;
+      const [internal, format, type, bytes] = bufferTexFormat(t.buf.ifmt)!;
+      const avail = Math.max(0, (t.buf.size < 0 ? b.size - t.buf.offset : Math.min(t.buf.size, b.size - t.buf.offset)));
+      const n = Math.floor(avail / bytes);
+      const w = Math.max(1, Math.min(n, TEXBUF_WIDTH)), h = Math.max(1, Math.ceil(n / TEXBUF_WIDTH));
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, t.tex);
+      gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+      if (t.buf.w !== w || t.buf.h !== h) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+        t.buf.w = w; t.buf.h = h;
+      }
+      if (n > 0) {
+        gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, b.buf);
+        const rows = Math.floor(n / TEXBUF_WIDTH), rest = n - rows * TEXBUF_WIDTH;
+        if (rows) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEXBUF_WIDTH, rows, format, type, t.buf.offset);
+        if (rest) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, rows, rest, 1, format, type, t.buf.offset + rows * TEXBUF_WIDTH * bytes);
+        gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, c.share.buffers.get(c.pixelUnpack)?.buf ?? null);
+      }
+    }
+    gl.activeTexture(gl.TEXTURE0 + c.activeUnit);
+  }
   glDeleteBuffers(names: Uint32Array) {
     const c = this.cur; if (!c) return;
     for (const name of names) {
@@ -2089,7 +2194,8 @@ export class Executor {
     for (let i = 0; i < nu; i++) {
       const u = gl.getActiveUniform(o.prog, i);
       if (!u || u.name.startsWith('_tc_')) continue;
-      if (blockIndex[i] >= 0) { o.uniforms.push({ name: u.name, type: u.type, size: u.size, loc: -1 }); continue; }
+      // a block member has no location: its loc tells the guest its block (-2 - index)
+      if (blockIndex[i] >= 0) { o.uniforms.push({ name: u.name, type: u.type, size: u.size, loc: -2 - blockIndex[i] }); continue; }
       const base = o.locs.length;
       const arrayBase = u.name.endsWith('[0]') ? u.name.slice(0, -3) : null;
       for (let k = 0; k < u.size; k++) {
@@ -2246,6 +2352,7 @@ export class Executor {
     if (target === E.FRAMEBUFFER || target === E.READ_FRAMEBUFFER) { c.readFb = name; this.bindReadFb(c); }
   }
   glDeleteFramebuffers(n: number, names: Uint32Array) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     for (const name of names.subarray(0, n)) {
       const f = c.framebuffers.get(name);
@@ -2263,37 +2370,58 @@ export class Executor {
     this.gl.bindRenderbuffer(this.gl.RENDERBUFFER, name ? c.share.renderbuffers.get(name)! : null);
   }
   glDeleteRenderbuffers(n: number, names: Uint32Array) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     for (const name of names.subarray(0, n)) { const r = c.share.renderbuffers.get(name); if (r) this.gl.deleteRenderbuffer(r); c.share.renderbuffers.delete(name); }
   }
   glIsRenderbuffer(name: number): Uint8Array { return u32s(this.cur?.share.renderbuffers.has(name) ? 1 : 0); }
-  glRenderbufferStorage(_t: number, ifmt: number, w: number, h: number) { this.gl.renderbufferStorage(this.gl.RENDERBUFFER, renderbufferFormat(ifmt), w, h); }
+  glRenderbufferStorage(_t: number, ifmt: number, w: number, h: number) { this.fbEpoch++; this.gl.renderbufferStorage(this.gl.RENDERBUFFER, renderbufferFormat(ifmt), w, h); }
   glRenderbufferStorageMultisample(_t: number, samples: number, ifmt: number, w: number, h: number) {
+    this.fbEpoch++;
     const gl = this.gl;
     gl.renderbufferStorageMultisample(gl.RENDERBUFFER, Math.min(samples, gl.getParameter(gl.MAX_SAMPLES) as number), renderbufferFormat(ifmt), w, h);
   }
   glFramebufferTexture2D(target: number, attachment: number, textarget: number, name: number, level: number) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     const t = name ? c.share.textures.get(name) : null;
     const tt = textarget === E.TEXTURE_RECTANGLE ? E.TEXTURE_2D : textarget;
     this.gl.framebufferTexture2D(fbTarget(target), attachmentOf(attachment), tt, t?.tex ?? null, level);
   }
   glFramebufferTexture(target: number, attachment: number, name: number, level: number) {
+    this.fbEpoch++;
     const c = this.cur; if (!c) return;
     const t = name ? c.share.textures.get(name) : null;
     this.gl.framebufferTexture2D(fbTarget(target), attachmentOf(attachment), t ? (t.webglTarget === E.TEXTURE_CUBE_MAP ? E.TEXTURE_CUBE_MAP_POSITIVE_X : t.webglTarget) : E.TEXTURE_2D, t?.tex ?? null, level);
   }
   glFramebufferTexture1D(target: number, attachment: number, _tt: number, name: number, level: number) { this.glFramebufferTexture2D(target, attachment, E.TEXTURE_2D, name, level); }
   glFramebufferTextureLayer(target: number, attachment: number, name: number, level: number, layer: number) {
+    this.fbEpoch++;
     const t = name ? this.cur?.share.textures.get(name) : null;
     this.gl.framebufferTextureLayer(fbTarget(target), attachmentOf(attachment), t?.tex ?? null, level, layer);
   }
   glFramebufferTexture3D(target: number, attachment: number, _tt: number, name: number, level: number, layer: number) { this.glFramebufferTextureLayer(target, attachment, name, level, layer); }
   glFramebufferRenderbuffer(target: number, attachment: number, _rt: number, name: number) {
+    this.fbEpoch++;
     const r = name ? this.cur?.share.renderbuffers.get(name) ?? null : null;
     this.gl.framebufferRenderbuffer(fbTarget(target), attachmentOf(attachment), this.gl.RENDERBUFFER, r);
   }
-  glCheckFramebufferStatus(target: number): Uint8Array { return u32s(this.cur ? this.gl.checkFramebufferStatus(fbTarget(target)) : E.FRAMEBUFFER_UNDEFINED); }
+  /**
+   * WebGL's checkFramebufferStatus waits for the GPU (SwiftShader: the whole
+   * frame so far), and Qt asks every frame: answered from a cache until a
+   * framebuffer's attachments or their images change (fbEpoch).
+   */
+  glCheckFramebufferStatus(target: number): Uint8Array {
+    const c = this.cur;
+    if (!c) return u32s(E.FRAMEBUFFER_UNDEFINED);
+    const name = target === E.READ_FRAMEBUFFER ? c.readFb : c.drawFb;
+    const key: object | null = name ? c.framebuffers.get(name) ?? null : target === E.READ_FRAMEBUFFER ? c.read : c.draw;
+    const hit = key && this.fbStatus.get(key);
+    if (hit && hit[0] === this.fbEpoch) return u32s(hit[1]);
+    const status = this.gl.checkFramebufferStatus(fbTarget(target));
+    if (key) this.fbStatus.set(key, [this.fbEpoch, status]);
+    return u32s(status);
+  }
   glBlitFramebuffer(sx0: number, sy0: number, sx1: number, sy1: number, dx0: number, dy0: number, dx1: number, dy1: number, mask: number, filter: number) {
     this.gl.blitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
   }
@@ -2762,6 +2890,7 @@ export function webglTarget(target: number): number {
   switch (target) {
     case E.TEXTURE_1D: case E.TEXTURE_RECTANGLE: case E.TEXTURE_2D: return E.TEXTURE_2D;
     case E.TEXTURE_1D_ARRAY: return E.TEXTURE_2D;
+    case E.TEXTURE_BUFFER: return E.TEXTURE_2D; // a buffer texture is a 2D texture here
     default: return target;
   }
 }

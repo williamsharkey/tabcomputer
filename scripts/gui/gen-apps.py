@@ -175,6 +175,22 @@ def closure(db, prov, roots):
     return seen
 
 
+def c_utf8_tar(deb):
+    """/usr/lib/locale/C.utf8 out of a libc-bin .deb, as a tar overlay (same bytes on every run)"""
+    import io, tarfile, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run(['dpkg-deb', '-x', deb, d], check=True)
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w', format=tarfile.USTAR_FORMAT) as tar:
+            base = os.path.join(d, 'usr/lib/locale/C.utf8')
+            for root, dirs, files in sorted(os.walk(base)):
+                dirs.sort()
+                for f in sorted(files):
+                    full = os.path.join(root, f)
+                    ti = tarfile.TarInfo(os.path.relpath(full, d)); ti.size = os.path.getsize(full); ti.mode = 0o644
+                    with open(full, 'rb') as fh: tar.addfile(ti, fh)
+        return buf.getvalue()
+
 def fetch(db, name, cache):
     fn = db[name]['Filename']
     dst = os.path.join(cache, os.path.basename(fn))
@@ -419,6 +435,14 @@ def main():
         h = hashlib.sha256(data).hexdigest()
         open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
         overlays.append({'path': '/', 'tar': True, 'sha256': h, 'size': len(data), 'when': 'ca-certificates'})
+    # The C.UTF-8 locale (LANG of every app, src/gui/apps.ts appEnv): glibc loads it from
+    # /usr/lib/locale/C.utf8, which Debian ships in libc-bin (skipped: its tools aren't
+    # needed). Without it setlocale fails and GTK warns "Locale not supported by C library".
+    if any('libc6' in a['packages'] for a in apps.values()):
+        data = c_utf8_tar(fetch(db, 'libc-bin', cache))
+        h = hashlib.sha256(data).hexdigest()
+        open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
+        overlays.append({'path': '/', 'tar': True, 'sha256': h, 'size': len(data), 'when': 'libc6'})
     # gdk-pixbuf's loaders.cache for libgdk-pixbuf-2.0-0's own loaders (the only
     # ones any app here has): gdk-pixbuf-query-loaders dlopen()s each loader, so
     # it is made in Blink (`gui install gpicview`, then copy

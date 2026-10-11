@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { batch, messages } from './gl-encode';
+import { batch, concat, messages } from './gl-encode';
 import { MSG_FRAME } from '@shiro/gl/wire';
 
 /**
@@ -44,6 +44,8 @@ describe.skipIf(!existsSync(CHROME))('GL on WebGL2 in Chromium', () => {
     const p = await b.newPage();
     await p.setContent('<html><body></body></html>');
     await p.addScriptTag({ content: out.outputFiles[0].text });
+    const w = await esbuild.build({ entryPoints: [join(ROOT, 'src/gl/worker.ts')], bundle: true, write: false, format: 'iife', target: 'es2022', absWorkingDir: ROOT });
+    await p.evaluate((src) => { (globalThis as any).glWorkerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' })); }, w.outputFiles[0].text);
     page = p as unknown as Page;
   }, 60_000);
   afterAll(async () => { await browser?.close(); });
@@ -72,6 +74,41 @@ describe.skipIf(!existsSync(CHROME))('GL on WebGL2 in Chromium', () => {
     expect(Object.keys(results).length).toBeGreaterThan(60);
     expect(Object.entries(results).filter(([, r]) => r !== null).map(([n, r]) => `${n}: ${r}`)).toEqual([]);
   }, 60_000);
+
+  it('runs the executor in a Worker: frames come back as bitmaps, then their acks', async () => {
+    const W = 0x400001;
+    const msgs = await page.evaluate((b) => new Promise<{ type: string; px?: number[]; size?: number[]; kind?: number; frame?: number }[]>((resolve) => {
+      const worker = new Worker((globalThis as any).glWorkerUrl);
+      const got: { type: string; px?: number[]; size?: number[]; kind?: number; frame?: number }[] = [];
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === 'frame') {
+          const c = new OffscreenCanvas(m.bitmap.width, m.bitmap.height);
+          const g = c.getContext('2d')!;
+          g.drawImage(m.bitmap, 0, 0);
+          got.push({ type: 'frame', size: [m.bitmap.width, m.bitmap.height], px: Array.from(g.getImageData(2, 2, 1, 1).data) });
+        } else if (m.type === 'send') {
+          const dv = new DataView(m.data.buffer, m.data.byteOffset);
+          got.push({ type: 'send', kind: dv.getUint32(0, true), frame: dv.getUint32(8, true) });
+        } else got.push({ type: m.type });
+        if (got.some((x) => x.type === 'send')) { worker.terminate(); resolve(got); }
+      };
+      worker.postMessage({ type: 'init' });
+      const buf = new Uint8Array(b).buffer;
+      worker.postMessage({ type: 'batch', buf, sizes: [[0x400001, { width: 24, height: 16 }]] }, [buf]);
+      setTimeout(() => { worker.terminate(); resolve(got); }, 10_000);
+    }), Array.from(concat(
+      batch(0, [['tcCreateContext', 1, 0, 2, 1, 0], ['tcMakeCurrent', 1, W, W, 0x100]]),
+      batch(1, [['glClearColor', 0, 0.5, 1, 1], ['glClear', 0x4000], ['tcSwapBuffers', W, 9]]),
+    )));
+    const frame = msgs.find((m) => m.type === 'frame')!;
+    expect(frame.size).toEqual([24, 16]);
+    expect(frame.px![0]).toBe(0);
+    expect(Math.abs(frame.px![1] - 128)).toBeLessThanOrEqual(1);
+    expect(frame.px!.slice(2)).toEqual([255, 255]);
+    expect(msgs.findIndex((m) => m.type === 'frame')).toBeLessThan(msgs.findIndex((m) => m.type === 'send'));
+    expect(msgs.find((m) => m.type === 'send')).toMatchObject({ kind: MSG_FRAME, frame: 9 });
+  }, 30_000);
 
   describe('executor pixels', () => {
     const W = 32, H = 32, WIN = 0x400001;

@@ -387,9 +387,15 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | Bulk upload (glBufferSubData) | 210 MB/s |
 | Small calls (glVertex3f) | 0.43 M/s |
 | Frames rendered in 3 s without animation frames (a hidden tab) | 0 |
+| Neverball title screen in the page, 640×480: synchronous readback / async readback (3 runs each, alternating) | 6.4–7.2 / 7.9–8.5 frames/s (+20%) |
+| Neverball in the page, async readback: 320×240 / 640×480 | 17.3–17.7 / 8.3 frames/s |
+| Neverball in Blink under Node, recording backend (guest and transport only) | 24 FPS |
+| OpenSCAD 2021.01 (Blink 0119) PNG export: OpenCSG preview / full CGAL render | 3.8 s, 1,724 draws / 10.3 s (6.4 s CGAL) |
 
 The page numbers are SwiftShader's (a CPU renderer); a GPU only makes the
-WebGL2 side cheaper.
+WebGL2 side cheaper. With async readback the page's main thread is about 80%
+idle while Neverball runs, and the frame rate follows the pixel count, so at
+640×480 SwiftShader's fill rate is the limit here, not glshiro.
 
 ### Stages (as agreed)
 

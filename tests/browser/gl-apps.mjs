@@ -27,7 +27,7 @@ const APPS = {
   glxgears: { cmd: '/usr/bin/glxgears.x86_64-linux-gnu', title: /gears/i, gears: true, files: {} },
   neverball: {
     cmd: 'HOME=/tmp/nb SDL_AUDIODRIVER=dummy /usr/games/neverball', title: /neverball/i, gears: false,
-    files: { '/tmp/nb/.neverball/neverballrc': 'fullscreen 0\nwidth 640\nheight 480\n' },
+    files: { '/tmp/nb/.neverball/neverballrc': `fullscreen 0\nwidth ${process.env.NB_W ?? 640}\nheight ${process.env.NB_H ?? 480}\n` },
   },
 };
 const appName = opt('--app') ?? 'glxgears';

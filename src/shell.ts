@@ -299,11 +299,19 @@ export function inPageJobForPid(pid: number): BackgroundJob | undefined {
 }
 /** Signals whose default action doesn't end a process (0, SIGCHLD, SIGCONT, the stops, SIGURG, SIGWINCH) */
 const NON_TERMINATING = new Set([0, 17, 18, 19, 20, 21, 22, 23, 28]);
-/** `kill -SIG` to an in-page job: a terminating signal aborts it and its status becomes 128+SIG */
-export function signalInPageJob(job: BackgroundJob, sig: number): void {
+/**
+ * `kill -SIG` to an in-page job: a terminating signal aborts it and its status
+ * becomes 128+SIG. The abort names the signal, which the job's running kernel
+ * programs get (shell-kernel.ts) rather than a SIGINT; `groupSignalled`: the
+ * kernel already sent it to the job's group (kill -- -PGID), don't again. A
+ * kill of the job alone (`kill $!`) is `processOnly`: jobs the job started in
+ * the background run on, as a subshell's do when it is killed (#63)
+ */
+export function signalInPageJob(job: BackgroundJob, sig: number, groupSignalled = false): void {
   if (NON_TERMINATING.has(sig) || job.status !== 'running') return;
   if (job.ignoresIntQuit && (sig === 2 || sig === 3)) return;
-  job.abortController?.abort();
+  job.abortController?.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'),
+    { signal: sig, groupSignalled: groupSignalled ? job.pid : undefined, processOnly: !groupSignalled }));
   job.status = 'failed';
   job.exitCode = 128 + sig;
   job.signal = sig;
@@ -315,10 +323,10 @@ export function signalInPageJob(job: BackgroundJob, sig: number): void {
 processTable.attachSource({
   list: () => [...inPageJobs.keys()].map((pid) => inPageJobView(pid)!).filter(Boolean),
   get: (pid) => inPageJobView(pid),
-  kill: (pid, sig = 15) => {
+  kill: (pid, sig = 15, opts) => {
     const job = inPageJobs.get(pid);
     if (!job) return false;
-    signalInPageJob(job, sig);
+    signalInPageJob(job, sig, !!opts?.group);
     return true;
   },
 });
@@ -1037,6 +1045,13 @@ export class Shell {
   /** This shell's $$ is a kernel process (Kernel.forkShell): /proc describes it from the kernel's table */
   kernelPid?: number;
   kernelHost: { kernel: import('./kernel/kernel').Kernel; proc: import('./kernel/process').Process } | null = null;
+  /**
+   * The process group of the background job this shell runs (its pid, $!),
+   * without job control: the kernel programs it starts join it, so a signal to
+   * the job (`kill $!`, `kill -- -$!`) reaches them and nothing else, and the
+   * host shell's group (an agent's sh -c) doesn't (#63). Forks inherit it.
+   */
+  jobPgid?: number;
   /** File descriptors for `read -u FD` and `exec N< file` */
   fileDescriptors: Map<number, { content: string; offset: number }> = new Map();
   /** Coproc state: { name, pid, output } */
@@ -1645,6 +1660,7 @@ export class Shell {
     child.errexitSuppressed = this.errexitSuppressed;
     child.inheritedReturn = this.canReturn();
     child.kernelHost = this.kernelHost;
+    child.jobPgid = this.jobPgid;
     child.kernelPid = this.kernelPid;
     child.uid = this.uid;
     child.bootGate = this.bootGate;
@@ -1804,15 +1820,20 @@ export class Shell {
     // running, as bash leaves an async list, and so do SIGINT and SIGQUIT: the
     // job ignores them without job control and has its own group with it (#53)
     const onOuterAbort = () => {
-      const sig = (outer!.signal.reason as { signal?: unknown } | undefined)?.signal;
-      if (typeof sig === 'number' && sig !== 2 && sig !== 3) abort.abort(outer!.signal.reason);
+      const reason = outer!.signal.reason as { signal?: unknown; processOnly?: boolean } | undefined;
+      const sig = reason?.signal;
+      // (`kill PID` of the shell around it isn't a signal to this job's group, #63)
+      if (typeof sig === 'number' && sig !== 2 && sig !== 3 && !reason?.processOnly) abort.abort(outer!.signal.reason);
     };
     outer?.signal.addEventListener('abort', onOuterAbort, { once: true });
     child.inheritedAbort = abort;
     // A script or a kernel process's `sh -c` (an agent's) has no job control: the job's stdin
     // is /dev/null (POSIX 2.9.3.1), not the stream the shell reads, and no [N] pid is printed
     const jobControl = this.options.has('monitor') || this.interactiveFlag || (!this.scriptShell && !this.kernelStdio);
-    if (!jobControl) child.kernelStdinLive = false;
+    if (!jobControl) {
+      child.kernelStdinLive = false;
+      child.jobPgid = pid;
+    }
     // A finished job keeps its status for jobs/wait, not its shell or the outer abort's listener
     const ended = () => {
       outer?.signal.removeEventListener('abort', onOuterAbort);

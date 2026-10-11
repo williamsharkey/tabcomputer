@@ -127,6 +127,9 @@ async function guarded(h, label, fn) {
 const startClaude = (h, cmd, limitMs) => guarded(h, 'claude start', () => h.eval(async ([cmd, limitMs, promptSrc]) => {
   const { until, screen, T } = window.__cn;
   const PROMPT = new RegExp(promptSrc);
+  // the previous launch's last frame can still be on screen (the npm build exits on the normal
+  // screen): keep only the shell's prompt line, so the prompt test sees this launch's output
+  T.clear();
   T.input(cmd, true); // the command line without its Enter: the shell echoes it
   await new Promise((r) => setTimeout(r, 300));
   // the whole normal buffer, trailing blank rows dropped: the shell's newline changes nothing

@@ -176,6 +176,8 @@ const IMM_OFF = { pos: 0, normal: 4, color: 7, secondary: 11, fog: 15, tc: 16 };
 export class Executor {
   private contexts = new Map<number, Ctx>();
   private drawables = new Map<number, Drawable>();
+  /** pbuffers (glXCreatePbuffer): XIDs the X server doesn't know, with their size */
+  private pbuffers = new Map<number, { width: number; height: number }>();
   private configs = new Map<number, FBConfig>();
   private cur: Ctx | null = null;
   private handlers: (((args: Arg[]) => Uint8Array | void) | null)[] = [];
@@ -369,7 +371,11 @@ export class Executor {
       this.gl.scissor(0, 0, c.draw.width, c.draw.height);
     }
   }
+  tcCreatePbuffer(xid: number, width: number, height: number) {
+    this.pbuffers.set(xid, { width: Math.max(1, width), height: Math.max(1, height) });
+  }
   tcDrawableGone(xid: number) {
+    this.pbuffers.delete(xid);
     const d = this.drawables.get(xid);
     if (!d) return;
     this.freeDrawable(d);
@@ -378,7 +384,7 @@ export class Executor {
 
   private drawable(xid: number, cfg: FBConfig): Drawable {
     let d = this.drawables.get(xid);
-    const size = this.host.drawableSize(xid) ?? { width: d?.width ?? 300, height: d?.height ?? 300 };
+    const size = this.pbuffers.get(xid) ?? this.host.drawableSize(xid) ?? { width: d?.width ?? 300, height: d?.height ?? 300 };
     if (d && d.width === size.width && d.height === size.height) return d;
     if (d) this.freeDrawable(d);
     d = this.makeDrawable(xid, Math.max(1, size.width), Math.max(1, size.height), cfg);

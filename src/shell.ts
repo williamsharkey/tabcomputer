@@ -6471,7 +6471,10 @@ export class Shell {
         if (ch === '}') {
           // Its } ends a command list (`{ echo }; }`: the first } is an argument)
           const before = current.replace(/[ \t]+$/, '');
-          const closes = /(^|[;&\n{}]|\bdone|\bfi|\besac)$/.test(before) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
+          // After a { or } only when that is a word of its own, apart from this one
+          // (`{ find . -exec echo {} \; ; }`, `-I{}`: the {} is an argument)
+          const afterBrace = /\s/.test(line[i - 1] ?? '') && /(^|[\s;&|()])[{}]$/.test(before);
+          const closes = (afterBrace || /(^|[;&\n]|\bdone|\bfi|\besac)$/.test(before)) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
           if (braceDepth > 0 && closes) { depth--; braceDepth--; }
           current += ch; i++; continue;
         }

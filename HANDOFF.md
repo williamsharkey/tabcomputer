@@ -13,7 +13,8 @@ Read this whole file once, then `AGENTS.md`, then the docs it points to.
 ## 0. Resume checklist (do these in order)
 
 1. **Environment.** A Claude Code cloud environment with:
-   - GitHub access (push) to `williamsharkey/shiro` and `williamsharkey/tabcomputer`.
+   - GitHub access (push) to `williamsharkey/tabcomputer`, the source repository
+     (§2). `williamsharkey/shiro` is a separate product; tabcomputer work doesn't go there.
    - Network: npm registry, GitHub (api, codeload, objects), Debian mirrors
      (deb.debian.org, snapshot.debian.org), busybox.net, jsdelivr/unpkg,
      api.digitalocean.com and api.porkbun.com (the coordinator only),
@@ -23,10 +24,9 @@ Read this whole file once, then `AGENTS.md`, then the docs it points to.
      - `DIGITALOCEAN_ACCESS_TOKEN`: droplet replacement only.
      - `PORKBUN_API_KEY` and `PORKBUN_SECRET_KEY`: DNS and the DNS-01 cert renewal.
      - `CLAUDE_CODE_OAUTH_TOKEN` (optional): only if an agent-CLI tester needs a real sign-in.
-2. **Coordinator clone.** Clone shiro, check out `unix/integration`, and add the
-   deploy remote: `git remote add tab https://github.com/williamsharkey/tabcomputer.git`.
+2. **Coordinator clone.** Clone tabcomputer and check out `main`.
 3. **Check what moved since this file.** Run `git fetch origin`, then list the
-   worker branches that are ahead of integration (§4). Some workers were still
+   worker branches that are ahead of `main` (§4). Some workers were still
    committing when the old account was paused.
 4. **Recreate the workers** (§6) from the template in §7. Each is told its
    branch, its scope and its in-flight task from §6.
@@ -171,21 +171,23 @@ coordinator session, which merges, tests, benchmarks and deploys.
 
 ## 2. Repositories and branches
 
-- **`williamsharkey/shiro`**: the source of truth for development.
-  - Workers develop on `unix/<area>` branches.
-  - The coordinator merges them into `unix/integration`.
-  - shiro.computer, the old product, is a separate deployment. Don't touch it.
-    It no longer serves `/pkg/`, so the pkg fallback mirror is now
-    tabcomputer.com (fa84cad).
-- **`williamsharkey/tabcomputer`**: the deploy mirror and the issue tracker.
-  - `main` mirrors `unix/integration`.
-  - Pushing to the `deploy` branch makes the droplet build and go live.
+- **`williamsharkey/tabcomputer`**: the source repository and the issue tracker.
+  - Workers develop on `unix/<area>` branches. They merge `main` into their
+    branch before pushing, and never push `main` or `deploy`.
+  - `main` is the integration branch. Only the coordinator moves it, by
+    fast-forward, to a merge it has tested (§4).
+  - `deploy` is the release trigger: the coordinator fast-forwards it to a
+    tested `main` commit and the droplet builds and goes live (§3). Each
+    release gets a line in docs/RELEASES.md (build number, commit, date); git
+    tags are blocked by the proxy.
   - Issues are filed here, including by Claude agents running inside tabcomputer.
-  - At handoff, every `unix/*` branch from shiro has also been pushed to
-    tabcomputer under the same names, so the new owner can make tabcomputer
-    canonical if wanted. If you do, repoint workers' `origin` and update this
-    file; until then shiro stays canonical.
-- **Remotes in the coordinator clone:** `origin` = shiro, `tab` = tabcomputer.
+- **`williamsharkey/shiro`**: a separate product, shiro.computer, the
+  lightweight one without the x86-64 emulator, with its own `main` and
+  `deploy.sh`. tabcomputer work doesn't go there. Its old `unix/*` branches and
+  `unix/integration` were copied to tabcomputer at the repo move (Build 971,
+  573f0a64). shiro.computer no longer serves `/pkg/`, so the pkg fallback
+  mirror is tabcomputer.com (fa84cad).
+- **Remotes in a clone:** `origin` = tabcomputer.
 
 ---
 
@@ -259,7 +261,9 @@ This ran every 2 h as a routine and between whenever workers reported. Steps:
    - Always pass `--config vitest.config.ts` from `tests/`. A run from the wrong cwd once "ran" 1275 files and no tests.
    - Rerun a lone failure in isolation before calling it real. Known timing flakes under load: `kernel-wasix` dash/bash pty, x86-engine POSIX-timer/futex cases, `toolchain-layers` "Killed".
    - `pkill -f "vitest run"` kills the calling shell (exit 144). That's expected.
-5. **Push and deploy.** `git push origin unix/integration`, then deploy (§3), then watch `deployed.txt`.
+5. **Push and deploy.** Fast-forward `main` (`git push origin HEAD:main`), then
+   fast-forward `deploy` to it (§3), add the release to docs/RELEASES.md, and
+   watch `deployed.txt`.
 6. **Benchmark** about every 2 h.
    - Run `npm run bench:quick -- --no-build --out bench/results/integration-<sha>-quick.json`.
    - Compare with `node bench/compare.mjs <prev>.json <new>.json`. It A/Bs candidate regressions on the same machine.

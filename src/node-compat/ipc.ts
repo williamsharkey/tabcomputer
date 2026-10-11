@@ -127,10 +127,17 @@ const closedError = () => Object.assign(new Error('Channel closed'), { code: 'ER
  */
 export function attachProcessIpc(proc: any, ipc: GuestIpc, events: Record<string, Function[]>, advanced = false): () => boolean {
   let refd = true;
+  // The channel's events come from the Worker's timers, not from the script: process.exit() in a
+  // listener (it throws ProcessExitError to unwind) ends the process there. Escaping, it was an
+  // uncaught error in the Worker, which the kernel ends with status 1 ("Uncaught Error:
+  // process.exit(0)"; a forked child's exit(0) on a 'message' read as 1). Other errors propagate.
+  const emitFromChannel = (event: string, ...args: unknown[]): boolean => {
+    try { proc.emit(event, ...args); return true; } catch (e) { if (e instanceof ProcessExitError) return false; throw e; }
+  };
   const disconnected = () => {
     if (!proc.connected) return;
     proc.connected = false;
-    queueMicrotask(() => proc.emit('disconnect'));
+    queueMicrotask(() => { emitFromChannel('disconnect'); });
   };
   proc.connected = true;
   proc.channel = { ref() { refd = true; }, unref() { refd = false; } };
@@ -138,7 +145,7 @@ export function attachProcessIpc(proc: any, ipc: GuestIpc, events: Record<string
     const cb = callbackOf(rest);
     if (!proc.connected) {
       const e = closedError();
-      queueMicrotask(() => (cb ? cb(e) : proc.emit('error', e)));
+      queueMicrotask(() => { if (!cb) emitFromChannel('error', e); else try { cb(e); } catch (x) { if (!(x instanceof ProcessExitError)) throw x; } });
       return false;
     }
     if (message === undefined) throw Object.assign(new TypeError('The "message" argument must be specified'), { code: 'ERR_MISSING_ARGS' });
@@ -160,7 +167,8 @@ export function attachProcessIpc(proc: any, ipc: GuestIpc, events: Record<string
   const flush = () => {
     waiting = false;
     if (!(events['message']?.length)) { if (pending.length && proc.connected) { waiting = true; later(flush, 5); } return; }
-    for (const m of pending.splice(0)) proc.emit('message', m, undefined);
+    // (once a listener exits, nothing more is delivered)
+    for (const m of pending.splice(0)) if (!emitFromChannel('message', m, undefined)) break;
   };
   const read = ipcReader((m) => { pending.push(m); if (!waiting) flush(); });
   ipc.onData((b) => { if (b) read(b); else disconnected(); });

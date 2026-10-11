@@ -134,6 +134,10 @@ const sysvshmBin = join(out, 'sysvshm');
 const haveSysvshm = 'SYS_shmget' in Abi && tryBuild('gcc', ['-static', '-O1', '-o', sysvshmBin, 'sysvshm.c']);
 const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
+const callretBin = join(out, 'callret');
+const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
+const callsBin = join(out, 'calls');
+const haveCalls = tryBuild('gcc', ['-static', '-O2', '-o', callsBin, 'calls.c']);
 const futexckptBin = join(out, 'futexckpt');
 const haveFutexckpt = tryBuild('gcc', ['-static', '-O1', '-o', futexckptBin, 'futexckpt.c']);
 const sysvsemBin = join(out, 'sysvsem');
@@ -1428,6 +1432,20 @@ describe('Blink engine: CPU and syscall fixes', () => {
       expect(r.output.replace(/\r\n/g, '\n')).toBe(NATIVE_SSE2D);
     }
   }, 60_000);
+
+  // small callees compiled into their caller's region, their rets going back
+  // inside it (BLINK_WJIT_OFF bit 21 turns that off); the outputs are native's
+  it.skipIf(!haveCallret || !haveCalls)('calls and returns match native, callees in the caller\'s region or not, and interpreted', async () => {
+    const { fs, shell } = await setup(readFileSync(callretBin));
+    await fs.writeFile('/home/user/work/calls', readFileSync(callsBin), { mode: 0o755 });
+    for (const env of ['', 'BLINK_WJIT_OFF=0x200000 ', 'BLINK_WJIT=0 ']) {
+      let r = await run(shell, `${env}./prog`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('fib 682000\ntwo_sites 729979e90c11aca0\nlongjmp 36020\n' +
+        'detour 6ee6d79c67ba74b0\npointers 7d2877d473ee2321\n');
+      r = await run(shell, `${env}./calls 1000000 2>/dev/null`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('calls b30fec670ff9ba2e\nmemory b328a7deb029a1df\nregs b730b7fef0aa8521\n');
+    }
+  }, 120_000);
 
   // LTP waitpid08/10: one of 8 forked children never woke from its checkpoint
   it.skipIf(!haveFutexckpt)('every wake a waker counts reaches a waiter (futex in shared memory, 8 children)', async () => {

@@ -1,0 +1,375 @@
+From bcd6465ed236470677a6885901f5c711d565dccd Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 07:40:37 +0000
+Subject: [PATCH] Shiro: small callees compile into their caller's region;
+ bigger TLBs and a one-compare TLB check
+
+A region now takes in the whole of a small function it calls directly
+(every block its direct branches reach: at most 6 blocks of 64
+instructions, its own calls likewise two levels down), and a ret whose
+address is one of the region's return points goes on there inside the
+region. A function that doesn't fit is left out entirely: running part
+of it in the caller's region would leave the region in the middle of it,
+which costs more than calling it through WjCall. BLINK_WJIT_OFF bit 21
+turns this off.
+
+The JIT's translation caches (Machine::wjr/wjw) grow from 256 to 4096
+pages and FindPageTableEntry's TLB from 32 to 1024: native Claude Code's
+heap thrashed both (TLB refills were ~3 s of a 50 s start). A cache hit
+is one compare: the entry for an access's first page has to hold the page
+of its last byte, which a page-crossing access's doesn't; the entry keeps
+host page - guest page, so the host address is one add.
+
+SHIRO_BLINK_PROFILE also writes the guest instructions run in compiled
+code per region (SHIRO_BLINK_PROFILE_REGIONS=n lists n), region entries
+by path (the interpreter, WjExecute's chain, WjCall) and TLB resets.
+---
+ blink/machine.h |   2 +-
+ blink/reset.c   |   2 +
+ blink/wjit.c    | 154 +++++++++++++++++++++++++++++++++++++++++++-----
+ blink/wjit.h    |   4 +-
+ 4 files changed, 143 insertions(+), 19 deletions(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 0d7fdbf..0acfc8d 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -480,7 +480,7 @@ struct Machine {               //
+   bool boop;                             //
+   i8 trapno;                             //
+   i8 segvcode;                           //
+-  struct MachineTlb tlb[32];             //
++  struct MachineTlb tlb[1024];           //
+   sigjmp_buf onhalt;                     //
+   struct sigaltstack_linux sigaltstack;  //
+   i64 robust_list;                       //
+diff --git a/blink/reset.c b/blink/reset.c
+index 04112e3..049f8e1 100644
+--- a/blink/reset.c
++++ b/blink/reset.c
+@@ -98,8 +98,10 @@ void ResetCpu(struct Machine *m) {
+   ResetFpu(m);
+ }
+ 
++long g_shiro_tlb_resets;  // (SHIRO_BLINK_PROFILE)
+ void ResetTlb(struct Machine *m) {
+   STATISTIC(++tlb_resets);
++  ++g_shiro_tlb_resets;
+   memset(m->tlb, 0, sizeof(m->tlb));
+   WjResetTlb(m);
+   m->opcache->codevirt = 0;
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 064761f..6f8dd72 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -96,6 +96,8 @@ static _Atomic(unsigned) g_wj_epoch;
+ static long g_wj_callops[0x400];
+ static i64 g_wj_dyncalls[0x400];  // BLINK_WJIT_DEBUG=2: fallbacks executed
+ static _Thread_local long t_runs;
++// region entries by path (SHIRO_BLINK_PROFILE): [0] Actor, [1] WjExecute's chain, [2] WjCall
++long g_wj_ents[3];
+ static _Thread_local int t_depth, t_slice;
+ static _Thread_local bool t_unwind;
+ static _Atomic(long) g_wj_blocks, g_wj_bytes, g_wj_failed, g_wj_insns,
+@@ -458,6 +460,7 @@ struct Blk {
+ };
+ 
+ struct Cg {
++  i64 *cnt;  // SHIRO_BLINK_PROFILE's instruction counter for the region
+   struct Mod *mod;
+   struct Blk blk[kMaxBlocks];
+   int nblk;
+@@ -547,12 +550,12 @@ static void WjFill(struct Machine *m, i64 v, bool write) {
+   t = write ? m->wjw : m->wjr;
+   t += (v >> 12) & (WJ_TLB_SIZE - 1);
+   t->tag = v & -4096;
+-  t->host = (u32)(uintptr_t)host;
++  t->host = (u32)(uintptr_t)host - (u32)(v & -4096);
+   if (!write && (entry & PAGE_RW)) {
+     // a readable+writable page can go in both caches
+     t = m->wjw + ((v >> 12) & (WJ_TLB_SIZE - 1));
+     t->tag = v & -4096;
+-    t->host = (u32)(uintptr_t)host;
++    t->host = (u32)(uintptr_t)host - (u32)(v & -4096);
+   }
+ }
+ 
+@@ -590,7 +593,7 @@ static u32 WjXlat(struct Machine *m, i64 v, int n, int write) {
+   WjFill(m, v, write);
+   t = (write ? m->wjw : m->wjr) + ((v >> 12) & (WJ_TLB_SIZE - 1));
+   if (t->tag != (v & -4096)) return 0;
+-  return t->host + (v & 4095);
++  return t->host + (u32)v;
+ }
+ 
+ // xmm register `r` <-> n bytes of guest memory, the slow way (misses,
+@@ -866,7 +869,9 @@ static void Ea(struct Cg *g, struct Ins *in, bool seg) {
+ }
+ 
+ // pushes the i32 condition "L_EA hits the cache and doesn't cross a page"
+-// and leaves the entry's address in L_E
++// and leaves the entry's address in L_E: the entry for L_EA's page has to
++// hold the page of the access's last byte, which a page-crossing access's
++// isn't
+ static void TlbCheck(struct Cg *g, int w, u32 table) {
+   Get(g, L_EA);
+   I64(g, 12);
+@@ -881,27 +886,21 @@ static void TlbCheck(struct Cg *g, int w, u32 table) {
+   Tee(g, L_E);
+   Mem(g, W_I64_LOAD, 3, table);
+   Get(g, L_EA);
++  if (w > 1) {
++    I64(g, w - 1);
++    Op(g, W_I64_ADD);
++  }
+   I64(g, -4096);
+   Op(g, W_I64_AND);
+   Op(g, W_I64_EQ);
+-  if (w > 1) {
+-    Get(g, L_EA);
+-    Op(g, W_I32_WRAP_I64);
+-    I32(g, 4095);
+-    Op(g, W_I32_AND);
+-    I32(g, 4096 - w);
+-    Op(g, W_I32_LE_U);
+-    Op(g, W_I32_AND);
+-  }
+ }
+ 
++// the entry holds host page - guest page (mod 2^32)
+ static void HostAddr(struct Cg *g, u32 table) {
+   Get(g, L_E);
+   Mem(g, W_I32_LOAD, 2, table + 8);
+   Get(g, L_EA);
+   Op(g, W_I32_WRAP_I64);
+-  I32(g, 4095);
+-  Op(g, W_I32_AND);
+   Op(g, W_I32_ADD);
+ }
+ 
+@@ -3405,6 +3404,34 @@ static void CallAndResume(struct Cg *g, struct Ins *in, i64 ret) {
+   Goto(g, ret);
+ }
+ 
++// a ret to the instruction after one of the region's calls goes on there
++// (a callee compiled into its caller's region returns without leaving it)
++static void RetInRegion(struct Cg *g) {
++  int i, j, n = 0;
++  i64 rp[8];
++  struct Ins *c;
++  if (g_wj_off & (1 << 21)) return;
++  for (i = 0; i < g->n && n < 8; ++i) {
++    c = &g->in[i];
++    if (Mopcode(c->rde) != 0x0E8 &&
++        !(Mopcode(c->rde) == 0x0FF && ModrmReg(c->rde) == 2)) {
++      continue;
++    }
++    for (j = 0; j < n && rp[j] != c->pc + c->len; ++j) {
++    }
++    if (j < n || FindBlk(g, c->pc + c->len) < 0) continue;
++    rp[n++] = c->pc + c->len;
++  }
++  for (j = 0; j < n; ++j) {
++    Get(g, L_T);
++    I64(g, rp[j]);
++    Op(g, W_I64_EQ);
++    If(g, T_VOID);
++    Goto(g, rp[j]);
++    End(g);
++  }
++}
++
+ static void Translate(struct Cg *g, struct Ins *in) {
+   u64 rde = in->rde;
+   int op = Mopcode(rde);
+@@ -3604,6 +3631,7 @@ static void Translate(struct Cg *g, struct Ins *in) {
+     case 0x0C3:  // ret
+       Pop64(g, in);
+       Set(g, L_T);
++      RetInRegion(g);
+       ExitToT(g);
+       return;
+     case 0x0E9:
+@@ -3801,7 +3829,48 @@ static void SortBlocks(struct Cg *g) {
+   }
+ }
+ 
+-// collects the blocks reachable from `pc` through direct branches
++// Adds the whole of a small function called from the region (every block
++// its direct branches reach, at most 6 blocks of 64 instructions, its own
++// calls likewise down to `depth`), so its rets come back inside the region
++// (RetInRegion). A function that doesn't fit, or leaves through an indirect
++// jump, isn't added at all: running part of it here would leave the region
++// in the middle of it, which costs more than calling it through WjCall.
++static bool Inline(struct Cg *g, i64 target, int depth) {
++  int nblk0 = g->nblk, n0 = g->n, nq = 0, head = 0, k, op;
++  i64 q[16], pc;
++  struct Ins *last;
++  if (FindBlk(g, target) >= 0) return true;
++  q[nq++] = target;
++  while (head < nq) {
++    pc = q[head++];
++    if (FindBlk(g, pc) >= 0) continue;
++    if (g->nblk - nblk0 >= 6 || !DecodeBlock(g, pc) || g->n - n0 > 64) goto undo;
++    k = g->nblk - 1;
++    last = &g->in[g->blk[k].first + g->blk[k].n - 1];
++    op = Mopcode(last->rde);
++    if (last->how == HOW_CALL_BRANCH || op == 0x0FF || op == 0x0C2) goto undo;
++    if (nq > 12) goto undo;
++    if (IsJcc(op)) {
++      q[nq++] = last->pc + last->len + last->disp;
++      q[nq++] = g->blk[k].end;
++    } else if (op == 0x0E9 || op == 0x0EB) {
++      q[nq++] = last->pc + last->len + last->disp;
++    } else if (op == 0x0E8) {
++      q[nq++] = g->blk[k].end;
++      if (depth > 1) Inline(g, last->pc + last->len + last->disp, depth - 1);
++    } else if (op != 0x0C3) {
++      q[nq++] = g->blk[k].end;
++    }
++  }
++  return true;
++undo:
++  g->nblk = nblk0;
++  g->n = n0;
++  return false;
++}
++
++// collects the blocks reachable from `pc` through direct branches, and the
++// small functions it calls (Inline)
+ static bool Discover(struct Cg *g, i64 pc) {
+   int k, op, head = 0;
+   i64 q[kMaxBlocks * 2 + 2];
+@@ -3827,6 +3896,7 @@ static bool Discover(struct Cg *g, i64 pc) {
+       q[nq++] = last->pc + last->len + last->disp;
+     } else if (op == 0x0E8) {
+       q[nq++] = g->blk[k].end;  // where the callee returns to
++      if (!(g_wj_off & (1 << 21))) Inline(g, last->pc + last->len + last->disp, 2);
+     } else if (op != 0x0C3 && op != 0x0FF) {
+       q[nq++] = g->blk[k].end;
+     }
+@@ -3834,6 +3904,16 @@ static bool Discover(struct Cg *g, i64 pc) {
+   return g->nblk > 0;
+ }
+ 
++// SHIRO_BLINK_PROFILE: guest instructions run in compiled code, per region
++// (each block adds its length when it's entered)
++extern bool g_shiro_prof;
++#define WJ_PROF_REGIONS 65536
++static struct WjProfRegion {
++  i64 pc;
++  i64 n;
++} g_wj_prof_region[WJ_PROF_REGIONS];
++static _Atomic(int) g_wj_prof_nregion;
++
+ static void Body(struct Cg *g) {
+   int i, k, r, pass;
+   struct Ins *in;
+@@ -3862,6 +3942,14 @@ static void Body(struct Cg *g) {
+       g->cur = k;
+       g->base = g->nblk - 1 - k;
+       g->depth = 0;
++      if (g->cnt) {
++        I32(g, 0);
++        I32(g, 0);
++        Mem(g, W_I64_LOAD, 3, (u32)(uintptr_t)g->cnt);
++        I64(g, b->n);
++        Op(g, W_I64_ADD);
++        Mem(g, W_I64_STORE, 3, (u32)(uintptr_t)g->cnt);
++      }
+       for (i = b->first; i < b->first + b->n; ++i) {
+         in = &g->in[i];
+         if (pass && in->how == HOW_INLINE) ++g_wj_inline;
+@@ -4089,8 +4177,32 @@ static void Stats(void) {
+ 
+ // SHIRO_BLINK_PROFILE: the instructions compiled code hands to Blink's
+ // handlers most often (each such call leaves the compiled block's registers)
++static int WjProfByCount(const void *a, const void *b) {
++  i64 p = g_wj_prof_region[*(const int *)a].n, q = g_wj_prof_region[*(const int *)b].n;
++  return p < q ? 1 : p > q ? -1 : 0;
++}
++
+ int WjProfText(char *b, int n, int cap) {
+   int i, j, best, done[24];
++  extern long g_shiro_tlb_resets;
++  n += snprintf(b + n, cap - n, "\ncompiled regions entered: %ld from the interpreter, %ld chained by WjExecute, %ld by WjCall; %ld TLB resets\n",
++                g_wj_ents[0], g_wj_ents[1], g_wj_ents[2], g_shiro_tlb_resets);
++  {
++    int nr = atomic_load(&g_wj_prof_nregion), r, *idx;
++    int ntop = getenv("SHIRO_BLINK_PROFILE_REGIONS") ? atoi(getenv("SHIRO_BLINK_PROFILE_REGIONS")) : 20;
++    i64 sum = 0;
++    if (nr > WJ_PROF_REGIONS) nr = WJ_PROF_REGIONS;
++    for (r = 0; r < nr; ++r) sum += g_wj_prof_region[r].n;
++    n += snprintf(b + n, cap - n, "guest instructions run in compiled code: %lld (%d regions); the most:\n", (long long)sum, nr);
++    if ((idx = (int *)malloc(nr * sizeof(int)))) {
++      for (r = 0; r < nr; ++r) idx[r] = r;
++      qsort(idx, nr, sizeof(int), WjProfByCount);
++      for (r = 0; r < nr && r < ntop && cap - n > 80; ++r) {
++        n += snprintf(b + n, cap - n, "  %#14llx %12lld\n", (long long)g_wj_prof_region[idx[r]].pc, (long long)g_wj_prof_region[idx[r]].n);
++      }
++      free(idx);
++    }
++  }
+   n += snprintf(b + n, cap - n, "\ncompiled code's calls to Blink's handlers (not inlined)\nopcode          calls\n");
+   for (j = 0; j < 24 && cap - n > 100; ++j) {
+     for (best = -1, i = 0; i < 0x400; ++i) {
+@@ -4124,6 +4236,13 @@ static int Compile(struct Machine *m, i64 pc) {
+   }
+   SortBlocks(g);
+   Plan(g);
++  if (UNLIKELY(g_shiro_prof)) {
++    int i = atomic_fetch_add(&g_wj_prof_nregion, 1);
++    if (i < WJ_PROF_REGIONS) {
++      g_wj_prof_region[i].pc = pc;
++      g->cnt = &g_wj_prof_region[i].n;
++    }
++  }
+   Body(g);
+   if (!Assemble(&mod, &g->b, g->nblk, out, pc)) {
+     for (k = 0; k < g->nblk; ++k) {
+@@ -4277,6 +4396,7 @@ int WjExecute(struct Machine *m) {
+     int k;
+     ((wj_f)(uintptr_t)e->fn)(m);
+     ++t_runs;
++    if (UNLIKELY(g_shiro_prof)) ++g_wj_ents[0];
+     // straight on to the next block when it has code (an indirect jmp's
+     // target, a block that ended at its length limit), rather than back
+     // through Actor's loop: bounded, so the GIL slice and signals still come
+@@ -4288,6 +4408,7 @@ int WjExecute(struct Machine *m) {
+       }
+       ((wj_f)(uintptr_t)e->fn)(m);
+       ++t_runs;
++      if (UNLIKELY(g_shiro_prof)) ++g_wj_ents[1];
+     }
+     return 1;
+   }
+@@ -4341,6 +4462,7 @@ static int WjCall(struct Machine *m, i64 ret) {
+     }
+     if (!(e = Find(m->ip)) || e->fn <= 0) break;
+     ++t_runs;
++    if (UNLIKELY(g_shiro_prof)) ++g_wj_ents[2];
+     ((wj_f)(uintptr_t)e->fn)(m);
+     if (t_unwind || !m->wjhot) break;
+   }
+diff --git a/blink/wjit.h b/blink/wjit.h
+index f77d4bb..1e1e184 100644
+--- a/blink/wjit.h
++++ b/blink/wjit.h
+@@ -8,12 +8,12 @@
+ // Hot basic blocks become small wasm modules that share the guest memory
+ // and the function table; the interpreter loop (Actor) calls them.
+ 
+-#define WJ_TLB_BITS 8
++#define WJ_TLB_BITS 12
+ #define WJ_TLB_SIZE (1 << WJ_TLB_BITS)
+ 
+ struct WjTlb {
+   i64 tag;   // guest page, or -1
+-  u32 host;  // host address of the page
++  u32 host;  // host address of the page - the guest page (mod 2^32)
+   u32 pad;
+ };
+ 
+-- 
+2.43.0
+

@@ -82,6 +82,14 @@ export const npxCmd: Command = {
     // The package's command reads npx's own (piped) stdin
     const runBin = (line: string) => ctx.stdin ? ctx.shell.executeWithStdin(line, ctx.stdin, out, err) : run(line);
 
+    // The project's own (node_modules/.bin, from here up), as npm's npx: before a command of
+    // the same name (`npx jest` ran Shiro's test runner, not the project's jest)
+    for (let d = ctx.cwd || '/'; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
+      const local = `${d === '/' ? '' : d}/node_modules/.bin/${binName}`;
+      if (await ctx.fs.exists(local)) return runBin(buildCmdLine(local, passthrough));
+      if (d === '/') break;
+    }
+
     // Check if binary already exists in PATH
     const existingBin = await ctx.shell.findExecutableInPath(binName);
     if (existingBin) {

@@ -64,6 +64,30 @@ const VENDOR = 'tabcomputer in-page X server';
 const RELEASE = 12101011;
 export const SERVER_DEFAULTS = { width: 1600, height: 1000 };
 
+/**
+ * A copy of `pix`'s area (x, y, w, h) with a GL frame (RGBA, top row first,
+ * at the window's origin) over it: what a GL window shows, since its frames
+ * go to a canvas over the window and not into its pixels (gl-surface.ts).
+ */
+export function withGLFrame(pix: Pix, frame: { width: number; height: number; data: Uint8ClampedArray }, x: number, y: number, w: number, h: number): Pix {
+  const out = new Pix(w, h, pix.depth);
+  const opaque = pix.depth === 32 ? 0 : 0xff000000;
+  for (let j = 0; j < h; j++) {
+    const py = y + j;
+    for (let i = 0; i < w; i++) {
+      const px = x + i;
+      let v = px >= 0 && py >= 0 && px < pix.width && py < pix.height ? pix.data[py * pix.width + px] : 0;
+      if (px >= 0 && py >= 0 && px < frame.width && py < frame.height) {
+        const o = (py * frame.width + px) * 4, f = frame.data;
+        const a = opaque ? 255 : f[o + 3];
+        v = (((opaque || a << 24) | ((f[o] * a / 255) << 16) | ((f[o + 1] * a / 255) << 8) | (f[o + 2] * a / 255)) & pix.mask) >>> 0;
+      }
+      out.data[j * w + i] = v;
+    }
+  }
+  return out;
+}
+
 export class XWindow {
   children: XWindow[] = [];          // bottom → top
   mapped = false;
@@ -215,6 +239,8 @@ export class XServer {
   hooks: ServerHooks = {};
   /** Makes GL surfaces (the rootless display, gl-surface.ts); null: no display to show them on. */
   glSurfaceProvider: ((w: XWindow) => GLSurface) | null = null;
+  /** The GL frame a window's surface shows (RGBA, top row first), for GetImage; null when it has none. */
+  glFrame: ((w: XWindow) => { width: number; height: number; data: Uint8ClampedArray } | null) | null = null;
   keymap = new Keymap();
   private selections = new Map<number, { win: XWindow; client: Client; time: number }>();
   // input state
@@ -1850,7 +1876,9 @@ export class XServer {
       if (!d.win) throw new XError(P.BadMatch, 0);
     }
     const visual = d.win ? d.win.visual : 0;
-    const img = format === 2 ? encodeZImage(d.pix, x, y, w, h, planeMask) : encodeXYImage(d.pix, x, y, w, h, planeMask);
+    const frame = d.win && this.glFrame ? this.glFrame(d.win) : null;
+    const [src, sx, sy] = frame ? [withGLFrame(d.pix, frame, x, y, w, h), 0, 0] : [d.pix, x, y];
+    const img = format === 2 ? encodeZImage(src, sx, sy, w, h, planeMask) : encodeXYImage(src, sx, sy, w, h, planeMask);
     this.reply(c, d.depth, c.writer().u32(visual).zero(20), img);
   }
 

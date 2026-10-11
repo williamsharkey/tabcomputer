@@ -340,6 +340,8 @@ export const O_CREAT = 0o100;
 export const O_EXCL = 0o200;
 export const O_NOCTTY = 0o400;
 export const O_TRUNC = 0o1000;
+/** Flags that only steer open() itself: Linux doesn't keep them in the description (F_GETFL, /proc/PID/fdinfo) */
+export const O_OPEN_ONLY = O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC;
 export const O_APPEND = 0o2000;
 export const O_NONBLOCK = 0o4000;
 export const O_DSYNC = 0o10000;

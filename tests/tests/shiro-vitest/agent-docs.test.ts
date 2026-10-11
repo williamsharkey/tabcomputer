@@ -39,7 +39,9 @@ describe('agent docs', () => {
     expect(md).toContain('You are on tabcomputer (tabcomputer.com)');
     expect(md).toContain('`doctor`');
     expect(md).toContain('https://github.com/williamsharkey/tabcomputer');
-    expect(md).toContain('not checked out');
+    expect(md).toContain('hotswap checkout');
+    expect(md).toContain('hotswap watch -d');
+    expect(md).toContain('hotswap test --changed');
     expect(md).toContain("runs on its own page");
     expect(md).not.toMatch(/NEO\.md|shiro-context|src\/main\.ts/);
     expect(CLAUDE_MD).toBe('@AGENTS.md\n');

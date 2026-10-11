@@ -35,13 +35,19 @@ export interface WorkerRunnerOptions {
   dataSize?: number;
   /** Extra fields for the start message (module URL, wasm bytes, ...). */
   startData?: Record<string, unknown>;
+  /**
+   * The channel takes a signal for the guest as it comes (default), to hand
+   * over on its next reply. False: only when it replies (Blink with direct
+   * channels, whose threads' own replies must get it first).
+   */
+  listen?: boolean;
 }
 
 /** A Runner that starts `createWorker()` as the process. */
 export function workerRunner(createWorker: (proc: Process) => GuestWorker, opts: WorkerRunnerOptions = {}): Runner {
   return (proc: Process, kernel: Kernel) => new Promise<number | void>(resolve => {
     const sab = createChannelBuffer(opts.dataSize);
-    const channel = new KernelChannel(sab, kernel, proc);
+    const channel = new KernelChannel(sab, kernel, proc, { listen: opts.listen });
     const worker = createWorker(proc);
     proc.data.worker = worker;
     proc.data.channel = channel;

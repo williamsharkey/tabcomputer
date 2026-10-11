@@ -25,6 +25,7 @@ hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build'
 - `hotswap revert [--all]` undoes the newest swap, or all of them. `hotswap status` lists what's applied, what each swap changed, and the time left on its TTL.
 - `hotswap confirm --persist` also saves the confirmed swaps in IndexedDB, and boot re-applies them before `~/.profile` runs. That happens only on the same build (`__BUILD_SHA__` plus the build number): a new deploy discards them. Safe mode (`?safe=1`, or the automatic one) and `?hotswap=0` skip them, and `hotswap persisted [clear]` shows or drops them. A swap you never confirmed is never persisted, so a reload always gets rid of it.
 - Out of band: `window.__tabcomputer.hotswap.revert(true)` from devtools, or the shiro-mcp `eval` of a remote session.
+- A swap that freezes the page (a loop that never yields) stops the TTL timer too. The watchdog's abort (`watchdog abort`, shiro-mcp `abort`) breaks loops that pass the shell's yield points. Otherwise reload: an unconfirmed swap is gone after a reload, though the reload also ends the agent's session. If a persisted swap freezes the boot, the tab goes into safe mode by itself after two loads that never reach the prompt, and safe mode skips persisted swaps.
 
 ## Testing in the tab
 

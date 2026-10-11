@@ -98,8 +98,14 @@ export const hotswapCmd: Command = {
     ensureNotifier();
 
     if (sub === 'status') {
-      if (!hotswap.stack.length) { ctx.stdout += 'No swaps applied.\n'; return 0; }
+      if (!hotswap.stack.length) ctx.stdout += 'No swaps applied.\n';
       for (const r of hotswap.stack) ctx.stdout += line(r) + '\n' + describe(r.report);
+      // Anything else live that isn't the page's own (#47): kernel hooks added since boot,
+      // and what the last `hotswap test` run had changed (restored then)
+      const { foreignKernelHooks, lastTestLeftovers } = await import('../hotswap/leftovers');
+      for (const f of foreignKernelHooks()) ctx.stdout += `live: ${f}\n`;
+      const t = lastTestLeftovers();
+      if (t?.changed.length) ctx.stdout += `last hotswap test (${new Date(t.at).toLocaleTimeString()}) changed, and the runner restored: ${t.changed.join('; ')}\n`;
       return 0;
     }
 
@@ -253,6 +259,8 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
     });
     for (const e of sum.errors) out(` \u00d7 ${e.split('\n').join('\n     ')}\n`);
     out(` ${sum.failed ? 'FAIL' : 'PASS'} ${rel}: ${sum.passed} passed${sum.failed ? `, ${sum.failed} failed` : ''}${sum.skipped ? `, ${sum.skipped} skipped` : ''} (${(sum.ms / 1000).toFixed(1)}s)\n`);
+    // (what the suite's copies changed in the live page, put back: #47)
+    if (sum.restored?.length) out(`   restored in the page after the run: ${sum.restored.join('; ')}\n`);
     failed += sum.failed; passed += sum.passed; skipped += sum.skipped;
   }
   if (names.length > 1) out(`Tests: ${passed} passed${failed ? `, ${failed} failed` : ''}${skipped ? `, ${skipped} skipped` : ''}\n`);

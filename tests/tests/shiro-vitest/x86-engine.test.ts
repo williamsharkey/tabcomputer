@@ -140,6 +140,10 @@ const flagfuseBin = join(out, 'flagfuse');
 const haveFlagfuse = tryBuild('gcc', ['-static', '-O1', '-o', flagfuseBin, 'flagfuse.c']);
 const spinhandoffBin = join(out, 'spinhandoff');
 const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
+const ntstoreBin = join(out, 'ntstore');
+const haveNtstore = tryBuild('gcc', ['-static', '-O2', '-o', ntstoreBin, 'ntstore.c']);
+const ssebitsBin = join(out, 'ssebits');
+const haveSsebits = tryBuild('gcc', ['-static', '-O2', '-o', ssebitsBin, 'ssebits.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1615,6 +1619,28 @@ describe('Blink engine: CPU and syscall fixes', () => {
     expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
     expect(Date.now() - t0).toBeLessThan(15_000);
   }, 60_000);
+
+  // andps/andnps/orps and the pd forms, compiled as v128 and/andnot/or (0141).
+  // (A misaligned memory operand faults natively; Blink's interpreter doesn't
+  // check that one, so only JIT on and off are compared there.)
+  it.skipIf(!haveSsebits)('andps, andnps, orps and their pd forms match native, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(ssebitsBin));
+    const on = (await run(shell, './prog')).output.replace(/\r\n/g, '\n');
+    const off = (await run(shell, 'BLINK_WJIT=0 ./prog')).output.replace(/\r\n/g, '\n');
+    expect(on.split('\n')[0]).toBe('ssebits bbebdb0582b4e9e3');
+    expect(on).toBe(off);
+  }, 60_000);
+
+  // non-temporal stores (glibc's large memcpy/memset), compiled inline as aligned
+  // stores (patch 0140); a misaligned movntdq still faults
+  it.skipIf(!haveNtstore)('movntps and movntdq copy, and fault when misaligned, as native, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(ntstoreBin));
+    const native = 'movntps 40a150ff03fd0383\nmovntdq 40a150ff03fd0383\nmemset d1790b7b799d0383\nmemcpy fed8a3bb674c9713\n';
+    for (const env of ['', 'BLINK_WJIT=0 ']) {
+      const r = await run(shell, `${env}./prog`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe(native.repeat(3) + 'misaligned movntdq faults 300 of 300\n');
+    }
+  }, 120_000);
 
   // a fused cmp+setcc across an instruction that writes no flags: movd/movq and
   // scalar SSE arithmetic used the producer's locals as scratch (Firefox's

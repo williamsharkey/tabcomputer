@@ -1,0 +1,47 @@
+From b632ee148e81298786d3895e741bc1d0fe211b60 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 11:54:23 +0000
+Subject: [PATCH] Shiro: compiled code does movntps/movntpd/movntdq itself
+ (glibc's large memcpy and memset: 306 -> 2260 MB/s)
+
+The non-temporal stores glibc's memcpy and memset use past the cache size
+went to Blink's handler, one call per 16 bytes. Compiled as an aligned
+16-byte store (non-temporal is only a cache hint), with movaps's alignment
+exit (a misaligned operand is the interpreter's #GP).
+---
+ blink/wjit.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 1bbcb94..0c95eeb 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -1953,6 +1953,12 @@ static void Analyze(struct Ins *in) {
+     case 0x129:
+       if (Rep(rde)) goto Call;
+       return;
++    case 0x12B:  // movntps/movntpd Mx,Vx (non-temporal: a plain aligned store here)
++      if (Rep(rde) || IsModrmRegister(rde)) goto Call;
++      return;
++    case 0x1E7:  // movntdq Mx,Vx (66; without it, mmx movntq)
++      if (!Osz(rde) || Rep(rde) || IsModrmRegister(rde)) goto Call;
++      return;
+     case 0x16F:  // movdqa/movdqu Vx,Wx
+     case 0x17F:
+       if (!Osz(rde) && Rep(rde) != 3) goto Call;  // mmx movq
+@@ -3714,6 +3720,12 @@ static void Translate(struct Cg *g, struct Ins *in) {
+       }
+       return;
+     }
++    case 0x12B:  // movntps/movntpd/movntdq: glibc's memcpy and memset past the
++    case 0x1E7:  // cache size (each went to Blink's handler: 300 MB/s copies)
++      Ea(g, in, true);
++      AlignOrExit(g, in);
++      XmmStore(g, in, RexrReg(rde), 16);
++      return;
+     case 0x157:
+       Get(g, L_M);
+       Get(g, L_M);
+-- 
+2.43.0
+

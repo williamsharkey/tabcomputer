@@ -114,6 +114,12 @@ APPS = {
 # Kept whenever they are in the closure: glibc dlopens libgcc_s; fontconfig needs /etc/fonts.
 ALWAYS = {'libgcc-s1', 'fontconfig-config'}
 
+# A library that embeds an interpreter needs that interpreter's runtime, which SKIP leaves out (it's there to keep
+# python3/perl for maintainer scripts away): the packages, and globs whose ELF libraries are kept like plug-ins'.
+# Blender links libpython3.11 and failed with "init_fs_encoding ... No module named 'encodings'" without its stdlib.
+# (libpurple0's libperl5.36 is only for Pidgin's optional Perl plug-in loader, so it isn't here.)
+EMBEDS = {'libpython3.11': (['libpython3.11-minimal', 'libpython3.11-stdlib'], ['usr/lib/python3.11/lib-dynload/*.so'])}
+
 # Plug-ins kept only when the startup set already has their libraries; the
 # others are deleted at install (GIMP queries every plug-in on first start).
 # Settings written into the user's home before a launch, when the file isn't there
@@ -291,6 +297,10 @@ def main():
         # GTK icon themes (Adwaita's symbolic icons, GIMP's theme) are SVG: their pixbuf loader comes too
         if kind in ('gtk2', 'gtk3') and 'librsvg2-common' not in extra: extra = extra + ['librsvg2-common']
         names = closure(db, prov, roots + extra)
+        for lib, (pkgs, globs) in EMBEDS.items():
+            if lib in names and not set(pkgs) <= set(names):
+                extra, plugins = extra + pkgs, plugins + globs
+                names = closure(db, prov, roots + extra)
         root = os.path.join(work, app)
         shutil.rmtree(root, ignore_errors=True)
         os.makedirs(root)

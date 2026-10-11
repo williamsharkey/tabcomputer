@@ -250,6 +250,7 @@ async function ghDispatch(ctx: CommandContext, sub: string): Promise<number> {
             if (typeof localStorage !== 'undefined') localStorage.setItem(GITHUB_TOKEN_KEY, t);
             ctx.env['GITHUB_TOKEN'] = t;
             ctx.stdout = `Logged in. Token saved.\n`;
+            await ensureGitIdentity(ctx.fs, t).catch(() => {}); // and gh's credential helper for the full git
           } else {
             return 1;
           }
@@ -264,15 +265,22 @@ async function ghDispatch(ctx: CommandContext, sub: string): Promise<number> {
           if (!token) { ctx.stderr = 'no oauth token found for github.com\n'; return 1; }
           ctx.stdout = token + '\n';
         } else if (authSub === 'setup-git') {
-          // Shiro's git already uses the gh token for github.com remotes
+          // The builtin git uses the token itself; the full git (pkg install git) asks this helper
           if (!token) { ctx.stderr = 'You are not logged into any GitHub hosts. Run gh auth login first.\n'; return 1; }
+          const { ensureGitCredentialHelper } = await import('../git-credential');
+          await ensureGitCredentialHelper(ctx.fs);
+        } else if (authSub === 'git-credential') {
+          // git's credential protocol, as real gh's helper: `!gh auth git-credential get`
+          const { credentialAnswer } = await import('../git-credential');
+          const answer = credentialAnswer(ctx.args[2] ?? '', ctx.stdin || '', token);
+          if (answer) ctx.stdout = answer;
         } else if (authSub === 'logout') {
           if (typeof localStorage !== 'undefined') localStorage.removeItem('tabcomputer_github_token');
           delete ctx.env['GITHUB_TOKEN'];
           delete ctx.env['GH_TOKEN'];
           ctx.stdout = 'Logged out.\n';
         } else {
-          ctx.stderr = `gh auth: '${authSub}' is not a valid subcommand. Valid: login, logout, refresh, status, token, setup-git\n`;
+          ctx.stderr = `gh auth: '${authSub}' is not a valid subcommand. Valid: login, logout, refresh, status, token, setup-git, git-credential\n`;
           return 1;
         }
         return 0;

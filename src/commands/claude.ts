@@ -81,7 +81,9 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // allow rule older Shiro seeded, which current Claude Code warns about)
   try {
     const { ensureClaudeBootstrap } = await import('../claude-config');
-    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user' });
+    // tui "default" when unset: accepting 2.1.296's "Try the new fullscreen renderer?"
+    // relaunches it with execve, which hangs under Blink from a threaded process (tabcomputer#41)
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user', defaultTui: 'default' });
   } catch { /* settings are Claude's own business; never block the run */ }
   // JSC's JIT costs more than it saves under Blink: -p took 85 s without it
   // and 107 s with it (musl build, docs/COMPAT.md). Export BUN_JSC_useJIT=1 to keep it.
@@ -93,8 +95,33 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   const { nativeClaudeVersion } = await import('./claude-native');
   const version = await nativeClaudeVersion(ctx.fs, path, raw as Uint8Array);
   const build = `TABCOMPUTER_CLAUDE_BUILD=native TABCOMPUTER_CLAUDE_VERSION=${quote(version ?? 'unknown')} `;
-  const line = jit + links + build + [path, ...args].map(quote).join(' ');
+  // grep/find/rg in the agent's shell and its search tools: tabcomputer's (~1 ms) rather than
+  // the 240 MB binary re-run as ugrep/bfs/rg in Blink (300-1400 ms each, tabcomputer#42)
+  const search = nativeSearchSetup(args, ctx.env);
+  const line = jit + links + build + search.env + [path, ...search.args].map(quote).join(' ');
   return ctx.shell.execute(line, (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+}
+
+const CLAUDE_SUBCOMMANDS = new Set(['auth', 'mcp', 'config', 'doctor', 'install', 'update', 'upgrade', 'plugin', 'setup-token', 'migrate-installer']);
+
+/**
+ * Native Claude Code's search, pointed at tabcomputer's programs. By default it
+ * replaces the Bash tool's grep and find with functions that re-run its own
+ * binary as ugrep and bfs, and runs rg as itself too: each a whole Blink start
+ * of the 240 MB binary. Opting in to its Grep and Glob tools (an
+ * --allowedTools rule naming them) makes it leave grep and find alone, and
+ * USE_BUILTIN_RIPGREP=0 makes those tools use the rg on PATH. Not for
+ * subcommands, or when the user gave --allowedTools or --tools themselves.
+ */
+export function nativeSearchSetup(args: string[], env: Record<string, string>): { args: string[]; env: string } {
+  const first = args.find((a) => !a.startsWith('-'));
+  const own = args.some((a) => /^--(allowedTools|allowed-tools|tools)(=|$)/.test(a));
+  if ((first && CLAUDE_SUBCOMMANDS.has(first) && args.indexOf(first) === 0) || args.some((a) => a === '--version' || a === '-v' || a === '--help' || a === '-h')) return { args, env: '' };
+  return {
+    // (=: a separate value would take the user's prompt as another tool name)
+    args: own ? args : ['--allowedTools=Grep,Glob', ...args],
+    env: env.USE_BUILTIN_RIPGREP === undefined ? 'USE_BUILTIN_RIPGREP=0 ' : '',
+  };
 }
 
 export const claudeCmd: Command = {

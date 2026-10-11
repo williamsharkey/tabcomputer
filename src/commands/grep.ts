@@ -1,6 +1,6 @@
 import { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
-import { decodeBytes } from '../utils/byte-text';
+import { byteLength, decodeBytes } from '../utils/byte-text';
 
 /** A binary file decoded for matching only, a MiB at a time with the page running between (#19) */
 async function lossyDecode(bytes: Uint8Array): Promise<string> {
@@ -18,7 +18,8 @@ async function lossyDecode(bytes: Uint8Array): Promise<string> {
  * grep, following GNU grep: BRE by default (-E ERE, -F fixed strings, -P
  * JavaScript/Perl-ish), several patterns (-e, -f, newlines), -i -v -w -x -c
  * -l -L -o -q -s -n -h -H -m -A/-B/-C -r/-R --include/--exclude/--exclude-dir
- * --color. Exit status 0 when a line is selected, 1 when none, 2 on error.
+ * --color -Z -z -b -T. Exit status 0 when a line is selected, 1 when none, 2
+ * on error.
  */
 export const grepCmd: Command = {
   name: 'grep',
@@ -32,6 +33,8 @@ export const grepCmd: Command = {
     let withFilename: boolean | null = null;
     let colorMode = 'never';
     let textMode = false;
+    // -Z: a NUL after file names; -z: NUL-terminated lines in and out; -b: byte offsets; -T: a tab before the line
+    let nullName = false, nullData = false, byteOffset = false, initialTab = false;
     let label = '(standard input)';
     const patterns: string[] = [];
     let patternGiven = false;
@@ -77,6 +80,8 @@ export const grepCmd: Command = {
       '--recursive': () => { recursive = true; }, '--dereference-recursive': () => { recursive = true; deref = true; },
       '--text': () => { textMode = true; }, '--line-buffered': () => {}, '--color': () => { colorMode = 'always'; },
       '--colour': () => { colorMode = 'always'; },
+      '--null': () => { nullName = true; }, '--null-data': () => { nullData = true; },
+      '--byte-offset': () => { byteOffset = true; }, '--initial-tab': () => { initialTab = true; },
     };
     while (i < args.length) {
       const arg = args[i];
@@ -136,7 +141,11 @@ export const grepCmd: Command = {
           case 'H': withFilename = true; continue;
           case 'h': withFilename = false; continue;
           case 'a': textMode = true; continue;
-          case 'I': case 'U': case 'Z': case 'z': case 'b': case 'u': continue;
+          case 'Z': nullName = true; continue;
+          case 'z': nullData = true; continue;
+          case 'b': byteOffset = true; continue;
+          case 'T': initialTab = true; continue;
+          case 'I': case 'U': case 'u': continue;
           case 'e': { const v = value(); if (v === null) return 2; patterns.push(...v.split('\n')); patternGiven = true; j = arg.length; continue; }
           case 'f': { const v = value(); if (v === null || !(await readPatternFile(v))) return 2; j = arg.length; continue; }
           case 'm': { const v = value(); maxCount = parseInt(v ?? '0', 10); j = arg.length; continue; }
@@ -197,23 +206,33 @@ export const grepCmd: Command = {
 
     /** Search one input; returns true if a line was selected */
     const searchText = (content: string, name: string): boolean => {
-      const binary = !textMode && content.includes('\0');
-      const lines = content.split('\n');
-      if (content.endsWith('\n')) lines.pop();
-      const prefix = (ln: number, sep: string) => (showNames ? name + sep : '') + (lineNumbers ? (ln + 1) + sep : '');
+      const eol = nullData ? '\0' : '\n';
+      const binary = !textMode && !nullData && content.includes('\0');
+      // (empty input has no lines: `true | grep -v x` selects nothing)
+      const lines = content === '' ? [] : content.split(eol);
+      if (content.endsWith(eol)) lines.pop();
+      // each line's byte offset, for -b
+      const starts: number[] = [];
+      if (byteOffset) { let off = 0; for (const l of lines) { starts.push(off); off += byteLength(l) + 1; } }
+      const prefix = (ln: number, sep: string, col = 0) => {
+        const p = (showNames ? name + (nullName ? '\0' : sep) : '') + (lineNumbers ? (ln + 1) + sep : '')
+          + (byteOffset ? (starts[ln] + (col ? byteLength(lines[ln].slice(0, col)) : 0)) + sep : '');
+        return p && initialTab ? p + '\t' : p;
+      };
+      const nameEnd = nullName ? '\0' : '\n';
       let count = 0;
       let lastPrinted = -1;
       let afterLeft = 0;
       for (let ln = 0; ln < lines.length; ln++) {
         if (maxCount >= 0 && count >= maxCount) {
           // GNU still prints trailing context after the last match
-          if (afterLeft > 0 && hasContext) { ctx.stdout += prefix(ln, '-') + lines[ln] + '\n'; lastPrinted = ln; afterLeft--; continue; }
+          if (afterLeft > 0 && hasContext) { ctx.stdout += prefix(ln, '-') + lines[ln] + eol; lastPrinted = ln; afterLeft--; continue; }
           break;
         }
         const selected = matches(lines[ln]) !== invertMatch;
         if (!selected) {
           if (hasContext && afterLeft > 0) {
-            ctx.stdout += prefix(ln, '-') + lines[ln] + '\n';
+            ctx.stdout += prefix(ln, '-') + lines[ln] + eol;
             lastPrinted = ln;
             afterLeft--;
           }
@@ -227,8 +246,8 @@ export const grepCmd: Command = {
         if (hasContext) {
           const from = Math.max(0, ln - beforeCtx, lastPrinted + 1);
           if (printedAny && (lastPrinted < 0 || from > lastPrinted + 1)) ctx.stdout += '--\n';
-          for (let b = from; b < ln; b++) ctx.stdout += prefix(b, '-') + lines[b] + '\n';
-          ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + '\n';
+          for (let b = from; b < ln; b++) ctx.stdout += prefix(b, '-') + lines[b] + eol;
+          ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + eol;
           lastPrinted = ln;
           afterLeft = afterCtx;
           printedAny = true;
@@ -241,15 +260,15 @@ export const grepCmd: Command = {
           while ((m = regex.exec(lines[ln])) !== null) {
             // Empty matches print nothing (and must not stall the scan)
             if (m[0] === '') { regex.lastIndex++; continue; }
-            ctx.stdout += prefix(ln, ':') + (useColor ? `\x1b[1;31m${m[0]}\x1b[0m` : m[0]) + '\n';
+            ctx.stdout += prefix(ln, ':', m.index) + (useColor ? `\x1b[1;31m${m[0]}\x1b[0m` : m[0]) + eol;
           }
           continue;
         }
-        ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + '\n';
+        ctx.stdout += prefix(ln, ':') + colorize(lines[ln]) + eol;
       }
-      if (countOnly && !quiet) ctx.stdout += (showNames ? name + ':' : '') + count + '\n';
-      if (filesWith && count > 0 && !quiet) ctx.stdout += name + '\n';
-      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + '\n'; }
+      if (countOnly && !quiet) ctx.stdout += (showNames ? name + (nullName ? '\0' : ':') : '') + count + '\n';
+      if (filesWith && count > 0 && !quiet) ctx.stdout += name + nameEnd;
+      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + nameEnd; }
       return count > 0;
     };
 

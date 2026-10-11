@@ -259,10 +259,37 @@ describe('kernel pty: packet mode and the controlling tty (screen)', () => {
     expect(await tty.read(new Uint8Array(16))).toBe(-A.EAGAIN);
     pty.input('x');
     expect(await readStr(tty)).toBe('x');
+    // F_GETFL: the status flags only, as Linux (not the O_NOCTTY the opener adds, nor O_CLOEXEC)
+    const tty2 = await kernel.open(proc, '/dev/tty', A.O_RDWR | A.O_NONBLOCK | A.O_CLOEXEC) as PtyFile;
+    const fd = proc.fds.alloc(tty2, 3, true);
+    expect(await kernel.syscall(proc, A.SYS_fcntl, [fd, A.F_GETFL, 0], new Uint8Array(0))).toBe(A.O_RDWR | A.O_NONBLOCK);
+    await tty2.close();
     // closing it leaves the session's tty open
     await tty.close();
     pty.input('y');
     expect(await readStr(slave)).toBe('y');
+    kernel.kill(proc.pid, A.SIGKILL);
+  });
+});
+
+describe('kernel pty: stat of /dev/tty', () => {
+  it('is the c 5,0 node, with no controlling tty and after a hangup', async () => {
+    const { fs, shell } = await createTestShell();
+    const kernel = new Kernel({ fs, shell, registerWithProcessTable: false });
+    attachKernelTty(kernel);
+    const lone = kernel.spawn({ path: 'daemon', fds: {}, setsid: true, run: () => new Promise<number>(() => {}) } as any);
+    expect(await kernel.open(lone, '/dev/tty', A.O_RDWR)).toBe(-6); // ENXIO: no controlling tty to open
+    const st = await kernel.statPath(lone, '/dev/tty');
+    expect(typeof st).not.toBe('number');
+    expect((st as A.KStat).mode & A.S_IFMT).toBe(A.S_IFCHR);
+    expect((st as A.KStat).rdev).toBe(5 << 8);
+    const { pty, slave } = openpty({ jc: jobControl });
+    const proc = kernel.spawn({ path: 'sh', fds: { 0: slave }, setsid: true, run: () => new Promise<number>(() => {}) } as any);
+    proc.ctty = slave;
+    await pty.master.close(); // the terminal went away
+    expect(await kernel.open(proc, '/dev/tty', A.O_RDWR)).toBe(-A.EIO);
+    expect(((await kernel.statPath(proc, '/dev/tty')) as A.KStat).rdev).toBe(5 << 8);
+    kernel.kill(lone.pid, A.SIGKILL);
     kernel.kill(proc.pid, A.SIGKILL);
   });
 });

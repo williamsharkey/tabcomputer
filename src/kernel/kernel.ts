@@ -39,7 +39,7 @@ import { CONTROL_BYTES, SharedObjects, isShareablePath, type ShmObjMessage } fro
 import { EpollFile, waitReady } from './epoll';
 import { Inotify, InotifyFile, IN_DONT_FOLLOW, IN_ONLYDIR, IN_MASK_ADD, IN_MASK_CREATE, MAX_USER_INSTANCES } from './inotify';
 import { SignalFile, notifySignalPending, pendingSignalListeners } from './signalfd';
-import { EventFile, MemFile, TimerFile, writeInodeBytes, SymlinkPathFile, anonymousInode, linkAnonymousInode } from './fd';
+import { EventFile, MemFile, TimerFile, writeInodeBytes, SymlinkPathFile, anonymousInode, linkAnonymousInode, charDevStat } from './fd';
 import { activeProfile, unameRelease, UNAME_VERSION } from '../profile';
 import { memoryInfo } from '../utils/sysinfo';
 
@@ -1507,6 +1507,9 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.searchDenied(proc, p)) return -A.EACCES;
+    // /dev/tty is its own node (c 5,0), whatever the caller's controlling tty: a
+    // stat needs none, and one after a hangup works too (opening it gives EIO)
+    if (p === '/dev/tty') return { ...charDevStat((5 << 8) | 0), gid: 5 };
     const dev = this.devices.get(p);
     if (dev) {
       // A description just for the stat: O_NOCTTY (stat must not make a pty the
@@ -3218,8 +3221,13 @@ export class Kernel {
       case A.F_DUPFD_CLOEXEC: return fds.dup(fd, arg, true);
       case A.F_GETFD: return fds.getCloexec(fd) ? A.FD_CLOEXEC : 0;
       case A.F_SETFD: return fds.setCloexec(fd, !!(arg & A.FD_CLOEXEC));
-      // a socket is open for reading and writing (Linux reports O_RDWR)
-      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE) | A.O_RDWR : f.flags;
+      // a socket is open for reading and writing (Linux reports O_RDWR). Flags that
+      // only matter to open(2) aren't status flags: devices (/dev/tty, /dev/null…)
+      // keep the open flags as given, and Linux never reports these
+      case A.F_GETFL: {
+        const fl = f.flags & ~(A.O_CREAT | A.O_EXCL | A.O_NOCTTY | A.O_TRUNC | A.O_CLOEXEC);
+        return f.kind === 'socket' ? (fl & ~A.O_ACCMODE) | A.O_RDWR : fl;
+      }
       case A.F_SETFL: {
         const mask = A.O_NONBLOCK | A.O_APPEND;
         f.flags = (f.flags & ~mask) | (arg & mask);

@@ -1,0 +1,308 @@
+From 1a998acf6f812aec7f0fe97d8baef7686994c977 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 09:14:16 +0000
+Subject: [PATCH] Shiro: mlock marks its pages locked; /proc/self/smaps and
+ smaps_rollup with Rss and Locked; msync(MS_INVALIDATE) of locked pages is
+ EBUSY (LTP mlock05, Open POSIX mlockall_3-6/3-7)
+
+---
+ blink/machine.h |   3 ++
+ blink/memory.c  |   2 +-
+ blink/shiro.inc | 123 +++++++++++++++++++++++++++++++++++++++++++-----
+ blink/syscall.c |  14 +++++-
+ 4 files changed, 127 insertions(+), 15 deletions(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 733de58..2fe7574 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -126,6 +126,9 @@
+ // read-only, or a memfd sealed against writes; the x86 PCD bit): Linux
+ // clears VM_MAYWRITE, so mprotect(PROT_WRITE) is EACCES
+ #define PAGE_NOMW 0x0000000000000010
++// Shiro: locked with mlock or mlockall (the x86 write-through bit): smaps's
++// Locked, and msync(MS_INVALIDATE) of it is EBUSY
++#define PAGE_MLOCKED 0x0000000000000008
+ #define SHIRO_STASH_REMOTE 1  // m->stashaddr: only remote pages to write back
+ 
+ #define SREG_ES 0
+diff --git a/blink/memory.c b/blink/memory.c
+index a3245f2..f4b451f 100644
+--- a/blink/memory.c
++++ b/blink/memory.c
+@@ -297,7 +297,7 @@ u64 BreakCow(struct Machine *m, i64 virt) {
+     if (!(entry & PAGE_V)) return 0;
+     if (!(entry & PAGE_COW)) return entry;
+     old = (u8 *)FindHostPage(entry);
+-    e2 = (entry & (PAGE_U | PAGE_XD | PAGE_LOCKS | PAGE_FILE)) | PAGE_V |
++    e2 = (entry & (PAGE_U | PAGE_XD | PAGE_LOCKS | PAGE_FILE | PAGE_WO | PAGE_MLOCKED)) | PAGE_V |
+          ((entry & PAGE_COWRW) ? PAGE_RW : 0);
+     if (HostPageRefs(old) <= 1) {
+       // the last mapper: the page is this process's again
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 915efbe..805c41a 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -617,6 +617,8 @@ static i64 ShiroPathCall(struct Machine *m, int nr, i64 path, int a1, int a2,
+ struct ShiroMaps {
+   char *b;
+   int n, cap;
++  int smaps;  // 1: /proc/self/smaps, 2: smaps_rollup
++  i64 rss, locked, total, trss, tlocked;  // pages: this mapping's, then all of them
+   bool on;
+   i64 start;
+   u64 flags;
+@@ -628,11 +630,39 @@ struct ShiroMaps {
+ 
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_mapsperm(void) { return 1; }
+ 
++// smaps's fields for a mapping of `pages` pages, `rss` of them with memory
++// and `locked` of those locked (kB, as Linux shows them)
++static void ShiroSmapsFields(struct ShiroMaps *u, i64 pages, i64 rss, i64 locked, u64 flags) {
++  bool anon = !u->fm || !u->fm->path || u->fm->path[0] == '[';
++  u->n += snprintf(u->b + u->n, u->cap - u->n,
++                   "Size:           %8" PRId64 " kB\nKernelPageSize:        4 kB\nMMUPageSize:           4 kB\n"
++                   "Rss:            %8" PRId64 " kB\nPss:            %8" PRId64 " kB\nPss_Dirty:      %8" PRId64 " kB\n"
++                   "Shared_Clean:          0 kB\nShared_Dirty:          0 kB\nPrivate_Clean:         0 kB\n"
++                   "Private_Dirty:  %8" PRId64 " kB\nReferenced:     %8" PRId64 " kB\nAnonymous:      %8" PRId64 " kB\n"
++                   "KSM:                   0 kB\nLazyFree:              0 kB\nAnonHugePages:         0 kB\n"
++                   "ShmemPmdMapped:        0 kB\nFilePmdMapped:         0 kB\nShared_Hugetlb:        0 kB\n"
++                   "Private_Hugetlb:       0 kB\nSwap:                  0 kB\nSwapPss:               0 kB\n"
++                   "Locked:         %8" PRId64 " kB\nTHPeligible:           0\n",
++                   pages * 4, rss * 4, rss * 4, rss * 4, rss * 4, rss * 4, anon ? rss * 4 : 0, locked * 4);
++  if (u->smaps == 1) {
++    u->n += snprintf(u->b + u->n, u->cap - u->n, "VmFlags: %s%s%s%smr mw me %s\n",
++                     (flags & (PAGE_U | PAGE_WO)) == PAGE_U ? "rd " : "",
++                     flags & (PAGE_RW | PAGE_COWRW) ? "wr " : "", flags & PAGE_XD ? "" : "ex ",
++                     flags & PAGE_SHRD ? "sh " : "", flags & PAGE_MLOCKED ? "lo " : "");
++  }
++}
++
+ static void ShiroMapsEnd(struct ShiroMaps *u, i64 end) {
+   int k;
+   if (!u->on) return;
++  if (u->smaps == 2) {  // smaps_rollup: only the sums
++    u->on = false;
++    u->total += (end - u->start) / 4096, u->trss += u->rss, u->tlocked += u->locked;
++    u->rss = u->locked = 0;
++    return;
++  }
+   u->on = false;
+-  if (u->cap - u->n < 400) return;  // the pipe's capacity: drop the rest
++  if (u->cap - u->n < 1400) return;  // (room for an smaps entry: drop the rest)
+   k = snprintf(u->b + u->n, u->cap - u->n,
+                "%08" PRIx64 "-%08" PRIx64 " %c%c%c%c %08" PRIx64 " 00:00 0",
+                u->start, end, (u->flags & (PAGE_U | PAGE_WO)) == PAGE_U ? 'r' : '-',
+@@ -645,10 +675,12 @@ static void ShiroMapsEnd(struct ShiroMaps *u, i64 end) {
+                      u->fm->path);
+   }
+   u->b[u->n++] = '\n';
++  if (u->smaps) ShiroSmapsFields(u, (end - u->start) / 4096, u->rss, u->locked, u->flags);
++  u->rss = u->locked = 0;
+ }
+ 
+ static void ShiroMapsPage(struct System *s, struct ShiroMaps *u, i64 addr, u64 entry) {
+-  u64 flags = entry & (PAGE_U | PAGE_RW | PAGE_XD | PAGE_COWRW | PAGE_SHRD | PAGE_WO);
++  u64 flags = entry & (PAGE_U | PAGE_RW | PAGE_XD | PAGE_COWRW | PAGE_SHRD | PAGE_WO | PAGE_MLOCKED);
+   int i;
+   if (u->on && (flags != u->flags || addr >= u->limit)) ShiroMapsEnd(u, addr);
+   if (!u->on) {
+@@ -664,6 +696,10 @@ static void ShiroMapsPage(struct System *s, struct ShiroMaps *u, i64 addr, u64 e
+       }
+     }
+   }
++  if (!(entry & PAGE_RSRV)) {  // (resident: it has its memory)
++    ++u->rss;
++    if (entry & PAGE_MLOCKED) ++u->locked;
++  }
+ }
+ 
+ static void ShiroMapsWalk(struct System *s, struct ShiroMaps *u, u64 table, int level, i64 base) {
+@@ -684,22 +720,29 @@ static void ShiroMapsWalk(struct System *s, struct ShiroMaps *u, u64 table, int
+   }
+ }
+ 
+-static bool ShiroIsOwnMaps(struct Machine *m, const char *p, int n) {
+-  char own[40];
+-  if (n == 15 && !memcmp(p, "/proc/self/maps", 15)) return true;
+-  if (n == 22 && !memcmp(p, "/proc/thread-self/maps", 22)) return true;
+-  snprintf(own, sizeof(own), "/proc/%d/maps", m->system->pid);
+-  return n == (int)strlen(own) && !memcmp(p, own, n);
++// 1 for /proc/self/maps (/proc/thread-self/maps, /proc/<own pid>/maps), 2
++// for smaps, 3 for smaps_rollup; 0 for anything else
++static int ShiroIsOwnMaps(struct Machine *m, const char *p, int n) {
++  static const char *const kNames[] = {"maps", "smaps", "smaps_rollup"};
++  char own[64];
++  int k;
++  for (k = 0; k < 3; ++k) {
++    if (n == snprintf(own, sizeof(own), "/proc/self/%s", kNames[k]) && !memcmp(p, own, n)) return k + 1;
++    if (n == snprintf(own, sizeof(own), "/proc/thread-self/%s", kNames[k]) && !memcmp(p, own, n)) return k + 1;
++    if (n == snprintf(own, sizeof(own), "/proc/%d/%s", m->system->pid, kNames[k]) && !memcmp(p, own, n)) return k + 1;
++  }
++  return 0;
+ }
+ 
+-static i64 ShiroMapsFd(struct Machine *m, int oflags) {
++static i64 ShiroMapsFd(struct Machine *m, int oflags, int kind) {
+   struct System *s = m->system;
+   struct ShiroMaps u = {0};
+   struct Dll *e;
+   u8 fds[8];
+   int rfd, wfd, off, k;
+   i64 r;
+-  u.cap = 65536 - 512;
++  u.smaps = kind - 1;
++  u.cap = u.smaps ? 4 << 20 : 65536 - 512;  // (smaps: about 900 bytes a mapping)
+   if (!(u.b = (char *)malloc(u.cap))) return -ENOMEM_LINUX;
+   for (e = dll_first(s->filemaps); e; e = dll_next(s->filemaps, e)) ++u.nstarts;
+   if (u.nstarts && !(u.starts = (i64 *)malloc(u.nstarts * sizeof(i64)))) {
+@@ -713,6 +756,17 @@ static i64 ShiroMapsFd(struct Machine *m, int oflags) {
+   if (s->cr3) ShiroMapsWalk(s, &u, s->cr3, 0, 0);
+   ShiroMapsEnd(&u, (i64)1 << 47);
+   free(u.starts);
++  if (u.smaps == 2) {  // one entry with the sums, as Linux's smaps_rollup
++    u.n = snprintf(u.b, u.cap, "00400000-7fffffffffff ---p 00000000 00:00 0                          [rollup]\n");
++    ShiroSmapsFields(&u, u.total, u.trss, u.tlocked, 0);
++    // (Linux's rollup has no Size, KernelPageSize or MMUPageSize lines: drop the first three)
++    {
++      char *a = strchr(u.b, '\n') + 1, *z = a;
++      for (k = 0; k < 3; ++k) z = strchr(z, '\n') + 1;
++      memmove(a, z, u.n - (z - u.b));
++      u.n -= z - a;
++    }
++  }
+   // A kernel memfd: a regular file, so it seeks and polls (epoll refuses
+   // it) as Linux's /proc/self/maps does; a kernel without memfd_create gets
+   // a pipe. O_CLOEXEC is 02000000 for open and pipe2 alike (MFD_CLOEXEC 1).
+@@ -742,9 +796,9 @@ static i64 ShiroMapsFd(struct Machine *m, int oflags) {
+ static i64 ShiroAtCall(struct Machine *m, int nr, int dirfd, i64 path, int a2,
+                        int a3) {
+   char *buf = (char *)ShiroAlloc(m, 4096);
+-  int n = ShiroPath(m, path, buf, 0);
++  int n = ShiroPath(m, path, buf, 0), k;
+   if (n < 0) return n;
+-  if (nr == 257 && ShiroIsOwnMaps(m, buf, n)) return ShiroMapsFd(m, a2);
++  if (nr == 257 && (k = ShiroIsOwnMaps(m, buf, n))) return ShiroMapsFd(m, a2, k);
+   // An empty path is ENOENT (LTP fchmodat02), except fchmodat2's AT_EMPTY_PATH
+   // (a3 here): that is fchmod of dirfd, O_PATH included, which the kernel does
+   // for a zero-length path (systemd's fchmod_opath, systemd-sysusers in its postinst)
+@@ -2574,6 +2628,38 @@ static void ShiroCommitPages(struct Machine *m, i64 start, i64 end) {
+   }
+ }
+ 
++// mlock and friends: the valid pages of [start, end) get PAGE_MLOCKED, or
++// lose it (a walk of the page tables, so mlockall's whole range is quick)
++EMSCRIPTEN_KEEPALIVE int blink_shiro_smaps(void) { return 1; }
++
++static void ShiroLockWalk(struct System *s, u64 table, int level, i64 base, i64 start, i64 end, bool on) {
++  u8 *pt = GetPageAddress(s, table, level == 0);
++  i64 span = (i64)1 << (39 - 9 * level), addr;
++  u64 e;
++  int i;
++  for (i = 0; i < (level ? 512 : 256); ++i) {
++    addr = base + i * span;
++    if (addr + span <= start || addr >= end) continue;
++    e = LoadPte(pt + i * 8);
++    if (!(e & PAGE_V)) continue;
++    if (level < 3 && !(e & PAGE_PS)) {
++      ShiroLockWalk(s, e, level + 1, addr, start, end, on);
++    } else if (level == 3) {
++      while (!CasPte(pt + i * 8, e, on ? e | PAGE_MLOCKED : e & ~PAGE_MLOCKED)) {
++        if (!((e = LoadPte(pt + i * 8)) & PAGE_V)) break;
++      }
++    }
++  }
++}
++
++static void ShiroLockPages(struct Machine *m, i64 start, i64 end, bool on) {
++  struct System *s = m->system;
++  LOCK(&s->mmap_lock);
++  if (s->cr3) ShiroLockWalk(s, s->cr3, 0, 0, start & -4096, end, on);
++  UNLOCK(&s->mmap_lock);
++  InvalidateSystem(s, true, false);
++}
++
+ // mincore: a page is resident once it has its memory (not still reserved)
+ static i64 ShiroMincore(struct Machine *m, i64 addr, u64 len, i64 vec) {
+   u8 *v, *slot;
+@@ -2626,7 +2712,7 @@ static void ShiroRestoreFrom(struct Machine *m, const u8 *p, size_t len) {
+         u8 *slot;
+         memcpy(&e, p, 8);
+         unassert((slot = ShiroPteSlot(s, r.virt + k * 4096)));
+-        StorePte(slot, e & ~PAGE_LOCKS);  // the parent's threads' locks aren't ours
++        StorePte(slot, e & ~(PAGE_LOCKS | PAGE_MLOCKED));  // the parent's threads' locks aren't ours, nor its mlocks
+         s->memstat.reserved -= 1;
+         s->memstat.committed += 1;
+         s->rss += 1;
+@@ -5327,6 +5413,17 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       if (!g_shiro_maps || (r = ShiroMremapFile(m, a, b, c, d, e)) == SHIRO_NOT_REMOTE) return false;
+       break;
+     case 0x01A:                                                       // msync
++      // MS_INVALIDATE of locked pages is EBUSY (Open POSIX mlockall_3-6/3-7)
++      if ((c & 2) && !(a & 4095) && b && IsValidAddrSize(a, ROUNDUP(b, 4096))) {
++        i64 v;
++        u8 *slot;
++        for (r = 0, v = a; v < a + (i64)b && !r; v += 4096) {
++          if ((slot = ShiroPteSlot(m->system, v)) && (LoadPte(slot) & PAGE_V) && (LoadPte(slot) & PAGE_MLOCKED)) {
++            r = -EBUSY_LINUX;
++          }
++        }
++        if (r) break;
++      }
+       if (g_shiro_maps) ShiroSyncMaps(m, a, b, false);
+       r = 0;
+       break;
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 87c048d..3f02ac6 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -793,6 +793,7 @@ static struct timespec CpuClockNow(struct Machine *, int);
+ static void ShiroCommitPages(struct Machine *, i64, i64);
+ static void ShiroSetComm(struct Machine *, const char *);
+ static void ShiroSetSubreaper(struct Machine *, bool);
++static void ShiroLockPages(struct Machine *, i64, i64, bool);
+ static i64 ShiroEuid(struct Machine *);
+ #else
+ #define ShiroSleeping(m, n) (void)0
+@@ -6174,18 +6175,29 @@ static int SysMlock(struct Machine *m, i64 addr, u64 len) {
+   UNLOCK(&m->system->mmap_lock);
+   return ok ? 0 : enomem();
+ }
++// (the pages are marked locked, PAGE_MLOCKED: smaps, msync)
+ static int SysMlockCommit(struct Machine *m, i64 addr, u64 len) {
+   int rc = SysMlock(m, addr, len);
+ #ifdef __EMSCRIPTEN__
+   if (!rc && len) ShiroCommitPages(m, addr, addr + len);  // (resident: LTP mincore03)
++  if (!rc && len) ShiroLockPages(m, addr, addr + len, true);
+ #endif
+   return rc;
+ }
++static int SysMunlock(struct Machine *m, i64 addr, u64 len) {
++  int rc = SysMlock(m, addr, len);
++  if (!rc && len) ShiroLockPages(m, addr, addr + len, false);
++  return rc;
++}
+ static int SysMlockall(struct Machine *m, int flags) {
+   if (!flags || (flags & ~7) || flags == 4) return einval();
++  // MCL_CURRENT: what is mapped now (marked, not given memory: a reservation
++  // of gigabytes, as V8's and Go's, would be)
++  if (flags & 1) ShiroLockPages(m, 0, (i64)1 << 47, true);
+   return 0;
+ }
+ static int SysMunlockall(struct Machine *m) {
++  ShiroLockPages(m, 0, (i64)1 << 47, false);
+   return 0;
+ }
+ #endif
+@@ -6658,7 +6670,7 @@ void OpSyscall(P) {
+     SYSCALL(5, 0x09D, "prctl", SysPrctl, STRACE_5);
+ #ifdef __EMSCRIPTEN__
+     SYSCALL(2, 0x095, "mlock", SysMlockCommit, STRACE_2);
+-    SYSCALL(2, 0x096, "munlock", SysMlock, STRACE_2);
++    SYSCALL(2, 0x096, "munlock", SysMunlock, STRACE_2);
+     SYSCALL(1, 0x097, "mlockall", SysMlockall, STRACE_1);
+     SYSCALL(0, 0x098, "munlockall", SysMunlockall, STRACE_0);
+ #endif
+-- 
+2.43.0
+

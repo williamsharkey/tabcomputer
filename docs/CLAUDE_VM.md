@@ -107,6 +107,27 @@ Counts are textual uses in the 45 MB of JS.
 `CellSegmenter` has no public documentation; its contract comes from the
 renderer that calls it.
 
+## The shim (`src/claude-vm/bun/`)
+
+`createBun({ fs, process, childProcess, Buffer })` (`index.ts`) makes the
+`Bun` object for one process from that process's own Node modules; it is
+given to the bundle's module scope, never set as a page global. Each area is
+a module, tested against what Bun 1.4.2 returns for the same calls
+(`tests/tests/shiro-vitest/claude-vm-bun-*.test.ts`):
+
+| module | APIs | how |
+|---|---|---|
+| `text.ts` | `stringWidth`, `stripANSI`, `sliceAnsi`, `wrapAnsi` | string-width, strip-ansi, slice-ansi, wrap-ansi; printable ASCII skips them. `sliceAnsi` keeps a wide character that starts before `end`, as Bun does |
+| `hash.ts` | `hash.crc32(data, seed)` | a table CRC-32 |
+| `semver.ts` | `semver.order`, `semver.satisfies` | node-semver (loose) |
+| `deep-equals.ts` | `deepEquals(a, b, strict)` | toEqual / toStrictEqual rules |
+| `formats.ts` | `YAML.parse/stringify`, `TOML.parse` | yaml (several documents: an array); Bun's own emitter style; smol-toml with dates as text objects |
+| `zstd.ts` | `zstdDecompress(Sync)` | fzstd (decode only) |
+| `which.ts`, `sleep.ts` | `which`, `sleepSync` | PATH on the process's fs (a regular file counts: the tab's files rarely carry execute bits); Atomics.wait, or a spin on the page's main thread |
+| `spawn.ts` | `spawn`, `file`, `stdin` | child_process: Bun's stdio defaults, web streams, FileSink stdin, `exited`/`exitCode`/`signalCode`/`kill`/`onExit`, ENOENT thrown at once, `Bun.file(fd\|path)` as stdio |
+
+Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-clis'.
+
 ## First results
 
 - On the host, Node 22 with a near-empty `Bun` object (`version`, `main`,

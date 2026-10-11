@@ -1,0 +1,74 @@
+From e87ef2760d739a981b8d58d329e1b7d7a7c8fa10 Mon Sep 17 00:00:00 2001
+From: Shiro <laserbarf@gmail.com>
+Date: Sun, 11 Oct 2026 01:14:16 +0000
+Subject: [PATCH 602/602] Shiro: the host page table takes new pages under a
+ lock
+
+TrackHostPage gave each new host page the next index of g_hostpages with
+no lock. A read() that faults in its buffer runs without the GIL
+(GilReleasesFor), so it raced other threads faulting in pages, and a
+same-instance fork child restoring its memory. Two pages got one index,
+so two PTEs named the same page: calibre's dpkg aborted in a fork child's
+restore (memorymalloc.c 'pt & PAGE_V', memory.c 's->real', an EFAULT
+copying into a page its parent then freed). The realloc that grew the
+table could also free it under a FindHostPage on another thread. Now the
+index is taken under a lock, and a grown table is a copy: the old one
+stays for readers that take no lock (entries never change once written).
+---
+ blink/memorymalloc.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index 325eb1f..f28cf47 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -222,11 +222,38 @@ static void FreeHostPage(struct HostPage *hp) {
+   free(hp);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++// Shiro: threads add host pages concurrently: one in a read() that faults
++// in its buffer runs without the GIL (GilReleasesFor) while another, or a
++// same-instance fork child restoring its memory, faults in its own. They
++// took the same index, so two PTEs named one page (calibre's dpkg: a
++// child's restore copied into a page its parent then freed), and a
++// realloc could free the table under a reader. FindHostPage reads the
++// table without the lock: a bigger table is a copy, and the old one stays
++// (an entry never changes once written).
++static pthread_mutex_t_ g_hostpages_lock = PTHREAD_MUTEX_INITIALIZER_;
++#endif
++
+ static u64 TrackHostPage(u8 *ptr) {
+   u64 entry;
+   if (HasLinearMapping()) {
+     return (uintptr_t)ptr;
+   } else {
++#ifdef __EMSCRIPTEN__
++    LOCK(&g_hostpages_lock);
++    if (g_hostpages.n == g_hostpages.c) {
++      size_t c = g_hostpages.c + 1;
++      u8 **p;
++      c += c >> 1;
++      unassert((p = (u8 **)malloc(c * sizeof(*p))));
++      if (g_hostpages.n) memcpy(p, g_hostpages.p, g_hostpages.n * sizeof(*p));
++      atomic_store_explicit((_Atomic(u8 **) *)&g_hostpages.p, p, memory_order_release);
++      g_hostpages.c = c;
++    }
++    entry = g_hostpages.n++;
++    g_hostpages.p[entry] = ptr;
++    UNLOCK(&g_hostpages_lock);
++#else
+     if (g_hostpages.n == g_hostpages.c) {
+       g_hostpages.c += 1;
+       g_hostpages.c += g_hostpages.c >> 1;
+@@ -235,6 +262,7 @@ static u64 TrackHostPage(u8 *ptr) {
+     }
+     entry = g_hostpages.n++;
+     g_hostpages.p[entry] = ptr;
++#endif
+     return entry << 12;
+   }
+ }
+-- 
+2.43.0
+

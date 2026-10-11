@@ -1,0 +1,40 @@
+From beb6571c8aa4df3e00a582f22a5f5898b2690b64 Mon Sep 17 00:00:00 2001
+From: Shiro <laserbarf@gmail.com>
+Date: Sat, 10 Oct 2026 23:32:51 +0000
+Subject: [PATCH 601/602] Shiro: a same-instance fork shares only its own
+ shared file mappings' pages
+
+ShiroForkSame shared the pages of every writable MAP_SHARED kernel-file
+mapping in g_shiro_maps, which lists every process of the instance: where
+another process had one, the forking process's private memory at the same
+addresses became shared with its child (and reserved pages there zero
+pages), so the child's writes showed in the parent. Only the forking
+process's own now, under g_shiro_maps_lock as the list's other users.
+---
+ blink/shiro.inc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index cccf9f1..eb49dda 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2776,11 +2776,16 @@ static i64 ShiroForkSame(struct Machine *m, u64 flags, i64 stack, i64 ctid) {
+   LOCK(&s->mmap_lock);
+   for (i = 0; i < s->nshared; ++i) ShiroShareRange(s, s->shared[i][0], s->shared[i][1]);
+   UNLOCK(&s->mmap_lock);
++  // (this process's own: the list has every process's of the instance, and
++  // another's address range here is this one's private memory)
++  LOCK(&g_shiro_maps_lock);
+   for (sm = g_shiro_maps; sm; sm = sm->next) {
++    if (sm->sys != s) continue;
+     LOCK(&s->mmap_lock);
+     ShiroShareRange(s, sm->addr, sm->size);
+     UNLOCK(&s->mmap_lock);
+   }
++  UNLOCK(&g_shiro_maps_lock);
+   InvalidateSystem(s, true, false);
+   ResetTlb(m);
+   WjResetTlb(m);
+-- 
+2.43.0
+

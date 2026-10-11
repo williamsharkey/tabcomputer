@@ -1003,6 +1003,41 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    Numbered from 0600 at the integration coordinator's request (the new
    unix/perf-blink owner renumbers). Tests: x86-engine's siginfo,
    aio-sigqueue, sigwake and shmobj fixtures, with direct channels on.
+0601. A same-instance fork shares only its own writable shared file
+   mappings. It walked every process's entry in the instance-wide list
+   (`g_shiro_maps`), so where a sibling had one, the forking process's
+   private memory at those addresses became shared with its new child
+   (and reserved pages there became zero pages). The child's writes then
+   showed in the parent. Test: fixtures/x86/forkmaps.c.
+0602. The host page table (`TrackHostPage`, the index a PTE stores) takes
+   new pages under a lock, and a grown table is a copy (the old one stays
+   for `FindHostPage`, which takes no lock).
+   - A read() that faults in its buffer runs without the GIL
+     (`GilReleasesFor`). It raced other threads faulting in pages, and a
+     same-instance fork child restoring its memory: two pages got one
+     index.
+   - The `realloc` that grew the table could also free it under a reader
+     on another thread.
+   - Test: fixtures/x86/pagerace.c. A read() into fresh pages runs while
+     another thread maps and touches its own. The interpreter died with
+     "memory access out of bounds" before; now it passes.
+   - Still open: the same fixture with compiled code (the JIT) is killed
+     by SIGSEGV, before 0602 too. A text page of the program (libc's
+     pread, just after its syscall) reads as zeros, so some page there
+     still resolves to the wrong host page.
+
+   calibre (`apt install calibre`, scripts/debian/score.mjs with calibre
+   added to the list) still aborts in dpkg after 0601 and 0602. It fails
+   deterministically while unpacking libqt6sql6 (package 259 of ~300),
+   in a same-instance fork child's restore (ShiroRestoreFrom). The
+   assertion varies: `pt & PAGE_V` in ReserveVirtual, or the restore's
+   CopyToUser EFAULT.
+   - Debug builds show the child's page-table or data page was a recycled
+     page that wasn't zero.
+   - It had been one of dpkg's private pages, freed by dpkg (FreePage)
+     and then written again: a full page of x86 code, i.e. .deb contents.
+   - So something still writes through a stale host page after dpkg frees
+     it. The writer isn't found yet.
 
 The page compiles blink.wasm once and gives the `WebAssembly.Module` to every
 Blink worker (src/x86-engine/blink.ts `blinkWasmModule`, host.mjs

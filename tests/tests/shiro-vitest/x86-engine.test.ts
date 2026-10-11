@@ -158,6 +158,10 @@ const sse41bBin = join(out, 'sse41b');
 const haveSse41b = tryBuild('gcc', ['-static', '-O1', '-msse4.1', '-o', sse41bBin, 'sse41b.c']);
 const ssefloatBin = join(out, 'ssefloat');
 const haveSsefloat = tryBuild('gcc', ['-static', '-O1', '-msse4.1', '-o', ssefloatBin, 'ssefloat.c', '-lm']);
+const pageraceBin = join(out, 'pagerace');
+const havePagerace = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', pageraceBin, 'pagerace.c']);
+const forkmapsBin = join(out, 'forkmaps');
+const haveForkmaps = tryBuild('gcc', ['-static', '-O1', '-w', '-o', forkmapsBin, 'forkmaps.c']);
 const sigwakeBin = join(out, 'sigwake');
 const haveSigwake = tryBuild('gcc', ['-static', '-O1', '-w', '-o', sigwakeBin, 'sigwake.c']);
 const freewhilewriteBin = join(out, 'freewhilewrite');
@@ -1488,6 +1492,25 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('hash 5b92588104fd1863 acc 19814400\n');
   }, 120_000);
+
+  // a read() faults in its buffer without the GIL while another thread
+  // faults in its own pages: Blink's host page table gave two pages one
+  // index (0602; before it: "memory access out of bounds"). Interpreter
+  // only: compiled code still crashes here (a text page reads as zeros;
+  // docs/X86_ENGINES.md 0602)
+  it.skipIf(!havePagerace)('pages faulted in by a read() without the GIL and by another thread stay distinct', async () => {
+    const { shell } = await setup(readFileSync(pageraceBin));
+    const r = await run(shell, 'BLINK_WJIT=0 ./prog; BLINK_WJIT=0 ./prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('reader bad 0 toucher bad 0\nreader bad 0 toucher bad 0\n');
+  }, 60_000);
+
+  // a same-instance fork shared the pages of other processes' shared file
+  // mappings' address ranges: the child's writes showed in the parent (0601)
+  it.skipIf(!haveForkmaps)('a fork keeps the parent\'s memory private where a sibling has a shared file mapping', async () => {
+    const { shell } = await setup(readFileSync(forkmapsBin));
+    const r = await run(shell, './prog; BLINK_WJIT=0 ./prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('touched P untouched 0\ntouched P untouched 0\n');
+  }, 60_000);
 
   // PostgreSQL's huge_pages=try maps MAP_HUGETLB first and falls back on ENOMEM
   it.skipIf(!haveHugetlb)('MAP_HUGETLB is ENOMEM (no huge pages reserved), an ordinary map works', async () => {

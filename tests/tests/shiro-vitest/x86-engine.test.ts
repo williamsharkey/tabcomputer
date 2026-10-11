@@ -134,6 +134,8 @@ const sysvshmBin = join(out, 'sysvshm');
 const haveSysvshm = 'SYS_shmget' in Abi && tryBuild('gcc', ['-static', '-O1', '-o', sysvshmBin, 'sysvshm.c']);
 const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
+const zombiekillBin = join(out, 'zombiekill');
+const haveZombiekill = tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiekillBin, 'zombiekill.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1547,6 +1549,18 @@ describe('Blink engine: CPU and syscall fixes', () => {
       const r = await run(shell, cmd);
       expect(r.output.replace(/\r\n/g, '\n')).toBe(NATIVE_SSE2D);
     }
+  }, 60_000);
+
+  // LTP pause01 (conformance's repro): a same-instance fork child's exit_group
+  // got no reply on its direct channel, so the page served it again and again,
+  // and the next children's registrations and signals waited seconds behind
+  // it: kill() missed children still in pause()
+  it.skipIf(!haveZombiekill)('kill() reaches each fork child while its earlier siblings are unreaped zombies', async () => {
+    const { shell } = await setup(readFileSync(zombiekillBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
+    expect(Date.now() - t0).toBeLessThan(15_000);
   }, 60_000);
 
   // small callees compiled into their caller's region, their rets going back

@@ -65,10 +65,6 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     workaround: 'Wrap a command that may read stdin as `{ cmd; } </dev/null`; a group\'s redirect works.',
   },
   {
-    issue: "Pasting an image into Claude Code is untested here: `xclip` gives Claude Code an image only when the browser lets the page read its clipboard (Chrome asks first).",
-    workaround: 'Save the image to a file and give its path.',
-  },
-  {
     issue: "In Debian mode, dpkg-deb's `.xz` decompression sometimes crashes or reports corrupt data under the x86-64 emulator, so `apt install` stops with a dpkg error.",
     workaround: 'Run the install again.',
   },

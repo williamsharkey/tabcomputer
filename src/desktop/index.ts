@@ -630,7 +630,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     ] };
     const edit: MenuSpec = { title: 'Edit', items: [
       { label: 'Copy', action: () => { const t = termView()?.activeTerminal(); const s = t?.term.getSelection() || String(getSelection() ?? ''); if (s) navigator.clipboard?.writeText(s).catch(() => {}); } },
-      { label: 'Paste', disabled: !termView(), action: () => { const t = termView()?.activeTerminal(); navigator.clipboard?.readText().then(s => t?.term.paste(s)).catch(() => {}); } },
+      { label: 'Paste', disabled: !termView(), action: () => { void termView()?.activeTerminal()?.pasteClipboard().catch(() => {}); } },
       { label: 'Select All', disabled: !termView(), action: () => termView()?.activeTerminal()?.term.selectAll() },
     ] };
     const pref = wm.themePreference();

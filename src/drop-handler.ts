@@ -1,54 +1,34 @@
 /**
  * drop-handler.ts — Drag-and-drop seed GIF import
  *
- * Attaches listeners to #terminal. When a .gif is dropped, scans for
- * the SHIRO1.0 Application Extension. If found, shows a confirmation
- * prompt and triggers rehydration via the existing shiro-seed-v2 message.
+ * A .gif dropped on a terminal is scanned for the SHIRO1.0 Application
+ * Extension. If found, a confirmation prompt triggers rehydration via the
+ * existing shiro-seed-v2 message. Any other dropped image becomes a path
+ * (terminal-file-paste.ts, which does the drop handling and asks here first).
  */
 
-import type { ShiroTerminal } from './terminal';
+import { ShiroTerminal } from './terminal';
 import type { FileSystem } from './filesystem';
 import { extractShiroSeed, type SeedData } from './gif-encoder';
 
-export function initDropHandler(terminal: ShiroTerminal, _fs: FileSystem): void {
-  const container = document.getElementById('terminal')!;
-
-  container.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    container.style.outline = '2px solid #51cf66';
-    container.style.outlineOffset = '-2px';
-  });
-
-  container.addEventListener('dragleave', () => {
-    container.style.outline = '';
-    container.style.outlineOffset = '';
-  });
-
-  container.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    container.style.outline = '';
-    container.style.outlineOffset = '';
-
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
-
-    for (const file of Array.from(files)) {
+export function initDropHandler(_terminal: ShiroTerminal, _fs: FileSystem): void {
+  ShiroTerminal.claimDrop = async (files, terminal) => {
+    for (const file of files) {
       if (file.type === 'image/gif' || file.name.endsWith('.gif')) {
         try {
           const buffer = await file.arrayBuffer();
           const seed = await extractShiroSeed(new Uint8Array(buffer));
           if (seed) {
-            promptSeedRestore(terminal, seed);
-            return;
+            void promptSeedRestore(terminal, seed);
+            return true;
           }
         } catch {
-          // Not a valid seed GIF — silently ignore
+          // Not a valid seed GIF
         }
       }
     }
-  });
+    return false;
+  };
 }
 
 async function promptSeedRestore(terminal: ShiroTerminal, seed: SeedData): Promise<void> {

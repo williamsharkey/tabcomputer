@@ -16,6 +16,8 @@ import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
 import * as agentResume from './agent-resume';
 import { frozenLastTimeNotice } from './watchdog';
+import { installFilePaste, pasteImagePaths } from './terminal-file-paste';
+import { readClipboardImage } from './utils/clipboard';
 
 /**
  * HUD (Heads-Up Display) state for dynamic banner updates.
@@ -40,6 +42,8 @@ export class ShiroTerminal {
   onExit?: () => void;
   /** Replaces the startup HUD (the desktop draws a compact welcome instead) */
   banner?: (t: ShiroTerminal) => void;
+  /** Sees files dropped on any terminal first; true when it took them (drop-handler.ts: a snapshot GIF) */
+  static claimDrop?: (files: File[], t: ShiroTerminal) => Promise<boolean>;
   private teardown?: () => void;
 
   term: Terminal;
@@ -262,9 +266,16 @@ export class ShiroTerminal {
     // (e.g., dev tools opening/closing, CSS layout changes, pane dividers)
     const resizeObserver = new ResizeObserver(refit);
     resizeObserver.observe(container);
+    // An image pasted (Cmd+V) or dropped here is saved to /tmp and its path pasted (terminal-file-paste.ts)
+    const offFilePaste = installFilePaste(container, () => ({
+      fs: this.shell.fs,
+      paste: (text) => this.term.paste(text),
+      claimDrop: ShiroTerminal.claimDrop && ((files) => ShiroTerminal.claimDrop!(files, this)),
+    }), () => this.term.element);
     this.teardown = () => {
       window.removeEventListener('resize', refit);
       resizeObserver.disconnect();
+      offFilePaste();
       this.tty.dispose();
     };
 
@@ -283,6 +294,18 @@ export class ShiroTerminal {
     });
 
     // Mobile copy/paste is now handled by the unified toolbar in mobile-input.ts
+  }
+
+  /**
+   * Paste the browser clipboard (a menu's Paste): its text, or when it holds
+   * only an image, the image saved to /tmp, as its path (as a Cmd+V paste).
+   */
+  async pasteClipboard(): Promise<void> {
+    let text = '';
+    try { text = (await navigator.clipboard?.readText()) ?? ''; } catch { /* refused */ }
+    if (text) { this.term.paste(text); return; }
+    const image = await readClipboardImage();
+    if (image) await pasteImagePaths({ fs: this.shell.fs, paste: (s) => this.term.paste(s) }, [{ type: image.type, bytes: async () => image.bytes }], 'paste');
   }
 
   /** Remove this terminal for good (closing a pane). The shared iframe container stays. */

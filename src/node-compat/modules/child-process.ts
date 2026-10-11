@@ -60,6 +60,21 @@ function pipeable(self: () => any, on: (ev: string, fn: Function) => void, off: 
   };
 }
 
+/**
+ * A plain clipboard write (`pbcopy`, `xclip -selection clipboard`, `xsel -b -i`,
+ * `wl-copy`): spawn/execFile hand its stdin to the page's clipboard and don't
+ * run it. A read (`-o`, `--output`, `-t TARGETS -o`) or anything with shell
+ * syntax around it (Claude Code's image paste: `xclip -t TARGETS -o | grep
+ * image/...`, `xclip -t image/png -o > file`) runs for real, or it would
+ * "succeed" with no output.
+ */
+export function isClipboardWrite(cmd: string): boolean {
+  const c = cmd.trim();
+  if (!/^(pbcopy|xclip(\s|$)|xsel(\s|$)|wl-copy(\s|$)|clip(\.exe)?$)/.test(c)) return false;
+  if (/[|;&<>`$()]/.test(c)) return false;
+  return !/(^|\s)(-o|-out|--?output|--paste)(\s|$)/.test(c);
+}
+
 /** Marks the wait a running child (ref()'d) puts on its parent: process.exit() doesn't wait for it */
 export const CHILD_HOLD = Symbol('child hold');
 const childWait = <T>(p: Promise<T>): Promise<T> => Object.assign(p, { [CHILD_HOLD]: true });
@@ -840,7 +855,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       } else {
         cmd = `${file} ${shellQuoteArgs(args || [])}`;
       }
-      const isClipCmd = /^(pbcopy|xclip(\s|$)|xsel(\s|$)|wl-copy(\s|$)|clip(\.exe)?$)/.test(cmd.trim());
+      const isClipCmd = isClipboardWrite(cmd);
       let clipBuf = '';
       const childEvents: Record<string, Function[]> = {};
       const child: any = {
@@ -923,7 +938,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const stderrEvents: Record<string, Function[]> = {};
       // Detect clipboard commands (pbcopy, xclip, etc.) to shim with browser clipboard API.
       // Claude Code's "c to copy" runs: spawn('/bin/sh', ['-c', 'pbcopy'], {input: url})
-      const isClipboardCmd = /^(pbcopy|xclip(\s|$)|xsel(\s|$)|wl-copy(\s|$)|clip(\.exe)?$)/.test(fullCmd.trim());
+      const isClipboardCmd = isClipboardWrite(fullCmd);
       let clipboardBuf = '';
       // Create async iterator for stream mocks so execa's getStream (for await...of) works.
       // Without this, execa can't read stdout/stderr and always gets empty output.

@@ -405,6 +405,11 @@ export function createNetModule(deps: NetDeps = {}): any {
       return this;
     }
 
+    /** node's listening handle: set while listening, null before and after (supertest closes a server only if it has one) */
+    get _handle(): { fd: number; ref(): void; unref(): void; hasRef(): boolean } | null {
+      return this.listening ? { fd: -1, ref() {}, unref() {}, hasRef: () => true } : null;
+    }
+
     address() {
       if (!this.ksock || !this.listening) return null;
       const a = this.ksock.getsockname();

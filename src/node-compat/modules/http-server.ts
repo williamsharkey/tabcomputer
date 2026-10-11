@@ -251,6 +251,11 @@ export function createServerFactory(deps: ServerDeps) {
   function createServer(optsOrHandler?: any, maybeHandler?: any): any {
     const handler = typeof optsOrHandler === 'function' ? optsOrHandler : maybeHandler;
     const server: any = new EventEmitter();
+    // node's listening handle: set while listening, null before and after. Code checks it
+    // (supertest closes the server it started only `if (server._handle)`; without it mocha
+    // never exited after a supertest suite)
+    const listenHandle = { fd: -1, ref() {}, unref() {}, hasRef: () => true };
+    Object.defineProperty(server, '_handle', { get: () => (server.listening ? listenHandle : null), configurable: true });
     if (handler) server.on('request', handler);
     let port: number | null = null;
     let unserve: (() => void) | null = null;

@@ -6551,6 +6551,7 @@ export class Shell {
     let depth = 0; // track control structure nesting (do/done, then/fi, {/})
     let braceDepth = 0; // track only { } brace groups (not ${VAR})
     let parenDepth = 0; // track subshell ( ... ) nesting separately
+    let wordParens = 0; // ( right after a word (`f()`, a function definition): its ) closes it, not a subshell (#73)
     const caseParens: number[] = []; // parenDepth at each open `case`: a ) there ends a pattern
     let cmdPos = true; // the next word starts a command, so it may be a reserved word
     let i = 0;
@@ -6601,6 +6602,8 @@ export class Shell {
           cmdPos = true; // a command (maybe `case`) starts inside ( or $(
           current += ch; i++; continue;
         }
+        if (ch === '(') wordParens++;
+        else if (ch === ')' && wordParens > 0) { wordParens--; current += ch; i++; continue; }
         if (ch === ')' && parenDepth > 0 && caseParens[caseParens.length - 1] !== parenDepth) {
           parenDepth--;
           cmdPos = true; // after a subshell or a `( pattern )`: a command or keyword

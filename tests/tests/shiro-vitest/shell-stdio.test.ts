@@ -263,6 +263,16 @@ describe('named pipes opened with exec', () => {
 
 describe('scripts that do nothing do not wait on stdin', () => {
   // dpkg-preconfigure runs ucf's empty config script with stdin on a pipe it keeps open
+  it('a pipeline whose head writes nothing gives the next stage EOF, not the live stdin (tabcomputer#48)', async () => {
+    for (const script of ['{ true; } 2>&1 | tail -3; echo done', 'time { true; } 2>&1 | tail -3; echo done', 'for i in 1; do :; done | cat; echo done', '( : ) | wc -l; echo done']) {
+      const [r] = createPipe(); // the write end is never closed, as an agent tool's stdin
+      let out = '';
+      const p = await spawn(['sh', '-c', script], { 0: r, 1: new SinkFile((t) => { out += t; }), 2: new SinkFile(() => {}) });
+      expect(await withTimeout(p.wait(), 5_000)).toBe(0);
+      expect(out.trim().split('\n').pop()).toBe('done');
+    }
+  }, 40_000);
+
   it('an empty file without #!, `sh FILE` and `sh -c ""` exit without reading a live stdin', async () => {
     await fs.writeFile('/tmp/empty.cfg', '');
     await fs.chmod?.('/tmp/empty.cfg', 0o755);

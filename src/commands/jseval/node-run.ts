@@ -104,6 +104,11 @@ export async function runNode(ctx: CommandContext): Promise<number> {
       ctx.stderr += `node: Cannot find module '${fileArgs[0]}'\n`;
       return 1;
     }
+    // As node: the main module is its real path (a package's bin through node_modules/.bin
+    // requires its own files: uvu's ./parse), unless --preserve-symlinks-main
+    if (!node.execArgv.includes('--preserve-symlinks-main')) {
+      scriptPath = await ctx.fs.realpath(scriptPath).catch(() => scriptPath);
+    }
   }
 
   if (node.check) return scriptPath ? checkSyntax(ctx, code, scriptPath) : 0;

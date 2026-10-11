@@ -27,7 +27,7 @@ const APPS = {
   glxgears: { cmd: '/usr/bin/glxgears.x86_64-linux-gnu', title: /gears/i, gears: true, files: {} },
   neverball: {
     cmd: 'HOME=/tmp/nb SDL_AUDIODRIVER=dummy /usr/games/neverball', title: /neverball/i, gears: false,
-    files: { '/tmp/nb/.neverball/neverballrc': 'fullscreen 0\nwidth 640\nheight 480\n' },
+    files: { '/tmp/nb/.neverball/neverballrc': `fullscreen 0\nwidth ${process.env.NB_W ?? 640}\nheight ${process.env.NB_H ?? 480}\n` },
   },
 };
 const appName = opt('--app') ?? 'glxgears';
@@ -58,6 +58,7 @@ const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbo
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
+page.on('console', (m) => { if (/glshiro|GL|worker/i.test(m.text())) errors.push(`console: ${m.text()}`); });
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failed++; };
 const result = {};
@@ -136,7 +137,14 @@ try {
   // glxgears: red, green and blue gears on black; any app: more than a few colors
   const colors = await page.evaluate((t) => {
     const w = window.__tabcomputer.desktop.windows().find((w) => new RegExp(t, 'i').test(w.title) && w.surface);
-    const c = w.surface.canvas;
+    // frames go to the window's GL surface (a bitmaprenderer canvas over it) when glshiro runs in a Worker
+    const gl = [...document.querySelectorAll('canvas[data-gl-surface]')].find((x) => x.width > 1 && x.isConnected);
+    let c = w.surface.canvas;
+    if (gl) {
+      c = document.createElement('canvas');
+      c.width = gl.width; c.height = gl.height;
+      c.getContext('2d').drawImage(gl, 0, 0);
+    }
     const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
     const n = { red: 0, green: 0, blue: 0 };
     const distinct = new Set();
@@ -147,7 +155,7 @@ try {
     }
     // glxgears clears to black: the frame covers the whole window
     const at = (x, y) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data.slice(0, 3));
-    return { ...n, colors: distinct.size, size: [c.width, c.height], corners: [at(1, 1), at(c.width - 2, 1), at(1, c.height - 2), at(c.width - 2, c.height - 2)] };
+    return { ...n, colors: distinct.size, glSurface: !!gl, size: [c.width, c.height], corners: [at(1, 1), at(c.width - 2, 1), at(1, c.height - 2), at(c.width - 2, c.height - 2)] };
   }, title);
   console.log(`window pixels: ${JSON.stringify(colors)}`);
   if (app.gears) {
@@ -184,6 +192,7 @@ try {
       glx: window.__shiroX ? window.__shiroX.server.extensions.has('GLX') : 'no X session',
       vendorLibrary: await window.__tabcomputer.fs.exists('/usr/lib/x86_64-linux-gnu/libGLX_tabcomputer.so.0'),
       glshiro: window.__tabcomputer.gl() ? window.__tabcomputer.gl().connections : 'not running',
+      glSurfaces: [...document.querySelectorAll('canvas[data-gl-surface]')].map((c) => `${c.dataset.glSurface} ${c.width}x${c.height} ${c.isConnected ? '' : 'detached'} ${getComputedStyle(c).display}`),
     })).catch((e) => e.message);
     console.log(`diagnostics: ${JSON.stringify(diag)}`);
   }

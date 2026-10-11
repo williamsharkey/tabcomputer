@@ -11,7 +11,9 @@
  * - gives inflate the object's own compressed bytes when its end is known:
  *   fromPack has every object's end (for the CRCs), an index read from an
  *   .idx has every offset; unknown, pako reads it as before;
- * - lets the page run every ~30 ms in fromPack's two passes over the objects.
+ * - lets the page run every ~30 ms in fromPack's two passes over the objects;
+ * - on the page, fromPack hands the whole indexing to a worker
+ *   (src/git-pack-indexer.ts) and builds the index from the .idx it returns.
  * Each anchor must match exactly once: an isomorphic-git upgrade that moves
  * them fails the build here, not silently.
  */
@@ -89,6 +91,28 @@ async function __shiroTurn() {
   // readSlice: a turn before each object (checkout reads thousands through it, outside fromPack)
   [`    const raw = (await this.pack).slice(start);`, `    await __shiroTurn();
     const raw = (await this.pack).slice(start);`],
+  // FileSystem.read: a big file's bytes wrapped, not copied (git read a 265 MB pack back: a 66 ms copy).
+  // isomorphic-git only reads them (packs, blobs it hashes); small ones are copied as before
+  [`      if (typeof buffer !== 'string') {
+        buffer = Buffer.from(buffer);
+      }`, `      if (typeof buffer !== 'string') {
+        buffer = buffer.byteLength >= 1048576 && ArrayBuffer.isView(buffer)
+          ? Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+          : Buffer.from(buffer);
+      }`],
+  // fromPack: the page hands the whole indexing (both passes: inflate, sha1, crc) to a worker
+  // (src/git-pack-indexer.ts sets the hook; the worker itself has none) and gets the .idx back
+  [`  static async fromPack({ pack, getExternalRefDelta, onProgress }) {`, `  static async fromPack({ pack, getExternalRefDelta, onProgress }) {
+    const __indexer = typeof globalThis !== 'undefined' ? globalThis.__shiroPackIndexer : undefined;
+    const __idx = typeof __indexer === 'function' ? await __indexer(pack).catch(() => null) : null;
+    if (__idx) {
+      const p = await GitPackIndex.fromIdx({ idx: Buffer.from(__idx.buffer, __idx.byteOffset, __idx.byteLength), getExternalRefDelta });
+      if (p) {
+        p.pack = Promise.resolve(pack);
+        p.toBuffer = async () => Buffer.from(__idx.buffer, __idx.byteOffset, __idx.byteLength); // (fromIdx skips the CRCs)
+        return p
+      }
+    }`],
   // fromPack: the ends it computed, and turns in both passes
   [`    await listpack([pack], async ({ data, type, reference, offset, num }) => {
       if (totalObjectCount === null) totalObjectCount = num;`, `    await listpack([pack], async ({ data, type, reference, offset, num }) => {
@@ -108,6 +132,10 @@ async function __shiroTurn() {
       offset = Number(offset);`],
 ];
 
+/** GitPackIndex for the indexing worker (src/git-pack-worker.ts): not part of isomorphic-git's API */
+const EXPORT_ESM = '\nexport { GitPackIndex as __shiroGitPackIndex };\n';
+const EXPORT_CJS = '\nexports.__shiroGitPackIndex = GitPackIndex;\n';
+
 export function isogitPackOffMainThread(): Plugin {
   return {
     name: 'isogit-pack-off-main-thread',
@@ -120,6 +148,7 @@ export function isogitPackOffMainThread(): Plugin {
         if (n !== 1) this.error(`vite-plugin-isogit: expected one match in ${id}, found ${n}: ${from.slice(0, 60)}`);
         out = out.replace(from, () => to);
       }
+      out += id.endsWith('.cjs') ? EXPORT_CJS : EXPORT_ESM;
       return { code: out, map: null };
     },
   };

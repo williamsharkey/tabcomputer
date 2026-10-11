@@ -14,9 +14,13 @@ import { getShiroOrigin } from '../utils/shiro-origin';
 import { activeProfile } from '../profile';
 import { gitPlumbing } from './git-plumbing';
 import { packageShadows } from '../pkg-manager';
+import { installPackIndexer } from '../git-pack-indexer';
 import { builtinCloneHandles } from './git-clone-route';
 import { splitShortOptions, unknownOption, realGit, PREFER_REAL } from './git-route';
 import { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig } from './git-config';
+
+// git clone's pack indexing in a worker (vite-plugin-isogit.ts calls it from fromPack)
+installPackIndexer();
 
 // --- Main command ---
 

@@ -14,21 +14,9 @@
    "failures": []
   },
   "quote": {
-   "pass": 29,
+   "pass": 32,
    "total": 33,
    "failures": [
-    {
-     "i": 27,
-     "name": "$'' octal escapes don't have leading 0"
-    },
-    {
-     "i": 28,
-     "name": "$'' octal escapes with fewer than 3 chars"
-    },
-    {
-     "i": 33,
-     "name": "$'' supports \\cA escape for Ctrl-A - mask with 0x1f"
-    },
     {
      "i": 34,
      "name": "\\c' is an escape, unlike bash"
@@ -231,18 +219,9 @@
    "failures": []
   },
   "loop": {
-   "pass": 27,
+   "pass": 29,
    "total": 29,
-   "failures": [
-    {
-     "i": 16,
-     "name": "bad arg to break"
-    },
-    {
-     "i": 17,
-     "name": "too many args to continue"
-    }
-   ]
+   "failures": []
   },
   "case_": {
    "pass": 13,
@@ -1356,21 +1335,9 @@
    "failures": []
   },
   "arith-context": {
-   "pass": 12,
+   "pass": 15,
    "total": 16,
    "failures": [
-    {
-     "i": 9,
-     "name": "$[ is a synonym for $(("
-    },
-    {
-     "i": 10,
-     "name": "$[$var is a synonym for $(($var (#2426)"
-    },
-    {
-     "i": 11,
-     "name": "$[$undefined] is a synonym for $(($undefined (#2566)"
-    },
     {
      "i": 15,
      "name": "Empty expression a[]"
@@ -1402,7 +1369,7 @@
    ]
   },
   "bugs": {
-   "pass": 23,
+   "pass": 24,
    "total": 29,
    "failures": [
     {
@@ -1424,10 +1391,6 @@
     {
      "i": 21,
      "name": "unset doesn't allow command execution"
-    },
-    {
-     "i": 27,
-     "name": "Crash after changing $[] to be alias of $(( ))"
     }
    ]
   },
@@ -1580,22 +1543,9 @@
    ]
   },
   "nocasematch-match": {
-   "pass": 3,
+   "pass": 6,
    "total": 6,
-   "failures": [
-    {
-     "i": 0,
-     "name": "[[ equality matching"
-    },
-    {
-     "i": 1,
-     "name": "[[ regex matching"
-    },
-    {
-     "i": 3,
-     "name": "case matching"
-    }
-   ]
+   "failures": []
   },
   "command-sub-ksh": {
    "pass": 0,

@@ -53,4 +53,23 @@ cp.spawn('sh', ['-c', t('spawn')], { stdio: 'inherit' });
     expect(await shell.execute('node /tmp/inh.js', () => {}, () => {})).toBe(0);
     expect(screen.replace(/\r\n/g, '\n').match(/\w+=\w+/g)).toEqual(['spawnSync=tty', 'execSync=tty', 'spawn=tty']);
   }, 60_000);
+  // node's stdout a pipe or a file, a terminal attached: the children's output follows node's, it isn't lost
+  it('spawn, spawnSync and execSync: their output goes where node\'s does when that is a pipe or a file', async () => {
+    const { shell, fs } = await createTestShell();
+    const tty = new TtySession();
+    let screen = '';
+    tty.pty.onOutput((b) => { screen += new TextDecoder().decode(b); });
+    shell.setTerminal({ tty, writeOutput: (s: string) => { screen += s; }, write: (s: string) => { screen += s; }, getSize: () => ({ cols: 80, rows: 24 }), onResize: () => () => {},
+      enterStdinPassthrough() {}, exitStdinPassthrough() {}, enterRawMode() {}, exitRawMode() {}, isRawMode: () => false, term: { buffer: { active: { type: 'normal' } } } } as any);
+    await fs.writeFile('/tmp/inh2.js', `const cp = require('child_process');
+cp.spawnSync('sh', ['-c', 'echo A'], { stdio: 'inherit' });
+cp.execSync('echo B', { stdio: 'inherit' });
+cp.spawn('sh', ['-c', 'echo C'], { stdio: 'inherit' });
+`);
+    // (what the pipeline's last stage prints: the callback in the page, the pty under a kernel sh)
+    const run = async (c: string) => { let out = ''; screen = ''; await shell.execute(c, (s) => { out += s; }, () => {}); return (out + screen).replace(/\r\n/g, '\n'); };
+    expect(await run('node /tmp/inh2.js | cat')).toBe('A\nB\nC\n');
+    await run('node /tmp/inh2.js > /tmp/inh2.out');
+    expect(await fs.readFile('/tmp/inh2.out', 'utf8')).toBe('A\nB\nC\n');
+  }, 60_000);
 });

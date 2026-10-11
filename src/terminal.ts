@@ -13,6 +13,7 @@ import { needsMoreInput } from './shell-syntax';
 import { activeProfile } from './profile';
 import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
+import * as agentResume from './agent-resume';
 import { frozenLastTimeNotice } from './watchdog';
 
 /**
@@ -836,6 +837,16 @@ export class ShiroTerminal {
     return { stdout, stderr, exitCode };
   }
 
+  /** Run a line the user entered; an agent it starts (claude, codex) is tracked for session restore (agent-resume.ts). */
+  private async runLine(line: string): Promise<number> {
+    agentResume.lineStarted(this, line, this.shell.cwd, this.shell.env, this.shell.fs);
+    try {
+      return await this.shell.execute(line, (s: string) => this.term.write(s));
+    } finally {
+      agentResume.lineEnded(this);
+    }
+  }
+
   private async handleInput(data: string) {
     // (bracketed paste markers, left on by a program that enabled mode 2004: the text is what counts)
     if (data.includes('\x1b[20')) data = data.replace(/\x1b\[20[01]~/g, '');
@@ -984,7 +995,7 @@ export class ShiroTerminal {
           this.typeAheadDropped = false;
           this.running = true;
           try {
-            await this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s));
+            await this.runLine(this.lineBuffer);
           } finally {
             this.running = false;
           }
@@ -1378,7 +1389,7 @@ export class ShiroTerminal {
         this.term.writeln('');
         if (this.lineBuffer.trim()) {
           this.running = true;
-          this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s)).then(() => {
+          this.runLine(this.lineBuffer).then(() => {
             this.running = false;
             this.lineBuffer = '';
             this.cursorPos = 0;

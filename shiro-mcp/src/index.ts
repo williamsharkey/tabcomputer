@@ -508,7 +508,8 @@ async function connectRelay(code: string, info: RelayInfo): Promise<string> {
   const answerRes = await fetch(`${SIGNALING_URL}/answer/${code}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ answer: { type: "relay", v: 1 }, candidates: [] })
+    // v2 (per-connection epochs) when the tab offers it, so a restarted shiro-mcp can rejoin a live tab
+    body: JSON.stringify({ answer: { type: "relay", v: info.v === 2 ? 2 : 1 }, candidates: [] })
   });
   if (!answerRes.ok) throw new Error("Failed to send answer");
 

@@ -70,7 +70,7 @@ export function launcherSource(): string {
     '// tabcomputer: claude --vm (src/claude-vm/extract.ts)',
     "const { createBun } = await require('tabcomputer:claude-vm').load();",
     "const assets = JSON.parse(require('fs').readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
-    "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js' });",
+    "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), net: require('net'), http: require('http'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js' });",
     // bundle.js through V8's code cache when a service worker serves /__vm/ (code-cache.ts):
     // the parameters node-compat gives a module, the bundle's own module first
     "const { loadCompiled } = await require('tabcomputer:claude-vm').codeCache();",

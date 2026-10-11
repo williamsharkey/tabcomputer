@@ -49,7 +49,7 @@ hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build'
 
 ## What a swap can change
 
-The swap bundle includes only the swap set. Every other import resolves to the page's **live** module. `vite-plugin-hotswap.ts` makes each module under `src/` register its namespace in `globalThis.__tabcomputerLive` under its path (`src/shell.ts`). New code therefore shares the page's singletons: the registry, the kernel, the filesystem, the process table.
+The swap bundle includes only the swap set. Every other import resolves to the page's **live** module. `vite-plugin-hotswap.ts` makes each module under `src/` register its namespace in `globalThis.__tabcomputerLive` under its path (`src/shell.ts`), except generated and vendored ones (`NOT_LIVE`). New code therefore shares the page's singletons: the registry, the kernel, the filesystem, the process table.
 
 - **Classes.** When a swapped file exports a class and its live module exports a class of the same name, the live class gets the new class's prototype methods, getters, setters and static methods. Every existing instance runs the new code from its next call, the main shell and the agent's own shell included. The replaced descriptors are kept, and a revert restores them exactly.
 - **Commands.** A registry command (`src/commands/*`) is a plain exported object (`{ name, exec, ... }`), not a class. When a swapped file exports one whose live module exports a command of the same name, the live object is patched in place: `exec`, `description` and its other properties. So the command registry, a lazy command's cache and the ModuleRegistry all run the new code, and a revert restores each property. `withHelpFlags` reads `cmd.exec` at each call for this. A lazy command's module is loaded before the build, so its own imports resolve to live modules too.
@@ -77,6 +77,7 @@ The swap bundle includes only the swap set. Every other import resolves to the p
 - **Closures already handed out**: bound listeners, timers, a stored `this.fn.bind(this)`. They keep the old code until they're re-created.
 - **Classes with `#private` members**: old instances fail the brand check in new methods.
 - **Anything running in a Worker**: the node runtime's workers, WASM and Blink guests, the watchdog worker. That includes everything they share with the page: the kernel's syscall channel layout, SharedArrayBuffer formats, syscall numbers and ABI structs. Change those with a deploy.
+- **Generated or vendored modules** (`src/gl/gen/`, `src/browser/vendor/`) aren't live: a swap that imports one bundles its own copy, which is fine for tables and stateless code. Swapping one directly has nothing live to patch. To change one, swap the modules that import it, or deploy.
 - **Vite-only imports in the swap set** (`?worker`, `?url`): they can't be built in the tab. `?raw` works. Bare npm imports work for the packages in `LIVE_DEPS` in `vite-plugin-hotswap.ts` (xterm today).
 - **The dev server** (`npm run dev`). The plugin runs only in production builds, where module ids are stable.
 
@@ -98,7 +99,9 @@ Patches and page scripts shouldn't depend on minified names. Use these on `windo
 
 ## Cost
 
-The live map keeps the exports and state bindings of `src/` modules from being tree-shaken, and the registrations add bytes of their own. On build 962 the JS grew by 4.8%: 8.17 MB → 8.56 MB, or 2.49 MB → 2.58 MB gzipped. That's all of `dist/assets/*.js`, measured with `npx vite build` with and without the plugin. Boot time doesn't change measurably. Over six fresh loads each in headless Chromium, the median time to `shiro:terminal:ready` was 218 ms with the plugin and 208 ms without, which is within the run-to-run spread (180–257 ms). The JS loaded at boot grows from 1.67 MB to 1.79 MB. The source tarball (about 3.3 MB, 0.2 MB of it fixtures) is downloaded only by `hotswap checkout`.
+The live map keeps the exports and state bindings of `src/` modules from being tree-shaken, and the registrations add bytes of their own. On build 973 the JS grew by 3.1%: 8.54 MB → 8.81 MB, or 2.67 MB → 2.73 MB gzipped. That's all of `dist/assets/*.js`, measured with `npx vite build` with and without the plugin. About 5 KB gz of that is a second copy of the zstd codec chunk, which the page and the deb worker would otherwise share as one file; a load fetches only one of them.
+- Most of the rest is in the boot chunk (+20 KB gz, +129 KB raw). About 74 KB raw is the namespace objects (a getter per export), and 44 KB is the registration statements. That's what makes a module swappable.
+- Generated tables (`src/gl/gen/`) and vendored code (`src/browser/vendor/`) aren't registered (`NOT_LIVE` in `src/hotswap/live.ts`). Registering them cost about 29 KB gz, mostly unused GL enum names. A swap that imports one gets its own copy from the checkout, and the build says so. Before that change the plugin cost 93 KB gz; it now costs 64 KB. Boot time doesn't change measurably. Over six fresh loads each in headless Chromium, the median time to `shiro:terminal:ready` was 218 ms with the plugin and 208 ms without, which is within the run-to-run spread (180–257 ms). The JS loaded at boot grows from 1.67 MB to 1.79 MB. The source tarball (about 3.3 MB, 0.2 MB of it fixtures) is downloaded only by `hotswap checkout`.
 
 ## Tests
 

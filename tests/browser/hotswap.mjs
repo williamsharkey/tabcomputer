@@ -103,6 +103,10 @@ r = await sh(page, 'cd /home/user/tabcomputer && reload commands/git src/command
 check(r.code === 0 && /Hot-reloaded 'commands\/git'/.test(r.out), 'reload of a command with relative imports', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the reloaded code');
 
+// Generated tables aren't live (NOT_LIVE): a module importing them builds with its own copy
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap build src/gl/exec.ts');
+check(r.code === 0 && /src\/gl\/gen\/enums\.ts is generated or vendored/.test(r.out), 'hotswap build of a module importing generated tables', r.out);
+
 // 6. Suites from the checkout, in the tab
 await page.evaluate(async () => {
   await window.__tabcomputer.fs.writeFile('/home/user/keep.txt', 'mine');

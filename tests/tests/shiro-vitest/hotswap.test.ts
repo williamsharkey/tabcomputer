@@ -256,6 +256,28 @@ describe('hotswap: building a swap bundle', () => {
     expect(a.n).toBe(42);
   });
 
+  it("doesn't make generated or vendored modules live; a swap copies them in", async () => {
+    const { hotswapLiveModules } = await import('../../../vite-plugin-hotswap');
+    const root = '/co';
+    const plugin: any = hotswapLiveModules(root);
+    const ctx = { resolve: async (spec: string, from: string) => ({ id: path.resolve(path.dirname(from), spec) + '.ts', external: false }) };
+    expect(await plugin.transform.call(ctx, 'export const GL_ONE = 1;\n', '/co/src/gl/gen/enums.ts')).toBeNull();
+    expect(await plugin.transform.call(ctx, 'export const x = 1;\n', '/co/src/browser/vendor/subtls/index.ts')).toBeNull();
+    const out = (await plugin.transform.call(ctx, `export const f = () => import('./gen/enums');\nexport const g = () => import('./mat');\n`, '/co/src/gl/exec.ts')).code;
+    expect(out).toContain('.set("src/gl/exec.ts", __tcLiveSelf)');
+    expect(out).toContain('"src/gl/mat.ts"');
+    expect(out).not.toContain('src/gl/gen/enums.ts');
+
+    const files: Record<string, string> = {
+      '/co/src/hs-fixture/g.ts': `import { ONE } from './gen/t';\nexport const one = (): number => ONE;\n`,
+      '/co/src/hs-fixture/gen/t.ts': 'export const ONE = 1;\n',
+    };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    const built = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/g.ts'], build: esbuild.build as any });
+    expect(built.copied).toEqual(['src/hs-fixture/gen/t.ts']);
+    expect(built.warnings.join('\n')).toMatch(/gen\/t\.ts is generated or vendored/);
+  });
+
   it('loads lazy modules the page way: import() at run time, static imports before the bundle runs', async () => {
     const files: Record<string, string> = {
       '/co/src/hs-fixture/l.ts': `import { early } from './e';\nexport class L { early() { return early; } async later() { return (await import('./d')).d; } }\n`,

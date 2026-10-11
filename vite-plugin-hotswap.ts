@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { execSync } from 'child_process';
 import type { Plugin } from 'vite';
 import { moduleState } from './src/hotswap/state';
+import { NOT_LIVE } from './src/hotswap/live';
 
 /**
  * The live module map for hot-swapping (src/hotswap/, docs/HOTSWAP.md): every
@@ -29,6 +30,7 @@ export function hotswapLiveModules(root: string): Plugin {
       if (id.includes('?') || id.includes('\0')) return null;
       if (!id.startsWith(srcDir) || !/\.(ts|tsx|js|mjs)$/.test(id) || id.endsWith('.d.ts')) return null;
       const key = path.relative(root, id).split(path.sep).join('/');
+      if (NOT_LIVE.test(key)) return null;
       let extra = `import * as __tcLiveSelf from ${JSON.stringify(id)};\n` +
         `(globalThis.__tabcomputerLive ??= new Map()).set(${JSON.stringify(key)}, __tcLiveSelf);\n`;
       LIVE_DEPS.forEach((dep, i) => {
@@ -62,6 +64,7 @@ export function hotswapLiveModules(root: string): Plugin {
         const r = await this.resolve(m[2], id);
         if (!r || r.external || r.id.includes('?') || !r.id.startsWith(srcDir)) continue;
         const lazyKey = path.relative(root, r.id).split(path.sep).join('/');
+        if (NOT_LIVE.test(lazyKey)) continue;
         extra += `(globalThis.__tabcomputerLiveLoaders ??= new Map()).set(${JSON.stringify(lazyKey)}, () => import(${JSON.stringify(m[2])}));\n`;
       }
       return {

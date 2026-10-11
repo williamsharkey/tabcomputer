@@ -12,7 +12,7 @@
  * namespaces); swap.ts evaluateBundle reads it.
  */
 import type * as esbuild from 'esbuild-wasm';
-import { liveLoaders, liveModules, type LiveLoaders, type LiveMap } from './live';
+import { liveLoaders, liveModules, NOT_LIVE, type LiveLoaders, type LiveMap } from './live';
 import { carryState } from './state';
 
 export interface HotswapFs {
@@ -256,7 +256,11 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
   });
   for (const w of result.warnings) warnings.push(w.text);
   if (testPath) return { code: result.outputFiles![0].text, hash: '', keys: [], copied: [], needs: [], warnings };
-  for (const k of copied) warnings.push(`${k} isn't loaded in the page, so the bundle has its own copy (its module state is separate)`);
+  for (const k of copied) {
+    warnings.push(NOT_LIVE.test(k)
+      ? `${k} is generated or vendored, which the page doesn't make live, so the bundle has its own copy`
+      : `${k} isn't loaded in the page, so the bundle has its own copy (its module state is separate)`);
+  }
   const code = `${NEEDS_PREFIX}${JSON.stringify([...needs])}\n` +
     result.outputFiles![0].text.replace(/\bimport\((["'])tc-live:([^"']+)\1\)/g, (_m, _q, key) => `globalThis.__tabcomputerLiveImport(${JSON.stringify(key)})`);
   return { code, hash: await sha256Hex(code), keys, copied: [...copied], needs: [...needs], warnings };

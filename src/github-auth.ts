@@ -187,7 +187,7 @@ export function openGitHubLoginPanel(code: DeviceCode): { setStatus: (text: stri
     if (e.data.type === 'gh-login-cancel') { abort.abort(); win.close(); }
   };
   const win = createServerWindow({
-    mode: 'iframe', title: 'Sign in to GitHub', width: '24em', height: '22em',
+    mode: 'iframe', title: 'Sign in to GitHub', width: '24em', height: '22em', appId: 'github-signin', appName: 'GitHub Sign-in',
     onClose: () => { closed = true; window.removeEventListener('message', onMessage); if (!abort.signal.aborted) abort.abort(); },
   });
   window.addEventListener('message', onMessage);

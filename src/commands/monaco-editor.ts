@@ -361,6 +361,7 @@ export const monacoEditorCmd: Command = {
     const win = createServerWindow({
       mode: 'iframe',
       title: target === '.' ? ctx.cwd.split('/').pop() || 'monaco' : target,
+      appId: 'monaco', appName: 'Monaco',
       width: '56em',
       height: '34em',
     });

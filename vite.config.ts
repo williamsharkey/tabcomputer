@@ -4,6 +4,7 @@ import path from 'path';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { inlineAssets } from './vite-plugin-inline';
 import { hashEngineWasm, versionBlinkEngine } from './vite-plugin-engines';
+import { hotswapLiveModules, hotswapSource } from './vite-plugin-hotswap';
 import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -38,6 +39,8 @@ export default defineConfig({
     inlineAssets(),
     hashEngineWasm(),
     versionBlinkEngine(),
+    hotswapLiveModules(__dirname),
+    hotswapSource(__dirname, buildSha),
   ],
   build: {
     target: 'es2022',

@@ -626,12 +626,13 @@ async function run(msg) {
   const shmObjs = new Map();
   // One request on `ch`; the page serves it and posts 'blink-done'.
   const hosted = new Set();  // kernel pids of same-instance fork children
-  const issue = (ch, nr, args, as) => new Promise((resolve) => {
+  // tid: the guest thread making the call (Blink patch 0127; 0: not known)
+  const issue = (ch, nr, args, as, tid = 0) => new Promise((resolve) => {
     for (let i = 0; i < CH_NARGS; i++) ch.i32[CH_ARGS + i] = args[i] ?? 0;
     ch.i32[CH_SYSNO] = nr;
     ch.done = resolve;
     Atomics.store(ch.i32, CH_STATE, 1);
-    post({ type: 'blink-sys', ch: pool.indexOf(ch), as });
+    post({ type: 'blink-sys', ch: pool.indexOf(ch), as, tid });
   });
   // The guest is exiting (Blink's ShiroQuiesce): the calls its other threads
   // have in flight, and any they make now, end with EINTR so the threads get
@@ -646,7 +647,7 @@ async function run(msg) {
       done?.({ r: -4, hi: -1, sig: 0 });
     }
   };
-  const call = async (nr, args, as, input, outCap) => {
+  const call = async (nr, args, as, input, outCap, tid = 0) => {
     if (exiting) return new Promise(() => {}); // the kernel ends this worker
     if (dying) return EINTR_REPLY;
     const ch = await acquire();
@@ -654,7 +655,7 @@ async function run(msg) {
     try {
       if (input.length > ch.data.length) return { r: -7 /* E2BIG */, hi: -1, out: null };
       ch.data.set(input);
-      let res = await issue(ch, nr, args, as);
+      let res = await issue(ch, nr, args, as, tid);
       const out = outCap ? ch.data.slice(0, Math.min(outCap, ch.data.length)) : null;
       // A signal for the guest rode on the reply: queue it, with its siginfo,
       // then rt_sigreturn (which may hand over the next)
@@ -666,7 +667,7 @@ async function run(msg) {
           const pid = as && hosted.has(as) ? as : 0;
           let info = null;
           if (siginfoCall && blinkModule?.[pid ? '_blink_shiro_signal_pid_info' : '_blink_shiro_signal_info']) {
-            const ri = await issue(ch, SYS_shiro_siginfo, [sig], as);
+            const ri = await issue(ch, SYS_shiro_siginfo, [sig], as, tid);
             if (ri.r === 0) info = Array.from(new Int32Array(ch.data.buffer, ch.data.byteOffset, 8));
             else if (ri.r === -38) siginfoCall = false;
             // (its last word: the thread a SIGEV_THREAD_ID timer's signal is for)
@@ -675,7 +676,7 @@ async function run(msg) {
           } else {
             queueSignal(sig, info, pid);
           }
-          sig = (await issue(ch, SYS.rt_sigreturn, [], as)).sig;
+          sig = (await issue(ch, SYS.rt_sigreturn, [], as, tid)).sig;
         }
       };
       await drain(res.sig);
@@ -743,6 +744,8 @@ async function run(msg) {
       port.postMessage({ type: 'blink-fork', pid, snapshot: bytes.buffer }, [bytes.buffer]);
       return 0;
     },
+    // a guest thread started (op 1) or ended (0) (Blink patch 0127)
+    threadNote(tid, op) { post({ type: 'blink-thread', tid, op }); },
     // a thread in a kernel call has a signal to take (Blink patches 0065,
     // 0507): the page interrupts the process's blocking calls
     kick() { post({ type: 'blink-kick' }); },
@@ -831,6 +834,20 @@ async function run(msg) {
       return { wasmBytes: M.HEAPU8.buffer.byteLength, fileBytes: files };
     };
     if (pool.length) M._blink_shiro_enable(msg.pid, chunk, ignLo >>> 0, ignHi >>> 0);
+    // Who holds Blink's GIL (patch 0126), for the kernel's /proc/PID/status: a
+    // copy every 50 ms in 16 bytes of their own. Handing the page the wasm
+    // memory itself kept every finished process's memory alive until the
+    // page's next GC (peak RSS +10-25 MiB a process)
+    if (M._shiro_gil_state && M.wasmMemory) {
+      const gilAddr = M._shiro_gil_state(), gil = new Int32Array(new SharedArrayBuffer(16));
+      const copy = () => {
+        const src = new Int32Array(M.wasmMemory.buffer, gilAddr, 4);
+        for (let i = 0; i < 4; i++) Atomics.store(gil, i, Atomics.load(src, i));
+      };
+      copy();
+      setInterval(copy, 50);
+      post({ type: 'blink-engine', gil: gil.buffer });
+    }
     // Direct channels (Blink patch 0065): in Blink's wasm memory, used by its
     // threads themselves and served by the page watching their state words,
     // so a kernel call skips the proxy to this thread and both messages.

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, onTestFinished, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -134,6 +134,12 @@ const sysvshmBin = join(out, 'sysvshm');
 const haveSysvshm = 'SYS_shmget' in Abi && tryBuild('gcc', ['-static', '-O1', '-o', sysvshmBin, 'sysvshm.c']);
 const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
+const callretBin = join(out, 'callret');
+const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
+const forkmanyBin = join(out, 'forkmaps-many');
+const haveForkmany = tryBuild('gcc', ['-static', '-O1', '-o', forkmanyBin, 'forkmaps-many.c']);
+const callsBin = join(out, 'calls');
+const haveCalls = tryBuild('gcc', ['-static', '-O2', '-o', callsBin, 'calls.c']);
 const futexckptBin = join(out, 'futexckpt');
 const haveFutexckpt = tryBuild('gcc', ['-static', '-O1', '-o', futexckptBin, 'futexckpt.c']);
 const sysvsemBin = join(out, 'sysvsem');
@@ -216,6 +222,17 @@ const fionbioBin = join(out, 'fionbio');
 const haveFionbio = tryBuild('gcc', ['-static', '-O1', '-o', fionbioBin, 'fionbio.c']);
 const fuzzBin = join(out, 'jitfuzz');
 const haveFuzz = tryBuild('gcc', ['-static', '-O1', '-o', fuzzBin, 'jitfuzz.c']);
+// alufuzz.c is generated (1.5 MB of C): every ALU form, wjit's category 0
+const aluBin = join(out, 'alufuzz');
+const haveAlu = (() => {
+  try {
+    writeFileSync(join(out, 'alufuzz.c'), execFileSync('python3', [join(FIX, 'alufuzz.py')], { maxBuffer: 64 << 20 }));
+    execFileSync('gcc', ['-static', '-O1', '-o', aluBin, join(out, 'alufuzz.c')], { stdio: 'pipe', timeout: 120_000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // signalfd needs Blink to forward signalfd/signalfd4 and the signal mask to the kernel (a patch named for it)
 const signalfdBin = join(out, 'signalfd');
@@ -480,6 +497,19 @@ describe.skipIf(!haveJit || !haveFuzz)('Blink engine: wasm JIT', () => {
     expect(jit.output.split('\n').length).toBeGreaterThan(100);
     expect(jit.output).toBe(interp.output);
   }, 120_000);
+
+  it.skipIf(!haveAlu)('runs every ALU form like the interpreter and the host CPU (alufuzz)', async () => {
+    // add/or/adc/sbb/and/sub/xor/cmp in each width as reg, reg<-mem, mem<-reg, imm8, imm32 and mem<-imm, with the flags
+    // dead, pushed, or consumed by a fused jcc: one checksum line per form (5360), each run hot enough to compile
+    const { shell } = await setup(readFileSync(aluBin));
+    const jit = await run(shell, './prog 300');
+    const interp = await run(shell, 'BLINK_WJIT=0 ./prog 300');
+    expect(jit.exitCode).toBe(0);
+    const lines = (s: string) => s.replace(/\r/g, '').trim().split('\n');
+    expect(lines(jit.output).length).toBe(5360);
+    expect(lines(jit.output)).toEqual(lines(interp.output));
+    if (process.arch === 'x64') expect(lines(jit.output)).toEqual(lines(execFileSync(aluBin, ['300']).toString()));
+  }, 600_000);
 
   it('sees code rewritten after mprotect, in RWX pages and after munmap', async () => {
     const { shell } = await setup(readFileSync(jitBin));
@@ -1577,6 +1607,31 @@ describe('Blink engine: CPU and syscall fixes', () => {
       expect(r.output.replace(/\r\n/g, '\n')).toBe(NATIVE_SSE2D);
     }
   }, 60_000);
+
+  // small callees compiled into their caller's region, their rets going back
+  // inside it (BLINK_WJIT_OFF bit 21 turns that off); the outputs are native's
+  it.skipIf(!haveCallret || !haveCalls)('calls and returns match native, callees in the caller\'s region or not, and interpreted', async () => {
+    const { fs, shell } = await setup(readFileSync(callretBin));
+    await fs.writeFile('/home/user/work/calls', readFileSync(callsBin), { mode: 0o755 });
+    for (const env of ['', 'BLINK_WJIT_OFF=0x200000 ', 'BLINK_WJIT=0 ']) {
+      let r = await run(shell, `${env}./prog`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('fib 682000\ntwo_sites 729979e90c11aca0\nlongjmp 36020\n' +
+        'detour 6ee6d79c67ba74b0\npointers 7d2877d473ee2321\n');
+      r = await run(shell, `${env}./calls 1000000 2>/dev/null`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe('calls b30fec670ff9ba2e\nmemory b328a7deb029a1df\nregs b730b7fef0aa8521\n');
+    }
+  }, 120_000);
+
+  // debian: dracut-install and ldconfig aborted ("pt & PAGE_V", "impossible
+  // memory") or hung once a process with many file pages mapped had forked
+  // enough times: every fork took new g_hostpages slots, and past 2^20 a page
+  // table entry lost its address bits. 250 files of 96 KiB and 180 forks is
+  // ~1.08 M page allocations, past the 2^20 index slots (patch 0534).
+  it.skipIf(!haveForkmany)('a process with many file pages mapped forks and execs 180 times', async () => {
+    const { shell } = await setup(readFileSync(forkmanyBin));
+    const r = await run(shell, './prog 250 96 180');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('250 files mapped\n180 forks done 747000\n');
+  }, 600_000);
 
   // LTP waitpid08/10: one of 8 forked children never woke from its checkpoint
   it.skipIf(!haveFutexckpt)('every wake a waker counts reaches a waiter (futex in shared memory, 8 children)', async () => {

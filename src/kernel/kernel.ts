@@ -907,6 +907,17 @@ export class Kernel {
     else if (pid === -1) targets = [...this.procs.values()].filter(p => p.pid !== 1 && p.pid !== sender.pid);
     else targets = [...this.procs.values()].filter(p => p.pgid === -pid);
     targets = targets.filter(p => p.state !== 'zombie' || pid > 0);
+    // An in-page background job leads the group its kernel programs run in
+    // (shell.ts executeBackground, #63): `kill -TERM -- -$!` reaches it too
+    const inPageLeader = pid < -1 && !this.procs.has(-pid) ? processTable.get(-pid) : undefined;
+    if (inPageLeader && inPageLeader.status === 'running') {
+      if (sig !== 0) {
+        for (const p of targets.filter(p => this.maySignal(sender, p, sig))) this.deliver(p, sig, { signo: sig, code: A.SI_USER, pid: sender.pid, uid: sender.uid });
+        // (its programs have it now: the job only ends, it doesn't signal them again)
+        processTable.kill(-pid, sig, { group: true });
+      }
+      return 0;
+    }
     if (targets.length === 0) return -A.ESRCH;
     // the ones the sender may signal; none of several is EPERM as for one
     targets = targets.filter(p => this.maySignal(sender, p, sig));
@@ -2591,7 +2602,8 @@ export class Kernel {
         }
         case A.SYS_exit:
         case A.SYS_exit_group:
-          await this.exit(proc, A.W_EXITCODE(args[0]));
+          // (an engine that crashed reports its exit: the guest dies of the crash's signal)
+          await this.exit(proc, typeof proc.data.crashSignal === 'number' ? proc.data.crashSignal : A.W_EXITCODE(args[0]));
           return 0;
         case A.SYS_wait4: {
           // WNOHANG, WUNTRACED, WCONTINUED, WNOWAIT (waitid comes through here), __WNOTHREAD/__WALL/__WCLONE
@@ -3361,8 +3373,12 @@ export class Kernel {
       case A.F_GETFD: return fds.getCloexec(fd) ? A.FD_CLOEXEC : 0;
       case A.F_SETFD: return fds.setCloexec(fd, !!(arg & A.FD_CLOEXEC));
       // a socket is open for reading and writing (Linux reports O_RDWR)
-      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux)
-      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE & ~A.O_OPEN_ONLY) | A.O_RDWR : f.flags & ~A.O_OPEN_ONLY;
+      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux, and
+      // O_CLOEXEC is the fd's: a device keeps the open flags as given)
+      case A.F_GETFL: {
+        const fl = f.flags & ~A.O_OPEN_ONLY & ~A.O_CLOEXEC;
+        return f.kind === 'socket' ? (fl & ~A.O_ACCMODE) | A.O_RDWR : fl;
+      }
       case A.F_SETFL: {
         const mask = A.O_NONBLOCK | A.O_APPEND;
         f.flags = (f.flags & ~mask) | (arg & mask);

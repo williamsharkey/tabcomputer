@@ -265,7 +265,8 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   (`GLSurface.pixels()`, through the server's `glFrame` hook) and lays it
   over those pixels; frames themselves are never read back.
   A window made current before it can take a surface (not mapped yet) is
-  tried again with each batch and frame.
+  tried again with each batch and frame; pbuffers (whose XIDs the X server
+  never sees, tcCreatePbuffer) are not.
 - Fallback present: read the front FBO back into the window's pixmap, so
   Xshiro composes it like any drawing; asynchronously (a pixel-pack buffer
   and a fence), so the page doesn't wait for the GPU.
@@ -293,9 +294,16 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   qualifiers, renamed built-in functions, fragment outputs, and the
   compatibility built-ins mapped to `_tc_` attributes and uniforms. Every
   shader of the corpus in `tests/tests/shiro-vitest/fixtures/glsl` (Mesa
-  demos, glmark2, SuperTuxKart, OpenSCAD) compiles and links after it.
-  There is no type checker yet, so desktop-only implicit conversions are
-  still compile errors. The full front end below is the plan:
+  demos, glmark2, SuperTuxKart, OpenSCAD, Krita's canvas shaders) compiles
+  and links after it.
+- Implicit conversions (`src/gl/glsl/implicit.ts`) run on the result: a
+  preprocessor (as WebGL's compiler sees it), a parser, and a checker over
+  the declarations and the built-in functions, which wraps each int operand
+  where desktop GLSL converts to float (`float(2)`, `vec2(textureSize(s, 0))`).
+  It only inserts text, so line numbers hold; a conversion inside a macro
+  inlines that one use. Source it can't parse goes on unchanged. Krita's
+  shaders don't need it; Blender's and hand-written GL 2/3 apps' do.
+- The rest of the full front end below is the plan:
 - Desktop GLSL 110–330 to GLSL ES 3.00, in `src/gl/glsl/`: preprocessor,
   parser, a type checker for the built-in function set, and a printer.
   The checker is there for what ES forbids and desktop GLSL ≥ 1.20 allows:
@@ -393,7 +401,7 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | glxgears in Blink under Node, recording backend (guest and transport only) | 200–229 FPS |
 | glxinfo in Blink under Node | 0.7 s |
 | Round trip (glFinish) through the socket, Blink under Node | 2,964/s (337 µs) |
-| Bulk upload (glBufferSubData) | 210 MB/s |
+| Bulk upload (glBufferSubData) | 210 MB/s (300–321 MB/s since big arrays are sent from the caller's memory) |
 | Small calls (glVertex3f) | 0.43 M/s |
 | Frames rendered in 3 s without animation frames (a hidden tab) | 0 |
 | Neverball title screen in the page, 640×480: synchronous readback / async readback (3 runs each, alternating) | 6.4–7.2 / 7.9–8.5 frames/s (+20%) |
@@ -402,6 +410,33 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | Neverball in the page, 640×480: async readback / Worker with GL surfaces (3 runs each) | 8.7–9.2 / 8.7–9.4 frames/s |
 | Neverball in Blink under Node, recording backend (guest and transport only) | 24 FPS |
 | OpenSCAD 2021.01 (Blink 0119) PNG export: OpenCSG preview / full CGAL render | 3.8 s, 1,724 draws / 10.3 s (6.4 s CGAL) |
+| OpenSCAD 2021.01 GUI in the page (Ubuntu noble's, Qt 5.15 xcb_glx, 772×579 window): first preview / frames while the view is dragged (3 runs each) | ~4 s / 3.4–4.1 frames/s |
+| … per dragged frame: GL calls, bytes sent, executor time, guest waiting on replies, guest running | ~11,000 (≈5,000 glVertex3d), 2.0 MB (a 1.7 MB glTexImage2D of the whole window), ~50 ms, ~70 ms, ~190 ms |
+
+OpenSCAD's GUI is guest-bound: of ~260 ms per dragged frame, the guest runs
+~190 ms, and `SHIRO_BLINK_PROFILE` puts 92% of its main thread's samples in
+Blink's interpreter (instructions after a compiled block's exit, "not at a
+branch target"), so Blink's JIT coverage is the lever, not glshiro. Its
+queries (viewport, matrices, framebuffer binding, front face, scissor
+enable, framebuffer status: ~10 per frame) are answered from the
+executor's state; WebGL's checkFramebufferStatus waits for the GPU, so its
+answer is cached until a framebuffer's attachments or their images change
+(+8%, within noise). Qt re-specifies its whole window texture each frame:
+without MIT-SHM its xcb backing store still has a graphics buffer, and
+composeAndFlush binds it with `QPlatformGraphicsBufferHelper::lockAndBindToTexture`
+and no rect, which is a glTexImage2D of the whole window (Qt 5.15's design,
+not ours). In the guest that costs 9–15 ms of a ~210 ms frame at 772×579,
+and scales with the window (a 1920×1080 Qt GL window sends 8 MB per
+repaint). Most of it is the write: the kernel's AF_UNIX send buffer is
+256 KB, so 1.7 MB goes in ~7 handoffs to glshiro. The vendor library sends
+an array of 64 KB or more in a command too big for a batch straight from
+the caller's memory, and keeps that buffer between commands (it was a
+malloc, i.e. an mmap with fresh pages, each time): bulk upload in Blink
+under Node went from 230–275 to 300–321 MB/s (glbench, 3 runs each,
+alternating). Diagnostics:
+`TABCOMPUTER_GL_DEBUG=1` logs MakeCurrent, `=2` how 10 frames' time splits
+into reply waits and the swap throttle, `=3` each query; gl-apps.mjs
+`GL_OPS=1` counts commands per frame.
 
 The page numbers are SwiftShader's (a CPU renderer); a GPU only makes the
 WebGL2 side cheaper. With async readback the page's main thread is about 80%

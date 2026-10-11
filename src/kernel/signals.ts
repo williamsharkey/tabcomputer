@@ -896,3 +896,11 @@ export function attachKernel(kernel: Kernel, jc: JobControl = jobControl): () =>
 export function targetOf(proc: Process, jc: JobControl = jobControl): SignalTarget | undefined {
   return jc.get(proc.pid);
 }
+
+/**
+ * The event `timeout` dispatches on its AbortSignal when its time is up but
+ * the signal was aborted already (by the shell around it, #53): abort() can't
+ * fire twice, so the job's handler (shell-kernel.ts) hears this instead. Its
+ * detail is the abort reason's { signal, killAfter }.
+ */
+export const TIMEOUT_EXPIRED_EVENT = 'tabcomputer-timeout-expired';

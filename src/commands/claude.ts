@@ -47,6 +47,22 @@ export function loginArgs(args: string[], build: 'native' | 'npm' = 'native'): s
   return build === 'native' ? ['auth', 'login', ...args.slice(1)] : ['/login'];
 }
 
+/**
+ * Turn on the native build's Grep and Glob tools (#42). Without them, Claude
+ * Code's shell snapshot defines `grep` and `find` as functions that re-exec its
+ * own 250 MB binary as ugrep/bfs, a whole Blink start (300-1400 ms) for every
+ * grep the agent runs. An allow rule naming Grep or Glob is what makes it keep
+ * the tools and drop those functions; the shell then uses tabcomputer's builtins.
+ * The `=` form, because a bare --allowedTools would swallow a following prompt.
+ * Only for a session or a -p run, not subcommands (`mcp`, `auth`, `doctor`...);
+ * TABCOMPUTER_CLAUDE_GREP_WRAPPERS=1 keeps Claude's own.
+ */
+export function searchToolArgs(args: string[], env: Record<string, string>): string[] {
+  if (env.TABCOMPUTER_CLAUDE_GREP_WRAPPERS === '1') return args;
+  if (args.length > 0 && !args[0].startsWith('-') && !/\s/.test(args[0])) return args;
+  return ['--allowedTools=Grep,Glob', ...args];
+}
+
 /** Where `claude --native` looks for the binary: $CLAUDE_NATIVE_PATH, else ~/.local/bin/claude. */
 export function nativeClaudePath(env: Record<string, string>): string {
   return env.CLAUDE_NATIVE_PATH || `${env.HOME || '/home/user'}/.local/bin/claude`;
@@ -76,7 +92,7 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
       + '(CLAUDE_NATIVE_PATH picks another path for the linux-x64-musl binary.)\n';
     return 1;
   }
-  args = loginArgs(args);
+  args = searchToolArgs(loginArgs(args), ctx.env);
   // Same settings cleanup as the npm build's start (e.g. drop the "mcp__*"
   // allow rule older Shiro seeded, which current Claude Code warns about)
   try {

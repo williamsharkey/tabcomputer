@@ -1027,6 +1027,15 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    Test: fixtures/x86/ssebits.c. Blink's interpreter doesn't raise #GP for
    their misaligned memory operands (x86 does); compiled code does what it
    does.
+122. Patch 0142: compiled code does bswap r32/r64 and 16-bit rotates and
+   shifts by a constant (zlib's and xz's big-endian loads and `rolw $8`).
+   16-bit shifts by %cl or by 16–31, and 16-bit bswap, still go to Blink.
+   jitfuzz covers the new forms. vendor/blink/bench/codecs.c times zlib,
+   xz and the string functions natively and under Blink.
+123. Patch 0143: `SHIRO_BLINK_PROFILE` expands `%p` to the pid, so each
+   process that inherits it writes its own file (git's index-pack, the xz
+   under dpkg-deb). `SHIRO_BLINK_PROFILE_TOP=n` (default 40) sets the rows
+   of the address tables.
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each

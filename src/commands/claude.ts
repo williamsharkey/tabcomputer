@@ -106,13 +106,28 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // official-marketplace clone at start. Without them its first launch copied its
   // own 250 MB into ~/.local/share/claude/versions through staging/ (~1000
   // eventfd wakes/s for 24-70 s) and git-cloned the plugin marketplace (#40).
-  // DISABLE_ERROR_REPORTING: no error reports from the emulator's sockets (the npm build's
-  // and --vm's fetch already drops them, node-compat/execution.ts); it gates nothing else.
   // Export any of them to change it.
-  const quiet = ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING']
-    .filter((k) => ctx.env[k] === undefined).map((k) => `${k}=1 `).join('');
+  const quiet = Object.entries(quietEnv(ctx.env)).map(([k, v]) => `${k}=${v} `).join('');
   const line = jit + links + quiet + build + search.env + [path, ...search.args].map(quote).join(' ');
   return ctx.shell.execute(line, (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+}
+
+/**
+ * What native Claude Code and `claude --vm` start with, unless the user set it:
+ * - no self-install, updater or official-marketplace clone (see runNative);
+ * - DISABLE_ERROR_REPORTING and DISABLE_TELEMETRY: its telemetry, error reports,
+ *   feature-flag fetches and probes are round trips that cost ~5 s of a signed-in
+ *   `claude -p` in the tab (20.5 -> 15.6 s); the version check, `claude update` and
+ *   sign-in stay. Their cost: this computer can't take a Remote Control session
+ *   started on claude.ai. TABCOMPUTER_CLAUDE_TELEMETRY=1 (or DISABLE_TELEMETRY or
+ *   DO_NOT_TRACK set by the user) leaves telemetry as Claude Code's default; Claude
+ *   Code reads any non-empty DISABLE_TELEMETRY, 0 included, as set.
+ *   (docs/CLAUDE_VM.md, "Network traffic".)
+ */
+export function quietEnv(env: Record<string, string>): Record<string, string> {
+  const keys = ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING'];
+  if (env.TABCOMPUTER_CLAUDE_TELEMETRY !== '1' && env.DO_NOT_TRACK === undefined) keys.push('DISABLE_TELEMETRY');
+  return Object.fromEntries(keys.filter((k) => env[k] === undefined).map((k) => [k, '1']));
 }
 
 /**
@@ -158,8 +173,7 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   const cached = ctx.env.TABCOMPUTER_VM_CODECACHE !== '0'
     && await import('../claude-vm/sw-host').then((m) => m.ensureVmServiceWorker()).catch(() => false);
   const search = nativeSearchSetup(args, ctx.env);
-  const quiet = Object.fromEntries(['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']
-    .filter((k) => ctx.env[k] === undefined).map((k) => [k, '1']));
+  const quiet = quietEnv(ctx.env);
   const env: Record<string, string> = {
     FORCE_HYPERLINK: '1', ...quiet, ...(search.env ? { USE_BUILTIN_RIPGREP: '0' } : {}), ...ctx.env,
     TABCOMPUTER_CLAUDE_BUILD: 'vm', TABCOMPUTER_CLAUDE_VERSION: version ?? 'unknown',

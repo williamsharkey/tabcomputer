@@ -989,6 +989,20 @@ described here:
   the shell's ELF path (Blink, with the terminal's pty). In Chromium:
   `--version` 2.7 s; `-p "say hi"` to the API's answer 139 s, 105 s with
   `BUN_JSC_useJIT=0`.
+- Network traffic (native and `--vm`, `quietEnv` in `src/commands/claude.ts`):
+  Claude Code starts with `DISABLE_ERROR_REPORTING=1` and `DISABLE_TELEMETRY=1`
+  unless the user set them (or `DO_NOT_TRACK`). Its telemetry, error reports,
+  feature-flag fetches and probes are round trips: a signed-in native
+  `claude -p` in the tab took 20.5 s with them, 15.6 s without (Build 978,
+  remote-debug's A/B). The version check, `claude update` and sign-in are
+  unaffected. **Cost:** with telemetry off (feature flags at their defaults)
+  this computer can't take a Remote Control session started on claude.ai
+  ("cannot be received while feature-flag evaluation is off"). To turn
+  telemetry back on: `export TABCOMPUTER_CLAUDE_TELEMETRY=1`, or set
+  `DISABLE_TELEMETRY=` (empty; Claude Code reads any non-empty value, `0`
+  included, as set). **Faster opt-in:** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+  (12.9 s, −37%) also turns off the version check and updates, trusted-device
+  enrollment at sign-in, plugin refresh and feedback; not a default for that reason.
 - Known (low priority, not yet investigated): without the full git, the
   auto-install of Claude's official plugin marketplace logs
   `spawn ENOENT /usr/local/bin/git` in `~/.claude/debug` (that path is the

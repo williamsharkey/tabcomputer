@@ -195,6 +195,12 @@ Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-
   style runs (with their close codes) and OSC 8 links, and paint them into
   the screen's `[char id, word]` cells.
 
+- **Network traffic**: `--vm` starts with the same `DISABLE_ERROR_REPORTING=1`
+  and `DISABLE_TELEMETRY=1` defaults as native (its Remote Control cost and how
+  to turn telemetry back on: docs/COMPAT.md, "Network traffic"). node-compat's
+  fetch already drops the Datadog, Sentry and event-logging hosts; the switch
+  also stops the feature-flag fetches and the API probes it doesn't.
+
 ## Results
 
 Local Chromium, `bench/claude-tui.mjs` (2 runs × 30 keys; `--vm` warm, after

@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { createTestShell, createTestOS, run } from './helpers';
 import { transformESModules } from '@shiro/commands/jseval/module-transform';
 import { isEsbuildChunk, liveEsbuildChunk } from '@shiro/commands/jseval/esm-live';
-import { claudeCmd } from '@shiro/commands/claude';
+import { claudeCmd, quietEnv } from '@shiro/commands/claude';
 
 async function shellWith(files: Record<string, string>) {
   const { fs, shell } = await createTestShell();
@@ -244,13 +244,25 @@ describe('claude --native', () => {
       await run(shell, 'export DISABLE_AUTOUPDATER=0; CLAUDE_NATIVE_PATH=/opt/n/claude claude --native -p hi; unset DISABLE_AUTOUPDATER');
     } finally { spy.mockRestore(); }
     expect(lines).toHaveLength(2);
-    for (const k of ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING']) {
+    for (const k of ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING', 'DISABLE_TELEMETRY']) {
       expect(lines[0]).toContain(`${k}=1 `);
     }
-    // (the rest of the traffic switches are left alone: the version check and Remote Control need them)
-    for (const k of ['DISABLE_TELEMETRY', 'DISABLE_GROWTHBOOK', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']) expect(lines[0]).not.toContain(k);
+    // (the broader switches are left alone: the version check, `claude update` and sign-in need them)
+    for (const k of ['DISABLE_GROWTHBOOK', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']) expect(lines[0]).not.toContain(k);
     expect(lines[1]).not.toContain('DISABLE_AUTOUPDATER=1');
     expect(lines[1]).toContain('DISABLE_INSTALLATION_CHECKS=1 ');
+  });
+});
+
+describe('quietEnv: what native and --vm start with', () => {
+  it('telemetry and error reporting off by default; whatever the user set stays; TABCOMPUTER_CLAUDE_TELEMETRY=1 turns telemetry back on', () => {
+    const d = quietEnv({});
+    expect(d).toMatchObject({ DISABLE_ERROR_REPORTING: '1', DISABLE_TELEMETRY: '1', DISABLE_AUTOUPDATER: '1' });
+    expect(d).not.toHaveProperty('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC');
+    expect(quietEnv({ TABCOMPUTER_CLAUDE_TELEMETRY: '1' })).not.toHaveProperty('DISABLE_TELEMETRY');
+    expect(quietEnv({ DO_NOT_TRACK: '0' })).not.toHaveProperty('DISABLE_TELEMETRY');
+    expect(quietEnv({ DISABLE_TELEMETRY: '' })).not.toHaveProperty('DISABLE_TELEMETRY');
+    expect(quietEnv({ DISABLE_ERROR_REPORTING: '' })).not.toHaveProperty('DISABLE_ERROR_REPORTING');
   });
 });
 

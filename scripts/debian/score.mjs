@@ -131,10 +131,15 @@ async function newMachine(base, log) {
     rmSync(dir, { recursive: true, force: true });
   };
   const page = await context.newPage();
-  page.on('pageerror', (e) => log(`[pageerror] ${e.message}`));
+  // Name the command that was running: a Blink worker's "Aborted()" or "memory
+  // access out of bounds" fails no package by itself, so the log has to say where
+  let current = '';
+  let last = '';
+  page.on('pageerror', (e) => log(`[pageerror] ${e.message} (${current ? `during: ${current}` : `after: ${last}`})`.slice(0, 400)));
   await page.goto(base + '/');
   await page.waitForFunction(() => window.__tabcomputer && window.__tabcomputer.shell, null, { timeout: 120000 });
-  const run = async (cmd, timeoutS = 600) => page.evaluate(async ({ cmd, timeoutS, extraEnv }) => {
+  const run = async (cmd, timeoutS = 600) => { current = last = cmd; try { return await runIn(cmd, timeoutS); } finally { current = ''; } };
+  const runIn = async (cmd, timeoutS) => page.evaluate(async ({ cmd, timeoutS, extraEnv }) => {
     let out = '';
     const t0 = performance.now();
     // A root shell (as `sudo -s` gives): kernel programs' output streams into

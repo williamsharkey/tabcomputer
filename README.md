@@ -10,7 +10,8 @@ internet.
   WebAssembly. Under it, LTP's syscall tests pass 431/534 and the Open POSIX Test Suite 1428/1448
   ([docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **Debian.** `debian install` streams in Debian 13, and Debian's own apt and dpkg install
-  packages. 496 of popcon's top 500 install and pass a smoke test
+  packages. Of popcon's top 2000, 1846 install and pass a smoke test (3 of the scored ones
+  fail, 100 aren't in trixie and 51 aren't scored yet)
   ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)).
 - **GUI apps.** Debian's X11 apps open as desktop windows: 37 of the 38 in the scoreboard,
   among them GIMP, Inkscape, LibreOffice Writer, VLC and Firefox ([docs/GUI_SCORE.md](docs/GUI_SCORE.md)).
@@ -54,7 +55,7 @@ against a local server (the "parallel" rows ran with three other tabs doing the 
 | `gui xeyes` | 2 s to install, about 1 s to the window ([docs/GUI.md](docs/GUI.md)) |
 
 The benchmark suite's numbers for the same paths are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
-("Real workloads"). 496 of popcon's 500 most-installed Debian packages install and pass a
+("Real workloads"). 1846 of popcon's 2000 most-installed Debian packages install and pass a
 smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)). Some work but are too slow to enjoy:
 Debian's `nodejs` takes 26 s for `node -e`. Use tabcomputer's built-in `node` instead.
 
@@ -136,7 +137,7 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   (coreutils, grep/sed/awk, git, gh, node and npm, jq, rg, tmux, vi, nano). `help` lists the
   common ones, `help --all` all of them.
 - **Debian.** `debian install` streams in Debian 13 "trixie" amd64; then `sudo apt install` is
-  Debian's apt against a Debian mirror. 496 of popcon's top 500 packages install and pass a
+  Debian's apt against a Debian mirror. 1846 of popcon's top 2000 packages install and pass a
   smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md), [docs/DEBIAN.md](docs/DEBIAN.md)).
   Heavier tools work too, slowly: `tesseract` (OCR; 4 min to install, 7.5 s for a line of text)
   and LibreOffice headless (`libreoffice-writer-nogui`: 10 min to install, then

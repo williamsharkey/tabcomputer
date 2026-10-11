@@ -21,12 +21,15 @@ main shell. Times are from that run.
 ## 1. Check out this build's source
 
 ```console
-$ hotswap checkout ~/tabcomputer
+$ hotswap checkout
 checked out build 973 (cf60c7b1b1e5), 873 files, in /home/user/tabcomputer
 edit, then: cd /home/user/tabcomputer && hotswap apply src/shell.ts
 ```
 
-- It takes about 150 ms. The default directory is `~/shiro`.
+- It takes about 150 ms. The default directory is `~/tabcomputer`. In a tab that already
+  has a checkout in `~/shiro` (the default before Build 974) and no `~/tabcomputer`,
+  `hotswap checkout` keeps using `~/shiro` and says so; `hotswap checkout ~/tabcomputer`
+  makes a new one.
 - The checkout is the source of the page you're running, not of main. That is the
   build's `src/`, `profiles/`, `tests/`, the root build files, AGENTS.md and the docs on
   hot-swapping. It doesn't include `public/`, `vendor/`, `scripts/`, `bench/` or

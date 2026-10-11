@@ -75,9 +75,9 @@ export const nohup: Command = {
     // Output: appended to nohup.out as it comes (a server's log grows while it runs), else ours
     let pending: Promise<void> = Promise.resolve();
     const toFile = (s: string) => { if (s) pending = pending.then(() => ctx.fs.appendFile(outPath!, s.replace(/\r\n/g, '\n'))).catch(() => {}); };
-    let out = '', err = '';
-    const stdout = outPath ? toFile : (ctx.streamStdout ?? ((s: string) => { out += s; }));
-    const stderr = outPath && errTerminal ? toFile : (ctx.streamStderr ?? ((s: string) => { err += s; }));
+    // (else into ctx as it comes: if the shell stops waiting for nohup, what COMMAND wrote is kept)
+    const stdout = outPath ? toFile : (ctx.streamStdout ?? ((s: string) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }));
+    const stderr = outPath && errTerminal ? toFile : (ctx.streamStderr ?? ((s: string) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }));
 
     let code: number;
     try {
@@ -87,8 +87,6 @@ export const nohup: Command = {
       outer?.signal.removeEventListener('abort', onOuter);
       await pending;
     }
-    ctx.stdout += out.replace(/\r\n/g, '\n');
-    ctx.stderr += err.replace(/\r\n/g, '\n');
     return code;
   },
 };

@@ -4,11 +4,13 @@
 // a reload the terminal comes back running `claude ... --resume <id>` with the
 // conversation on screen; ~/AGENTS.md reaches the model with no "external
 // imports" question (src/agent-docs.ts). The npm build by default; CLAUDE_BUILD=native runs
-// the native one (needs bench/.cache/fixtures/{claude-native,ld-musl-x86_64.so.1},
+// the native one (CLAUDE_BUILD=vm: its JavaScript on the page's engine, claude --vm) (needs bench/.cache/fixtures/{claude-native,ld-musl-x86_64.so.1},
 // served from the build's /__bench/, as bench/claude-tui.mjs does; ~2 min per start).
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/claude-restore.mjs [URL]
+// TOOL=1: the first reply is a Bash tool call (writes ~/proj/tool.txt), run with
+// --dangerously-skip-permissions; checks the command ran and its result came back.
 // Native: the relay must allow this machine and the stand-in's port, e.g. API_PORT=5311 with
 //   TABCOMPUTER_TCP_PORTS=80,443,5311 TABCOMPUTER_TCP_ALLOW_CIDRS=<this machine's address>/32
 //   TABCOMPUTER_TCP_ORIGINS=http://localhost:5299 for the server, and a copy of the fixtures in dist/__bench/.
@@ -21,13 +23,15 @@ try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require(
 
 const url = process.argv[2] ?? 'http://localhost:5299/';
 const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const build = process.env.CLAUDE_BUILD === 'native' ? 'native' : 'npm';
-const START_MS = build === 'native' ? 240_000 : 60_000;
+const build = ['native', 'vm'].includes(process.env.CLAUDE_BUILD) ? process.env.CLAUDE_BUILD : 'npm';
+const START_MS = build === 'native' ? 240_000 : build === 'vm' ? 150_000 : 60_000; // (vm: the first start extracts)
 const REPLY = 'pong-from-the-stand-in';
 const KEY = 'sk-ant-api03-' + 'x'.repeat(80) + '-standin00AA';
 
 // ── a stand-in for api.anthropic.com: every /v1/messages gets REPLY ──
 const asked = [];
+const TOOL = !!process.env.TOOL;
+let toolAsked = false, toolResult = '';
 let sawAgentsMd = false;
 const api = createServer((req, res) => {
   const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*', 'access-control-expose-headers': '*' };
@@ -40,9 +44,26 @@ const api = createServer((req, res) => {
     try { j = JSON.parse(body); } catch {}
     if (req.url.startsWith('/v1/messages/count_tokens')) { res.writeHead(200, { ...cors, 'content-type': 'application/json' }); return res.end('{"input_tokens":10}'); }
     asked.push(JSON.stringify(j.messages ?? []).slice(-200));
+    // TOOL=1: the conversation's first turn asks for a Bash call; the turn with its result gets the reply
+    const lastUser = JSON.stringify((j.messages ?? []).at(-1) ?? {});
+    const wantsTool = TOOL && (j.tools ?? []).some((t) => t.name === 'Bash') && !lastUser.includes('tool_result') && !toolAsked;
+    if (lastUser.includes('tool_result')) toolResult = lastUser.slice(0, 400);
     if (body.includes('gh issue list')) sawAgentsMd = true; // a line of ~/AGENTS.md (src/agent-docs.ts)
     if (process.env.DEBUG) console.log('[api]', req.url, j.stream ? 'stream' : '', asked.at(-1));
     const msg = { id: 'msg_standin' + asked.length, type: 'message', role: 'assistant', model: j.model || 'claude', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } };
+    if (wantsTool && j.stream) {
+      toolAsked = true;
+      res.writeHead(200, { ...cors, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      const input = { command: `echo tool-ran-${build} > /home/user/proj/tool.txt`, description: 'Write a file' };
+      ev('message_start', { message: msg });
+      ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'toolu_standin1', name: 'Bash', input: {} } });
+      ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } });
+      ev('content_block_stop', { index: 0 });
+      ev('message_delta', { delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } });
+      ev('message_stop', {});
+      return res.end();
+    }
     if (!j.stream) {
       res.writeHead(200, { ...cors, 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ...msg, content: [{ type: 'text', text: REPLY }], stop_reason: 'end_turn' }));
@@ -74,6 +95,7 @@ await context.addInitScript(() => { try { localStorage.setItem('tabcomputer-desk
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
+if (process.env.SHOW_CONSOLE) page.on('console', (m) => { const t = m.text(); if (!/^\[(kernel|shiro|boot)/.test(t)) console.log('[console]', t.slice(0, 300)); });
 const boot = async () => {
   await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=desktop');
   await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel && !document.querySelector('.sd-booting'), null, { timeout: 120_000 });
@@ -106,7 +128,7 @@ const typeIn = (text) => page.evaluate((text) => {
 try {
   await boot();
   await sh('mkdir -p ~/proj');
-  if (build === 'native') {
+  if (build !== 'npm') {
     await page.evaluate(async () => {
       for (const [src, dst] of [['/__bench/claude-native', '/home/user/.local/bin/claude'], ['/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1']]) {
         const r = await fetch(src);
@@ -131,7 +153,7 @@ try {
   await page.waitForTimeout(1000);
   await typeIn(`export ANTHROPIC_BASE_URL=${BASE} ANTHROPIC_API_KEY=${KEY}\r`);
   await page.waitForTimeout(300);
-  await typeIn(`claude --${build}\r`);
+  await typeIn(`claude --${build}${TOOL ? ' --dangerously-skip-permissions' : ''}\r`);
   await waitScreen(/^\s*(❯|│ >|> )/m, START_MS, "claude's input box");
   check(true, `claude --${build} reaches its prompt`);
   await page.waitForTimeout(build === 'native' ? 10_000 : 3000);
@@ -143,6 +165,11 @@ try {
   await waitScreen(new RegExp(REPLY), START_MS, 'the reply');
   check(asked.length > 0, `the stand-in API answered (${asked.length} request(s))`);
   check(sawAgentsMd, '~/AGENTS.md reached the model (in the request)');
+  if (TOOL) {
+    const file = await sh('cat /home/user/proj/tool.txt');
+    check(toolAsked && file.out.includes(`tool-ran-${build}`), `the Bash tool ran the command (tool.txt: ${file.out.trim()})`);
+    check(toolResult.includes('toolu_standin1'), 'its result went back to the model');
+  }
   const tracked = await page.waitForFunction(() => {
     const ar = window.__tabcomputer.agentResume;
     return window.__shiroDesktop.windows().some((w) => w.content?.activeTerminal && ar?.forTerminal(w.content.activeTerminal()));
@@ -157,7 +184,7 @@ try {
   await boot();
   const t = await waitScreen(new RegExp(REPLY), START_MS, 'the resumed conversation').catch((e) => { check(false, e.message); return null; });
   if (t) {
-    check((t.running ?? '').includes('--resume') && (!id || t.running.includes(id)), `the terminal resumes the session (${t.running})`);
+    check((t.running ?? '').includes('--resume') && (!id || t.running.includes(id)) && t.running.includes(`--${build}`), `the terminal resumes the session in the same build (${t.running})`);
     check(/ping/.test(t.screen), 'the conversation is on screen after the reload');
   }
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`);

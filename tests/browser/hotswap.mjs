@@ -2,7 +2,7 @@
 // Needs a build and a running server:
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/hotswap.mjs [http://localhost:5299/]
-// 1. `hotswap checkout` unpacks the build's own source into ~/shiro; sed edits src/shell.ts; `hotswap diff` shows it.
+// 1. `hotswap checkout` unpacks the build's own source into ~/tabcomputer; sed edits src/shell.ts; `hotswap diff` shows it.
 // 2. `hotswap apply --ttl 8s src/shell.ts`: the main terminal's shell sees the change, no reload.
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
@@ -48,10 +48,13 @@ check(true, 'boots');
 // 1. A checkout of this build's source in the tab
 let t0 = Date.now();
 let r = await sh(page, 'hotswap checkout');
-check(r.code === 0 && /checked out build \d+/.test(r.out), `hotswap checkout (${Date.now() - t0} ms)`, r.out);
-check(/No changes/.test((await sh(page, 'cd /home/user/shiro && hotswap diff')).out), 'a fresh checkout has no changes');
+check(r.code === 0 && /checked out build \d+/.test(r.out) && /in \/home\/user\/tabcomputer/.test(r.out), `hotswap checkout (${Date.now() - t0} ms)`, r.out);
+// A tab with a checkout in ~/shiro (the old default) and none in ~/tabcomputer keeps using it
+r = await sh(page, 'mv /home/user/tabcomputer /home/user/shiro && hotswap checkout; mv /home/user/shiro /home/user/tabcomputer');
+check(/using the existing checkout in \/home\/user\/shiro/.test(r.out), 'hotswap checkout falls back to an existing ~/shiro checkout', r.out);
+check(/No changes/.test((await sh(page, 'cd /home/user/tabcomputer && hotswap diff')).out), 'a fresh checkout has no changes');
 
-r = await sh(page, `cd /home/user/shiro && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
 check(r.out.trim() === '1', 'edited src/shell.ts in the tab', r.out);
 check((await mainEcho(page)) === '5.0.0', 'before: BASH_VERSION is 5.0.0');
 
@@ -89,13 +92,13 @@ check((await mainEcho(page)) === '5.0.0', 'the next load has no swap');
 
 
 // 5. A registry command (#47): git is a lazy command, a plain object, not a class
-r = await sh(page, `cd /home/user/shiro && sed -i 's/git version 2\\.47\\.0/git version 9.9.9-swapped/' src/commands/git.ts && hotswap apply --ttl 60s src/commands/git.ts`);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i 's/git version 2\\.47\\.0/git version 9.9.9-swapped/' src/commands/git.ts && hotswap apply --ttl 60s src/commands/git.ts`);
 check(r.code === 0 && /command git: replaced .*exec/.test(r.out) && !/not swapped.*gitCmd/.test(r.out), 'hotswap apply src/commands/git.ts patches the git command', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the swapped code');
 await sh(page, 'hotswap revert');
 check(/git version 2\.47\.0/.test((await sh(page, 'git --version')).out), 'revert puts the old git back');
 // reload resolves the command's relative imports through the live modules
-r = await sh(page, 'cd /home/user/shiro && reload commands/git src/commands/git.ts');
+r = await sh(page, 'cd /home/user/tabcomputer && reload commands/git src/commands/git.ts');
 check(r.code === 0 && /Hot-reloaded 'commands\/git'/.test(r.out), 'reload of a command with relative imports', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the reloaded code');
 
@@ -105,10 +108,10 @@ await page.evaluate(async () => {
   localStorage.setItem('hotswap-check', 'mine');
 });
 t0 = Date.now();
-r = await sh(page, 'cd /home/user/shiro && hotswap test shell-posix shell-syntax shell-issue74');
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test shell-posix shell-syntax shell-issue74');
 console.log(r.out.split('\n').map((l) => '     ' + l).join('\n'));
 check(r.code === 0 && /PASS tests\/tests\/shiro-vitest\/shell-posix\.test\.ts: \d+ passed/.test(r.out) && /Tests: \d+ passed\n/.test(r.out), `hotswap test runs the shell suites (${Date.now() - t0} ms)`, r.out);
-r = await sh(page, 'cd /home/user/shiro && hotswap test -t "nothing matches this" shell-posix');
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test -t "nothing matches this" shell-posix');
 check(/0 passed/.test(r.out), 'hotswap test -t filters');
 const kept = await page.evaluate(async () => ({
   file: await window.__tabcomputer.fs.readFile('/home/user/keep.txt', 'utf8'),

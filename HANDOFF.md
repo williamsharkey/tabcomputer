@@ -44,7 +44,7 @@ in §6 are for reference only (the user may archive them).
 > **Historical.** This section records the handoff on 2026-10-10. It is not the current state. Since then the
 > new coordinator has run integration cycles through Build 963. The current workers are unix/perf-blink,
 > perf-kernel, perf-fs-shell, conformance, shell-stdio, compat-dev, compat-tools, agent-clis, gui, gl, docs,
-> debian, bench, remote-debug and hot-swap. Live state: `git log origin/unix/integration`, the open issues on
+> debian, bench, remote-debug and hot-swap. Live state: `git log` of tabcomputer `main`, the open issues on
 > williamsharkey/tabcomputer, and each worker's branch. The old account's last branches
 > (unix/gui-fin, unix/perf-blink-fin) were handed to gui and perf-blink to fold in.
 
@@ -195,6 +195,12 @@ coordinator session, which merges, tests, benchmarks and deploys.
   573f0a64). shiro.computer no longer serves `/pkg/`, so the pkg fallback
   mirror is tabcomputer.com (fa84cad).
 - **Remotes in a clone:** `origin` = tabcomputer.
+- **Interim, until a worker's session may add the tabcomputer repo** (`add_repo`
+  needs the user's approval in most sessions): the worker pushes to its shiro
+  `unix/<area>` branch as a staging transport and merges shiro
+  `origin/unix/integration`, which the coordinator keeps equal to tabcomputer
+  `main`. The coordinator copies each staged branch to tabcomputer
+  `unix/<area>` and integrates there. Nobody touches shiro `main`.
 
 ---
 
@@ -489,11 +495,12 @@ find or archive them; they can't be messaged from the new account.
 
 ## 7. Worker recreation template
 
-Create each worker as a cloud session on shiro, with
-`source_revision: unix/<area>` (or `unix/integration` for a new branch). Prompt:
+Create each worker as a cloud session on tabcomputer, with
+`source_revision: unix/<area>` (or `main` for a new branch). Until its session
+may add tabcomputer, use shiro and the interim staging rule in §2. Prompt:
 
 ```
-You are the unix/<area> worker for tabcomputer (repo williamsharkey/shiro,
+You are the unix/<area> worker for tabcomputer (repo williamsharkey/tabcomputer,
 deployed to tabcomputer.com). Read HANDOFF.md (section 6, "<area>") and
 AGENTS.md first, then `git log -15` on your branch to see where you were.
 
@@ -501,8 +508,8 @@ Scope: <scope from §6>.
 Continue: <in-flight task from §6>. Then: <queue>.
 
 Rules:
-- develop on branch unix/<area>; merge origin/unix/integration before pushing;
-  push your branch; the coordinator merges and deploys;
+- develop on branch unix/<area>; merge origin/main before pushing; push your
+  branch, never main or deploy; the coordinator merges and deploys;
 - report each finished step to the coordinator session <new coordinator id>
   with send_message: what changed, the commit, tests, numbers;
 - tests for what you build (vitest under tests/, browser tests under

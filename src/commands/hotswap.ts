@@ -8,15 +8,20 @@ import { evaluateBundle, hotswap, type ModuleReport, type SwapRecord } from '../
  * an auto-revert unless confirmed (docs/HOTSWAP.md).
  */
 
-const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/shiro)
+const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/tabcomputer)
        hotswap apply [--root DIR] [--ttl 90s | --no-ttl] [--fresh-state] FILE...
        hotswap build [--root DIR] FILE...   build and report, swap nothing
        hotswap confirm [--persist] [ID]     keep pending swaps (stop their TTL)
        hotswap revert [--all]               undo the newest swap (or all)
        hotswap status                       applied swaps, TTLs, what changed
        hotswap persisted [clear]            swaps re-applied at boot
-       hotswap test [--root DIR] [-t RE] [-v] SUITE...
+       hotswap watch [--root DIR] [--ttl 90s | --no-ttl] [--debounce 150ms] [-d] [PATH...]
+                                            swap each module under src/ as it's saved (-d: in the background)
+       hotswap watch --wait [--timeout 30s] | --stop
+                                            the background watcher's new results | stop it
+       hotswap test [--root DIR] [-t RE] [-v] [--changed [--max N]] [SUITE...]
                                             run vitest suites from the checkout in this tab
+                                            (--changed: the suites that import a changed file)
        hotswap diff [--stat] [FILE...]       changes since the checkout
        hotswap push BRANCH -m MSG [--repo OWNER/NAME]
                                             commit them on the build's commit, as a new GitHub branch
@@ -81,9 +86,13 @@ let notifierSet = false;
 function ensureNotifier(): void {
   if (notifierSet) return;
   notifierSet = true;
-  hotswap.onAutoRevert = (records) => {
-    const msg = `hotswap: reverted ${records.map((r) => `#${r.id} ${r.label}`).join(', ')}: #${records[records.length - 1].id} wasn't confirmed in time`;
+  hotswap.onAutoRevert = (records, reason) => {
+    const why = reason === 'wedge' ? 'the page froze after it was applied' : `#${records[records.length - 1].id} wasn't confirmed in time`;
+    const msg = `hotswap: reverted ${records.map((r) => `#${r.id} ${r.label}`).join(', ')}: ${why}`;
     console.warn(msg);
+    void import('../hotswap/watch').then(({ current }) => {
+      if (current && records.some((r) => r === current.record)) { current.record = null; current.note(`\u21ba ${msg.slice(9)}`, false); }
+    });
     import('../kernel/klog').then(({ klog, LOG_WARNING }) => klog.log(LOG_WARNING, msg)).catch(() => {});
   };
 }
@@ -98,10 +107,13 @@ export const hotswapCmd: Command = {
     ensureNotifier();
 
     if (sub === 'status') {
+      const { current } = await import('../hotswap/watch');
+      if (current?.running) ctx.stdout += `watching ${current.paths.join(' ')}: ${current.results.length} result(s)${current.results.length ? `, last: ${current.results[current.results.length - 1].line}` : ''}\n`;
       if (!hotswap.stack.length) { ctx.stdout += 'No swaps applied.\n'; return 0; }
       for (const r of hotswap.stack) ctx.stdout += line(r) + '\n' + describe(r.report);
       return 0;
     }
+    if (sub === 'watch') return watch(ctx, args);
 
     if (sub === 'confirm') {
       const persist = args.includes('--persist');
@@ -198,6 +210,86 @@ export const hotswapCmd: Command = {
   },
 };
 
+let waitCursor = 0;
+
+async function watch(ctx: CommandContext, args: string[]): Promise<number> {
+  const W = await import('../hotswap/watch');
+  if (args.includes('--stop')) {
+    if (!W.current) { ctx.stdout += 'No watcher running.\n'; return 0; }
+    W.current.stop();
+    ctx.stdout += `stopped watching ${W.current.paths.join(' ')}\n`;
+    W.setCurrent(null);
+    return 0;
+  }
+  if (args.includes('--wait')) {
+    const w = W.current;
+    if (!w) { ctx.stderr += "hotswap watch --wait: no watcher running (start one with 'hotswap watch -d')\n"; return 1; }
+    const ti = args.indexOf('--timeout');
+    const timeout = ti >= 0 ? parseDuration(args[ti + 1] ?? '') ?? 30_000 : 30_000;
+    // A save the shell made just now has already been noted (change events are synchronous)
+    await Promise.race([w.idle(), new Promise((r) => setTimeout(r, timeout))]);
+    const fresh = w.results.filter((r) => r.n > waitCursor);
+    if (w.results.length) waitCursor = w.results[w.results.length - 1].n;
+    if (!fresh.length) { ctx.stdout += `no swap since the last --wait (watching ${w.paths.join(' ')})\n`; return 0; }
+    for (const r of fresh) ctx.stdout += r.line + '\n' + r.warnings.map((x) => `  warning: ${x}\n`).join('');
+    return fresh[fresh.length - 1].ok ? 0 : 1;
+  }
+
+  let root: string | null = null;
+  let ttl: number | null = DEFAULT_TTL_MS;
+  let debounce: number | undefined;
+  let detach = false;
+  const paths: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--root') root = ctx.fs.resolvePath(args[++i] ?? '.', ctx.cwd);
+    else if (a === '--no-ttl') ttl = null;
+    else if (a === '--ttl' || a === '--debounce') {
+      const v = parseDuration(args[++i] ?? '');
+      if (v === null) { ctx.stderr += `hotswap watch: bad ${a} '${args[i]}'\n`; return 2; }
+      if (a === '--ttl') ttl = v; else debounce = v;
+    } else if (a === '-d' || a === '--detach') detach = true;
+    else if (a.startsWith('-')) { ctx.stderr += `hotswap watch: unknown option ${a}\n`; return 2; }
+    else paths.push(ctx.fs.resolvePath(a, ctx.cwd));
+  }
+  root ??= await findRoot(ctx, paths[0] ?? ctx.cwd);
+  if (!root) { ctx.stderr += 'hotswap watch: no checkout found above the cwd (a directory with src/shell.ts); pass --root DIR\n'; return 1; }
+  const checkout = root;
+  if (W.current) {
+    W.current.stop();
+    ctx.stdout += `stopped the previous watcher (${W.current.paths.join(' ')})\n`;
+  }
+  const w = new W.HotswapWatcher({
+    fs: ctx.fs,
+    manager: hotswap,
+    build: (files) => buildSwap({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root: checkout, files }),
+    evaluate: evaluateBundle,
+  }, { root: checkout, paths, ttlMs: ttl, debounceMs: debounce });
+  w.start();
+  W.setCurrent(w);
+  waitCursor = 0;
+  const what = `watching ${w.paths.join(' ')}: each save is swapped in${ttl ? ` and reverts ${Math.round(ttl / 1000)}s after the last save unless 'hotswap confirm'` : ''}`;
+  if (detach) {
+    ctx.stdout += `${what}\n'hotswap watch --wait' prints what each save did; 'hotswap watch --stop' stops it\n`;
+    return 0;
+  }
+  // In the foreground until Ctrl-C (or kill)
+  const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
+  out(`${what}; Ctrl-C stops\n`);
+  const print = (r: { line: string; warnings: string[] }) => out(r.line + '\n' + r.warnings.map((x) => `  warning: ${x}\n`).join(''));
+  w.listeners.add(print);
+  const signal: AbortSignal | undefined = ctx.shell?.abortController?.signal;
+  await new Promise<void>((resolve) => {
+    if (!signal || signal.aborted) { resolve(); return; }
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+  w.listeners.delete(print);
+  w.stop();
+  if (W.current === w) W.setCurrent(null);
+  out('stopped watching\n');
+  return 130;
+}
+
 /** The suite files: paths, or names under tests/tests/shiro-vitest ('shell-posix') */
 async function suitePath(ctx: CommandContext, root: string, arg: string): Promise<string | null> {
   const tries = [ctx.fs.resolvePath(arg, ctx.cwd)];
@@ -208,8 +300,50 @@ async function suitePath(ctx: CommandContext, root: string, arg: string): Promis
   return null;
 }
 
+const SUITE_DIR = 'tests/tests/shiro-vitest';
+/** Imports the tab can't give a suite (test-runner.ts): such suites run last */
+const NODE_ONLY = /^(node:)?(child_process|worker_threads|http|https|net|module|cluster|vm)$|^esbuild$|^playwright/;
+
+/**
+ * The suites to run for changed files (paths relative to the checkout): those
+ * that are a changed file, import one directly (`@shiro/x` is src/x, or a
+ * relative path), or are named like one or its directory (src/commands/awk.ts:
+ * awk-conformance; src/hotswap/watch.ts: hotswap). With more than `max` (0: no
+ * limit), suites that import what the tab can't give them (node:child_process,
+ * worker_threads, esbuild) go last, then the named ones come first, then those
+ * with the fewest imports, the most focused.
+ */
+export function suitesForChanges(files: string[], suites: { path: string; text: string }[], max = 20): { all: string[]; run: string[] } {
+  const bare = (p: string) => p.replace(/\.(ts|tsx|js|mjs)$/, '').replace(/\/index$/, '');
+  const changed = new Set(files.map(bare));
+  // Names a suite may be called by: the file's (awk.ts: awk-conformance) and its directory's (hotswap/x.ts: hotswap)
+  const GENERIC = new Set(['src', 'commands', 'tests', 'shiro-vitest', 'utils', 'index']);
+  const stems = [...new Set(files.flatMap((f) => bare(f).toLowerCase().split('/').slice(-2)).filter((n) => !GENERIC.has(n)))];
+  const hits: { path: string; named: boolean; nodeOnly: boolean; imports: number }[] = [];
+  for (const s of suites) {
+    const dir = s.path.slice(0, s.path.lastIndexOf('/'));
+    const specs = [...s.text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s+)(['"])([^'"]+)\1/gm)].map((m) => m[2]);
+    const targets = specs.map((sp) => {
+      if (sp.startsWith('@shiro/')) return `src/${sp.slice(7)}`;
+      if (!sp.startsWith('.')) return null;
+      const out: string[] = [];
+      for (const part of `${dir}/${sp}`.split('/')) { if (part === '..') out.pop(); else if (part && part !== '.') out.push(part); }
+      return out.join('/');
+    }).filter((t): t is string => !!t).map((t) => bare(t.split('?')[0]));
+    const name = s.path.split('/').pop()!.replace(/\.test\.ts$/, '').toLowerCase();
+    const named = stems.some((st) => name === st || name.startsWith(st + '-') || name.endsWith('-' + st));
+    if (!named && !changed.has(bare(s.path)) && !targets.some((t) => changed.has(t))) continue;
+    const nodeOnly = specs.some((sp) => NODE_ONLY.test(sp));
+    hits.push({ path: s.path, named, nodeOnly, imports: targets.length });
+  }
+  const ranked = [...hits].sort((a, b) => Number(a.nodeOnly) - Number(b.nodeOnly) || Number(b.named) - Number(a.named) || a.imports - b.imports || a.path.localeCompare(b.path));
+  return { all: hits.map((h) => h.path), run: (max > 0 ? ranked.slice(0, max) : ranked).map((h) => h.path) };
+}
+
 async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
   let root: string | null = null;
+  let changed = false;
+  let max = 20;
   let filter: RegExp | undefined;
   let verbose = false;
   const names: string[] = [];
@@ -219,15 +353,39 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
     else if (a === '-t' || a === '--testNamePattern') {
       try { filter = new RegExp(args[++i] ?? ''); } catch (e: any) { ctx.stderr += `hotswap test: bad -t: ${e.message}\n`; return 2; }
     } else if (a === '-v' || a === '--verbose') verbose = true;
+    else if (a === '--changed') changed = true;
+    else if (a === '--max') { max = parseInt(args[++i] ?? '', 10); if (!(max >= 0)) { ctx.stderr += 'hotswap test: bad --max\n'; return 2; } }
     else if (a.startsWith('-')) { ctx.stderr += `hotswap test: unknown option ${a}\n`; return 2; }
     else names.push(a);
   }
-  if (!names.length) { ctx.stderr += 'Usage: hotswap test [--root DIR] [-t RE] [-v] SUITE...\n'; return 2; }
+  if (!names.length && !changed) { ctx.stderr += 'Usage: hotswap test [--root DIR] [-t RE] [-v] [--changed [--max N]] [SUITE...]\n'; return 2; }
   root ??= await findRoot(ctx, ctx.cwd);
   if (!root) { ctx.stderr += 'hotswap test: no checkout found above the cwd (a directory with src/shell.ts); pass --root DIR\n'; return 1; }
   const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
+  if (changed) {
+    const { sourceChanges } = await import('../hotswap/source');
+    let changes;
+    try { changes = await sourceChanges(ctx.fs as any, root); } catch (e: any) { ctx.stderr += `hotswap test --changed: ${e?.message ?? e} (a checkout from 'hotswap checkout' has a manifest)\n`; return 1; }
+    const files = changes.filter((c) => c.status !== 'D').map((c) => c.path);
+    const suites: { path: string; text: string }[] = [];
+    for (const n of (await ctx.fs.readdir(`${root}/${SUITE_DIR}`).catch(() => [] as string[])).sort()) {
+      if (!n.endsWith('.test.ts')) continue;
+      try { suites.push({ path: `${SUITE_DIR}/${n}`, text: await ctx.fs.readFile(`${root}/${SUITE_DIR}/${n}`, 'utf8') as string }); } catch { /* unreadable */ }
+    }
+    const pick = suitesForChanges(files, suites, max);
+    if (!files.length) out('no changes since the checkout\n');
+    else if (!pick.all.length) out(`no suite imports ${files.join(' ')}\n`);
+    else out(`${pick.all.length} suite(s) import ${files.join(' ')}${pick.run.length < pick.all.length ? `; running ${pick.run.length} (--max ${max}; --max 0 runs all)` : ''}\n`);
+    names.push(...pick.run);
+    if (!names.length) return 0;
+  }
   const { buildTest } = await import('../hotswap/build');
   const { runTestBundle } = await import('../hotswap/test-runner');
+  // The suites' node:fs: the checkout as it is now, read once; their writes stay in memory
+  const { snapshotTree } = await import('../hotswap/test-fs');
+  const t0 = performance.now();
+  const files = await snapshotTree(ctx.fs as any, root);
+  if (verbose) out(` (read ${files.size} files of ${root} for node:fs in ${Math.round(performance.now() - t0)} ms)\n`);
   let failed = 0, passed = 0, skipped = 0;
   for (const name of names) {
     const file = await suitePath(ctx, root, name);
@@ -246,6 +404,8 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
     }
     const sum = await runTestBundle(code, {
       filter,
+      files,
+      cwd: ctx.cwd,
       onResult: (r) => {
         if (r.status === 'fail') out(` \u00d7 ${r.name}\n${(r.error ?? '').split('\n').map((l) => `     ${l}`).join('\n')}\n`);
         else if (verbose) out(` ${r.status === 'pass' ? '\u2713' : '-'} ${r.name}${r.status === 'pass' ? ` (${r.ms}ms)` : ` (${r.status})`}\n`);
@@ -264,8 +424,18 @@ const home = (ctx: CommandContext) => ctx.env['HOME'] || '/home/user';
 async function checkout(ctx: CommandContext, args: string[]): Promise<number> {
   const force = args.includes('--force');
   const dirArg = args.find((a) => !a.startsWith('-'));
-  const dir = ctx.fs.resolvePath(dirArg ? dirArg.replace(/^~(?=\/|$)/, home(ctx)) : `${home(ctx)}/shiro`, ctx.cwd);
-  const { checkoutSource } = await import('../hotswap/source');
+  const dir = ctx.fs.resolvePath(dirArg ? dirArg.replace(/^~(?=\/|$)/, home(ctx)) : `${home(ctx)}/tabcomputer`, ctx.cwd);
+  const { checkoutSource, readManifest } = await import('../hotswap/source');
+  // Tabs from before the default was ~/tabcomputer have their checkout in ~/shiro: keep using it
+  if (!dirArg && !force) {
+    const old = `${home(ctx)}/shiro`;
+    const exists = async (p: string) => { try { await ctx.fs.stat(p); return true; } catch { return false; } };
+    if (!(await exists(dir)) && await exists(`${old}/.hotswap-source.json`)) {
+      const m = await readManifest(ctx.fs as any, old).catch(() => null);
+      ctx.stdout += `using the existing checkout in ${old}${m ? ` (build ${m.build})` : ''}; 'hotswap checkout ~/tabcomputer' makes a new one\n`;
+      return 0;
+    }
+  }
   try {
     const m = await checkoutSource(ctx.fs as any, dir, { force });
     ctx.stdout += `checked out build ${m.build} (${m.sha ? m.sha.slice(0, 12) : 'no commit'}), ${Object.keys(m.files).length} files, in ${dir}\n`;

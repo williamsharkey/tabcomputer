@@ -1,6 +1,7 @@
 import { Command, CommandContext } from './index';
 import { quoteArgsForShell } from '../shell';
 import { posixRegExp } from '../utils/posix-regex';
+import { parseDateString } from './touch';
 
 /**
  * find — GNU findutils-compatible.
@@ -10,8 +11,8 @@ import { posixRegExp } from '../utils/posix-regex';
  * Expressions use GNU precedence: ( ) ! -not, implicit/explicit -a, -o, and
  * the comma operator. Tests: -name -iname -path -ipath -wholename -regex
  * -iregex -lname -ilname -type -xtype -size -empty -mtime -atime -ctime -mmin
- * -amin -cmin -newer -anewer -cnewer -perm -user -group -uid -gid -nouser
- * -nogroup -links -inum -samefile -readable -writable -executable -true
+ * -amin -cmin -newer -anewer -cnewer -newerXY (-newermt DATE) -perm -user
+ * -group -uid -gid -nouser -nogroup -links -inum -samefile -readable -writable -executable -true
  * -false. Actions: -print -print0 -printf -fprint -fprint0 -ls -fls -delete
  * -exec/-execdir (; and +) -ok/-okdir -prune -quit. Options: -maxdepth
  * -mindepth -depth -xdev -mount -follow -regextype -daystart -noleaf ...
@@ -637,7 +638,27 @@ async function runFind(ctx: CommandContext): Promise<number> {
           return (await runArgv(ctx, argv, cwd, '', out)) === 0;
         });
       }
-      default:
+      default: {
+        // -newerXY: X's time (a, c, m; B as m) newer than the reference's Y time, or than a date for Y = t
+        const nm = t !== undefined ? /^-newer([aBcm])([aBcmt])$/.exec(t) : null;
+        if (nm) {
+          const ref = need(t);
+          const which = nm[1] === 'B' ? 'm' : nm[1];
+          let refTime: number | null = null;
+          if (nm[2] === 't') {
+            refTime = parseDateString(ref);
+            if (refTime === null) throw new FindError(`I cannot figure out how to interpret \`${ref}' as a date or time`);
+          }
+          return pred(t, async (e) => {
+            if (refTime === null) {
+              const st = await statOf(fs.resolvePath(ref, ctx.cwd), true);
+              if (!st) throw new FindError(`'${ref}': No such file or directory`);
+              refTime = timeOf(st, nm[2] === 'B' ? 'm' : nm[2]);
+            }
+            return timeOf(e.st, which) > refTime;
+          });
+        }
+      }
         if (t === undefined) throw new FindError('invalid expression');
         if (t === ')') throw new FindError(`invalid expression; you have too many ')'`);
         if (t === '-o' || t === '-or' || t === '-a' || t === '-and' || t === ',') {

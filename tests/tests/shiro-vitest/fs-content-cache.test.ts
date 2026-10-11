@@ -226,6 +226,42 @@ describe('FileSystem content cache', () => {
       } finally { kernel.dispose(); }
     });
 
+    it('keep their inode numbers: stat and fstat agree after the sweep (GNU cp checks it)', async () => {
+      const { fs, shell } = await createTestShell();
+      const kernel = new Kernel({ shell });
+      try {
+        const proc = kernel.spawn({ path: 'p', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+        await fs.mkdir('/tmp/smi', { recursive: true });
+        await fs.writeFile('/tmp/smi/f', 'identity');
+        await fs.writeFile('/tmp/smi/l', 'linked');
+        await fs.link('/tmp/smi/l', '/tmp/smi/l2');
+        await fs.sync();
+        const ino = fs.inoOf('/tmp/smi/f');
+        const linkIno = fs.inoOf('/tmp/smi/l2');
+        fs.sweepContent(later());
+        expect(fs.lookupCached('/tmp/smi/f')!.node.evicted).toBe(true);
+        expect(fs.readBytesCached('/tmp/smi/l2')).toBeUndefined();
+        expect(fs.inoOf('/tmp/smi/f')).toBe(ino);
+        expect(fs.inoOf('/tmp/smi/l2')).toBe(linkIno);
+        const p = new TextEncoder().encode('/tmp/smi/f');
+        const d = new Uint8Array(256); d.set(p);
+        expect(kernel.syscallSync(proc, A.SYS_stat, [p.length], d)).toBe(0);
+        expect(A.decodeStat(d).ino).toBe(ino);
+        const o = new Uint8Array(256); o.set(p);
+        const fd = await kernel.syscall(proc, A.SYS_openat, [A.AT_FDCWD, p.length, A.O_RDONLY, 0], o) as number;
+        const f = new Uint8Array(256);
+        expect(await kernel.syscall(proc, A.SYS_fstat, [fd], f)).toBe(0);
+        expect(A.decodeStat(f).ino).toBe(ino);
+        expect(fs.nlinkOf('/tmp/smi/l2')).toBe(2);
+        const q = new TextEncoder().encode('/tmp/smi/l2');
+        const e = new Uint8Array(256); e.set(q);
+        expect(await kernel.syscall(proc, A.SYS_stat, [q.length], e)).toBe(0); // (not in memory: the kernel waits for IndexedDB)
+        expect(A.decodeStat(e).nlink).toBe(2);
+        expect(A.decodeStat(e).ino).toBe(linkIno);
+        kernel.kill(proc.pid, A.SIGKILL);
+      } finally { kernel.dispose(); }
+    });
+
     it('node in the page holds them: readFileSync of a file whose bytes had gone', async () => {
       const { fs, shell } = await createTestShell();
       await fs.mkdir('/tmp/smn', { recursive: true });

@@ -332,6 +332,26 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
         return JSON.stringify({ type: 'diag_result', ...d, procs, pendingWrites, kernel, requestId });
       }
 
+      case 'profile': {
+        // Live profile (src/live-profile.ts): start a capture, mark, stop, read
+        // it in slices ({part, offset}), so a reply stays small
+        const lp = await import('../live-profile');
+        const action = String(cmd.action || 'status');
+        if (action === 'start') {
+          logActivity(session, 'info', `profile start ${cmd.label ?? ''}`.trim());
+          const meta = await lp.startProfile({ durationMs: cmd.durationMs, sampleMs: cmd.sampleMs, procGrep: cmd.procGrep, label: cmd.label });
+          return JSON.stringify({ type: 'profile_result', meta, requestId });
+        }
+        if (action === 'mark') return JSON.stringify({ type: 'profile_result', ok: lp.markProfile(String(cmd.text ?? '')), requestId });
+        if (action === 'read') {
+          const slice = await lp.readProfile({ part: cmd.part, offset: cmd.offset, limit: cmd.limit, maxBytes: cmd.maxBytes });
+          return JSON.stringify({ type: 'profile_result', ...(slice ?? { meta: null }), requestId });
+        }
+        const meta = action === 'stop' ? lp.stopProfile() : lp.profileStatus();
+        const full = meta ? await lp.fullProfile() : null;
+        return JSON.stringify({ type: 'profile_result', meta, summary: full ? lp.summarizeProfile(full) : [], requestId });
+      }
+
       case 'eval': {
         logActivity(session, 'eval', cmd.code);
         const result = await eval(cmd.code);

@@ -20,6 +20,7 @@ import { createSocket } from "dgram";
 import { lookup } from "dns/promises";
 import { randomFillSync, webcrypto } from "crypto";
 import { RelayChannel, type RelayInfo } from "./relay.js";
+import { collectProfile, profileToTrace } from "./trace.js";
 
 // WebCrypto for the relay on Node 18 (global from Node 19)
 if (!(globalThis as any).crypto) (globalThis as any).crypto = webcrypto;
@@ -293,6 +294,26 @@ A frozen page can't answer until it recovers; if this times out, retry after a r
     name: "abort",
     description: `Kill switch: abort the tabcomputer page's foreground commands, like Ctrl-C in every terminal (in-page shell commands are aborted; the kernel's foreground process groups get SIGINT). Over the HTTPS relay the watchdog worker takes this request, so it works while the page is frozen: it raises a shared abort flag that the page checks at its yield points (shell function calls, source, loops; the x86 runner). A page stuck in one JavaScript loop with no yield point can't be stopped this way; reload it (the next load offers safe mode).`,
     inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "profile",
+    description: `Live profile of the tabcomputer page (src/live-profile.ts), e.g. native Claude Code's startup or keystrokes. action:
+- start: begin a capture (durationMs default 60000, max 600000; sampleMs default 100; procGrep: kernel processes to sample, e.g. 'claude'; label). It records long tasks and long animation frames (slowest script), input Event Timing and per keydown the time until a terminal echoed output (key classes only, never values), terminal output bytes, per process and syscall number the calls answered at once vs async with their total and max ms, and every sampleMs: event-loop lag, heap, the shell line in flight, and per kernel process the calls in progress and their age, syscall/kernel-ms deltas, threads in a call, Blink's engine lock (holder, waiters, acquires).
+- mark: note a moment (text), e.g. before typing.
+- stop / status: end it (it also ends by itself) / show it; both return a summary.
+- collect: read the whole capture; with out: a local path, writes the JSON there and a Chrome/Perfetto trace next to it (<out>.trace.json), and returns only the summary and paths.
+- read: one slice (part: tasks|inputs|samples|marks|syscalls|procs, offset).`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "start | mark | stop | status | collect | read" },
+        durationMs: { type: "number" }, sampleMs: { type: "number" }, procGrep: { type: "string" }, label: { type: "string" },
+        text: { type: "string", description: "mark text" },
+        out: { type: "string", description: "collect: local file for the JSON (trace at <out>.trace.json)" },
+        part: { type: "string" }, offset: { type: "number" }
+      },
+      required: ["action"]
+    }
   },
   {
     name: "errors",
@@ -757,6 +778,24 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 
     case "abort": {
       return await sendCommand({ type: "abort" });
+    }
+
+    case "profile": {
+      const action = String(args.action || "status");
+      if (action === "collect") {
+        const p = await collectProfile((req) => sendCommand(req));
+        if (!p.meta) return { type: "profile_result", meta: null };
+        const out = typeof args.out === "string" ? args.out : "";
+        if (out) {
+          writeFileSync(out, JSON.stringify(p));
+          writeFileSync(`${out}.trace.json`, JSON.stringify(profileToTrace(p)));
+          const st: any = await sendCommand({ type: "profile", action: "status" });
+          return { type: "profile_result", meta: p.meta, summary: st.summary, out, trace: `${out}.trace.json` };
+        }
+        return { type: "profile_result", ...p };
+      }
+      return await sendCommand({ type: "profile", action, durationMs: args.durationMs, sampleMs: args.sampleMs, procGrep: args.procGrep,
+        label: args.label, text: args.text, part: args.part, offset: args.offset });
     }
 
     case "diag": {

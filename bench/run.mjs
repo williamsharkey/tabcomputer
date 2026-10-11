@@ -13,6 +13,7 @@ import { Harness, CHROMIUM } from './lib/harness.mjs';
 import { NetCache } from './lib/netcache.mjs';
 import { startShiroServer, startTcpTestServer, hostAddress } from './lib/servers.mjs';
 import { prepareFixtures, prepareGh } from './lib/fixtures.mjs';
+import { startMockModel } from './lib/mockmodel.mjs';
 import { writeReport } from './report.mjs';
 import { machineFor } from './lib/machine.mjs';
 import { startGitDaemon } from './lib/gitserver.mjs';
@@ -21,7 +22,7 @@ const BENCH = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(BENCH, '..');
 const ALL_SUITES = ['boot', 'shell', 'kernel', 'wasm', 'x86', 'net', 'node', 'hygiene', 'workloads', 'workflows'];
 // Only when asked for (--suites debian): apt runs take minutes
-const OPTIONAL_SUITES = ['debian', 'x86first', 'workloads-slow', 'toolchains', 'perfbench'];
+const OPTIONAL_SUITES = ['debian', 'x86first', 'workloads-slow', 'toolchains', 'perfbench', 'claude'];
 const NONISOLATED_SUITES = ['boot', 'shell', 'kernel', 'wasm', 'x86', 'hygiene'];
 // --quick: everything isolated, plus the kernel fallback paths (JSPI) not isolated
 const QUICK_NONISOLATED_SUITES = ['kernel'];
@@ -98,13 +99,15 @@ async function main() {
   const tcp = await startTcpTestServer('0.0.0.0');
   // git:// server for workloads-slow's clone over the relay
   const gitd = suites.includes('workloads-slow') ? await startGitDaemon({ cacheDir, log }) : null;
+  // the mock Messages API native Claude Code reaches through the relay (suites/claude.mjs)
+  const mockModel = suites.includes('claude') && hostAddr ? await startMockModel(hostAddr) : null;
   const netcache = new NetCache(join(cacheDir, 'net'), { offline: args.offline, log });
   const results = [];
   let chromiumVersion = null;
   for (const mode of args.modes) {
     const server = await startShiroServer({
       staticDir: dist, isolated: mode === 'isolated',
-      tcpPorts: [...Object.values(tcp.ports), ...(gitd ? [gitd.port] : [])], allowCidrs: hostAddr ? [`${hostAddr}/32`] : [],
+      tcpPorts: [...Object.values(tcp.ports), ...(gitd ? [gitd.port] : []), ...(mockModel ? [mockModel.port] : [])], allowCidrs: hostAddr ? [`${hostAddr}/32`] : [],
       log: process.env.BENCH_SERVER_LOG ? (l) => log(`[server] ${l}`) : null,
     });
     const h = new Harness({
@@ -113,6 +116,7 @@ async function main() {
     });
     h.gitServer = gitd ? { host: hostAddr, port: gitd.port, repo: gitd.repo } : null;
     h.fixtures = fixtures;
+    h.mockModel = mockModel;
     await h.launch();
     chromiumVersion ??= h.browser.version();
     const modeSuites = suites.filter((s) => mode === 'isolated' || (args.quick ? QUICK_NONISOLATED_SUITES : NONISOLATED_SUITES).includes(s));
@@ -144,6 +148,7 @@ async function main() {
   }
   await tcp.close();
   await gitd?.close();
+  await mockModel?.close();
 
   const env = environment(args, chromiumVersion);
   env.machine = machineFor(env);

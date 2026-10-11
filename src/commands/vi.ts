@@ -601,3 +601,10 @@ export const viCmd: Command = {
     });
   },
 };
+
+/** ex: vi in ex mode, as Vim's ex (`ex -s FILE < script`, `ex FILE <<EOF … EOF`) */
+export const exCmd: Command = {
+  name: 'ex',
+  description: 'Line editor: vi in ex mode (ex -s FILE < script)',
+  exec: (ctx) => { ctx.args = ['-e', ...ctx.args]; return viCmd.exec(ctx); },
+};

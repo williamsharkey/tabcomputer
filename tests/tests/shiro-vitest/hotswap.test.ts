@@ -495,7 +495,8 @@ describe('hotswap: building a swap bundle', () => {
   it("doesn't make generated or vendored modules live; a swap copies them in", async () => {
     const { hotswapLiveModules } = await import('../../../vite-plugin-hotswap');
     const root = '/co';
-    const plugin: any = hotswapLiveModules(root);
+    // (two plugins since #47: a pre pass records new URL(lit, import.meta.url) literals; this is the post one)
+    const plugin: any = ([] as any[]).concat(hotswapLiveModules(root)).find((p: any) => p.name === 'tabcomputer-hotswap-live');
     const ctx = { resolve: async (spec: string, from: string) => ({ id: path.resolve(path.dirname(from), spec) + '.ts', external: false }) };
     expect(await plugin.transform.call(ctx, 'export const GL_ONE = 1;\n', '/co/src/gl/gen/enums.ts')).toBeNull();
     expect(await plugin.transform.call(ctx, 'export const x = 1;\n', '/co/src/browser/vendor/subtls/index.ts')).toBeNull();

@@ -58,6 +58,33 @@ export interface BuildResult {
 /** The bundle's first line: the lazy live modules to load before it runs */
 export const NEEDS_PREFIX = '// hotswap-needs: ';
 
+/**
+ * A bundle runs from a blob: URL, so a module's `import.meta.url` there is the
+ * blob, and `new URL('./guest-entry.ts', import.meta.url)` threw "Invalid URL"
+ * (every `node` in the page's terminals, after a test copy of node-worker/host.ts
+ * became the page's, #47). Each bundled module's `import.meta.url` becomes
+ * __tcUrl(its key): the live module's own URL, which the page registers
+ * (vite-plugin-hotswap.ts), and `new URL('lit', import.meta.url)` becomes
+ * __tcUrl(key, 'lit'): the URL the page's build gave it (a Worker's or an
+ * asset's hashed file), else `lit` against the module's URL.
+ */
+export const META_URL_HELPER =
+  'function __tcUrl(key, lit) {\n' +
+  '  var urls = globalThis.__tabcomputerLiveUrls, page = (globalThis.location && globalThis.location.href) || "file:///";\n' +
+  '  var own = (urls && urls.get(key)) || new URL(key, page).href;\n' +
+  '  if (lit === undefined) return own;\n' +
+  '  return (urls && urls.get(key + "|" + lit)) || new URL(lit, own).href;\n' +
+  '}\n';
+
+/** `import.meta.url` in a module's source, for the module `key` (META_URL_HELPER) */
+export function rewriteImportMetaUrl(code: string, key: string): string {
+  if (!code.includes('import.meta.url')) return code;
+  const k = JSON.stringify(key);
+  return code
+    .replace(/\bnew\s+URL\(\s*(['"])([^'"\n]+)\1\s*,\s*import\.meta\.url\s*\)/g, (_m, _q, lit) => `new URL(__tcUrl(${k}, ${JSON.stringify(lit)}))`)
+    .replace(/\bimport\.meta\.url\b/g, `__tcUrl(${k})`);
+}
+
 const EXTS = ['', '.ts', '.tsx', '.js', '.mjs', '/index.ts', '/index.js'];
 
 function normalize(p: string): string {
@@ -227,6 +254,7 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
         }
         const key = keyOf(p);
         if (!testPath && !opts.freshState && key && swapSet.has(key) && loader !== 'json') contents = carryState(contents, key).code;
+        if (loader !== 'json') contents = rewriteImportMetaUrl(contents, key ?? p);
         return { contents, loader, resolveDir: dirOf(p) };
       });
     },
@@ -244,6 +272,7 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
     legalComments: 'none',
     sourcemap: opts.sourcemap ? 'inline' : false,
     tsconfigRaw,
+    banner: { js: META_URL_HELPER },
     define: {
       __BUILD_SHA__: JSON.stringify(pageSha()),
       'import.meta.env.DEV': 'false',

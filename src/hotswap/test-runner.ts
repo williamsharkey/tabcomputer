@@ -10,6 +10,7 @@
  */
 import { importCode, quietDuring } from './swap';
 import { makeTestNode, type Snapshot } from './test-fs';
+import { snapshotPage, restorePage, recordTestLeftovers } from './leftovers';
 
 type Fn = () => unknown;
 type Mode = 'run' | 'skip' | 'only' | 'todo';
@@ -22,7 +23,11 @@ interface Suite {
 }
 
 export interface TestResult { name: string; status: 'pass' | 'fail' | 'skip' | 'todo'; ms: number; error?: string }
-export interface RunSummary { results: TestResult[]; passed: number; failed: number; skipped: number; ms: number; errors: string[] }
+export interface RunSummary {
+  results: TestResult[]; passed: number; failed: number; skipped: number; ms: number; errors: string[];
+  /** What the suite's module copies had changed in the live page, put back after the run (leftovers.ts, #47) */
+  restored?: string[];
+}
 
 const DEFAULT_TIMEOUT = 5000;
 
@@ -479,6 +484,8 @@ async function runNow(code: string, opts: RunOptions): Promise<RunSummary> {
   const restorers: (() => void)[] = [];
   const summary: RunSummary = { results: [], passed: 0, failed: 0, skipped: 0, ms: 0, errors: [] };
   await dropTestDatabases();
+  // The page as it is before the suite's copies run: put back after (#47)
+  const pageBefore = snapshotPage();
   const runId = Math.random().toString(36).slice(2, 8);
   g.__tcTestEnv = isolatedEnv(runId);
   g.__tcTestApi = makeApi(root, restorers);
@@ -550,6 +557,8 @@ async function runNow(code: string, opts: RunOptions): Promise<RunSummary> {
     return summary;
   } finally {
     while (restorers.length) restorers.pop()!();
+    summary.restored = restorePage(pageBefore);
+    recordTestLeftovers(summary.restored);
     delete g.__tcTestApi;
     summary.ms = Math.round(performance.now() - started);
     // (the env stays: timers the suite left may still use it; the next run replaces it)

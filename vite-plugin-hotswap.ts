@@ -19,9 +19,41 @@ import { NOT_LIVE } from './src/hotswap/live';
 /** npm modules registered as 'npm:NAME' where src/ imports them (a swap bundle can import these) */
 const LIVE_DEPS = ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-unicode11', 'acorn', 'pako', 'isomorphic-git', 'isomorphic-git/http/web', 'esbuild-wasm'];
 
-export function hotswapLiveModules(root: string): Plugin {
+/** `new URL('<literal>', import.meta.url)` in a module's source: the literals, in order */
+const META_URL_RE = /\bnew\s+URL\(\s*(['"])([^'"\n]+)\1\s*,\s*import\.meta\.url\s*\)/g;
+export function metaUrlLiterals(code: string): string[] {
+  return [...code.matchAll(META_URL_RE)].map((m) => m[2]);
+}
+
+/**
+ * Registrations of the URLs the build gave a module's `new URL('<lit>', import.meta.url)`
+ * (#47): Vite rewrites those (a Worker's chunk, an asset's hashed file) before this
+ * plugin's post transform sees the code, so the i-th rewritten expression is the i-th
+ * literal of the source. Nothing when the counts differ (the bundle then falls back to
+ * `lit` against the module's URL: build.ts META_URL_HELPER).
+ */
+export function liveUrlRegistrations(key: string, literals: string[], transformed: string): string {
+  const args = [...transformed.matchAll(/\bnew\s+URL\(\s*((?:"[^"]*"|'[^']*'|\/\*[\s\S]*?\*\/|\([^()]*\)|[^,()])+?)\s*,\s*import\.meta\.url\s*\)/g)].map((m) => m[1]);
+  if (!literals.length || args.length !== literals.length) return '';
+  return literals.map((lit, i) => `globalThis.__tabcomputerLiveUrls.set(${JSON.stringify(`${key}|${lit}`)}, new URL(${args[i]}, import.meta.url).href);\n`).join('');
+}
+
+export function hotswapLiveModules(root: string): Plugin[] {
   const srcDir = path.join(root, 'src') + path.sep;
-  return {
+  /** Each module's `new URL('<lit>', import.meta.url)` literals, from its source before Vite rewrote them */
+  const metaLiterals = new Map<string, string[]>();
+  const pre: Plugin = {
+    name: 'tabcomputer-hotswap-live-urls',
+    enforce: 'pre',
+    apply: 'build',
+    transform(code, id) {
+      if (id.includes('?') || id.includes('\0') || !id.startsWith(srcDir) || !/\.(ts|tsx|js|mjs)$/.test(id)) return null;
+      const lits = metaUrlLiterals(code);
+      if (lits.length) metaLiterals.set(id, lits); else metaLiterals.delete(id);
+      return null;
+    },
+  };
+  return [pre, {
     name: 'tabcomputer-hotswap-live',
     enforce: 'post',
     // (dev serves modules by URL; an absolute-path self-import there would load a second copy)
@@ -33,6 +65,12 @@ export function hotswapLiveModules(root: string): Plugin {
       if (NOT_LIVE.test(key)) return null;
       let extra = `import * as __tcLiveSelf from ${JSON.stringify(id)};\n` +
         `(globalThis.__tabcomputerLive ??= new Map()).set(${JSON.stringify(key)}, __tcLiveSelf);\n`;
+      // Its URL, and the URLs the build gave its `new URL('<lit>', import.meta.url)`s: a
+      // swapped or tested copy of it (a blob: module) resolves those through these (#47)
+      if (/\bimport\.meta\.url\b/.test(code)) {
+        extra += `(globalThis.__tabcomputerLiveUrls ??= new Map()).set(${JSON.stringify(key)}, import.meta.url);\n` +
+          liveUrlRegistrations(key, metaLiterals.get(id) ?? [], code);
+      }
       LIVE_DEPS.forEach((dep, i) => {
         if (!new RegExp(`\\bfrom\\s*(['"])${dep.replace(/[/.]/g, '\\$&')}\\1`).test(code)) return;
         extra += `import * as __tcLiveDep${i} from ${JSON.stringify(dep)};\n` +
@@ -72,7 +110,7 @@ export function hotswapLiveModules(root: string): Plugin {
         map: null,
       };
     },
-  };
+  }];
 }
 
 /** What `hotswap checkout` gets: the source of this build (src/hotswap/source.ts) */

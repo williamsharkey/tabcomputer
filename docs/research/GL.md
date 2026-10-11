@@ -293,9 +293,16 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   qualifiers, renamed built-in functions, fragment outputs, and the
   compatibility built-ins mapped to `_tc_` attributes and uniforms. Every
   shader of the corpus in `tests/tests/shiro-vitest/fixtures/glsl` (Mesa
-  demos, glmark2, SuperTuxKart, OpenSCAD) compiles and links after it.
-  There is no type checker yet, so desktop-only implicit conversions are
-  still compile errors. The full front end below is the plan:
+  demos, glmark2, SuperTuxKart, OpenSCAD, Krita's canvas shaders) compiles
+  and links after it.
+- Implicit conversions (`src/gl/glsl/implicit.ts`) run on the result: a
+  preprocessor (as WebGL's compiler sees it), a parser, and a checker over
+  the declarations and the built-in functions, which wraps each int operand
+  where desktop GLSL converts to float (`float(2)`, `vec2(textureSize(s, 0))`).
+  It only inserts text, so line numbers hold; a conversion inside a macro
+  inlines that one use. Source it can't parse goes on unchanged. Krita's
+  shaders don't need it; Blender's and hand-written GL 2/3 apps' do.
+- The rest of the full front end below is the plan:
 - Desktop GLSL 110–330 to GLSL ES 3.00, in `src/gl/glsl/`: preprocessor,
   parser, a type checker for the built-in function set, and a printer.
   The checker is there for what ES forbids and desktop GLSL ≥ 1.20 allows:

@@ -233,7 +233,7 @@ function overlayFs(edits: Record<string, string>): HotswapFs {
 
 describe('hotswap watch', () => {
   // A checkout whose src/greeter.ts and src/other.ts "build" to the source saved last
-  function setup(opts: { ttlMs?: number | null } = {}) {
+  function setup(opts: { ttlMs?: number | null; test?: (files: string[], rec: any) => Promise<{ ok: boolean; line: string }> } = {}) {
     const listeners = new Set<(e: string, p: string, n?: string) => void>();
     const saved: Record<string, string> = {};
     const builds: string[][] = [];
@@ -258,6 +258,7 @@ describe('hotswap watch', () => {
         }
         return out;
       },
+      test: opts.test,
     }, { root: '/co', ttlMs: opts.ttlMs === undefined ? 60_000 : opts.ttlMs, debounceMs: 20 });
     w.start();
     return { w, mgr, save, builds, listeners };
@@ -374,6 +375,50 @@ describe('hotswap watch', () => {
     expect(t.mgr.revertOnWedge(4000, Date.now() + 60_000)).toHaveLength(1);
     expect(reasons).toEqual(['wedge']);
     expect(g.greet()).toBe('hello w');
+    t.w.stop();
+  });
+
+  it('--test runs the suites after a good save, beside the next saves, and --wait waits for them', async () => {
+    const live = makeLive();
+    registerLive('src/other.ts', { Greeter: class Greeter { greet() { return 'other'; } } });
+    const g = new live.Greeter('q');
+    const runs: string[][] = [];
+    let release!: () => void;
+    let gate = new Promise<void>((r) => { release = r; });
+    const t = setup({
+      async test(files, rec) {
+        runs.push(files);
+        await gate;
+        return files.includes('src/other.ts') ? { ok: false, line: `\u2717 tests after #${rec.id}: failed` } : { ok: true, line: `\u2713 tests after #${rec.id}: ok` };
+      },
+    });
+    mgr = t.mgr;
+    t.save('/co/src/greeter.ts', 't1');
+    await new Promise((r) => setTimeout(r, 60));
+    // the swap is live while its tests run, and the next saves swap in without waiting for them
+    expect(g.greet()).toBe('t1 q');
+    expect(runs).toEqual([['src/greeter.ts']]);
+    t.save('/co/src/greeter.ts', 't2');
+    await new Promise((r) => setTimeout(r, 60));
+    t.save('/co/src/other.ts', 't3');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(g.greet()).toBe('t2 q');
+    let idle = false;
+    void t.w.idle().then(() => { idle = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(idle).toBe(false);
+    release();
+    gate = Promise.resolve();
+    await t.w.idle();
+    // the saves made during the first run are tested together after it
+    expect(runs).toEqual([['src/greeter.ts'], ['src/greeter.ts', 'src/other.ts']]);
+    const lines = t.w.results.map((r) => r.line.replace(/ live .*/, ''));
+    expect(lines.filter((l) => /tests after/.test(l))).toEqual([expect.stringMatching(/^\u2713 tests after #\d+: ok$/), expect.stringMatching(/^\u2717 tests after #\d+: failed$/)]);
+    expect(t.w.results[t.w.results.length - 1].ok).toBe(false);
+    // a save that doesn't build isn't tested
+    t.save('/co/src/greeter.ts', 'SYNTAX');
+    await t.w.idle();
+    expect(runs).toHaveLength(2);
     t.w.stop();
   });
 

@@ -23,6 +23,12 @@ export interface WatchDeps {
   build(files: string[]): Promise<BuildResult>;
   /** Load a bundle's modules (swap.ts evaluateBundle) */
   evaluate(code: string): Promise<Record<string, Record<string, unknown>>>;
+  /**
+   * `hotswap watch --test`: run the suites for these files (relative to the
+   * root) after a good save. Runs beside the next saves, never delaying them;
+   * files saved during a run are tested together after it.
+   */
+  test?(files: string[], rec: SwapRecord | null): Promise<{ ok: boolean; line: string }>;
 }
 
 export interface WatchOptions {
@@ -93,6 +99,8 @@ export class HotswapWatcher {
   private busy: Promise<void> | null = null;
   private unsub: (() => void) | null = null;
   private idleWaiters: (() => void)[] = [];
+  private testQueue = new Set<string>();
+  private testing: Promise<void> | null = null;
   private seq = 0;
 
   constructor(private deps: WatchDeps, opts: WatchOptions) {
@@ -118,6 +126,7 @@ export class HotswapWatcher {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.pending.clear();
+    this.testQueue.clear();
     this.settle();
   }
 
@@ -134,14 +143,14 @@ export class HotswapWatcher {
     this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, this.debounceMs);
   }
 
-  /** Resolves when no save is waiting and no build is running */
+  /** Resolves when no save is waiting and no build or test run is running */
   idle(): Promise<void> {
-    if (!this.timer && !this.busy && !this.pending.size) return Promise.resolve();
+    if (!this.timer && !this.busy && !this.pending.size && !this.testing) return Promise.resolve();
     return new Promise((r) => this.idleWaiters.push(r));
   }
 
   private settle(): void {
-    if (this.timer || this.busy || this.pending.size) return;
+    if (this.timer || this.busy || this.pending.size || this.testing) return;
     const w = this.idleWaiters.splice(0);
     for (const r of w) r();
   }
@@ -203,6 +212,21 @@ export class HotswapWatcher {
       line: `${errors ? '✗' : '✓'} #${rec.id} ${summarize(rec.report.filter((m) => built.keys.includes(m.module)), stale)}: live ${Date.now() - firstSave} ms after the save (build ${buildMs} ms${warn}); ${ttl}`,
       files: rel, warnings: built.warnings, buildMs, totalMs: Date.now() - firstSave, record: rec,
     });
+    if (!errors && this.deps.test) this.queueTests(rel);
+  }
+
+  private queueTests(files: string[]): void {
+    for (const f of files) this.testQueue.add(f);
+    if (this.testing) return;
+    this.testing = (async () => {
+      while (this.testQueue.size && this.unsub) {
+        const batch = [...this.testQueue];
+        this.testQueue.clear();
+        let r: { ok: boolean; line: string };
+        try { r = await this.deps.test!(batch, this.record); } catch (e: any) { r = { ok: false, line: `\u2717 tests for ${batch.join(' ')}: ${e?.message ?? e}` }; }
+        this.emit({ ok: r.ok, line: r.line, files: batch, warnings: [], buildMs: 0, totalMs: 0 });
+      }
+    })().finally(() => { this.testing = null; this.settle(); });
   }
 
   /** A line from outside the watcher (an auto-revert of its swap) */

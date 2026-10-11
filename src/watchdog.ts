@@ -269,6 +269,17 @@ function prune(ring: [number, number][], now: number) {
   while (ring.length && ring[0][0] < now - 60_000) ring.shift();
 }
 
+const wedgeListeners = new Set<(ms: number, since: number) => void>();
+/**
+ * Called when the page runs again after a freeze of WEDGE_MS or more (the
+ * frozen ms, and when the freeze began). Hot-swap reverts its unconfirmed
+ * swaps from here. Returns the unsubscribe function.
+ */
+export function onWedge(fn: (ms: number, since: number) => void): () => void {
+  wedgeListeners.add(fn);
+  return () => { wedgeListeners.delete(fn); };
+}
+
 /** One heartbeat tick: `lag` is how late it ran. Exported for tests. */
 export function noteLag(lag: number, now = Date.now()): void {
   lastLag = lag;
@@ -277,6 +288,7 @@ export function noteLag(lag: number, now = Date.now()): void {
   if (lag >= LAG_RECORD_MS) {
     recordEvent({ t: now, kind: lag >= STALL_MS ? 'stall' : 'lag', ms: Math.round(lag), active: activeLines(lag + TICK_MS) });
   }
+  if (lag >= WEDGE_MS) for (const fn of wedgeListeners) { try { fn(lag, now - lag); } catch { /* a listener never breaks the heartbeat */ } }
 }
 
 export function noteLongTask(ms: number, now = Date.now(), text?: string, kind: 'longtask' | 'loaf' = 'longtask'): void {

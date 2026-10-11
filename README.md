@@ -1,8 +1,22 @@
 # tabcomputer
 
 tabcomputer is a computer that lives in your browser tab: a desktop with windows and a dock,
-a Unix kernel written for the page, and real Linux programs. Debian's x86-64 binaries run in
-the Blink emulator compiled to WebAssembly, and a TCP relay connects them to the internet.
+a Unix kernel written for the page, and real Linux programs. A TCP relay connects them to the
+internet.
+
+- **A desktop.** Windows, a dock, a Terminal with tabs, Files, Settings and a phone layout
+  ([docs/DESKTOP.md](docs/DESKTOP.md)).
+- **An x86-64 engine.** Unmodified Linux x86-64 binaries run in the Blink emulator compiled to
+  WebAssembly. Under it, LTP's syscall tests pass 431/534 and the Open POSIX Test Suite 1428/1448
+  ([docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
+- **Debian.** `debian install` streams in Debian 13, and Debian's own apt and dpkg install
+  packages. Of popcon's top 2000, 1846 install and pass a smoke test (3 of the scored ones
+  fail, 100 aren't in trixie and 51 aren't scored yet)
+  ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)).
+- **GUI apps.** Debian's X11 apps open as desktop windows: 37 of the 38 in the scoreboard,
+  among them GIMP, Inkscape, LibreOffice Writer, VLC and Firefox ([docs/GUI_SCORE.md](docs/GUI_SCORE.md)).
+- **Coding agents.** Claude Code, native or npm, runs in the tab. Codex, Grok Build, Gemini
+  CLI and aider reach their APIs too ([docs/COMPAT.md](docs/COMPAT.md#agent-clis-unixagent-clis)).
 
 **Live:** [tabcomputer.com](https://tabcomputer.com). Nothing to install. Your files stay in
 this browser's storage for this site.
@@ -41,7 +55,7 @@ against a local server (the "parallel" rows ran with three other tabs doing the 
 | `gui xeyes` | 2 s to install, about 1 s to the window ([docs/GUI.md](docs/GUI.md)) |
 
 The benchmark suite's numbers for the same paths are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
-("Real workloads"). 496 of popcon's 500 most-installed Debian packages install and pass a
+("Real workloads"). 1846 of popcon's 2000 most-installed Debian packages install and pass a
 smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)). Some work but are too slow to enjoy:
 Debian's `nodejs` takes 26 s for `node -e`. Use tabcomputer's built-in `node` instead.
 
@@ -123,7 +137,7 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   (coreutils, grep/sed/awk, git, gh, node and npm, jq, rg, tmux, vi, nano). `help` lists the
   common ones, `help --all` all of them.
 - **Debian.** `debian install` streams in Debian 13 "trixie" amd64; then `sudo apt install` is
-  Debian's apt against a Debian mirror. 496 of popcon's top 500 packages install and pass a
+  Debian's apt against a Debian mirror. 1846 of popcon's top 2000 packages install and pass a
   smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md), [docs/DEBIAN.md](docs/DEBIAN.md)).
   Heavier tools work too, slowly: `tesseract` (OCR; 4 min to install, 7.5 s for a line of text)
   and LibreOffice headless (`libreoffice-writer-nogui`: 10 min to install, then
@@ -139,9 +153,9 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   625/635; the oils shell spec tests 2148/2417; smoosh's POSIX shell tests 159/162; the
   wasi-testsuite 71/72 ([docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **GUI apps.** `gui` lists Debian X11 apps (xterm, GTK and Qt editors and viewers, GIMP,
-  Inkscape, Krita, VLC, NetSurf). They open as desktop windows. Of the 29 in the scoreboard,
-  all install, 24 open a window and 18 take keyboard input; GTK 2/3 text can render as real
-  DOM text ([docs/GUI_SCORE.md](docs/GUI_SCORE.md), [docs/GUI.md](docs/GUI.md),
+  Inkscape, Krita, LibreOffice Writer, Firefox, Thunderbird, VLC). They open as desktop windows.
+  Of the 38 in the scoreboard, all install, 37 open a window and take keyboard input (Blender
+  doesn't open one), and 32 show their text as real DOM text ([docs/GUI_SCORE.md](docs/GUI_SCORE.md), [docs/GUI.md](docs/GUI.md),
   [docs/DOM-RENDERING.md](docs/DOM-RENDERING.md)).
 - **Browser app (research spike).** Tabs showing real sites on per-site origins, with TLS done
   in the page over the relay ([docs/BROWSER.md](docs/BROWSER.md), [docs/WEB_SCORE.md](docs/WEB_SCORE.md)).
@@ -163,8 +177,8 @@ Claude Code comes in two builds:
 
 - **Native** (the default on tabcomputer). `claude install` downloads Anthropic's
   linux-x64-musl binary (about 240 MB) and plain `claude` runs it in the x86-64 engine.
-  `claude update` fetches a newer one. It is slow: one `claude -p` request took 85–105 s to
-  reach the API in the measurements in [docs/COMPAT.md](docs/COMPAT.md).
+  `claude update` fetches a newer one. It is slow: in [docs/COMPAT.md](docs/COMPAT.md), its first screen
+  took 52 s and a `claude -p` request about 100 s to reach the API.
 - **npm** (`claude --npm`). The pinned pure-JavaScript release, `@anthropic-ai/claude-code@2.1.112`,
   on tabcomputer's Node.js runtime. It is installed in the background at first boot and starts
   quickly. `claude-window` runs it in a new window.
@@ -172,8 +186,8 @@ Claude Code comes in two builds:
 Both builds sign themselves in. Signed out, Claude Code opens the sign-in page in a new browser
 tab; paste the code it shows at the "Paste code here" prompt. `claude login` signs in again.
 
-Codex, Grok Build, Gemini CLI and aider also reach their APIs from tabcomputer; opencode does
-not start yet. The table with versions, timings and blockers is in
+Codex, Grok Build, Gemini CLI and aider also reach their APIs from tabcomputer. Antigravity
+(`agy`) and opencode start after `debian install` (they need glibc). The table with versions, timings and blockers is in
 [docs/COMPAT.md](docs/COMPAT.md#agent-clis-unixagent-clis).
 
 An agent outside the tab can drive it: run `remote start` here, then connect with the
@@ -198,13 +212,13 @@ the relay.
 
 - **Speed.** Hot loops in the x86-64 engine run at about 2–5x native, but starting a big
   program is slow: `gh --version` takes 5.0 s on its first run in a page (75 ms native), and
-  most GTK and Qt apps take 4–24 s to their first window (Inkscape 38 s) ([docs/X86_ENGINES.md](docs/X86_ENGINES.md),
+  32 of the 37 GUI apps that open a window take 3–31 s to the first one (Inkscape 54 s,
+  Firefox 224 s) ([docs/X86_ENGINES.md](docs/X86_ENGINES.md),
   [docs/GUI_SCORE.md](docs/GUI_SCORE.md)).
 - **Network.** TCP to ports 22, 80, 443 and 9418 only, through the relay. UDP to the internet
   is DNS only (answered over DNS-over-HTTPS). No listening on the internet.
-- **Not yet working.** inotify for Linux programs (Node's `fs.watch` works); a D-Bus session bus
-  (some GUI apps wait on it or quit); opencode. Each scoreboard lists its failures
-  and why.
+- **Not yet working.** Blender opens no window; opencode prints its version (after
+  `debian install`) but hasn't been run further. Each scoreboard lists its failures and why.
 - **dpkg under Blink.** dpkg-deb's `.xz` decompression occasionally crashes or reports corrupt
   data (an open Blink issue, [docs/X86_ENGINES.md](docs/X86_ENGINES.md) item 57). It hit 2 of about 15
   `apt install` runs while this README was checked (python3 once, gcc once). When `apt` stops
@@ -271,12 +285,16 @@ Server options are `TABCOMPUTER_*` environment variables.
 Production is one droplet set up by [deploy/tabcomputer/](deploy/tabcomputer/README.md); a push
 to the `deploy` branch ships.
 
+To change tabcomputer from inside a tab, with no reload, see `hotswap` and
+[docs/DEVELOP_IN_TAB.md](docs/DEVELOP_IN_TAB.md).
+
 Coding agents and contributors: start with [AGENTS.md](AGENTS.md). All docs: [docs/README.md](docs/README.md).
 
 ## History
 
-tabcomputer grew out of [Shiro](https://shiro.computer), a browser Unix shell, and keeps its
-history. The engine still runs shiro.computer as the terminal-first `shiro` profile.
+tabcomputer grew out of Shiro, a browser Unix shell, and keeps its history. Shiro goes on
+separately as [shiro.computer](https://shiro.computer), a lightweight terminal without the
+x86-64 engine.
 
 ## Appendix: prebuilt packages
 

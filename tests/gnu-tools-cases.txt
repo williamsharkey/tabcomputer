@@ -1,0 +1,879 @@
+# Commands run in tabcomputer's shell and in real bash (gnu-tools-diff.test.ts).
+# One per line; '#' lines are comments. Fixture files: see FILES in the test.
+# sed
+sed -n '2,4p' a.txt
+sed -n '/ERROR/p' log.txt
+sed 's/apple/APPLE/g' a.txt
+sed -E 's/([0-9]+)-([0-9]+)/\2\/\1/' log.txt
+sed '1d;$d' a.txt
+sed -n '$p' a.txt
+sed '/^$/d' src/sub/notes.md
+sed 's/^/> /' src/lib.ts
+sed -n '2{p;q}' a.txt
+sed '3q' a.txt
+sed 'y/abc/ABC/' a.txt
+sed -n 'l' tabs.tsv
+sed '2i\inserted' a.txt
+sed '2a\appended' a.txt
+sed '2c\changed' a.txt
+sed '/apple/,/cherry/d' a.txt
+sed -n '/start/,/WARN/{=;p}' log.txt
+sed 's/a/X/2' a.txt
+sed 's/[aeiou]//gi' a.txt
+sed -e 's/a/1/' -e 's/b/2/' a.txt
+sed '$!N;s/\n/ /' a.txt
+sed = a.txt | sed 'N;s/\n/\t/'
+sed -n '/apple/{n;p}' a.txt
+sed 's/\(.*\),\(.*\),\(.*\)/\3 \1/' b.csv
+sed -E 's/(a|e)+/<&>/g' a.txt
+sed 's/x/\n/' sp\ ace.txt
+sed 's/\t/|/g' tabs.tsv
+sed 's/\r$//' crlf.txt | od -c | head -3
+sed '' noeol.txt | od -c | tail -2
+sed -i 's/banana/BANANA/' a.txt && cat a.txt
+sed -i.bak 's/apple/pear/' a.txt && cat a.txt a.txt.bak
+sed -n '1~2p' a.txt
+sed '0,/apple/s//APPLE/' a.txt
+sed -n '/apple/I p' a.txt
+sed 's/.*/\U&/' a.txt
+sed 's/\b\(.\)/\u\1/g' log.txt
+sed --version | head -1
+sed -z 's/\n/,/g' a.txt
+sed 'G' src/lib.ts
+sed -n 'h;n;G;p' a.txt
+sed '/TODO/!d' src/main.ts
+sed -s -n '1p' a.txt b.csv
+sed -n '2,+2p' a.txt
+sed 's|/|_|g' <<< 'a/b/c'
+sed -E 's/^(.)(.*)$/\2\1/' a.txt
+sed '/apple/{s//X/;s/X/Y/}' a.txt
+sed -n -e '/ERROR/{s/.*ERROR //p}' log.txt
+echo 'hello world' | sed 's/o/0/3'
+echo 'aaa' | sed 's/a*/x/g'
+echo 'abc' | sed 's/b*/x/g'
+echo 'foo.bar' | sed 's/\./\\./g'
+echo 'path/to/file.txt' | sed 's#.*/##'
+echo '  trim  ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | od -c
+printf 'a\nb\nc\n' | sed -n '2!p'
+printf 'a\nb\nc\n' | sed '$a\end'
+printf 'a\nb\n' | sed 'w out.txt' >/dev/null; cat out.txt
+sed 'r src/lib.ts' noeol.txt
+sed -n '/x/=' src/main.ts
+# awk
+awk '{print $1}' log.txt
+awk -F, 'NR>1{print $2}' b.csv
+awk -F, 'NR>1{s+=$2} END{print s}' b.csv
+awk -F, '{print NF}' b.csv
+awk 'length > 5' a.txt
+awk '{print NR": "$0}' a.txt
+awk -F'\t' '{print $2"|"$3}' tabs.tsv
+awk '/ERROR/{c++} END{print c}' log.txt
+awk '{a[$2]++} END{for(k in a) print k, a[k]}' log.txt | sort
+awk 'BEGIN{printf "%5.2f|%-5s|%05d|%x|%e\n", 3.14159, "ab", 42, 255, 12345.678}'
+awk 'BEGIN{print 1/3; print 100000*100000; print 2^53+1; print 0.1+0.2; print 1e6; print 1e16; print -0}'
+awk 'BEGIN{x="10"; y=9; print (x<y), ("10"<"9")}'
+awk '{print ($1 < 5)}' nums.txt
+awk 'BEGIN{print substr("hello",2,3), index("hello","l"), length("héllo"), toupper("ab"), split("a:b:c",A,":"), A[3]}'
+awk 'BEGIN{s="aXbXc"; n=gsub(/X/,"-",s); print n, s}'
+awk 'BEGIN{s="foo bar"; sub(/o+/,"[&]",s); print s}'
+awk 'BEGIN{if (match("abc123def", /[0-9]+/)) print RSTART, RLENGTH}'
+awk -v x=5 'BEGIN{print x*2}'
+awk 'BEGIN{OFS="-"} {$1=$1; print}' log.txt
+awk 'BEGIN{FS=","; OFS="\t"} {print $1,$3}' b.csv
+awk 'NR==FNR{a[$1];next} ($1 in a)' a.txt a.txt | head -3
+awk 'END{print NR}' a.txt noeol.txt
+awk '{ $3=""; print }' log.txt
+awk 'BEGIN{while ((getline line < "a.txt") > 0) n++; print n}'
+awk '{print > "out_" NR%2 ".txt"} END{close("out_0.txt"); while((getline l < "out_0.txt")>0) print "e:" l}' a.txt
+awk 'BEGIN{"echo hi" | getline v; print v}'
+awk '{print | "sort -r"}' a.txt
+awk 'BEGIN{printf "%s %d %c %c\n", "x", "12abc", 65, "hello"}'
+awk 'BEGIN{print length()}' <<< 'abcd'
+awk '{print length}' a.txt | head -2
+awk -F: '{print $NF}' <<< 'a:b:c'
+awk '{$NF=""; print}' <<< 'a b c'
+awk 'BEGIN { n = split("", arr); print n }'
+awk '{sum[$1]+=$2} END {for (k in sum) print k, sum[k]}' <<< $'a 1\nb 2\na 3' | sort
+awk 'BEGIN{printf("%.3s|%10.4f|%-10d|\n", "abcdef", 3.14159265, 42)}'
+awk 'BEGIN{print int(-3.7), int("4x"), sqrt(16), exp(0), log(1), sin(0), atan2(0,-1)}'
+awk 'BEGIN{print tolower("ABC") ; print sprintf("%03d", 7)}'
+awk '/apple/,/cherry/' a.txt
+awk -F'[,:]' '{print $2}' <<< 'a,b:c'
+awk 'NF' src/sub/notes.md
+awk '!seen[$0]++' a.txt
+awk '{printf "%s%s", sep, $0; sep=","} END{print ""}' a.txt
+awk 'BEGIN{RS=""}{print NR": "$1}' src/sub/notes.md
+awk 'BEGIN{x["a"]=1; delete x["a"]; print length(x)}'
+awk --version 2>&1 | head -1
+awk 'BEGIN{print substr("hello", 0, 2), substr("hello", -1), substr("hello", 4)}'
+awk 'BEGIN{CONVFMT="%.2g"; a=3.14159; b=a ""; print b; OFMT="%.2f"; print a}'
+awk '{print $1 > "/dev/stderr"}' a.txt 2>&1 | head -2
+awk 'BEGIN { printf "%d%%\n", 50 }'
+awk -F, 'NR>1 && $3=="NYC" {print $1}' b.csv
+awk '{ print toupper(substr($0,1,1)) substr($0,2) }' a.txt
+awk 'BEGIN{exit 3}'
+awk '{exit} END{print "end"}' a.txt
+awk 'BEGIN{a="x"; a = a a; print a}'
+awk 'BEGIN { print 1==1.0, "a" ~ /a/, "abc" ~ "^a" }'
+awk '$1 ~ /^[0-9]+$/' a.txt
+awk 'BEGIN{n=split("2024-01-02",d,"-"); print d[1]+0, d[2]+0}'
+# find
+find . -name '*.ts' | sort
+find . -type f | sort
+find . -type d | sort
+find src -name '*.ts' -o -name '*.js' | sort
+find . -maxdepth 1 -type f -name '*.txt' | sort
+find . -mindepth 2 | sort
+find src -type f -exec grep -l TODO {} \; | sort
+find src -type f -exec wc -l {} + | sort
+find . -name '*.md' -print0 | xargs -0 cat
+find . -path './src/*' -name '*.js'
+find . -not -name '*.txt' -type f | sort
+find . -empty
+find . -size +0 -name 'a.txt'
+find . -newer a.txt -name zzz
+find src -name '*.ts' -printf '%f %s\n' | sort
+find src -type f -printf '%p\n' | sort
+find . -iname 'A.TXT'
+find . -name 'sub' -prune -o -type f -name '*.md' -print
+find src \( -name '*.ts' -o -name '*.md' \) | sort
+find . -regex '.*\.ts$' | sort
+find src -type f | wc -l
+find src -name '*.js' -delete; find src -type f | sort
+find nosuchdir
+find . -type f -name '*.json' -exec cat {} +
+find src -depth | head -3
+find . -maxdepth 0
+find src -type f -newer src/main.ts | sort
+find . -name '*.txt' -size -1k | sort
+find src -name lib.ts -exec dirname {} \;
+find src -type f -execdir echo {} \; | sort
+find . -type f -name "*.ts" ! -path "*/sub/*" | sort
+# xargs
+echo a b c | xargs -n1 echo
+echo a b c | xargs echo x
+printf 'a\nb\nc\n' | xargs -I{} echo item {}
+printf 'a\nb\nc\n' | xargs -I % sh -c 'echo %; echo %%'
+printf '1\n2\n3\n4\n5\n' | xargs -n2
+printf 'a b\nc\n' | xargs -L1 echo
+printf 'x y\n' | xargs -d '\n' echo
+find src -name '*.ts' | sort | xargs grep -n TODO
+echo | xargs echo empty
+echo | xargs -r echo notrun
+printf 'a\0b\0' | xargs -0 echo
+printf 'a\nb\n' | xargs -t echo 2>&1
+echo 'sp ace.txt' | xargs -I{} cat {}
+printf 'a.txt\nb.csv\n' | xargs wc -l
+printf '1\n2\n3\n' | xargs -P2 -n1 echo | sort
+echo "'quoted arg' \"dq\" plain" | xargs -n1
+printf 'a\nb\n' | xargs -n1 sh -c 'echo "<$0>"'
+seq 1 5 | xargs -n 2 -- echo
+echo a | xargs false; echo $?
+# sort
+sort a.txt
+sort -r a.txt
+sort -n nums.txt
+sort -g nums.txt
+sort -u a.txt
+sort -f a.txt
+sort -fu a.txt
+sort -t, -k2 -n b.csv
+sort -t, -k2,2n b.csv
+sort -t, -k3,3 -k1,1r b.csv
+sort -V ver.txt
+sort -h h.txt
+sort -k2 log.txt
+sort -k1,1 -k3r log.txt
+sort -s -k1,1 log.txt
+sort -c a.txt; echo $?
+sort -t$'\t' -k2 tabs.tsv
+sort -R a.txt | wc -l
+sort a.txt | uniq -c
+sort a.txt | uniq -c | sort -rn
+sort a.txt | uniq -d
+sort a.txt | uniq -u
+sort -n -r nums.txt | head -3
+sort -o sorted.txt a.txt && cat sorted.txt
+sort -z a.txt | od -c | head -2
+sort -b nums.txt
+sort -k1.2,1.3 a.txt
+sort -M <<< $'Mar\nJan\nFeb'
+sort -n <<< $'b\na\n2\n1'
+sort a.txt nums.txt | head -4
+sort --version | head -1
+uniq -i a.txt
+uniq -c -i a.txt
+uniq -f1 log.txt
+uniq -s 5 a.txt
+# misc agent-common
+grep -rn TODO src | sort
+grep -rl TODO . | sort
+grep -c apple a.txt
+grep -E '^(a|b)' a.txt
+grep -v apple a.txt
+grep -w 10 a.txt
+grep -o '[0-9]\+' log.txt | head -3
+grep -A1 ERROR log.txt
+grep -B1 -n ERROR log.txt
+grep -C1 WARN log.txt
+grep -i APPLE a.txt
+grep -rn --include='*.ts' TODO . | sort
+grep -rn --exclude-dir=sub return src
+grep -q apple a.txt && echo yes
+grep -m1 ERROR log.txt
+grep -h TODO src/*.ts
+grep -L TODO src/*.ts src/sub/*
+grep -e apple -e cherry a.txt
+grep -F '2.5' a.txt
+grep -P '\d+' a.txt
+grep -n '' noeol.txt
+grep nomatch a.txt; echo $?
+grep -r TODO nosuch; echo $?
+head -n 3 a.txt
+head -c 5 a.txt
+head -n -2 a.txt
+tail -n 2 a.txt
+tail -n +3 a.txt
+tail -c 4 noeol.txt
+cut -d, -f1,3 b.csv
+cut -c1-3 a.txt
+cut -f2 tabs.tsv
+cut -d, -f2- b.csv
+cut -d: -f1 <<< 'a:b'
+tr a-z A-Z < a.txt
+tr -d '\r' < crlf.txt | od -c
+tr -s ' ' <<< 'a   b    c'
+tr -cd '[:digit:]\n' < log.txt
+tr '\n' ',' < a.txt
+wc -l a.txt
+wc a.txt b.csv
+wc -c noeol.txt
+wc -w < a.txt
+cat -n src/lib.ts
+cat -A crlf.txt
+nl a.txt
+paste -d, a.txt a.txt | head -2
+paste -sd+ <<< $'1\n2\n3' | bc
+column -t -s, b.csv
+comm -12 <(sort a.txt) <(sort -u a.txt)
+join -t, <(sort b.csv) <(sort b.csv) | head -2
+rev <<< abc
+tac a.txt
+seq 5 | tac
+seq -s, 1 5
+seq 0.5 0.5 2
+seq -w 8 11
+printf '%s\n' a b c
+printf '%5s|%-5s|%05.1f\n' x y 3.14159
+printf '%d %i %o %x %X %e\n' 42 42 8 255 255 1234.5
+printf '%q\n' "a b'c"
+printf '%b\n' 'a\tb'
+printf '%s,' a b; echo
+printf 'no newline'
+basename src/sub/deep.js .js
+dirname src/sub/deep.js
+realpath src/../a.txt
+readlink -f src/./lib.ts
+diff a.txt a.txt; echo $?
+diff <(echo a) <(echo b); echo $?
+diff -u <(printf 'a\nb\n') <(printf 'a\nc\n') | tail -3
+expr 3 + 4
+expr length hello
+test -f a.txt && echo file
+[ -d src ] && echo dir
+du -s src | cut -f2
+ls src
+ls -1 src | sort
+ls -a src/sub
+ls -d src/*/
+ls *.txt
+stat -c '%s %n' a.txt
+md5sum a.txt
+sha256sum a.txt
+base64 <<< hello
+echo aGVsbG8K | base64 -d
+od -An -tx1 <<< ab
+xxd -l 8 a.txt
+hexdump -C noeol.txt | head -2
+tee t.txt < a.txt | wc -l; wc -l t.txt
+mktemp -d | grep -c /tmp
+date -d '2024-01-02' +%Y/%m/%d
+date -u -d @0 '+%F %T'
+jq -r .name pkg.json
+jq '.scripts | keys' pkg.json
+awk 'BEGIN{print length("héllo")}'
+hexdump -C noeol.txt
+hexdump -C a.txt | head -3
+column -t log.txt
+xxd -p noeol.txt
+xxd a.txt | head -2
+awk '{print $1+0}' nums.txt
+awk 'BEGIN{x=" 5"; print (x<5)}'
+echo " 5" | awk '{print ($1==5), ($0==5), ($0<10)}'
+echo "0x10 1e3 010" | awk '{print $1+0, $2+0, $3+0}'
+awk 'BEGIN{printf "%c", 256}' | od -An -tx1
+awk 'BEGIN{print substr("héllo",2,2)}'
+awk 'BEGIN{print index("héllo","l")}'
+awk '{print length($0)}' <<< 'héllo'
+awk 'BEGIN{printf "%5s|\n", "é"}'
+awk 'BEGIN { print strftime("%Y", 0, 1) }'
+awk 'BEGIN { print systime() > 0 }'
+awk 'BEGIN { n = asort(a); print n }'
+awk 'BEGIN{a[3]=1;a[1]=2;a[2]=3; n=asorti(a,b); for(i=1;i<=n;i++) printf b[i]; print ""}'
+awk 'BEGIN{PROCINFO["sorted_in"]="@ind_str_asc"; a["b"];a["a"];a["c"]; for(k in a) printf k; print ""}'
+awk '{print gensub(/(a)(p)/, "\\2\\1", "g")}' a.txt
+awk 'BEGIN{s="a,b;c"; n=split(s, p, /[,;]/, seps); print n, seps[1], seps[2]}'
+awk 'BEGIN{print and(12, 10), or(12,10), xor(12,10), lshift(1,4), rshift(16,2)}'
+awk 'BEGIN { printf "%'"'"'d\n", 1234567 }'
+awk -v 'x=a\tb' 'BEGIN{print x}'
+awk 'BEGIN{print ENVIRON["HOME"] != ""}'
+awk 'BEGINFILE{print FILENAME} ENDFILE{print FNR}' a.txt b.csv
+awk -F, -v OFS=, '{$2=$2*2} 1' b.csv
+awk 'BEGIN{FPAT="([^,]*)|(\"[^\"]+\")"} {print $2}' <<< 'a,"b,c",d'
+awk '{ print $0 }' RS=';' <<< 'a;b;c'
+awk 'BEGIN{RS="\n\n"} {print NR}' src/sub/notes.md
+awk 'BEGIN{RS="[0-9]"} {printf "%s|", $0} END{print ""}' <<< 'a1b2c'
+awk '{print RT}' RS='[,;]' <<< 'a,b;c'
+awk 'BEGIN{IGNORECASE=1} /APPLE/' a.txt
+awk '@include "x"' 2>&1 | head -1
+awk 'function f(a,  b){b=a*2; return b} BEGIN{print f(3)}'
+awk 'function r(n){return n<=1?1:n*r(n-1)} BEGIN{print r(10)}'
+awk 'BEGIN{a["x"]=1; f(a); print a["x"]} function f(arr){arr["x"]=2}'
+awk 'BEGIN{print length(12345)}'
+awk 'BEGIN{print 017, 1e400 > 1, -1e400 < 0}'
+awk 'BEGIN{print substr("abc", 2)}' | od -c
+awk 'BEGIN{printf "%s\n"}'
+awk 'BEGIN{printf "%d %d\n", 1}'
+awk 'BEGIN{print 10 % 3, -10 % 3, 2 ** 3, 2 ^ 0.5}'
+awk 'BEGIN{x++; ++x; print x--, x}'
+awk 'BEGIN{print (1,2) in a}'
+awk 'BEGIN{a[1,2]=3; for (k in a) {split(k, p, SUBSEP); print p[1], p[2]}}'
+awk 'BEGIN{getline; print "got:" $0}' <<< 'line1'
+awk 'NR==1{getline x; print x}' a.txt
+awk '{getline; print}' a.txt
+awk 'BEGIN{while(("ls src" | getline f)>0) print "f:" f; close("ls src")}'
+awk 'BEGIN{cmd="sort"; print "b" |& cmd; print "a" |& cmd; close(cmd, "to"); while((cmd |& getline l)>0) print l}'
+awk 'BEGIN{system("echo sys"); print "after"}'
+awk 'BEGIN{r=system("exit 3"); print r}'
+awk 'BEGIN{printf "%s", "x" > "/dev/stdout"; print ""}'
+awk 'BEGIN{print "err" > "/dev/stderr"}' 2>&1
+awk 'BEGIN{print -3 % 2, int(2.999999999), 0.1*3}'
+awk 'BEGIN{print 1e300*1e300, log(-1)}'
+awk 'BEGIN{OFS=","; $0="a b c"; $5="e"; print; print NF}'
+awk 'BEGIN{$0="a b c"; NF=2; print}'
+awk '{NF--; print}' <<< 'a b c'
+awk 'BEGIN{print substr("hello", 1.5, 2.3)}'
+awk 'BEGIN{print toupper(123)}'
+awk 'BEGIN { "date +%Y" | getline y; print (y > 2000) }'
+awk '{ printf "%-10s %5d\n", $1, NR }' a.txt | head -2
+awk 'BEGIN{print match("foobar", "o+"), RSTART, RLENGTH; print match("x", /y/), RSTART, RLENGTH}'
+awk 'BEGIN{match("ab12cd", /([a-z]+)([0-9]+)/, m); print m[1], m[2], m[0]}'
+awk 'BEGIN{s="hello"; print substr(s, length(s))}'
+awk -e 'BEGIN{print 1}'
+awk -f /dev/stdin a.txt <<< '{print NR}' | tail -1
+awk 'BEGIN { print length(arr) ; arr[1]; print length(arr) }'
+awk '{$2="X"}1' log.txt | head -1
+awk 'END{print $0}' a.txt
+awk -F '' '{print $2}' <<< 'abc'
+awk -F 'x' '{print NF}' <<< 'axbxc'
+awk -F'|' '{print $2}' <<< 'a|b|c'
+awk -F'.' '{print $2}' <<< 'a.b.c'
+awk -F' ' '{print $2}' <<< '  a   b  '
+awk -F'\\|' '{print $2}' <<< 'a|b'
+awk -Ft '{print $2}' <<< $'a\tb'
+awk 'BEGIN{FS=","} {print $2; FS=":"}' <<< $'a,b\nc:d'
+awk '/a/ && !/b/' a.txt
+awk 'NR%2' a.txt
+awk 'NR>=2 && NR<=3' a.txt
+awk '$0 ~ "^[a-c]"' a.txt
+awk '{print substr($0, index($0, " ")+1)}' log.txt | head -2
+awk 'BEGIN{printf "%.0f %.0f %.0f\n", 0.5, 1.5, 2.5}'
+awk 'BEGIN{printf "%i|%5.1e|%G|%g\n", 3.9, 12345, 0.0001, 1e20}'
+awk 'BEGIN{print 123456789012}'
+awk 'BEGIN{print 0.1 + 0.7, 1/7}'
+awk 'BEGIN{x = 1e6; print x; x = 1e7 + 0.5; print x}'
+awk 'BEGIN{print 2147483648 * 2, 9007199254740993}'
+# sed harder
+sed -n '/^$/!{p}' src/sub/notes.md
+sed ':a;N;$!ba;s/\n/,/g' a.txt
+sed -e :a -e '$!N;s/\n//;ta' a.txt
+sed '/ERROR/{h;d};${G}' log.txt
+sed -n '/start/{:l;n;/done/q;p;bl}' log.txt
+sed 's/a/b/;T;s/$/!/' a.txt
+sed 's/\(a\)\|b/[\1]/g' a.txt
+sed -E 's/(a)|b/[\1]/g' a.txt
+sed 's/a\{2,\}/X/' <<< 'baaad'
+sed -E 's/a{2,}/X/' <<< 'baaad'
+sed 's/a\+/X/' <<< 'baaad'
+sed 's/a\?d/X/' <<< 'bad'
+sed -E 's/\s+/_/g' <<< 'a  b	c'
+sed 's/\w\+/W/g' <<< 'foo bar-baz'
+sed -E 's/\<b/B/g' <<< 'bob bab'
+sed 's/[[:upper:]]/u/g' <<< 'AbC'
+sed 's/[]]/X/' <<< 'a]b'
+sed 's/[^[:alnum:]]//g' <<< 'a-b_c!'
+sed 's/\//|/g' <<< 'a/b'
+sed 's/a/\t/' <<< 'xay' | od -c | head -1
+sed 's/&/and/' <<< 'a&b'
+sed 's/b/\&/' <<< 'abc'
+sed 's/x*$/!/' <<< 'abc'
+sed 's/$/\r/' <<< 'a' | od -c | head -1
+sed 'n;d' a.txt
+sed '1!G;h;$!d' a.txt
+sed -n '$=' a.txt
+sed '$!d' noeol.txt
+sed 'a foo' noeol.txt | od -c | tail -2
+sed '1i foo' noeol.txt
+sed '2,3s/^/#/' a.txt
+sed '/apple/s/$/ !/' a.txt
+sed 's/apple/X/w /dev/stdout' a.txt
+sed -n 's/apple/X/p' a.txt
+sed -n 's/apple/X/gpw w.txt' a.txt; cat w.txt
+sed 's/APPLE/x/I' a.txt
+sed '/^[0-9]/s/[0-9]/N/g' a.txt
+sed 'e echo hi' noeol.txt
+sed '2q5' a.txt; echo $?
+sed -n '/apple/{p;q}' a.txt
+sed -E '/^(banana|cherry)$/d' a.txt
+sed -n '2,/apple/p' a.txt
+sed -n '/apple/,+1p' a.txt
+sed -n '/apple/,~4p' a.txt
+sed '1,3!d' a.txt
+sed 's/./&\n/3' <<< 'abcdef'
+sed 's/\n//' a.txt | head -2
+sed 'N;P;D' a.txt
+sed '$!{N;s/\n/+/}' <<< $'1\n2\n3'
+sed --posix 's/a/b/' <<< 'a'
+sed -i -e '1d' a.txt && head -1 a.txt
+sed -i '' 's/a/b/' a.txt 2>&1; echo $?
+sed -n -i 'p' a.txt; wc -l a.txt
+sed -E 's/([^,]*),([^,]*)/\2,\1/' b.csv
+sed 's/\(^\|,\)\([^,]*\)/\1"\2"/g' b.csv | head -2
+sed 'F' a.txt | head -2
+sed -u 's/a/b/' a.txt | head -1
+sed --expression='s/a/b/' a.txt | head -1
+sed -f /dev/stdin a.txt <<< 's/a/Q/'
+sed -n '/apple/!p' a.txt | wc -l
+sed nosuchcmd a.txt; echo $?
+sed 's/a/b' a.txt; echo $?
+sed -n 'p' nosuch.txt; echo $?
+sed 's/a/b/' a.txt nosuch.txt 2>/dev/null | wc -l; echo ${PIPESTATUS[0]}
+sed 'z;s/^$/empty/' noeol.txt
+sed 'l 5' noeol.txt
+sed 's/\x41/a/' <<< 'A'
+sed 's/\o101/a/' <<< 'A'
+sed 's/\d65/a/' <<< 'A'
+sed 's/\cA//' <<< 'x'
+sed 's/a/\x41/' <<< 'a'
+sed -E 's/(.)\1/<\1\1>/g' <<< 'aabbc'
+sed 's/.*/"&"/' a.txt | head -2
+sed "s/'/\"/g" <<< "it's"
+sed '/^#/d;/^$/d' src/sub/notes.md
+sed -n '/function/,/^}/p' src/sub/deep.js
+sed 's/  */ /g' <<< 'a    b'
+sed 's/\s*$//' <<< 'a   '| od -c | head -1
+sed -E 's/^\s+//' src/sub/deep.js
+sed 's/[0-9]\{4\}-\([0-9]\{2\}\)-[0-9]\{2\}/\1/' log.txt | head -1
+sed -E 's#^(.*)/([^/]*)$#\2 in \1#' <<< 'a/b/c.txt'
+printf 'ab\000\377hello world 1234567890abcdef\n' > hx.bin; for f in "" -x -c -b -d -o -C "-C -v" "-Cv" "-c -n3" "-C -s 4 -n 6" "-C -s4 -n6" "-n 0x10"; do echo "== $f"; hexdump $f hx.bin; done
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz' | hexdump -C
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz' | hexdump -Cv
+printf 'abc' | hexdump
+printf '' | hexdump -C; echo rc=$?
+hexdump nosuch; echo rc=$?
+hexdump -C a.txt nosuch; echo rc=$?
+hexdump -C noeol.txt a.txt
+printf 'héllo\t\r\n' | hexdump -c
+printf 'héllo' | hexdump -C
+hexdump -C < a.txt
+printf 'a 1\nb 2\nc 3\n' > j1; printf 'a x\nc y\nd z\n' > j2; join j1 j2
+join -a1 j1 j2
+join -a2 j1 j2
+join -a1 -a2 j1 j2
+join -v1 j1 j2
+join -v2 j1 j2
+join -a1 -a2 -e NA -o 0,1.2,2.2 j1 j2
+join -o auto -a1 -e - j1 j2
+join -o 1.1,2.2 j1 j2
+join -o '1.2 2.2' j1 j2
+join -t, -1 3 -2 3 <(sort -t, -k3 b.csv) <(sort -t, -k3 b.csv)
+join -j 1 j1 j2
+cat j1 | join - j2
+printf 'A 1\nb 2\n' > k1; printf 'a x\nB y\n' > k2; join -i k1 k2
+join --header <(printf 'k v\na 1\n') <(printf 'k w\na 2\n')
+printf '  a   1  \nb 2\n' > w1; join w1 j2
+printf 'a 1\na 2\nb 3\n' > m1; printf 'a x\na y\nb z\n' > m2; join m1 m2
+join -t $'\t' <(printf 'a\t1\n') <(printf 'a\t2\n') | od -c | head -1
+join j1; echo $?
+join -1 0 j1 j2; echo $?
+join j1 nosuch; echo $?
+join -t, -o 1.1,2.3,2.4 -e '?' <(sort b.csv) <(sort b.csv) | head -2
+awk 'BEGINFILE{n=0} {n++} ENDFILE{print FILENAME, n}' a.txt b.csv log.txt
+awk 'BEGINFILE{print "bf", FNR} {print; nextfile} ENDFILE{print "ef", FNR}' a.txt b.csv
+awk 'ENDFILE{print NR}' a.txt
+echo x | awk 'BEGINFILE{print "[" FILENAME "]"}'
+awk 'BEGIN{PROCINFO["sorted_in"]="@ind_str_desc"; a["b"];a["a"];a["c"]; for(k in a) printf k; print ""}'
+awk 'BEGIN{PROCINFO["sorted_in"]="@ind_num_asc"; a[10];a[9];a[100];a[1]; for(k in a) printf k " "; print ""}'
+awk 'BEGIN{PROCINFO["sorted_in"]="@val_num_desc"; a["x"]=3;a["y"]=10;a["z"]=1; for(k in a) printf k " "; print ""}'
+awk 'BEGIN{PROCINFO["sorted_in"]="@val_str_asc"; a["x"]="b";a["y"]="a";a["z"]="c"; for(k in a) printf k " "; print ""}'
+awk '{c[$2]++} END{PROCINFO["sorted_in"]="@val_num_desc"; for(k in c) print k, c[k]}' log.txt
+printf "%'d\n" 1234567
+sed -f - a.txt <<< 's/a/Q/'
+printf 's/a/Z/\n' > s.sed; sed -f s.sed a.txt
+printf 'a,,b\n,x,\n' | column -t -s,
+printf 'a b c\nd e\n' | column -t
+printf 'a b c\nd e\n' | column -t -o '|'
+printf 'a,b\nc\n' | column -t -s,
+printf 'a  b\nc d\n' | column -t -s' '
+grep -rn "TODO" --include="*.ts" src | sort
+grep -rnw x src | sort
+grep -rn -i "todo" . --exclude="*.md" | sort
+grep -E -o '[A-Z]+' log.txt | sort | uniq -c
+grep -c '' a.txt noeol.txt
+grep -n -e ERROR -e WARN log.txt
+grep -x apple a.txt
+grep -lr "export" src
+grep -r --files-without-match TODO src | sort
+grep -o -b apple a.txt
+grep --color=never apple a.txt
+grep -s apple nosuch a.txt; echo $?
+grep -H apple a.txt
+grep -rh TODO src | sort
+grep -A2 -B1 cherry a.txt
+grep -E 'a{2}' <<< 'aa'
+grep '\(ab\)\{2\}' <<< 'abab'
+grep -P '(?<=ERROR )\w+' -o log.txt
+grep -Pzo 'start\n' log.txt | od -c | head -2
+grep -z apple a.txt | wc -c
+grep -v -c apple a.txt
+grep -m 2 -n apple a.txt
+grep --max-count=1 -c apple a.txt
+grep -r --include=*.{ts,js} return src | sort
+grep -n "" crlf.txt | od -c | head -2
+grep -E "^\s*//" -r src | sort
+grep -r "import.*from" src --include=*.ts -l
+grep -rn "x" src --exclude-dir=sub | sort
+grep -q nomatch a.txt || echo none
+grep '' nosuch 2>&1; echo $?
+grep -e '-3' a.txt
+grep -- -3 a.txt
+grep -F -x -f <(echo apple) a.txt
+grep -w -o '[a-z]*e' a.txt
+grep -i -c APPLE a.txt
+grep -rc TODO src | sort
+grep --exclude=lib.ts -r TODO src
+grep --null -l TODO src/*.ts | od -c | head -2
+grep -T apple a.txt
+grep --label=foo -H apple < a.txt
+cat a.txt | grep -n apple
+find . -type f -name '*.txt' -newer pkg.json | sort
+find . -type f -printf '%P\t%s\n' | sort
+find . -type f -printf '%d %y %m %h/%f\n' | sort
+find src -type d -printf '%p/\n' | sort
+find . -maxdepth 1 -printf '%f\n' | sort
+find . -name "*.txt" -exec basename {} .txt \; | sort
+find . -type f -name '*.ts' -exec sh -c 'echo "$1"' _ {} \; | sort
+find . -type f | xargs -I{} sh -c 'wc -c < "{}"' | sort -n | tail -1
+find . -perm -u+r -name a.txt
+find . -type f -size +100c | sort
+find . -type f -size -2 | sort
+find . -name '*.ts' -not -path '*/node_modules/*' | sort
+find . \( -name '*.md' -or -name '*.json' \) -print | sort
+find . -type l
+find src -mindepth 1 -maxdepth 1 -type d
+find . -iname '*.TS' | sort
+find . -name '[ab].*' | sort
+find . -name 'sp*' -print0 | xargs -0 ls
+find . -type f -exec ls {} + | sort
+find . -lname x
+find src -type f -name '*.ts' -exec grep -Hn x {} + | sort
+find . -wholename './src/lib.ts'
+find src -type f -print -quit
+find . -type f -exec test -s {} \; -print | sort | head -3
+find . -empty -type f
+find . -mmin -60 -name a.txt
+find . -mtime -1 -name a.txt
+find . -mtime +1 -name a.txt
+find . -newermt '2000-01-01' -name a.txt
+find src -type f | sed 's|^src/||' | sort
+find . -name '*.txt' -exec cat {} + | wc -l
+find . -type f -name '*.ts' | xargs wc -l | tail -1
+find src -printf '%y %p\n' | sort
+ls -l a.txt | awk '{print $5}'
+ls -1t | head -0
+ls -R src
+ls src/*.ts
+ls -A src
+ls nosuch; echo $?
+ls -d src
+ls -F src
+ls -1 src/sub
+stat -c '%s %F' a.txt src
+stat --format='%n %s' a.txt
+wc -l *.txt | tail -1
+wc -L a.txt
+wc -m crlf.txt
+cut -d' ' -f2- log.txt
+cut -c 3- a.txt | head -3
+cut -d, -f1 --complement b.csv
+cut -d, -f2 -s <<< $'a,b\nnoc'
+cut -b1-2 a.txt | head -2
+cut --output-delimiter=: -d, -f1,2 b.csv
+tr -d '[:space:]' < a.txt
+tr '[:lower:]' '[:upper:]' <<< 'hello'
+tr -s '\n' < src/sub/notes.md
+tr -c 'a-z\n' '_' <<< 'ab1-c'
+tr 'abc' 'x' <<< 'aabbcc'
+tr -d 'a-c' <<< 'abcdef'
+head -n1 a.txt b.csv
+head -q -n1 a.txt b.csv
+tail -n1 a.txt b.csv
+tail -n 0 a.txt
+tail -c +3 noeol.txt
+head -c -3 noeol.txt
+sort -t, -k2,2nr b.csv
+sort -k2,2 -k1,1 log.txt
+sort -n -k1.1,1.2 nums.txt
+sort -u -t, -k3,3 b.csv
+sort -rV ver.txt
+sort -n -t. -k1,1 -k2,2 <<< $'1.10\n1.9\n2.1'
+sort --field-separator=, --key=2 b.csv
+sort -nr <<< $'1.5\n-2\n10\n3e1'
+sort -g <<< $'1.5\n-2\n10\n3e1'
+sort -d <<< $'b-a\na_b\naa'
+sort -i <<< $'b\na'
+sort -k 3 -t ' ' log.txt
+sort -n <<< $'10 b\n2 a\n10 a'
+sort -u -n <<< $'1\n01\n1.0'
+sort -m <(printf '1\n3\n') <(printf '2\n4\n')
+sort --parallel=2 -S 1M a.txt | head -1
+sort -T /tmp a.txt | head -1
+uniq <<< $'a\na\nb\na'
+uniq -c <<< $'a\na\nb' | od -c | head -2
+uniq -D <<< $'a\na\nb'
+uniq --group <<< $'a\na\nb'
+xargs -a a.txt echo
+xargs --arg-file=a.txt -n3 echo
+echo '1 2 3' | xargs -n 1 expr 10 +
+printf 'a\nb\n' | xargs -i echo '[{}]'
+printf 'a\nb\n' | xargs -I {} -n1 echo {} {}
+printf '%s\n' a b c d | xargs -L 2
+printf 'a b c\n' | xargs -s 8 echo
+echo 'a"b' | xargs echo; echo $?
+echo "a'b" | xargs echo; echo $?
+printf 'x\n' | xargs -E x echo got
+printf 'a\n\nb\n' | xargs -d '\n' -n1 echo '>'
+printf 'f1\nf2\n' | xargs touch && ls f1 f2
+seq 3 | xargs -n1 -I@ echo @@
+seq 10 | xargs -n3 | tail -1
+xargs echo < a.txt | wc -w
+echo a | xargs -n1 nosuchcmd; echo $?
+echo a | xargs sh -c 'exit 3'; echo $?
+echo a | xargs sh -c 'exit 255'; echo $?
+seq 1 3 | xargs -P 3 -I{} sh -c 'echo {}' | sort
+date -d '2024-03-05 14:07:09' '+%Y-%m-%d %H:%M:%S %a %b %j %u %V'
+date -d '2024-01-01' +%s
+date -d @1700000000 -u
+date -u -d '2024-02-29 + 1 year' +%F
+date -d 'tomorrow' +%F | wc -c
+date -u +%Y-%m-%dT%H:%M:%SZ | wc -c
+date -d '2024-01-31 +1 month' +%F
+date -R -d '2024-01-01 00:00 UTC' -u
+date -I -d '2024-05-06'
+date -Iseconds -u -d '2024-05-06 01:02:03'
+date --date='2 days ago' +%F | wc -c
+date -u -d '2024-01-01T10:00:00Z' +%H
+grep -b apple a.txt
+grep -nb an a.txt
+printf 'x\0apple pie\0y' | grep -z apple | od -c
+printf 'a\nb\0c\0' | grep -zc b
+grep -lZ TODO -r src | sort -z | od -c | head -3
+grep -LZ nomatch a.txt | od -c
+grep -c -Z apple a.txt b.csv | od -c | head -2
+grep -Z -H apple a.txt | od -c | head -2
+grep -rlZ TODO src | xargs -0 wc -l | tail -1
+grep -HT apple a.txt
+find . -newermt '2999-01-01' -name a.txt
+find . -newermt 'yesterday' -name a.txt
+find . -newermm b.csv -name zzz
+find . -newermt nonsense; echo $?
+stat --printf='%n\t%s\n' a.txt pkg.json
+stat -c '%A %a %f %F' a.txt src
+stat -c '%10s|%-7n|%05a' a.txt
+stat -c '%N' a.txt
+stat nosuch a.txt -c %n; echo $?
+stat; echo $?
+stat -c %U:%G a.txt
+stat -c '%F' noeol.txt
+touch e.txt; stat -c '%F %s' e.txt
+stat -c %Y a.txt | wc -c
+stat -t a.txt | wc -w
+stat a.txt | head -2 | tail -1 | awk '{print $1, $2}'
+printf 'a\nb\nc\nd\n' > x1; printf 'a\nB\nc\nd\ne\n' > x2; diff x1 x2; echo $?
+diff -u x1 x2 | tail -n +3
+diff -c x1 x2 | tail -n +3
+diff -q x1 x2; echo $?
+diff -s x1 x1
+diff --brief x1 x2
+diff -y -W 20 x1 x2
+diff -i x1 x2; echo $?
+diff -w <(echo 'a  b') <(echo 'a b'); echo $?
+diff -b <(echo 'a  b') <(echo 'a b'); echo $?
+diff -B <(printf 'a\n\nb\n') <(printf 'a\nb\n'); echo $?
+diff -r src src; echo $?
+mkdir s2; cp -r src/. s2/; echo extra >> s2/lib.ts; diff -r src s2 | head -5
+diff -ru src s2 | grep -v '^---\|^+++' 
+diff -N x1 nosuchfile | head -3
+diff x1 nosuch; echo $?
+diff --unified=1 x1 x2 | tail -n +3
+diff -u x1 x2 > p.diff; patch x1 < p.diff; cat x1
+diff -u x1 x2 > p.diff; patch -p0 --dry-run < p.diff
+diff -u noeol.txt <(echo 'last line no newline') | tail -n +3
+diff --color=never x1 x2
+diff <(printf 'a\n') <(printf 'a') ; echo $?
+diff -e x1 x2
+diff --normal x1 x2
+diff -U0 x1 x2 | tail -n +3
+cmp x1 x2; echo $?
+cmp -s x1 x1; echo $?
+cmp -l x1 x2 | head -2
+cmp noeol.txt a.txt
+comm x1 x2
+comm -3 x1 x2
+comm -23 <(sort a.txt) <(sort b.csv)
+paste x1 x2
+paste -d: x1 x2
+paste -s x1
+nl -ba src/sub/notes.md
+nl -w3 -s') ' x1
+nl -v 10 x1
+fold -w 3 <<< 'abcdefgh'
+fold -s -w 10 <<< 'hello there world foo'
+fmt -w 10 <<< 'one two three four five'
+expand <<< $'a\tb'
+expand -t 4 <<< $'a\tb\tc'
+unexpand -a <<< 'a       b'
+base64 -w0 a.txt
+base64 -w 20 a.txt
+echo -n 'hi' | base64
+md5sum a.txt b.csv > sums; md5sum -c sums
+sha1sum a.txt
+sha256sum a.txt | sha256sum -c 2>&1 | head -1
+sha512sum a.txt | cut -c1-16
+cksum a.txt
+sum a.txt
+od -c noeol.txt | head -2
+od -An -tu1 -N4 a.txt
+od -x a.txt | head -1
+od -t x2 -N 6 a.txt
+seq 10 -2 1
+seq -f '%03g' 3
+seq 1 0.25 2
+seq 5 1
+expr 7 / 2
+expr 7 % 3
+expr 'abc' : 'a\(.*\)'
+expr substr hello 2 3
+expr index hello l
+expr 1 = 1
+expr 2 \> 10
+expr a \< b
+test 1 -lt 2 && echo lt
+test abc = abc && echo eq
+test -z '' && echo empty
+test -n x && echo nonempty
+[ -e nosuch ] || echo missing
+[ 5 -ge 5 ] && echo ge
+[[ abc == a* ]] && echo glob
+[[ abc =~ ^a(b)c$ ]] && echo ${BASH_REMATCH[1]}
+basename -s .txt a.txt
+basename -a src/lib.ts src/main.ts
+dirname a/b/ /x
+env -i A=1 env
+env -u HOME sh -c 'echo ${HOME:-unset}'
+printenv HOME >/dev/null && echo has
+tee -a x1 <<< 'appended' > /dev/null; tail -1 x1
+head -n 2 a.txt b.csv
+tail -q -n1 a.txt b.csv
+tail -n +2 b.csv | head -1
+truncate -s 3 x2; cat x2
+truncate -s 0 x2; wc -c < x2
+split -l 3 a.txt part_; ls part_* ; cat part_ab
+csplit -s a.txt 3; wc -l < xx00
+yes | head -3
+yes abc | head -2
+printf '%s\n' {1..3}
+echo {a,b}{1,2}
+echo $((2**10)) $((7/2)) $((-7%3)) $((1<<4))
+echo ${#HOME} | grep -c .
+x=hello; echo ${x^^} ${x:1:3} ${x/l/L} ${x//l/L} ${x%l*} ${x#h}
+arr=(a b c); echo ${#arr[@]} ${arr[-1]} "${arr[@]:1}"
+declare -A m; m[k]=v; echo ${m[k]} ${!m[@]}
+printf -v out '%05d' 42; echo $out
+read -r a b <<< 'one two three'; echo "$b"
+IFS=, read -ra parts <<< 'a,b,c'; echo ${parts[1]}
+mapfile -t L < a.txt; echo ${#L[@]} ${L[2]}
+while IFS= read -r line; do echo "[$line]"; done < x1 | head -2
+for f in *.txt; do echo $f; done | head -3
+case abc in a*) echo A;; *) echo other;; esac
+f() { local x=$1; echo $((x*2)); }; f 21
+set -- a b c; echo $# $2 "$@"
+echo "$(echo nested $(echo deep))"
+echo $(( $(wc -l < a.txt) + 1 ))
+true && false || echo or
+( cd src && pwd | sed 's|.*/||' )
+shopt -s nullglob; echo none*; echo end
+shopt -s globstar; echo src/**/*.js
+echo a >&2 2>/dev/null; echo b 2>&1 >/dev/null
+exec 3>f3.txt; echo hi >&3; exec 3>&-; cat f3.txt
+type -t ls cd
+command -v sed | grep -c sed
+printf '%s\0' a b | xargs -0 -n1 echo
+(exit 3); echo $?
+false; echo $? $?
+set -o pipefail; false | true; echo $?
+time_out=$(timeout 1 sleep 0.1; echo $?); echo $time_out
+timeout 0.2 sleep 5; echo $?
+diff -ru src nosuch; echo $?
+diff -r src nosuch; echo $?
+split -l 3 a.txt part_; od -c part_ab | tail -3
+split -l 3 a.txt part_; cat part_ac | od -c | tail -2
+bash -c "trap 'echo bye' EXIT; echo main"
+sh -c "trap 'echo bye' EXIT; exit 3"; echo $?
+truncate -s 3 new.txt; od -c new.txt
+truncate -s 2 a.txt; cat a.txt
+truncate -s +2 noeol.txt; wc -c < noeol.txt
+truncate -c -s 5 nosuch; ls nosuch; echo $?
+split -l 3 a.txt part_; ls part_*; cat part_ac | od -c | tail -2
+split -l 3 -d a.txt p; ls p0*
+seq 1 7 > s; split -n 3 s q; wc -c q*
+seq 1 7 > s; split -b 4 -a 3 --additional-suffix=.txt s r; ls r*
+seq 1 7 > s; split -l 2 -x s h; ls h*
+printf 'abc' | split -b 1 - z; ls z*; cat zac
+split -l 1 /dev/null e; ls e* 2>/dev/null | wc -l
+split -n 2 nosuch; echo $?
+seq 1 1000 > big; split -l 1 big b; ls b* | tail -3; ls b* | wc -l
+seq 1 20 > s; split -C 10 s c; wc -c c* | head -3
+split -b 1K a.txt k; ls k*
+seq 1 5 | split -l2; ls x*
+split --lines=4 --numeric-suffixes=3 a.txt n; ls n*
+printf 'abcdef' > f; truncate -s 3 f; od -c f | head -1
+printf 'abcdef' > f; truncate -s +2 f; wc -c < f
+printf 'abcdef' > f; truncate -s '<2' f; wc -c < f
+printf 'abcd' > f; truncate -s '>6' f; od -c f | head -1
+printf 'abcd' > f; truncate -s %3 f; wc -c < f
+printf 'abcdefg' > f; truncate -s /2 f; wc -c < f
+truncate -c -s 5 g; ls g; echo $?
+truncate f; echo $?
+truncate -s 1K h && wc -c < h
+truncate -s 1K h; truncate -r h -s -24 i; wc -c < i
+truncate -s x f; echo $?
+truncate -s 5 /nonexistent/dir/f; echo $?
+truncate -s 0 a.txt; wc -c < a.txt
+truncate --size=2 a.txt; cat a.txt
+true | grep -v x; echo $?
+printf "" | grep -v x; echo $?
+printf "" | grep -c ""
+: | grep -n "" ; echo $?
+grep -v x < /dev/null; echo $?
+printf "" > e; grep -v x e; echo $?

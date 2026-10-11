@@ -1,9 +1,11 @@
 /**
  * `claude install --native [VERSION]`: install Anthropic's native Claude
  * Code build for `claude --native` (experimental; docs/COMPAT.md "Agent
- * CLIs"). Everything is downloaded from inside the guest by the `curl`
- * package (x86-64, its own TLS, kernel sockets and the TCP relay), so CORS
- * doesn't apply and nothing goes through a Shiro proxy route:
+ * CLIs"). The page fetches it from this site's own copy of the releases
+ * (server.mjs /claude-releases/ and the /debian/pool/ mirror): no TCP relay
+ * and none of its per-IP rate limit. Where the site has no such route (shiro,
+ * older servers), the `curl` package downloads it from inside the guest (x86-64,
+ * its own TLS, kernel sockets and the TCP relay), as before. Either way:
  *
  * - the linux-x64-musl build (the glibc one still crashes in Blink), checked
  *   against the sha256 in the release's manifest.json, into the native path;
@@ -13,6 +15,7 @@
 import { activeProfile } from '../profile';
 import type { CommandContext } from './index';
 import { sha256Hex } from '../pkg-manager';
+import { getShiroOrigin } from '../utils/shiro-origin';
 
 const RELEASES = 'https://downloads.claude.ai/claude-code-releases';
 const PLATFORM = 'linux-x64-musl';
@@ -84,7 +87,59 @@ export async function nativeClaudeVersion(fs: CommandContext['fs'], path: string
   return v;
 }
 
-export async function installNativeClaude(ctx: CommandContext, target: string, version?: string, muslDeb = MUSL_DEB): Promise<number> {
+/**
+ * Where the page can fetch releases itself: this site's /claude-releases/
+ * (server.mjs keeps Anthropic's files on its disk) and /debian/pool/ (its
+ * Debian mirror). The page's fetch, so no TCP relay and none of its per-IP
+ * rate limit (#40, #51: 250 MB took ~56 s through it).
+ */
+export interface ReleaseSource {
+  origin: string;
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+export function pageReleaseSource(): ReleaseSource | null {
+  if (typeof fetch !== 'function') return null;
+  return { origin: getShiroOrigin(), fetch: (u, i) => fetch(u, i) };
+}
+
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+
+/**
+ * A file from the page's origin: its bytes, or null for anything that isn't
+ * the file (a 404, an older server's HTML app shell, a network error, a
+ * size other than `size`). Streamed into one buffer: no copy of 250 MB.
+ */
+async function originBytes(src: ReleaseSource, path: string, size?: number, onProgress?: (n: number) => void): Promise<Uint8Array | null> {
+  try {
+    const r = await src.fetch(src.origin + path, { cache: 'no-store' });
+    if (!r.ok || !r.body || /text\/html/i.test(r.headers.get('content-type') || '')) return null;
+    const len = Number(r.headers.get('content-length')) || 0;
+    if (size !== undefined && len && len !== size) return null;
+    let buf = new Uint8Array(size ?? (len || 1 << 16));
+    let n = 0;
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (n + value.length > buf.length) {
+        if (size !== undefined) { await reader.cancel().catch(() => {}); return null; }
+        const bigger = new Uint8Array(Math.max(buf.length * 2, n + value.length));
+        bigger.set(buf.subarray(0, n));
+        buf = bigger;
+      }
+      buf.set(value, n);
+      n += value.length;
+      onProgress?.(n);
+    }
+    if (size !== undefined && n !== size) return null;
+    return n === buf.length ? buf : buf.slice(0, n);
+  } catch {
+    return null;
+  }
+}
+
+export async function installNativeClaude(ctx: CommandContext, target: string, version?: string, muslDeb = MUSL_DEB, source: ReleaseSource | null = pageReleaseSource()): Promise<number> {
   const say = (s: string) => {
     if (ctx.terminal) ctx.terminal.writeOutput(s.replace(/\n/g, '\r\n'));
     else ctx.stdout += s;
@@ -98,9 +153,20 @@ export async function installNativeClaude(ctx: CommandContext, target: string, v
   const envPrefix = PASS_ENV.filter((k) => ctx.env[k]).map((k) => `${k}=${quote(ctx.env[k])} `).join('');
   const curl = (args: string) => `${envPrefix}${CURL} -fsSL --retry 2 ${args}`;
   const fail = (msg: string) => { ctx.stderr += `claude install --native: ${msg}\n`; return 1; };
+  // The relay path needs the curl package; installed only when it comes to that
+  let curlReady: boolean | null = null;
+  const ensureCurl = async (): Promise<boolean> => {
+    if (curlReady !== null) return curlReady;
+    if (!(await ctx.fs.exists(CURL).catch(() => false))) {
+      say('  pkg install curl\n');
+      if ((await sh('pkg install curl')).code !== 0) return (curlReady = false);
+    }
+    return (curlReady = await ctx.fs.exists(CURL).catch(() => false));
+  };
   // Small text fetches go through a file too: in the page terminal a guest
   // program's stdout reaches the terminal, not a capture sink
   const fetchText = async (url: string): Promise<{ code: number; out: string }> => {
+    if (!(await ensureCurl())) return { code: 127, out: '' };
     const tmp = `/tmp/claude-native-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const r = await sh(curl(`-o ${quote(tmp)} ${quote(url)}`));
     let out = '';
@@ -113,52 +179,87 @@ export async function installNativeClaude(ctx: CommandContext, target: string, v
     await ctx.fs.unlink(tmp).catch(() => {});
     return { code: r.code, out };
   };
+  const text = (b: Uint8Array | null) => (b ? new TextDecoder().decode(b) : null);
+  const parseEntry = (json: string | null): { checksum?: string; size?: number } | undefined => {
+    try { return json ? JSON.parse(json).platforms?.[PLATFORM] : undefined; } catch { return undefined; }
+  };
 
   say('Installing native Claude Code (experimental: about 2 minutes per request in Blink)\n');
-  if (!(await ctx.fs.exists(CURL).catch(() => false))) {
-    say('  pkg install curl\n');
-    if ((await sh('pkg install curl')).code !== 0 || !(await ctx.fs.exists(CURL).catch(() => false))) return fail('could not install the curl package');
-  }
 
-  if (!version) {
-    const r = await fetchText(`${RELEASES}/latest`);
-    version = r.out.trim();
-    if (r.code !== 0 || !/^\d+\.\d+\.\d+/.test(version)) {
-      return fail(`could not reach ${RELEASES}/latest (curl exit ${r.code}).\n`
-        + 'It downloads from inside the VM through the server\'s TCP relay; this server may not offer one\n'
-        + '(check with `curl -sI https://example.com`), or the network sign-in was declined.');
+  // 1. From this site (server.mjs /claude-releases/), with the page's fetch
+  let bin: Uint8Array | null = null;
+  let entry: { checksum?: string; size?: number } | undefined;
+  if (source) {
+    const v = version ?? text(await originBytes(source, '/claude-releases/latest'))?.trim();
+    if (v && SEMVER.test(v)) {
+      const e = parseEntry(text(await originBytes(source, `/claude-releases/${v}/manifest.json`)));
+      if (e?.checksum && e.size) {
+        say(`  ${source.origin}/claude-releases/${v}/${PLATFORM}/claude (${Math.round(e.size / 2 ** 20)} MB)\n`);
+        const t0 = Date.now();
+        let shown = 0;
+        const got = await originBytes(source, `/claude-releases/${v}/${PLATFORM}/claude`, e.size, (n) => {
+          if (ctx.terminal && n - shown >= e.size! / 10) { shown = n; say(`\r  ${Math.round((100 * n) / e.size!)}%`); }
+        });
+        if (shown) say('\r');
+        if (got && (await sha256Hex(got)) === e.checksum) {
+          const s = (Date.now() - t0) / 1000;
+          say(`  ${Math.round(got.length / 2 ** 20)} MB in ${s.toFixed(1)} s\n`);
+          bin = got; entry = e; version = v;
+        } else {
+          say(`  not available from this site${got ? ' (sha256 mismatch)' : ''}; downloading through the TCP relay instead\n`);
+        }
+      }
     }
   }
-  const m = await fetchText(`${RELEASES}/${version}/manifest.json`);
-  let entry: { checksum?: string; size?: number } | undefined;
-  try { entry = JSON.parse(m.out).platforms?.[PLATFORM]; } catch { /* below */ }
-  if (m.code !== 0 || !entry?.checksum) return fail(`no ${PLATFORM} build in ${RELEASES}/${version}/manifest.json`);
 
-  const dir = target.slice(0, target.lastIndexOf('/')) || '/';
-  await ctx.fs.mkdir(dir, { recursive: true }).catch(() => {});
-  const tmp = `${target}.download`;
-  say(`  ${RELEASES}/${version}/${PLATFORM}/claude (${entry.size ? Math.round(entry.size / 2 ** 20) + ' MB' : 'size unknown'})\n`);
-  if ((await sh(curl(`-o ${quote(tmp)} ${RELEASES}/${version}/${PLATFORM}/claude`))).code !== 0) return fail('download failed');
-  const bin = await ctx.fs.readFile(tmp) as Uint8Array;
-  const got = await sha256Hex(bin);
-  if (got !== entry.checksum) {
+  // 2. Through the TCP relay, from inside the guest (servers without /claude-releases/)
+  if (!bin) {
+    if (!(await ensureCurl())) return fail('could not install the curl package');
+    if (!version) {
+      const r = await fetchText(`${RELEASES}/latest`);
+      version = r.out.trim();
+      if (r.code !== 0 || !/^\d+\.\d+\.\d+/.test(version)) {
+        return fail(`could not reach ${RELEASES}/latest (curl exit ${r.code}).\n`
+          + 'It downloads from inside the VM through the server\'s TCP relay; this server may not offer one\n'
+          + '(check with `curl -sI https://example.com`), or the network sign-in was declined.');
+      }
+    }
+    const m = await fetchText(`${RELEASES}/${version}/manifest.json`);
+    entry = parseEntry(m.out);
+    if (m.code !== 0 || !entry?.checksum) return fail(`no ${PLATFORM} build in ${RELEASES}/${version}/manifest.json`);
+    const tmp = `${target}.download`;
+    await ctx.fs.mkdir(target.slice(0, target.lastIndexOf('/')) || '/', { recursive: true }).catch(() => {});
+    say(`  ${RELEASES}/${version}/${PLATFORM}/claude (${entry.size ? Math.round(entry.size / 2 ** 20) + ' MB' : 'size unknown'})\n`);
+    if ((await sh(curl(`-o ${quote(tmp)} ${RELEASES}/${version}/${PLATFORM}/claude`))).code !== 0) return fail('download failed');
+    bin = await ctx.fs.readFile(tmp) as Uint8Array;
     await ctx.fs.unlink(tmp).catch(() => {});
-    return fail(`sha256 mismatch: manifest ${entry.checksum}, got ${got}`);
+    const got = await sha256Hex(bin);
+    if (got !== entry.checksum) return fail(`sha256 mismatch: manifest ${entry.checksum}, got ${got}`);
   }
+
+  await ctx.fs.mkdir(target.slice(0, target.lastIndexOf('/')) || '/', { recursive: true }).catch(() => {});
   await ctx.fs.writeFile(target, bin, { mode: 0o755 });
-  await ctx.fs.unlink(tmp).catch(() => {});
-  await recordNativeVersion(ctx.fs, target, version);
+  await recordNativeVersion(ctx.fs, target, version!);
 
   if (!(await ctx.fs.exists(MUSL_LOADER).catch(() => false))) {
     say('  musl loader (Debian musl 1.2.5)\n');
-    const debPath = '/tmp/musl.deb';
     let deb: Uint8Array | null = null;
+    // This site's Debian mirror first (deb.debian.org's pool is its /debian/pool/), then the relay
+    const pool = 'https://deb.debian.org/debian/pool/';
     for (const url of muslDeb.urls) {
-      if ((await sh(curl(`-o ${debPath} ${quote(url)}`))).code !== 0) continue;
-      const data = await ctx.fs.readFile(debPath) as Uint8Array;
-      if ((await sha256Hex(data)) === muslDeb.sha256) { deb = data; break; }
+      if (!source || !url.startsWith(pool)) continue;
+      const data = await originBytes(source, '/debian/pool/' + url.slice(pool.length));
+      if (data && (await sha256Hex(data)) === muslDeb.sha256) { deb = data; break; }
     }
-    await ctx.fs.unlink(debPath).catch(() => {});
+    if (!deb && (await ensureCurl())) {
+      const debPath = '/tmp/musl.deb';
+      for (const url of muslDeb.urls) {
+        if ((await sh(curl(`-o ${debPath} ${quote(url)}`))).code !== 0) continue;
+        const data = await ctx.fs.readFile(debPath) as Uint8Array;
+        if ((await sha256Hex(data)) === muslDeb.sha256) { deb = data; break; }
+      }
+      await ctx.fs.unlink(debPath).catch(() => {});
+    }
     if (!deb) return fail('could not download musl (sha256-checked)');
     const { debEntries } = await import('../gui/apps');
     const libc = (await debEntries(deb)).find((e) => e.path.replace(/^\.?\//, '') === muslDeb.libc);

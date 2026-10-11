@@ -81,6 +81,11 @@ What each row measures:
   1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
   is 17 s. Native numbers stop at the pty, without a terminal emulator; in
   the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
+  The kernel's pty trace (Build 975, [run](../bench/results/bench-29-claude-stages.json))
+  splits a key's 222 ms: 1 ms until Claude reads it, 215 ms of Claude's
+  own work in Blink until its first write back (no syscalls in between),
+  0.4 ms for xterm. The 1.8 s outliers are keys whose first write was not
+  the echo: the echo came in a later write.
   `/exit` returns the shell in 3.4 s (10 s on a launch with no turn). For
   comparison the npm build (`claude_npm.*`, [c](../bench/results/bench-27-claude-c.json))
   starts in 1.2 s, echoes a key in ~19 ms (p99 ~25 ms), answers the mocked

@@ -359,7 +359,7 @@ async function measureBuild(h, build, mock, rounds) {
   percentiles(h, `${pre}.echo.frame`, R['echo.frame'], 'key → the painted frame showing it');
   percentiles(h, `${pre}.echo.stage.read`, R['echo.stage.read'], "stage 1 of the same keys (kernel pty trace, Build 975+): pty input → Claude's read of it");
   percentiles(h, `${pre}.echo.stage.compute`, R['echo.stage.compute'], 'stage 2: that read → its first write to the pty');
-  percentiles(h, `${pre}.echo.stage.render`, R['echo.stage.render'], 'stage 3: the rest of the echo (the pty write → xterm parse → the input line matched)');
+  percentiles(h, `${pre}.echo.stage.render`, R['echo.stage.render'], 'stage 3: the rest of the echo, from that first write to the input line matched (xterm parse, and any later writes when the first one was not the echo)');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');

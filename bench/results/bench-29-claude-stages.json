@@ -1,0 +1,578 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-11T08:10:05.519Z",
+  "git": {
+   "sha": "fd42da5534b219668c7ec777b77bc83b0095be71",
+   "short": "fd42da5",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": false,
+  "runs": 1,
+  "machine": {
+   "id": "c7438dc4bb1e",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.10GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 179,
+  "netcache": {
+   "hits": 1,
+   "misses": 0,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "claude_native.start.cold.first_screen",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 44148,
+   "p90": 44148,
+   "min": 44148,
+   "max": 44148,
+   "n": 1,
+   "samples": [
+    44148
+   ],
+   "notes": "`claude --native` (linux-x64-musl in Blink) in a fresh profile, mock model: Enter → Claude's first output in the terminal buffer"
+  },
+  {
+   "name": "claude_native.start.cold.prompt",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 44148,
+   "p90": 44148,
+   "min": 44148,
+   "max": 44148,
+   "n": 1,
+   "samples": [
+    44148
+   ],
+   "notes": "`claude --native` (linux-x64-musl in Blink) in a fresh profile, mock model: Enter → the idle input prompt in the buffer"
+  },
+  {
+   "name": "claude_native.start.cold.prompt.frame",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 44166,
+   "p90": 44166,
+   "min": 44166,
+   "max": 44166,
+   "n": 1,
+   "samples": [
+    44166
+   ],
+   "notes": "same, to the end of the frame that paints it"
+  },
+  {
+   "name": "claude_native.start.warm.first_screen",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 43388,
+   "p90": 43388,
+   "min": 43388,
+   "max": 43388,
+   "n": 1,
+   "samples": [
+    43388
+   ],
+   "notes": "second launch in the same page: Enter → first output"
+  },
+  {
+   "name": "claude_native.start.warm.prompt",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 43388,
+   "p90": 43388,
+   "min": 43388,
+   "max": 43388,
+   "n": 1,
+   "samples": [
+    43388
+   ],
+   "notes": "second launch: Enter → idle prompt"
+  },
+  {
+   "name": "claude_native.start.warm.prompt.frame",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 43401,
+   "p90": 43401,
+   "min": 43401,
+   "max": 43401,
+   "n": 1,
+   "samples": [
+    43401
+   ],
+   "notes": "same, painted"
+  },
+  {
+   "name": "claude_native.rss_at_prompt",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 1421,
+   "p90": 1421,
+   "min": 1421,
+   "max": 1421,
+   "n": 1,
+   "samples": [
+    1421
+   ],
+   "notes": "renderer RSS (workers included) at the cold prompt"
+  },
+  {
+   "name": "claude_native.echo.first",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 3244,
+   "p90": 3244,
+   "min": 3244,
+   "max": 3244,
+   "n": 1,
+   "samples": [
+    3244
+   ],
+   "notes": "first key typed at the prompt (1.5 s after it shows) → its echo on the input line"
+  },
+  {
+   "name": "claude_native.echo.first.frame",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 3249,
+   "p90": 3249,
+   "min": 3249,
+   "max": 3249,
+   "n": 1,
+   "samples": [
+    3249
+   ],
+   "notes": "same, painted"
+  },
+  {
+   "name": "claude_native.echo.p50",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 222.5,
+   "p90": 222.5,
+   "min": 222.5,
+   "max": 222.5,
+   "n": 1,
+   "samples": [
+    222.5
+   ],
+   "notes": "key → its echo on the input line, 35 keys 150 ms apart after each echo, from 20 s after the prompt: median over 35 keys"
+  },
+  {
+   "name": "claude_native.echo.p90",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 348.2,
+   "p90": 348.2,
+   "min": 348.2,
+   "max": 348.2,
+   "n": 1,
+   "samples": [
+    348.2
+   ],
+   "notes": "p90, same keys"
+  },
+  {
+   "name": "claude_native.echo.p99",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1869,
+   "p90": 1869,
+   "min": 1869,
+   "max": 1869,
+   "n": 1,
+   "samples": [
+    1869
+   ],
+   "notes": "p99, same keys"
+  },
+  {
+   "name": "claude_native.echo.max",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1869,
+   "p90": 1869,
+   "min": 1869,
+   "max": 1869,
+   "n": 1,
+   "samples": [
+    1869
+   ],
+   "notes": "slowest key"
+  },
+  {
+   "name": "claude_native.echo.frame.p50",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 226,
+   "p90": 226,
+   "min": 226,
+   "max": 226,
+   "n": 1,
+   "samples": [
+    226
+   ],
+   "notes": "key → the painted frame showing it: median over 35 keys"
+  },
+  {
+   "name": "claude_native.echo.frame.p90",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 351.7,
+   "p90": 351.7,
+   "min": 351.7,
+   "max": 351.7,
+   "n": 1,
+   "samples": [
+    351.7
+   ],
+   "notes": "p90, same keys"
+  },
+  {
+   "name": "claude_native.echo.frame.p99",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1884,
+   "p90": 1884,
+   "min": 1884,
+   "max": 1884,
+   "n": 1,
+   "samples": [
+    1884
+   ],
+   "notes": "p99, same keys"
+  },
+  {
+   "name": "claude_native.echo.frame.max",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1884,
+   "p90": 1884,
+   "min": 1884,
+   "max": 1884,
+   "n": 1,
+   "samples": [
+    1884
+   ],
+   "notes": "slowest key"
+  },
+  {
+   "name": "claude_native.echo.stage.read.p50",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1.055,
+   "p90": 1.055,
+   "min": 1.055,
+   "max": 1.055,
+   "n": 1,
+   "samples": [
+    1.055
+   ],
+   "notes": "stage 1 of the same keys (kernel pty trace, Build 975+): pty input → Claude's read of it: median over 35 keys"
+  },
+  {
+   "name": "claude_native.echo.stage.read.p90",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 9.695,
+   "p90": 9.695,
+   "min": 9.695,
+   "max": 9.695,
+   "n": 1,
+   "samples": [
+    9.695
+   ],
+   "notes": "p90, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.read.p99",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 195.5,
+   "p90": 195.5,
+   "min": 195.5,
+   "max": 195.5,
+   "n": 1,
+   "samples": [
+    195.5
+   ],
+   "notes": "p99, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.read.max",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 195.5,
+   "p90": 195.5,
+   "min": 195.5,
+   "max": 195.5,
+   "n": 1,
+   "samples": [
+    195.5
+   ],
+   "notes": "slowest key"
+  },
+  {
+   "name": "claude_native.echo.stage.compute.p50",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 214.7,
+   "p90": 214.7,
+   "min": 214.7,
+   "max": 214.7,
+   "n": 1,
+   "samples": [
+    214.7
+   ],
+   "notes": "stage 2: that read → its first write to the pty: median over 35 keys"
+  },
+  {
+   "name": "claude_native.echo.stage.compute.p90",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 306.6,
+   "p90": 306.6,
+   "min": 306.6,
+   "max": 306.6,
+   "n": 1,
+   "samples": [
+    306.6
+   ],
+   "notes": "p90, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.compute.p99",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 490.8,
+   "p90": 490.8,
+   "min": 490.8,
+   "max": 490.8,
+   "n": 1,
+   "samples": [
+    490.8
+   ],
+   "notes": "p99, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.compute.max",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 490.8,
+   "p90": 490.8,
+   "min": 490.8,
+   "max": 490.8,
+   "n": 1,
+   "samples": [
+    490.8
+   ],
+   "notes": "slowest key"
+  },
+  {
+   "name": "claude_native.echo.stage.render.p50",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 0.43,
+   "p90": 0.43,
+   "min": 0.43,
+   "max": 0.43,
+   "n": 1,
+   "samples": [
+    0.43
+   ],
+   "notes": "stage 3: the rest of the echo (the pty write → xterm parse → the input line matched): median over 35 keys"
+  },
+  {
+   "name": "claude_native.echo.stage.render.p90",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 0.51,
+   "p90": 0.51,
+   "min": 0.51,
+   "max": 0.51,
+   "n": 1,
+   "samples": [
+    0.51
+   ],
+   "notes": "p90, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.render.p99",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1841,
+   "p90": 1841,
+   "min": 1841,
+   "max": 1841,
+   "n": 1,
+   "samples": [
+    1841
+   ],
+   "notes": "p99, same keys"
+  },
+  {
+   "name": "claude_native.echo.stage.render.max",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1841,
+   "p90": 1841,
+   "min": 1841,
+   "max": 1841,
+   "n": 1,
+   "samples": [
+    1841
+   ],
+   "notes": "slowest key"
+  },
+  {
+   "name": "claude_native.echo_burst.total",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 684.5,
+   "p90": 684.5,
+   "min": 684.5,
+   "max": 684.5,
+   "n": 1,
+   "samples": [
+    684.5
+   ],
+   "notes": "10 keys typed at once → the last echoed"
+  },
+  {
+   "name": "claude_native.echo_burst.total.frame",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 688.4,
+   "p90": 688.4,
+   "min": 688.4,
+   "max": 688.4,
+   "n": 1,
+   "samples": [
+    688.4
+   ],
+   "notes": "same, painted"
+  },
+  {
+   "name": "claude_native.turn",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 20009,
+   "p90": 20009,
+   "min": 20009,
+   "max": 20009,
+   "n": 1,
+   "samples": [
+    20009
+   ],
+   "notes": "Enter on a prompt → the mocked reply in the buffer"
+  },
+  {
+   "name": "claude_native.exit.cold",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 6950,
+   "p90": 6950,
+   "min": 6950,
+   "max": 6950,
+   "n": 1,
+   "samples": [
+    6950
+   ],
+   "notes": "`/exit` Enter → the shell runs the next command (after the turn)"
+  },
+  {
+   "name": "claude_native.exit.warm",
+   "suite": "claude",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 10586,
+   "p90": 10586,
+   "min": 10586,
+   "max": 10586,
+   "n": 1,
+   "samples": [
+    10586
+   ],
+   "notes": "same, second launch (no turn)"
+  }
+ ]
+}

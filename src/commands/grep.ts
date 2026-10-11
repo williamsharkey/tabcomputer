@@ -2,6 +2,7 @@ import { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
 import { byteLength, decodeBytes } from '../utils/byte-text';
 import { timeSlicer, yieldTask } from '../utils/time-slice';
+import { takeStdinLines } from './stdin-stream';
 
 /** A binary file is decoded for matching 256 KiB at a time: the native decode of binary measured ~30 ms per MiB (#19) */
 const BINARY_CHUNK = 256 << 10;
@@ -27,6 +28,7 @@ export const grepCmd: Command = {
     let textMode = false;
     // -Z: a NUL after file names; -z: NUL-terminated lines in and out; -b: byte offsets; -T: a tab before the line
     let nullName = false, nullData = false, byteOffset = false, initialTab = false;
+    let lineBuffered = false;
     let label = '(standard input)';
     const patterns: string[] = [];
     let patternGiven = false;
@@ -70,7 +72,7 @@ export const grepCmd: Command = {
       '--no-messages': () => { silentErrors = true; }, '--line-number': () => { lineNumbers = true; },
       '--with-filename': () => { withFilename = true; }, '--no-filename': () => { withFilename = false; },
       '--recursive': () => { recursive = true; }, '--dereference-recursive': () => { recursive = true; deref = true; },
-      '--text': () => { textMode = true; }, '--line-buffered': () => {}, '--color': () => { colorMode = 'always'; },
+      '--text': () => { textMode = true; }, '--line-buffered': () => { lineBuffered = true; }, '--color': () => { colorMode = 'always'; },
       '--colour': () => { colorMode = 'always'; },
       '--null': () => { nullName = true; }, '--null-data': () => { nullData = true; },
       '--byte-offset': () => { byteOffset = true; }, '--initial-tab': () => { initialTab = true; },
@@ -302,6 +304,35 @@ export const grepCmd: Command = {
       return count > 0;
     };
 
+    /**
+     * stdin as a stream (ctx.stdinStream, #72): -m N, -q and -l read only up to
+     * the line that decides (the search then runs on that, with the same result);
+     * --line-buffered, in the plain modes, prints each batch of lines as it
+     * arrives. True when stdin was searched here already.
+     */
+    const streamStdin = async (): Promise<boolean> => {
+      if (!ctx.stdinStream || nullData) return false;
+      const need = quiet || filesWith ? 1 : maxCount;
+      if (need >= 0 && !(afterCtx > 0 && !quiet && !filesWith)) {
+        if (need === 0) { ctx.stdin = ''; return false; }
+        let found = 0;
+        await takeStdinLines(ctx, (lines) => {
+          for (const l of lines) if (matches(l) !== invertMatch && ++found >= need) return true;
+          return false;
+        });
+        return false;
+      }
+      const plain = !countOnly && !filesWith && !filesWithout && !hasContext && !lineNumbers && !byteOffset && !quiet && maxCount < 0;
+      if (!lineBuffered || !plain || !ctx.streamStdout) return false;
+      const out = ctx.streamStdout;
+      await takeStdinLines(ctx, (lines) => {
+        searchText(lines.join('\n') + '\n', label);
+        if (ctx.stdout) { out(ctx.stdout); ctx.stdout = ''; }
+        return false;
+      }, 0x0a, false);
+      return true;
+    };
+
     const globToRe = (g: string) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
     const includeRes = includeGlobs.map(globToRe);
     const excludeRes = excludeGlobs.map(globToRe);
@@ -354,13 +385,13 @@ export const grepCmd: Command = {
         for (const e of entries) await searchPath(e, e, false);
       } else {
         showNames = withFilename ?? false;
-        searchText(ctx.stdin, label);
+        if (!(await streamStdin())) searchText(ctx.stdin, label);
       }
     } else {
       showNames = withFilename ?? (files.length > 1 || recursive);
       for (const f of files) {
         if (quiet && anySelected) break;
-        if (f === '-') searchText(ctx.stdin, label);
+        if (f === '-') { if (!(await streamStdin())) searchText(ctx.stdin, label); }
         else await searchPath(f, f, true);
       }
     }

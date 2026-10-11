@@ -1,5 +1,6 @@
 import type { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
+import { takeStdinLines } from './stdin-stream';
 
 /**
  * sed, following GNU sed: scripts from -e/-f/the first operand, -n, -E/-r,
@@ -45,6 +46,24 @@ interface Cmd {
 }
 
 class SedError extends Error {}
+
+/**
+ * The line by which the script surely quits (`5q`, `-n '1p;1q'`, `2,3p;3q`):
+ * when every command is p, d, q, Q or = with line-number addresses only and
+ * one is a q, sed ends at the smallest q's line. 0 when it may need more.
+ */
+function quitLine(cmds: Cmd[]): number {
+  let at = 0;
+  for (const c of cmds) {
+    if (!['p', 'd', 'q', 'Q', '='].includes(c.name) || c.negate) return 0;
+    if ((c.a1 && c.a1.kind !== 'line') || (c.a2 && c.a2.kind !== 'line')) return 0;
+    if (c.name === 'q' || c.name === 'Q') {
+      const n = c.a1?.kind === 'line' ? c.a1.n : 1;
+      at = at ? Math.min(at, n) : n;
+    }
+  }
+  return at;
+}
 
 /** Parse a sed script into a flat command list ({ jumps to its blockEnd when not selected) */
 function parseScript(script: string, extended: boolean): { cmds: Cmd[]; labels: Map<string, number> } {
@@ -412,6 +431,13 @@ export const sedCmd: Command = {
         ctx.stderr += `sed: -e expression #1, char 0: can't find label for jump to \`${c.label}'\n`;
         return 1;
       }
+    }
+
+    // stdin as a stream: a script that quits by line N reads only N lines (`… | sed 1q` ends an endless writer, #72)
+    const quitAt = quitLine(cmds);
+    if (quitAt > 0 && ctx.stdinStream && inPlace === null && !nulData && (files.length === 0 || files.includes('-'))) {
+      let seen = 0;
+      await takeStdinLines(ctx, (lines) => (seen += lines.length) >= quitAt);
     }
 
     // Inputs

@@ -181,6 +181,10 @@ export interface KernelRunOptions {
    * program inherits: a file to append to, a stream to write to, or input text.
    */
   inheritFds?: { fd: number; path?: string; file?: OpenFile; write?: (s: string) => void; content?: string }[];
+  /** The abort that signals the job (timeout, Ctrl-C); default: the shell's abortController */
+  abort?: AbortController | null;
+  /** The job leads a process group of its own; default: under timeout, or when the shell isn't a kernel process */
+  ownGroup?: boolean;
 }
 
 export interface KernelRunResult {
@@ -286,7 +290,7 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
   }
 
   // Under timeout (its abort says so) the job leads a group of its own even in a hosted shell
-  const ownGroup = !!(shell.abortController as { ownProcessGroup?: boolean } | null)?.ownProcessGroup;
+  const ownGroup = opts.ownGroup ?? !!(shell.abortController as { ownProcessGroup?: boolean } | null)?.ownProcessGroup;
   // A background job's programs (no job control) run in the job's group, not the host
   // shell's: `kill $!` reaches just them, the agent's other jobs keep running (#63)
   const jobGroup = !tty && !ownGroup && !shell.options.has('monitor') ? shell.jobPgid : undefined;
@@ -330,7 +334,7 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
 
   // Aborts from the shell (timeout, a script's Ctrl-C) reach the whole job:
   // SIGINT, or the signal the abort names (timeout -s SIG -k DURATION)
-  const abort = shell.abortController;
+  const abort = opts.abort !== undefined ? opts.abort : shell.abortController;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const signalJob = (reason: { signal?: number; killAfter?: number; groupSignalled?: number } | undefined) => {
     // (`kill -- -PGID` to an in-page job: the kernel has signalled this group already)

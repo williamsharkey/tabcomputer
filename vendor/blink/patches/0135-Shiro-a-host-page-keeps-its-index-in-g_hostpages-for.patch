@@ -1,4 +1,4 @@
-From 8de3be5dc213782c27c1a0d840a3650181a7634e Mon Sep 17 00:00:00 2001
+From 5233e94205a0474a15e5e0bfe7bd17410ad008ae Mon Sep 17 00:00:00 2001
 From: shiro <build@shiro>
 Date: Sun, 11 Oct 2026 08:12:42 +0000
 Subject: [PATCH] Shiro: a host page keeps its index in g_hostpages (forks of a

@@ -14,6 +14,8 @@ import { runChild, runChildSync } from './child';
 import { GuestNetStack, installGuestPorts } from './net';
 import { GuestTtyStdin } from './tty';
 import type { GuestIpc, NodeGuestHooks, ThreadEvents } from './hooks';
+import { WasiGuest, runSync, ProcExit } from '../wasi/wasi-guest';
+import { programFromStdin } from '../commands/jseval/node-args';
 
 const dec = new TextDecoder();
 
@@ -117,6 +119,9 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         },
         dataSize: sys.ch.data.length,
         openDir: (path) => sys.open(path, A.O_RDONLY | A.O_DIRECTORY),
+        newGuest: (opts) => new WasiGuest(opts),
+        runSync,
+        ProcExit,
       },
       ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)) } : {}),
       onUnhandledRejection: (fn) => { rejection = fn; },
@@ -178,8 +183,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       };
       // `node < script.js` / `cat x.js | node`: the program comes from stdin (`node -v` and
       // `node --help` answer without reading it)
-      const code = start.argv.slice(1).some((a) => !a.startsWith('-') || /^(-e|--eval|-p|--print|-v|--version|-h|--help)$/.test(a));
-      if (!code) ctx.stdin = await ctx.readStdin();
+      if (programFromStdin(start.argv.slice(1))) ctx.stdin = await ctx.readStdin();
       // else bytes as they arrive (a parent that talks to this node while it runs: esbuild's service)
       else ctx.stdinStream = pipeStdin(sys);
     }

@@ -204,8 +204,11 @@ async function smoke(m, pkg) {
       // A client of a system daemon (udisksctl: udisksd on the system bus) or of hardware's
       // X extension (vmwarectrl: VMWARE_CTRL) runs but has nothing to talk to, as in a
       // Debian container or on other hardware; a GUI program without the display it needs
-      const absent = /Error connecting to the \S+ daemon|Failed to connect to (?:the )?bus|Could not connect to (?:D-Bus|the system bus)|Cannot connect to the \S+ daemon|extension "\S+" missing on display|X Server does not support \S+|(?:cannot|can't|could not|unable to|couldn't) (?:open|connect to) (?:the )?(?:default )?(?:X )?(?:display|X server)|Gtk-WARNING \*\*: [^\n]*cannot open display|Could not connect to any X display/i.exec(r.out);
-      if (absent && !crashed) return { ok: true, how: `${bin} ${flagArg} (ran; "${absent[0]}")${who(bin)}`, ms: r.ms };
+      const absent = /Error connecting to the \S+ daemon|Failed to connect to (?:the )?bus|Could not connect to (?:D-Bus|the system bus)|Cannot connect to the \S+ daemon|extension "\S+" missing on display|X Server does not support \S+|(?:cannot|can't|could not|unable to|couldn't) (?:open|connect to) (?:the )?(?:default )?(?:X )?(?:display|X server)|Gtk-WARNING \*\*: [^\n]*cannot open display|Could not connect to any X display|Cannot autolaunch D-Bus without X11 \$DISPLAY/i.exec(r.out);
+      // GLib's g_error() stops the program with SIGTRAP (exit 133) on purpose: gnome-calendar
+      // without a display ("GcalContext-ERROR **: … Cannot autolaunch D-Bus"), as on Debian
+      const gError = r.code === 133 && /-ERROR \*\*:/.test(r.out);
+      if (absent && (!crashed || gError)) return { ok: true, how: `${bin} ${flagArg} (ran; "${absent[0]}")${who(bin)}`, ms: r.ms };
       // Answered the flag, then stayed in its event loop (ptked: "Unknown option: version", then its window)
       const answered = /unknown option|unrecognized option|invalid option|usage:/i.exec(r.out);
       if (r.code === 124 && answered && !crashSig && !broken) return { ok: true, how: `${bin} ${flagArg} (ran: "${r.out.trim().split('\n')[0].slice(0, 60)}", then kept running, as an interactive program does)${who(bin)}`, ms: r.ms };
@@ -232,7 +235,12 @@ async function smoke(m, pkg) {
     .sort((a, b) => a.split('/').length - b.split('/').length || (/\.so\.\d/.test(b) ? 1 : 0) - (/\.so\.\d/.test(a) ? 1 : 0));
   if (libs.length) {
     const dir = libs[0].slice(0, libs[0].lastIndexOf('/'));
-    const r = await m.run(`/lib64/ld-linux-x86-64.so.2 --library-path ${dir} --list ${libs[0]} 2>&1`, 180);
+    // By its real path: $ORIGIN is the directory it was opened from, and a symlink into
+    // a private directory (libuno_cppuhelpergcc3.so.3 → ../libreoffice/program/) finds
+    // its siblings (libreglo.so) only from there; LibreOffice's programs load it from
+    // there too. Through the symlink, glibc's own ld.so fails on Debian as well
+    const real = (await m.run(`readlink -f '${libs[0]}'`)).out.trim() || libs[0];
+    const r = await m.run(`/lib64/ld-linux-x86-64.so.2 --library-path ${dir} --list ${real} 2>&1`, 180);
     // A -dev package's lib.so can be a GNU ld script (libc6-dev's libc.so), not an ELF
     if (r.code !== 0 && /invalid ELF header/.test(r.out) && /GNU ld script|^\s*(INPUT|GROUP)\s*\(/m.test((await m.run(`head -c 256 '${libs[0]}'`)).out)) {
       return { ok: true, how: `installed; ${libs[0]} is a linker script`, ms: r.ms };

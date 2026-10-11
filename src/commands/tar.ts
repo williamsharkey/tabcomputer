@@ -1,5 +1,6 @@
 import type { Command, CommandContext } from './index';
 import { decodeBytes, encodeText } from '../utils/byte-text';
+import { pipeBytes } from '../utils/stream-bytes';
 
 /**
  * tar — GNU tar-compatible (GNU format archives: ustar headers with
@@ -111,20 +112,7 @@ function isZero(b: Uint8Array): boolean {
 class TarFatal extends Error {}
 
 async function streamTransform(data: Uint8Array, stream: any): Promise<Uint8Array> {
-  const writer = stream.writable.getWriter();
-  writer.write(data as any).catch(() => {});
-  writer.close().catch(() => {});
-  const reader = stream.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
-  let o = 0;
-  for (const c of chunks) { out.set(c, o); o += c.length; }
-  return out;
+  return pipeBytes(data, stream);
 }
 
 type Compression = 'gzip' | 'bzip2' | 'xz' | 'zstd' | null;
@@ -139,7 +127,7 @@ function sniff(d: Uint8Array): Compression {
 
 async function decompress(d: Uint8Array, c: Compression): Promise<Uint8Array> {
   switch (c) {
-    case 'gzip': return (await import('./compress/gzip-codec')).gunzip(d); // multi-member .tgz too
+    case 'gzip': return (await import('./compress/gunzip-async')).gunzipAsync(d); // multi-member .tgz too
     case 'bzip2': return (await import('./bzip2')).bzip2Decompress(d);
     case 'xz': return (await import('./xz')).xzDecompress(d);
     case 'zstd': return (await import('./zstd')).zstdDecompress(d);
@@ -431,6 +419,12 @@ async function runTar(ctx: CommandContext): Promise<number> {
         }
         return;
       }
+      if (st.isFIFO?.()) {
+        // A named pipe is a member of its own (type 6, no data), as GNU tar: reading it would wait for a writer
+        blocks.push(...headerBlocks({ ...base, type: '6' }));
+        if (verbose) vout(verbose > 1 ? verboseLine({ ...base, type: '6' }, verbose) : name + '\n');
+        return;
+      }
       if ((st.nlink ?? 1) > 1 && st.ino) {
         const first = linkedNames.get(st.ino);
         if (first !== undefined) {
@@ -676,6 +670,8 @@ async function runTar(ctx: CommandContext): Promise<number> {
         const sst = await fs.lstat(src).catch(() => null);
         if (!sst) { warn(`${name}: Cannot hard link to '${h.linkname}': No such file or directory`); status = 2; continue; }
         await fs.link(src, target);
+      } else if (h.type === '6') {
+        await fs.mkfifo(target, h.mode & 0o7777);
       } else if (h.type === '0' || h.type === '7') {
         await fs.writeFile(target, body.slice(), { mode: h.mode & 0o7777 });
         await fs.chmod(target, h.mode & 0o7777).catch(() => {});
@@ -705,7 +701,7 @@ function verboseLine(h: Header, verbose: number): string {
   const d = new Date(h.mtime * 1000);
   const when = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
   const owner = `${h.uname || h.uid}/${h.gname || h.gid}`;
-  const size = String(h.type === '5' || h.type === '2' || h.type === '1' ? 0 : h.size);
+  const size = String(h.type === '5' || h.type === '2' || h.type === '1' || h.type === '6' ? 0 : h.size);
   const pad = owner.length + 1 + size.length;
   const width = Math.max(19, pad);
   let line = `${MODE_CHARS(h.type, h.mode)} ${owner} ${size.padStart(width - pad + size.length)} ${when} ${h.name}`;

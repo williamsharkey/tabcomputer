@@ -67,12 +67,14 @@ export function inodeOf(path: string): number {
 }
 
 /** A node fs.Stats-like object. */
-export function makeStats(o: { type: 'file' | 'dir' | 'symlink'; size: number; mtimeMs: number; mode: number; ino: number }): any {
+export function makeStats(o: { type: 'file' | 'dir' | 'symlink'; size: number; mtimeMs: number; mode: number; ino: number; fifo?: boolean }): any {
   const t = new Date(o.mtimeMs);
-  const fmt = o.type === 'dir' ? 0o40000 : o.type === 'symlink' ? 0o120000 : 0o100000;
+  // A named pipe is stored as a file: not a regular one (reading it waits for a writer)
+  const fifo = o.type === 'file' && !!o.fifo;
+  const fmt = o.type === 'dir' ? 0o40000 : o.type === 'symlink' ? 0o120000 : fifo ? 0o10000 : 0o100000;
   return {
-    isFile: () => o.type === 'file', isDirectory: () => o.type === 'dir', isSymbolicLink: () => o.type === 'symlink',
-    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false,
+    isFile: () => o.type === 'file' && !fifo, isDirectory: () => o.type === 'dir', isSymbolicLink: () => o.type === 'symlink',
+    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => fifo, isSocket: () => false,
     dev: 1, ino: o.ino, mode: fmt | (o.mode & 0o7777), nlink: o.type === 'dir' ? 2 : 1, uid: 1000, gid: 1000, rdev: 0,
     size: o.size, blksize: 4096, blocks: Math.ceil(o.size / 512),
     atime: t, mtime: t, ctime: t, birthtime: t,
@@ -227,12 +229,13 @@ function moveCachedTree(fileCache: Map<string, string>, fileMtimes: Map<string, 
 function makeDirent(ctx: CommandContext, parent: string, name: string, isDir: boolean): any {
   const link = typeof ctx.fs.readlinkCached === 'function' ? ctx.fs.readlinkCached(parent + '/' + name) : undefined;
   const isLink = typeof link === 'string';
+  const fifo = !isLink && !isDir && ctx.fs.lookupCached?.(parent + '/' + name, false)?.node?.special === 'fifo';
   return {
     name, parentPath: parent, path: parent,
-    isFile: () => !isLink && !isDir,
+    isFile: () => !isLink && !isDir && !fifo,
     isDirectory: () => !isLink && isDir,
     isSymbolicLink: () => isLink,
-    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false,
+    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => fifo, isSocket: () => false,
   };
 }
 
@@ -415,7 +418,7 @@ export function createFsModule(deps: FsDeps): any {
       const hit = guestLookup(r);
       if (!hit) return hit;
       if (hit.node.type !== 'file' && hit.node.type !== 'dir') return undefined;
-      return makeStats({ type: hit.node.type, size: hit.node.size ?? 0, mtimeMs: hit.node.mtime, mode: pendingModes.get(r) ?? hit.node.mode ?? 0o644, ino: inodeOf(hit.path) });
+      return makeStats({ type: hit.node.type, size: hit.node.size ?? 0, mtimeMs: hit.node.mtime, mode: pendingModes.get(r) ?? hit.node.mode ?? 0o644, ino: inodeOf(hit.path), fifo: hit.node.special === 'fifo' });
     }
     const isFile = fileCache.has(r) || ctx.fs.readBytesCached(r) !== undefined;
     const isDir = !isFile && (fileCache.has(r + '/.') || fsDirCached(r) || [...fileCache.keys()].some((k) => k.startsWith(r + '/')));
@@ -424,11 +427,11 @@ export function createFsModule(deps: FsDeps): any {
       if (hit === null) return null;
       if (hit === undefined) return undefined;
       if (hit.node.type !== 'file' && hit.node.type !== 'dir') return undefined;
-      return makeStats({ type: hit.node.type, size: hit.node.size ?? 0, mtimeMs: hit.node.mtime, mode: hit.node.mode ?? 0o644, ino: inodeOf(hit.path) });
+      return makeStats({ type: hit.node.type, size: hit.node.size ?? 0, mtimeMs: hit.node.mtime, mode: hit.node.mode ?? 0o644, ino: inodeOf(hit.path), fifo: hit.node.special === 'fifo' });
     }
     const node = ctx.fs.lookupCached?.(r)?.node;
     const mode = pendingModes.get(r) ?? node?.mode ?? (isDir ? 0o755 : 0o644);
-    return makeStats({ type: isDir ? 'dir' : 'file', size: isFile ? (currentBytes(r)?.length ?? 0) : 0, mtimeMs: stableMtime(fileMtimes, r), mode, ino: inodeOf(r) });
+    return makeStats({ type: isDir ? 'dir' : 'file', size: isFile ? (currentBytes(r)?.length ?? 0) : 0, mtimeMs: stableMtime(fileMtimes, r), mode, ino: inodeOf(r), fifo: node?.special === 'fifo' });
   };
   /** lstat from memory (a symlink itself, else the file): null / undefined as statNow */
   const lstatNow = (p: any): any => {
@@ -443,7 +446,7 @@ export function createFsModule(deps: FsDeps): any {
   /** A node Stats from the filesystem's own stat (what memory couldn't answer) */
   const fromFsStat = (st: any, r: string, link = false): any => makeStats({
     type: link && st.isSymbolicLink?.() ? 'symlink' : st.isDirectory?.() ? 'dir' : 'file',
-    size: st.size ?? 0, mtimeMs: st.mtimeMs ?? st.mtime?.getTime?.() ?? Date.now(), mode: st.mode ?? 0o644, ino: inodeOf(r),
+    size: st.size ?? 0, mtimeMs: st.mtimeMs ?? st.mtime?.getTime?.() ?? Date.now(), mode: st.mode ?? 0o644, ino: inodeOf(r), fifo: !!st.isFIFO?.(),
   });
   const statAsync = async (p: any, link: boolean): Promise<any> => {
     const r = link ? realParent(p) : real(p);
@@ -655,7 +658,11 @@ export function createFsModule(deps: FsDeps): any {
       if (ctx.fs.readCached(resolved) !== undefined) return true;
       // Fallback: check Shiro FS cache for directories
       if (fsDirCached(resolved)) return true;
-      return false;
+      // a file whose bytes the cache let go (a large binary, after a while):
+      // its inode is still known (codex's npm wrapper found its own binary
+      // missing after one long run: tabcomputer#27). Only such a node: the
+      // FileSystem's view of a path node just renamed away is behind node's own
+      return ctx.fs.lookupCached?.(resolved)?.node.evicted === true;
     },
     statSync: (p: string, opts?: any) => {
       tickSyncOps();
@@ -939,9 +946,9 @@ export function createFsModule(deps: FsDeps): any {
       // O_CREAT|O_EXCL ('wx') on an existing file, or a missing file without O_CREAT, fail
       if (fl.create && fl.excl && exists) throw fsError('EEXIST', `EEXIST: file already exists, open '${p}'`, 'open', String(p));
       if (!fl.create && exists === false) throw fsError('ENOENT', `ENOENT: no such file or directory, open '${p}'`, 'open', String(p));
-      const fd = 100 + Math.floor(Math.random() * 9900);
       // Store mapping for writeSync/readSync/closeSync ('w' truncated, 'a' appends, 'r' reads)
       (globalThis as any).__shiroFds = (globalThis as any).__shiroFds || {};
+      const fd = nextFd((globalThis as any).__shiroFds);
       const f = fl.append ? 'a' : fl.write ? (fl.trunc ? 'w' : 'r+') : 'r';
       (globalThis as any).__shiroFds[fd] = { path: resolved, flags: f, offset: 0 };
       if (fl.trunc || (fl.create && !exists)) {
@@ -1167,7 +1174,7 @@ export function createFsModule(deps: FsDeps): any {
             for (const name of entries) {
               try {
                 const st = await ctx.fs.lstat(resolved + '/' + name);
-                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false });
+                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => !!st.isFIFO?.(), isSocket: () => false });
               } catch { dirents.push({ name, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false }); }
             }
             callback?.(null, dirents);
@@ -1861,4 +1868,18 @@ export function createFsPromisesModule(deps: FsDeps): any {
     watch: (p: any, opts?: any) => createWatchApi({ ctx, fileCache, getBuiltinModule, trackAsync: deps.trackAsync, atExit: deps.atExit }).promisesWatch(p, opts),
     constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024, O_NONBLOCK: 2048, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960 },
   };
+}
+
+/**
+ * A free fd number for openSync: the next one up that no file has open. A
+ * random pick (100-9999) gave two files open at once the same fd now and then:
+ * esbuild, which keeps many open, read one file's bytes as another's and the
+ * other as empty (Astro's optimized aria-query broke the dev toolbar)
+ */
+function nextFd(open: Record<number, unknown>): number {
+  const g = globalThis as { __shiroNextFd?: number };
+  let fd = g.__shiroNextFd ?? 100;
+  while (open[fd]) fd = fd >= 999_999 ? 100 : fd + 1;
+  g.__shiroNextFd = fd >= 999_999 ? 100 : fd + 1;
+  return fd;
 }

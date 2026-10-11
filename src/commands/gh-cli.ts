@@ -59,7 +59,9 @@ const SPECS: Record<string, string> = {
   'auth logout': 'hostname|h=',
   'auth refresh': 'scopes|s= remove-scopes|r= hostname|h=',
   'auth token': 'hostname|h=',
-  'api': 'method|X= raw-field|f= field|F= header|H= jq|q= template|t= paginate dry-run',
+  'auth setup-git': 'hostname|h= force|f',
+  'auth git-credential': '',
+  'api': 'method|X= raw-field|f= field|F= header|H= input= jq|q= template|t= paginate dry-run',
 };
 
 export class GhUsageError extends Error {}

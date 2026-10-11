@@ -27,13 +27,17 @@ export function createFakeProcess(
   pendingPromises: Promise<any>[],
 ): any {
   const processEnv: Record<string, string> = {
-    ...ctx.env,
+    ...exportedOnly(ctx),
     MCP_CONNECTION_NONBLOCKING: '1',
     // Route API calls through CORS proxy when in browser (the page, or a guest's Worker)
     ...((typeof window !== 'undefined' || (ctx as any).nodeGuest) && !ctx.env['ANTHROPIC_BASE_URL'] ? {
       ANTHROPIC_BASE_URL: `${getShiroOrigin()}/api/anthropic`,
     } : {}),
   };
+  // The shell's piped input being read is the shell's, not node's nor its children's: a
+  // `sh -c` that vite's esbuild started (as a guest, with vite's output redirected) took
+  // it for its stdin and gave esbuild's service none ("The service was stopped")
+  delete processEnv.__PIPE_STDIN;
 
   if (scriptPath?.includes('claude-code')) {
     // Background tasks stay off (long-lived background processes are still the
@@ -188,6 +192,9 @@ export function createFakeProcess(
       const msg = warning instanceof Error ? warning.message : String(warning);
       if (name === 'DeprecationWarning' && (fp as any).noDeprecation) return;
       try { (processEvents['warning'] || []).forEach(fn => fn(Object.assign(new Error(msg), { name, code: opts.code }))); } catch (_) {}
+      // --no-warnings / --disable-warning=CODE|TYPE: the event, not the line
+      const filter = (fp as any).warningFilter as { all: boolean; disabled: string[] } | undefined;
+      if (filter && (filter.all || filter.disabled.includes(name) || (opts.code && filter.disabled.includes(opts.code)))) return;
       stderrBuf.push(`(node:${fp.pid}) ${opts.code ? `[${opts.code}] ` : ''}${name}: ${msg}\n`);
     },
     title: 'node',
@@ -711,4 +718,23 @@ function completeEmitter(obj: any, table: Record<string, Function[]>): any {
   };
   for (const [k, f] of Object.entries(add)) if (typeof obj[k] !== 'function') obj[k] = f;
   return obj;
+}
+
+/**
+ * The environment a program gets: the shell's variables minus those it never
+ * exported (bash's readonly SHELLOPTS/BASHOPTS among them; codex re-exports
+ * what it inherits and failed on them). A value the command line set for this
+ * run (`X=1 node ...`) differs from the shell's and stays.
+ */
+function exportedOnly(ctx: CommandContext): Record<string, string> {
+  const sh = ctx.shell as { localVars?: Set<string>; env?: Record<string, string> } | undefined;
+  // Variables only: not the shell's $? $# $1…, LINENO, $_ or its own __PIPE_STDIN
+  // (env -i node saw ?=0 and LINENO=1), nor unexported ones
+  const env: Record<string, string> = {};
+  for (const k in ctx.env) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k === 'LINENO' || k === '_' || k === '__PIPE_STDIN' || k.startsWith('__shiro')) continue;
+    if (sh?.localVars?.has(k) && ctx.env[k] === sh.env?.[k]) continue;
+    env[k] = ctx.env[k];
+  }
+  return env;
 }

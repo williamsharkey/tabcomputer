@@ -426,11 +426,13 @@ async function handleStatic(req, res) {
       data = Buffer.from(brandAppShell(data.toString('utf8'), req.headers['host'], profileFor(req.headers['host'], override)?.brand));
     }
     // The streamed Debian rootfs's chunks are content-addressed (named by sha256),
-    // and so are the engines' hashed wasm copies (vite-plugin-engines.ts) and
+    // and so are the engines' hashed wasm copies and versioned Blink directories
+    // (vite-plugin-engines.ts) and
     // vite's /assets/ (name-HASH.ext). Everything else, the app shell above all,
     // is revalidated on every load so a reload always gets the deployed build.
     const immutable = pathname.startsWith('/debian/chunks/') || pathname.startsWith('/assets/')
       || /^\/engines\/.*\.[0-9a-f]{12}\.wasm$/.test(pathname)
+      || /^\/engines\/blink\/v-[0-9a-f]{12}\//.test(pathname)
       ? { 'cache-control': 'public, max-age=31536000, immutable' } : { 'cache-control': 'no-cache' };
     res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', ...staticHeaders, ...isolation, ...immutable });
     res.end(data);

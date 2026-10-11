@@ -170,7 +170,9 @@ ${bootSection(ctx, name)}
   a port is served the same way. Both are reachable only from this tab.
 - \`page :PORT text|click|input|eval ...\` drives that page, so you can test a UI
   without a browser automation tool.
-- \`gh auth login\` signs in to GitHub; git and gh then use the token. The built-in
+- The globe icon in the menu bar signs the user in to GitHub with a click
+  (quicker than \`gh auth login\`, which needs them at a terminal; point them
+  to the globe). git and gh then use the token. The built-in
   gh takes \`--body-file FILE\` and \`--json FIELDS --jq EXPR\`; a flag it doesn't
   implement is an error, never silently ignored.
 - If a prebuilt package misbehaves, check \`pkg outdated\` and run \`pkg upgrade\` first: fixed builds ship as
@@ -228,6 +230,15 @@ folder has the details and the measured scoreboards. Where things live:
 - WASM programs: \`src/wasi/\`; x86-64 programs: \`src/x86-engine/\` and the Blink
   patches in \`vendor/blink/patches/\`; Debian mode: \`src/debian/\`
 - prebuilt packages: \`src/pkg-index.json\`, recipes in \`scripts/pkgbuild/\`
+
+To change ${name} itself from here, without a reload: \`hotswap checkout\` puts
+this build's own source (src/, the vitest suites) in ~/shiro. Edit it, then
+\`hotswap apply src/shell.ts\` swaps the change into this running tab. It
+reverts by itself after 90 s unless you run \`hotswap confirm\`, so a broken
+shell fixes itself. \`hotswap test shell-posix\` runs a suite here, and
+\`hotswap push BRANCH -m MSG\` pushes the changes as a new branch of
+williamsharkey/tabcomputer (your own \`gh auth login\` account; never main).
+~/shiro/docs/HOTSWAP.md says what can and can't be swapped.
 
 ## Known issues
 

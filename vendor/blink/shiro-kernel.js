@@ -13,19 +13,31 @@
  *     -> Promise<{ r, hi, out: Uint8Array | null }>
  */
 
+// Pointers come as signed 32-bit numbers: past 2 GiB of wasm memory they are
+// negative, so each is made unsigned (>>> 0) and shifted with >>> (perf's
+// sched messaging, 40 processes in one instance, broke wjit's imports there)
 var ShiroKernelLibrary = {
-  shiro_ksys__proxy: 'sync',
-  shiro_ksys__async: 'auto',
-  shiro_ksys: (nr, argsPtr, as, dataPtr, inLen, outCap) => {
+  // tid: the calling guest thread's (Blink patch 0127), for the kernel's per-thread state
+  shiro_ksys2__proxy: 'sync',
+  shiro_ksys2__async: 'auto',
+  shiro_ksys2: (nr, argsPtr, as, dataPtr, inLen, outCap, tid) => {
+    argsPtr >>>= 0, dataPtr >>>= 0;
     var K = Module['shiroKernel'];
     if (!K) return -38; // ENOSYS
-    var args = HEAP32.slice(argsPtr >> 2, (argsPtr >> 2) + 12);
+    var args = HEAP32.slice(argsPtr >>> 2, (argsPtr >>> 2) + 12);
     var input = inLen ? HEAPU8.slice(dataPtr, dataPtr + inLen) : new Uint8Array(0);
-    return K.call(nr, args, as, input, outCap).then((res) => {
+    return K.call(nr, args, as, input, outCap, tid).then((res) => {
       if (res.out && res.out.length) HEAPU8.set(res.out, dataPtr);
-      HEAP32[argsPtr >> 2] = res.hi;
+      HEAP32[argsPtr >>> 2] = res.hi;
       return res.r;
     });
+  },
+
+  // a guest thread started (op 1) or ended (0): the kernel's list of the process's threads
+  shiro_thread_note__proxy: 'async',
+  shiro_thread_note: (tid, op) => {
+    var K = Module['shiroKernel'];
+    if (K && K.threadNote) K.threadNote(tid, op);
   },
 
   // fork(): hand the process snapshot (blink/shiro.inc) to the page, which
@@ -47,6 +59,7 @@ var ShiroKernelLibrary = {
 
   shiro_fork_start__proxy: 'sync',
   shiro_fork_start: (pid, ptr, len) => {
+    ptr >>>= 0;
     var K = Module['shiroKernel'];
     if (!K || !K.fork) return -38; // ENOSYS
     return K.fork(pid, HEAPU8.slice(ptr, ptr + len));
@@ -57,6 +70,7 @@ var ShiroKernelLibrary = {
   // is control words (the object's lock). Guest threads reach it here.
   shiro_shm_io__proxy: 'sync',
   shiro_shm_io: (id, off, ptr, n, dir) => {
+    ptr >>>= 0;
     var sab = Module['shiroKernel']?.shm?.get(id);
     if (!sab) return -14; // EFAULT
     off >>>= 0;
@@ -73,6 +87,7 @@ var ShiroKernelLibrary = {
   // the bytes at ptr that differ from twin go to the buffer
   shiro_shm_diff__proxy: 'sync',
   shiro_shm_diff: (id, off, ptr, twin, n) => {
+    ptr >>>= 0, twin >>>= 0;
     var sab = Module['shiroKernel']?.shm?.get(id);
     if (!sab) return -14;
     off >>>= 0;
@@ -93,6 +108,7 @@ var ShiroKernelLibrary = {
   // lets the waiters go first), 2 take it regardless (its holder died).
   shiro_shm_acquire__proxy: 'sync',
   shiro_shm_acquire: (id, off, ptr, flag, how) => {
+    ptr >>>= 0, flag >>>= 0;
     var sab = Module['shiroKernel']?.shm?.get(id);
     if (!sab) return 1;
     var c = new Int32Array(sab, sab.byteLength - 4096, 2);
@@ -108,7 +124,7 @@ var ShiroKernelLibrary = {
       return 1;
     }
     if (!(how & 1)) Atomics.add(c, 1, 1);
-    var done = () => { Atomics.store(HEAP32, flag >> 2, 1); Atomics.notify(HEAP32, flag >> 2); };
+    var done = () => { Atomics.store(HEAP32, flag >>> 2, 1); Atomics.notify(HEAP32, flag >>> 2); };
     var r = Atomics.waitAsync ? Atomics.waitAsync(c, 0, Atomics.load(c, 0), 100) : { async: false };
     if (r.async) r.value.then(done); else done();
     return 0;
@@ -116,6 +132,7 @@ var ShiroKernelLibrary = {
   // Writes the page at ptr back to off (if ptr) and releases the lock
   shiro_shm_release__proxy: 'sync',
   shiro_shm_release: (id, off, ptr) => {
+    ptr >>>= 0;
     var sab = Module['shiroKernel']?.shm?.get(id);
     if (!sab) return 0;
     if (ptr) {
@@ -132,11 +149,12 @@ var ShiroKernelLibrary = {
   // wake, 1 after ms), -11 if the word isn't `expect`, -38 without waitAsync
   shiro_shm_watch__proxy: 'sync',
   shiro_shm_watch: (id, off, expect, flag, ms) => {
+    flag >>>= 0;
     var sab = Module['shiroKernel']?.shm?.get(id);
     if (!sab) return -14;
     if (typeof Atomics.waitAsync !== 'function') return -38;
     var r = Atomics.waitAsync(new Int32Array(sab), (off >>> 0) >> 2, expect | 0, ms);
-    var done = (v) => { Atomics.store(HEAP32, flag >> 2, v === 'ok' ? 2 : 1); Atomics.notify(HEAP32, flag >> 2); };
+    var done = (v) => { Atomics.store(HEAP32, flag >>> 2, v === 'ok' ? 2 : 1); Atomics.notify(HEAP32, flag >>> 2); };
     if (!r.async) return r.value === 'not-equal' ? -11 : (done(r.value), 0);
     r.value.then(done);
     return 0;
@@ -161,7 +179,7 @@ var ShiroKernelLibrary = {
       // keeps them (every thread's Worker comes through here, the pool's too)
       var shiroKeep = function (d) {
         var K = Module['shiroKernel'];
-        if (d && d.shiroWjModule && K && K.keepWasm) K.keepWasm(d);
+        if (d && d.shiroWjModules && K && K.keepWasm) K.keepWasm(d.shiroWjModules);
       };
       PThread.getNewWorker = function () {
         var worker = shiroGetNewWorker.call(PThread);

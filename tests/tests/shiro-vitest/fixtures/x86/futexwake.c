@@ -11,7 +11,7 @@
 
 #define N 6
 static int word;
-static atomic_int woken;
+static atomic_int woken, arrived;
 
 static long futex(int *uaddr, int op, int val, struct timespec *ts, int v3) {
   return syscall(SYS_futex, uaddr, op, val, ts, 0, v3);
@@ -19,20 +19,30 @@ static long futex(int *uaddr, int op, int val, struct timespec *ts, int v3) {
 
 static void *waiter(void *arg) {
   (void)arg;
+  atomic_fetch_add(&arrived, 1);
   while (futex(&word, FUTEX_WAIT, 0, 0, 0) && errno == EINTR) {}
   atomic_fetch_add(&woken, 1);
   return 0;
 }
 
+// (on a loaded machine the waiters take a while to start and to count
+// themselves once woken: wait for that rather than a fixed time, then a
+// little longer, so a wake of too many would still show)
+static void settle(int want) {
+  for (int i = 0; i < 5000 && atomic_load(&woken) < want; i++) usleep(1000);
+  usleep(100000);
+}
+
 int main(void) {
   pthread_t t[N];
   for (int i = 0; i < N; i++) pthread_create(&t[i], 0, waiter, 0);
+  while (atomic_load(&arrived) < N) usleep(1000);
   usleep(300000);  // let every waiter reach FUTEX_WAIT
   long a = futex(&word, FUTEX_WAKE, 2, 0, 0);
-  usleep(200000);
+  settle(2);
   printf("wake(2)=%ld woken=%d\n", a, atomic_load(&woken));
   long b = futex(&word, FUTEX_WAKE, 1, 0, 0);
-  usleep(200000);
+  settle(3);
   printf("wake(1)=%ld woken=%d\n", b, atomic_load(&woken));
   long c = futex(&word, FUTEX_WAKE, 100, 0, 0);
   for (int i = 0; i < N; i++) pthread_join(t[i], 0);

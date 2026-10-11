@@ -14,6 +14,7 @@ import { createServerWindow } from './server-window';
 import { getShiroOrigin } from './utils/shiro-origin';
 import { copyText } from './utils/osc52';
 import { GLOBAL_GITCONFIG, formatGitConfig, parseGitConfig } from './commands/git-config';
+import { ensureGitCredentialHelper } from './git-credential';
 
 /** Client ID of the "shiro.computer" GitHub OAuth app (device flow enabled; not a secret). */
 export const GITHUB_OAUTH_CLIENT_ID = 'Ov23liznflO83ISe0lvr';
@@ -97,7 +98,9 @@ export function saveGitHubToken(token: string): void {
 
 /**
  * Fill in ~/.gitconfig user.name / user.email from the GitHub account when they
- * aren't set yet, so commits are attributed without extra setup. Returns what was set.
+ * aren't set yet, so commits are attributed without extra setup, and add gh's
+ * credential helper so the full git (`pkg install git`) pushes with the token
+ * too (git-credential.ts). Returns the identity that was set.
  */
 export async function ensureGitIdentity(
   fs: Pick<FileSystem, 'readFile' | 'writeFile'>,
@@ -106,12 +109,14 @@ export async function ensureGitIdentity(
 ): Promise<{ name?: string; email?: string }> {
   let config: Record<string, string> = {};
   try { config = parseGitConfig(await fs.readFile(GLOBAL_GITCONFIG, 'utf8') as string); } catch {}
-  if (config['user.name'] && config['user.email']) return {};
+  // (after the identity: its rewrite of the file keeps one value per key)
+  const helper = () => ensureGitCredentialHelper(fs as Parameters<typeof ensureGitCredentialHelper>[0], GLOBAL_GITCONFIG).catch(() => false);
+  if (config['user.name'] && config['user.email']) { await helper(); return {}; }
   const api = (path: string) => fetchImpl(`${getShiroOrigin()}/api/github${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
   }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   const user = await api('/user');
-  if (!user?.login) return {};
+  if (!user?.login) { await helper(); return {}; }
   const set: { name?: string; email?: string } = {};
   if (!config['user.name']) set.name = config['user.name'] = user.name || user.login;
   if (!config['user.email']) {
@@ -120,6 +125,7 @@ export async function ensureGitIdentity(
     set.email = config['user.email'] = primary?.email || user.email || `${user.id}+${user.login}@users.noreply.github.com`;
   }
   await fs.writeFile(GLOBAL_GITCONFIG, formatGitConfig(config));
+  await helper();
   return set;
 }
 
@@ -187,7 +193,7 @@ export function openGitHubLoginPanel(code: DeviceCode): { setStatus: (text: stri
     if (e.data.type === 'gh-login-cancel') { abort.abort(); win.close(); }
   };
   const win = createServerWindow({
-    mode: 'iframe', title: 'Sign in to GitHub', width: '24em', height: '22em',
+    mode: 'iframe', title: 'Sign in to GitHub', width: '24em', height: '22em', appId: 'github-signin', appName: 'GitHub Sign-in',
     onClose: () => { closed = true; window.removeEventListener('message', onMessage); if (!abort.signal.aborted) abort.abort(); },
   });
   window.addEventListener('message', onMessage);

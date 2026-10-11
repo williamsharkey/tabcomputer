@@ -1,4 +1,5 @@
 import { Command } from './index';
+import { pipeBytes } from '../utils/stream-bytes';
 
 // CRC-32 lookup table
 const crcTable = (() => {
@@ -22,43 +23,11 @@ function crc32(data: Uint8Array): number {
 }
 
 async function deflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const cs = new CompressionStream('deflate-raw');
-  const writer = cs.writable.getWriter();
-  // A corrupt stream rejects these too; the reader below reports the error
-  writer.write(data as any).catch(() => {});
-  writer.close().catch(() => {});
-  const reader = cs.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) { result.set(c, offset); offset += c.length; }
-  return result;
+  return pipeBytes(data, new CompressionStream('deflate-raw'));
 }
 
 async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream('deflate-raw');
-  const writer = ds.writable.getWriter();
-  // A corrupt stream rejects these too; the reader below reports the error
-  writer.write(data as any).catch(() => {});
-  writer.close().catch(() => {});
-  const reader = ds.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) { result.set(c, offset); offset += c.length; }
-  return result;
+  return pipeBytes(data, new DecompressionStream('deflate-raw'));
 }
 
 function writeU16(view: DataView, offset: number, val: number) { view.setUint16(offset, val, true); }
@@ -106,6 +75,8 @@ export const zipCmd: Command = {
             await addPath(resolved + '/' + child, name + '/' + child);
           }
         }
+      } else if (stat.isFIFO?.()) {
+        ctx.stderr += `zip warning: ignoring FIFO (Named Pipe) - use -FI to read: ${name}\n`; // (Info-ZIP's wording)
       } else {
         const data = await ctx.fs.readFile(resolved);
         const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);

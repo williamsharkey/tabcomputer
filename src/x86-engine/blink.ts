@@ -67,6 +67,8 @@ let wasmUrl: Promise<string | undefined> | null = null;
 let wasmModule: Promise<WebAssembly.Module | undefined> | null = null;
 function blinkWasmUrl(): Promise<string | undefined> {
   if (isNode()) return Promise.resolve(undefined);
+  // A versioned engine directory is immutable already: its own blink.wasm
+  if (typeof __BLINK_ENGINE_DIR__ === 'string' && __BLINK_ENGINE_DIR__ && !assetBase) return Promise.resolve(defaultAssetBase() + 'blink.wasm');
   return (wasmUrl ??= (async () => {
     try {
       const r = await fetch(new URL('../manifest.json', defaultAssetBase()).href, { cache: 'no-cache' });
@@ -117,7 +119,9 @@ function defaultAssetBase(): string {
     }
   }
   const base = typeof document !== 'undefined' && document.baseURI ? document.baseURI : (globalThis as any).location?.href;
-  return new URL('engines/blink/', base || 'http://localhost/').href;
+  // The build's own engine version (#18): a deploy mid-session must not mix engines
+  const dir = typeof __BLINK_ENGINE_DIR__ === 'string' && __BLINK_ENGINE_DIR__ ? __BLINK_ENGINE_DIR__ : 'engines/blink/';
+  return new URL(dir, base || 'http://localhost/').href;
 }
 
 /** True when this environment can run the Blink engine at all. */
@@ -194,6 +198,8 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
         // bash/dpkg in a 6-round A/B (docs/BENCHMARKS.md, perf-kernel round 10)
         poolWake: canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_POOL_WAKE === 'atomics' ? 'atomics' : 'message',
         restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1',
+        // the compiled modules the page has: the process doesn't post them again
+        wjKept: proc.env?.TABCOMPUTER_BLINK_WJ_KEEP === '0' ? [] : [...keptModules.keys()],
       },
     });
     return runner(proc, kernel);
@@ -206,17 +212,25 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
  * generates the same bytes for the same code, so the next process running
  * the same program (or library code it shares) gets its modules without
  * compiling them. A Blink process is its own worker, so without this its
- * modules die with it. Least recently compiled go first past
- * keepBudget() bytes of modules (TABCOMPUTER_BLINK_WJ_KEEP=0: none), and
- * all go when the page has been hidden for a while. In Chromium a module
- * costs ~5.7x its bytes in renderer memory (its compiled code): vim's
+ * modules die with it. Past keepBudget() bytes of modules
+ * (TABCOMPUTER_BLINK_WJ_KEEP=0: none; =16: 16 MiB for that process's
+ * modules, opt-in: see keepBudget) the least recently compiled go
+ * first, but not in favour of a module that keeps coming back
+ * (keepCompiledModule), and all go when the page has been
+ * hidden for a while. In Chromium a module
+ * costs ~5-7x its bytes in renderer memory (its compiled code): vim's
  * startup leaves 320 modules, 2.4 MiB of bytes, +13.6 MiB RSS, and its next
  * start takes 0.81 s instead of 1.24 s (docs/BENCHMARKS.md).
  */
 const MIB = 1 << 20;
 const WJ_HIDDEN_DROP_MS = 5 * 60_000;
 let keepBudgetBytes = 0;
-/** 6 MiB of module bytes with 8 GB of memory or more, 2 MiB with 4 GB or less (or on a phone or tablet), else 4 MiB */
+/**
+ * 6 MiB of module bytes with 8 GB of memory or more, 2 MiB with 4 GB or less
+ * (or on a phone or tablet), else 4 MiB. A module costs 5-7x its bytes in
+ * renderer memory: 16 MiB (Debian perl with a dozen modules compiles ~14 MB)
+ * held ~115 MiB more RSS than none, so it's opt-in (TABCOMPUTER_BLINK_WJ_KEEP=16)
+ */
 function keepBudget(): number {
   if (keepBudgetBytes) return keepBudgetBytes;
   const nav = (globalThis as { navigator?: { deviceMemory?: number; userAgent?: string } }).navigator;
@@ -229,29 +243,92 @@ function keepBudget(): number {
     let timer: ReturnType<typeof setTimeout> | null = null;
     doc.addEventListener('visibilitychange', () => {
       if (timer) { clearTimeout(timer); timer = null; }
-      if (doc.visibilityState === 'hidden') timer = setTimeout(() => { keptModules.clear(); keptBytes = 0; }, WJ_HIDDEN_DROP_MS);
+      if (doc.visibilityState === 'hidden') timer = setTimeout(() => { keptModules.clear(); keptBytes = 0; compiledCounts.clear(); }, WJ_HIDDEN_DROP_MS);
     });
   }
   return keepBudgetBytes;
 }
+/**
+ * The page's JavaScript heap past 60% of its limit (Chromium's
+ * performance.memory, looked at once a second at most): the kept modules
+ * shrink to the smallest tier's 2 MiB, rather than add to the pressure.
+ */
+let pressureCheckedAt = -Infinity;
+let pressure = false;
+function underMemoryPressure(): boolean {
+  const now = Date.now();
+  if (now - pressureCheckedAt < 1000) return pressure;
+  pressureCheckedAt = now;
+  const mem = (globalThis as { performance?: { memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number } } }).performance?.memory;
+  pressure = !!(mem?.usedJSHeapSize && mem.jsHeapSizeLimit && mem.usedJSHeapSize > 0.6 * mem.jsHeapSizeLimit);
+  return pressure;
+}
 const keptModules = new Map<string, { module: unknown; size: number }>();
 let keptBytes = 0;
-/** (tests) how many compiled modules the page keeps, and their bytes */
-export function keptCompiledModules(): { count: number; bytes: number } {
-  return { count: keptModules.size, bytes: keptBytes };
+/** how often each module (by key) was compiled lately, halved every WJ_AGE_EVERY */
+const compiledCounts = new Map<string, number>();
+const WJ_AGE_EVERY = 8192;
+let compiledSinceAging = 0;
+/** (tests) how many compiled modules the page keeps, their bytes, and whether it keeps `key`'s */
+export function keptCompiledModules(key?: string): { count: number; bytes: number; has: boolean } {
+  return { count: keptModules.size, bytes: keptBytes, has: key !== undefined && keptModules.has(key) };
 }
-function keepCompiledModule(key: unknown, module: unknown, size: number): void {
-  const budget = keepBudget();
-  if (typeof key !== 'string' || !module || size <= 0 || size > budget / 4) return;
-  const old = keptModules.get(key);
-  if (old) { keptModules.delete(key); keptBytes -= old.size; }
-  keptModules.set(key, { module, size });
-  keptBytes += size;
-  for (const [k, v] of keptModules) {
+/** (tests) as a Blink process's compiled module arriving; `pressure` as memory pressure would be seen */
+export function keepCompiledModuleForTest(key: string, size: number, underPressure?: boolean, ownBudget = 0): void {
+  if (underPressure !== undefined) { pressure = underPressure; pressureCheckedAt = Infinity; }
+  keepCompiledModule(key, {}, size, ownBudget);
+}
+/**
+ * Least recently compiled go first, with one exception. A program compiles
+ * its modules in the same order every run, so when they outgrow the budget,
+ * keeping the most recent ones evicts each just before the next run asks
+ * for it again (perl's 14 MB against 6 MiB kept nothing). So a module that
+ * was compiled before (and evicted since) displaces the least recent ones
+ * only if it was compiled more often than each of them: part of a big
+ * program stays across its runs. A module never seen before goes in as
+ * usual, so a new program's next run finds its modules. The counts are
+ * halved now and then, so what's no longer run fades.
+ */
+/** `module` null: one the page keeps (the process had its key), compiled again */
+function keepCompiledModule(key: unknown, module: unknown, size: number, ownBudget = 0): void {
+  const budget = Math.min(ownBudget || keepBudget(), underMemoryPressure() ? 2 * MIB : Infinity);
+  for (const [k, v] of keptModules) {  // (a budget cut by memory pressure)
     if (keptBytes <= budget) break;
     keptModules.delete(k);
     keptBytes -= v.size;
   }
+  if (typeof key !== 'string' || size <= 0 || size > budget / 4) return;
+  if (++compiledSinceAging >= WJ_AGE_EVERY || compiledCounts.size >= WJ_AGE_EVERY) {
+    compiledSinceAging = 0;
+    for (const [k, n] of compiledCounts) {
+      if (n > 1) compiledCounts.set(k, n >> 1);
+      else compiledCounts.delete(k);
+    }
+  }
+  const count = Math.min((compiledCounts.get(key) ?? 0) + 1, 255);
+  compiledCounts.set(key, count);
+  const old = keptModules.get(key);
+  if (old) {  // the same code again (V8 handed back the module it caches): now the most recent
+    keptModules.delete(key);
+    keptModules.set(key, old);
+    return;
+  }
+  if (!module) return;
+  let free = budget - keptBytes;
+  const victims: string[] = [];
+  for (const [k, v] of keptModules) {
+    if (free >= size) break;
+    // a module seen before (so evicted since) displaces only what's compiled less
+    if (count > 1 && (compiledCounts.get(k) ?? 0) >= count) return;
+    victims.push(k);
+    free += v.size;
+  }
+  for (const k of victims) {
+    keptBytes -= keptModules.get(k)!.size;
+    keptModules.delete(k);
+  }
+  keptModules.set(key, { module, size });
+  keptBytes += size;
 }
 
 /**
@@ -259,7 +336,19 @@ function keepCompiledModule(key: unknown, module: unknown, size: number): void {
  * the process the call is for: the guest's vfork child runs on this
  * worker's thread until it execs (Blink patch 0011), 0 = the guest itself.
  */
-async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayBuffer, as: number, busy: Set<SharedArrayBuffer>): Promise<boolean> {
+/**
+ * A Blink process's guest threads, for the kernel's per-thread state
+ * (/proc/PID/task/TID): proc.data.engineThreads, the tids running (Blink
+ * patch 0127 tells their start and end; the main thread's is the pid), and
+ * proc.data.engineCalls, the kernel call each is in, its arguments (the
+ * channel's 12 words: 64-bit ones as lo, hi) and since when (by the
+ * tid on the call; a call without one isn't listed).
+ */
+export interface EngineCall { nr: number; since: number; args: number[] }
+function engineCalls(proc: Process): Map<number, EngineCall> {
+  return (proc.data.engineCalls ??= new Map<number, EngineCall>()) as Map<number, EngineCall>;
+}
+async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayBuffer, as: number, busy: Set<SharedArrayBuffer>, tid = 0): Promise<boolean> {
   const i32 = new Int32Array(sab, 0, CH_DATA / 4);
   if (busy.has(sab) || Atomics.load(i32, CH_STATE) !== STATE_REQUEST) return false;
   busy.add(sab);
@@ -271,7 +360,16 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     // A call the kernel can answer from memory (stat, fstat, getpid, pipe and
     // file I/O that needn't wait) skips the async path, as WASI guests' do
     const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
-    let result = fast !== undefined ? fast : target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
+    let result = fast;
+    if (result === undefined) {
+      const calls = tid && !as ? engineCalls(proc) : null;
+      calls?.set(tid, { nr, since: Date.now(), args });
+      try {
+        result = target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
+      } finally {
+        calls?.delete(tid);
+      }
+    }
     if (!as && proc.exiting) return false;
     if (result > 0x7fffffff || result < -0x80000000) {
       i32[CH_ARGS] = Math.floor(result / 0x100000000);
@@ -367,7 +465,7 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       if (c.data.embryo && c.data.forkParent === proc.pid && !c.exiting) void kernel.exit(c, SIGKILL);
     }
   }, 1000);
-  const terminate = () => { stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
+  const terminate = () => { delete proc.data.engine; stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
   // The engine crashed (an abort or a wasm trap ends the whole instance): the
   // children it hosted died with it.
   let crashed = false;
@@ -415,7 +513,7 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
     if (m?.type === 'blink-sys') {
       const sab = pool[m.ch];
       if (sab) {
-        const served = servePoolChannel(kernel, proc, sab, m.as | 0, busy);
+        const served = servePoolChannel(kernel, proc, sab, m.as | 0, busy, m.tid | 0);
         // a kick that came first ends the call once it waits (twice: the
         // kernel may await before it starts waiting); an extra EINTR is
         // only a call again for Blink
@@ -438,7 +536,12 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         void ch.watch();
       }
     } else if (m?.type === 'blink-wjmod') {
-      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0') keepCompiledModule(m.key, m.module, m.size | 0);
+      // TABCOMPUTER_BLINK_WJ_KEEP=0: none; =<MiB> (up to 64): that budget for this process's
+      const keep = proc.env?.TABCOMPUTER_BLINK_WJ_KEEP;
+      const mib = keep ? Math.min(Number(keep) || 0, 64) : 0;
+      if (keep !== '0' && Array.isArray(m.modules)) {
+        for (const d of m.modules) keepCompiledModule(d?.key, d?.module, d?.size | 0, mib > 0 ? mib * MIB : 0);
+      }
     } else if (m?.type === 'blink-kick') {
       // A guest thread is in a kernel call with a signal to take (it came
       // between the call's start and the kernel's interrupt, or another
@@ -472,6 +575,19 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       });
     } else if (m?.type === 'blink-exiting') {
       exiting = true;
+      delete proc.data.engine;  // (so the page doesn't hold the wasm memory past the process)
+    } else if (m?.type === 'blink-thread') {
+      const threads = (proc.data.engineThreads ??= new Set<number>([proc.pid])) as Set<number>;
+      if (m.op) threads.add(m.tid | 0);
+      else { threads.delete(m.tid | 0); engineCalls(proc).delete(m.tid | 0); }
+    } else if (m?.type === 'blink-engine') {
+      // Blink's GIL state (patch 0126), for /proc/PID/status's EngineLock line:
+      // Int32Array(memory.buffer, gilAddr, 4) is the holder's tid (0: nobody),
+      // the waiters, and the times it was taken, as of at most 50 ms ago
+      // (host.mjs copies it into this buffer; not Blink's own memory, which
+      // the page would keep alive past the process)
+      if (!exiting && m.gil instanceof SharedArrayBuffer) proc.data.engine = { memory: { buffer: m.gil }, gilAddr: 0 };
+      proc.data.engineThreads ??= new Set<number>([proc.pid]);
     } else if (m?.type === 'blink-quiet') {
       if (exiting && !quiet) {
         quiet = true;

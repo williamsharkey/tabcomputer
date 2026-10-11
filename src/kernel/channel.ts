@@ -16,7 +16,7 @@
 import * as A from './abi';
 import type { Kernel } from './kernel';
 import type { OpenFile } from './fd';
-import type { Process } from './process';
+import type { Process, ThreadInfo } from './process';
 
 /** How a guest can block on a syscall here. */
 export function canBlock(): 'sab' | 'jspi' | 'none' {
@@ -731,6 +731,12 @@ export class KernelChannel {
 
   /** Thread id served by this channel (the pid for the main thread). */
   readonly tid: number;
+  /** That thread's record (proc.threads): the call in progress, for /proc/PID/task/TID */
+  private thread: ThreadInfo;
+  /** The record the call in progress started on (it keeps it if recordTid changes meanwhile) */
+  private callThread: ThreadInfo | null = null;
+  /** The process the request being served is for (opts.procOf; else proc) */
+  private cur: Process;
   private unlisten: () => void;
 
   /**
@@ -739,25 +745,78 @@ export class KernelChannel {
    * that thread, and gettid returns their tid.
    */
   constructor(readonly sab: SharedArrayBuffer, readonly kernel: Kernel, readonly proc: Process,
-    private opts: { tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean } = {}) {
+    private opts: {
+      tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean; recordTid?: number;
+      /**
+       * The process each request is for, read when it is served (Blink's
+       * hosted fork children run on the parent's Workers: a tail word names
+       * the child). Undefined: -ESRCH. Default: `proc`.
+       */
+      procOf?: () => Process | undefined;
+    } = {}) {
     // A channel can also live inside a larger buffer (Blink's direct channels
     // are in its wasm memory): `offset` bytes in, with a `size`-byte data area
     const off = opts.offset ?? 0;
     this.i32 = new Int32Array(sab, off, A.CH_DATA / 4);
     this.data = opts.size !== undefined ? new Uint8Array(sab, off + A.CH_DATA, opts.size) : new Uint8Array(sab, off + A.CH_DATA);
     this.tid = opts.tid ?? proc.pid;
+    // `recordTid`: the engine's own thread id (Blink numbers its threads and answers
+    // gettid and thread exit itself): this channel's calls show as that thread's
+    // in /proc/PID/task, without the kernel treating the channel as a thread's
+    this.thread = proc.thread(opts.recordTid || this.tid);
+    this.cur = proc;
     // `listen: false`: signals ride only on replies (Blink's direct channels:
     // host.mjs delivers the others, and an idle channel must not hold one)
-    this.unlisten = opts.listen === false ? () => {} : proc.addSignalListener(() => this.flagSignals());
+    // (with procOf too: a signal rides only on the reply to its own process's call)
+    this.unlisten = opts.listen === false || opts.procOf ? () => {} : proc.addSignalListener(() => this.flagSignals(this.proc));
   }
 
   get isThread(): boolean { return this.tid !== this.proc.pid; }
 
+  /** The process whose call the kernel is running now (opts.procOf's answer), or null */
+  get servingProc(): Process | null { return this.busy ? this.cur : null; }
+
+  /** Resolve the posted request's process (this.cur); false: there is none, answered -ESRCH */
+  private resolveTarget(): boolean {
+    if (!this.opts.procOf) return true;
+    const p = this.opts.procOf();
+    if (p) { this.cur = p; return true; }
+    this.cur = this.proc;
+    this.reply(-A.ESRCH);
+    this.repliedAt = now();
+    return false;
+  }
+
+  /** The thread record a call on this channel goes to: a hosted child's own (its tid is its pid) */
+  private recordFor(p: Process): ThreadInfo {
+    return p === this.proc ? this.thread : p.thread(p.pid);
+  }
+
+  /**
+   * The engine thread this channel serves now, for /proc/PID/task/TID (0:
+   * none, a spare): an engine that hands channels to its threads as they
+   * start sets it then, and clears it when the thread ends.
+   */
+  get recordTid(): number { return this.thread.tid === this.tid ? 0 : this.thread.tid; }
+  set recordTid(tid: number) {
+    if (tid === this.recordTid && tid !== 0) return;
+    this.dropRecord();
+    // (unowned: a record of its own, not listed)
+    this.thread = tid ? this.proc.thread(tid) : tid === 0 && this.tid !== this.proc.pid ? this.proc.thread(this.tid) : { tid: 0, nr: -1, args: [], since: 0, syscalls: 0 };
+  }
+
+  /** Remove this channel's thread record from the process (an ended engine thread) */
+  private dropRecord(): void {
+    const t = this.thread;
+    if (t.tid !== this.proc.pid && t.tid !== 0 && this.proc.threads.get(t.tid) === t) this.proc.threads.delete(t.tid);
+  }
+
   /** Move the next deliverable guest signal (kernel.takeSignal) into this channel's signal word if it is free. */
-  flagSignals(): void {
+  flagSignals(p: Process = this.cur): void {
     if (this.stopped || Atomics.load(this.i32, A.CH_SIGNAL) !== 0) return;
-    if (this.proc.pendingSignals.size === 0) return;
-    const sig = this.kernel.takeSignal(this.proc);
+    // (a reply: the signals of the process whose call it ends)
+    if (p.pendingSignals.size === 0) return;
+    const sig = this.kernel.takeSignal(p);
     if (sig) Atomics.store(this.i32, A.CH_SIGNAL, sig);
   }
 
@@ -806,16 +865,19 @@ export class KernelChannel {
    */
   serveSync(t?: number): boolean {
     if (!this.ready) return false;
+    if (!this.resolveTarget()) return true;
+    const p = this.cur;
     const nr = this.i32[A.CH_SYSNO];
     // busy while the kernel runs it: the call can wake other channels' waiters, and they mustn't re-serve this one
     this.busy = true;
     let r: number | undefined;
     try {
-      r = nr === A.SYS_gettid ? this.tid : this.kernel.syscallSync(this.proc, nr, this.loadArgs(), this.data);
+      r = nr === A.SYS_gettid ? (p === this.proc ? this.tid : p.pid) : this.kernel.syscallSync(p, nr, this.loadArgs(), this.data);
     } finally {
       this.busy = false;
     }
     if (r === undefined) return false;
+    this.recordFor(p).syscalls++;
     t ??= now();
     this.markPicked(t);
     this.reply(r);
@@ -826,6 +888,8 @@ export class KernelChannel {
 
   async handle(): Promise<void> {
     if (!this.ready || this.serveSync()) return;
+    if (!this.resolveTarget()) return;
+    const p = this.cur;
     this.busy = true;
     this.markPicked();
     const nr = this.i32[A.CH_SYSNO];
@@ -836,12 +900,14 @@ export class KernelChannel {
       this.opts.onThreadExit?.(args[0]);
       return;
     }
-    const f = this.kernel.readinessFile(this.proc, nr, args);
+    const th = this.callThread = this.recordFor(p);
+    th.nr = nr; th.args = args; th.since = Date.now(); th.syscalls++;
+    const f = this.kernel.readinessFile(p, nr, args);
     if (f) return this.waitReady(f, nr, args);
     let result: number | undefined;
     this.asyncCall = true;
     try {
-      result = await this.kernel.syscall(this.proc, nr, args, this.data);
+      result = await this.kernel.syscall(p, nr, args, this.data);
     } finally {
       this.asyncCall = false;
       this.finish(result);
@@ -851,7 +917,8 @@ export class KernelChannel {
   /** End the call in progress: reply (unless the process is gone) and update the hot-guest bookkeeping. */
   private finish(result: number | undefined): void {
     this.busy = false;
-    if (result !== undefined && !this.stopped && !this.proc.exiting) this.reply(result);
+    if (this.callThread) { this.callThread.nr = -1; this.callThread = null; }
+    if (result !== undefined && !this.stopped && !this.cur.exiting) this.reply(result);
     this.repliedAt = now();
     if (this.hot && watching.has(this)) pumpHot();
   }
@@ -866,13 +933,27 @@ export class KernelChannel {
    */
   private waitReady(f: OpenFile, nr: number, args: number[]): Promise<void> {
     return new Promise<void>(resolve => {
-      const proc = this.proc;
+      const proc = this.cur;
       const sig = proc.syscallSignal;
       let done = false;
       let off = () => {};
+      // Blocked: the process is in a syscall for /proc (S, syscall, wchan) and its kernel
+      // time, as kernel.syscall counts its calls (a fallback goes there and counts itself)
+      let t0 = 0;
+      const call = { nr, args };
+      const leave = () => {
+        if (!t0) return;
+        proc.inSyscall--;
+        const ms = Date.now() - t0;
+        if (ms >= 2) proc.kernelMs += ms;
+        const i = proc.calls.indexOf(call);
+        if (i >= 0) proc.calls.splice(i, 1);
+        t0 = 0;
+      };
       const end = (r: number | undefined, fallback = false) => {
         if (done) return;
         done = true;
+        leave();
         off();
         sig.removeEventListener('abort', onAbort);
         if (!fallback) { this.finish(r); resolve(); return; }
@@ -906,6 +987,11 @@ export class KernelChannel {
       off = f.onReady(attempt);
       sig.addEventListener('abort', onAbort, { once: true });
       attempt();
+      if (!done) {
+        t0 = Date.now();
+        if (proc.inSyscall++ === 0) proc.syscallSince = t0;
+        proc.calls.push(call);
+      }
     });
   }
 
@@ -953,6 +1039,8 @@ export class KernelChannel {
     if (this.stopped) return;
     this.stopped = true;
     this.unlisten();
+    // (an ended thread is gone from /proc/PID/task)
+    this.dropRecord();
     Atomics.store(this.i32, A.CH_STATE, A.STATE_DEAD);
     Atomics.notify(this.i32, A.CH_STATE);
   }

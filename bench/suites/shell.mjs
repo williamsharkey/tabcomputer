@@ -106,8 +106,10 @@ export async function run(h) {
   // bytes go (FileSystem.sweepContent, as CONTENT_IDLE_MS of quiet does)
   await h.try('shell.ls_la_1000.idle', 'ms', async () => h.sample('shell.ls_la_1000.idle',
     await idleTimes(h, 'ls -la /tmp/bench-ls', n, 'file-0999'), 'ms', { notes: '`ls -la` of the 1000 files after the content cache swept (idle)' }));
-  await h.try('shell.cat_1000', 'ms', async () => h.sample('shell.cat_1000',
-    await times(h, 'cat /tmp/bench-ls/* | wc -c', n, '^\\s*46995'), 'ms', { notes: '`cat` of the 1000 files (their bytes in memory)' }));
+  await h.try('shell.cat_1000', 'ms', async () => {
+    await drainFs(h); // (the files ls_la_1000 made are committed: their commit doesn't run during the timing)
+    h.sample('shell.cat_1000', await times(h, 'cat /tmp/bench-ls/* | wc -c', n, '^\\s*46995'), 'ms', { notes: '`cat` of the 1000 files (their bytes in memory)' });
+  });
   await h.try('shell.cat_1000.idle', 'ms', async () => h.sample('shell.cat_1000.idle',
     await idleTimes(h, 'cat /tmp/bench-ls/* | wc -c', n, '^\\s*46995'), 'ms', { notes: '`cat` of the 1000 files after the content cache swept (idle)' }));
   await h.try('shell.git_status_1000', 'ms', async () => {

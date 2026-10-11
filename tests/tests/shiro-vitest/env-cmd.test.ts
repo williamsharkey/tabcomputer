@@ -53,6 +53,13 @@ describe('env', () => {
     expect((await sh('env nosuchprog 2>/dev/null; echo st=$?')).out).toBe('st=127\n');
   });
 
+  it("the shell's own parameters ($?, $#, LINENO, $_) are no program's environment", async () => {
+    const keys = `node -e 'const e=process.env; console.log(["?","#","LINENO","_","FOO"].map((k) => k + "=" + (e[k] ?? "-")).join(" "))' < /dev/null`;
+    expect((await sh(`env - ${keys}`)).out).toBe('?=- #=- LINENO=- _=- FOO=-\n');
+    expect((await sh(keys)).out).toBe('?=- #=- LINENO=- _=- FOO=1\n');
+    expect((await sh('env | grep -cE "^(LINENO|_|[?#])="')).out).toBe('0\n');
+  });
+
   it('/usr/bin/env takes the same options', async () => {
     expect((await sh(`/usr/bin/env -i A=b sh -c 'echo $A $FOO'`)).out).toBe('b\n');
   });

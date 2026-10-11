@@ -189,7 +189,13 @@ export const kill: Command = {
           continue;
         }
         const [, job] = found;
-        if (job.pgid) {
+        // Without job control a job stays in this shell's process group: bash then
+        // signals the job's processes, not the group (`kill %1` killed the shell itself)
+        const ownPgid = jobControl.get(shell.kernelPid ?? shell.shellPid)?.pgid;
+        if (job.pgid && job.pgid === ownPgid) {
+          const pids = job.pids?.length ? job.pids : [job.pid ?? job.pgid];
+          if (!pids.map((p) => jobControl.kill(p, sig)).some((r) => r >= 0)) { ctx.stderr += `kill: ${t}: no such job\n`; anyFailed = true; }
+        } else if (job.pgid) {
           if (jobControl.kill(-job.pgid, sig) < 0) { ctx.stderr += `kill: ${t}: no such job\n`; anyFailed = true; }
           // A stopped job only acts on the signal once it runs again (bash continues it)
           else if (job.status === 'stopped' && terminating && sig !== sigs.SIGKILL) jobControl.kill(-job.pgid, sigs.SIGCONT);

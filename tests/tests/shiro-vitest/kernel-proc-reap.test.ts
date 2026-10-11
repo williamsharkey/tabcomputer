@@ -42,6 +42,70 @@ describe('tabcomputer#14 kernel parts', () => {
     expect((await kernel.waitpid(parent.pid, A.WNOHANG)).pid).toBe(parent.pid);
   });
 
+  it("the page's children, reaped, aren't kept for init's 30 s backstop (their workers and channels go)", async () => {
+    const { Session } = await import('node:inspector');
+    const session = new Session();
+    session.connect();
+    const gc = () => new Promise<void>((r) => session.post('HeapProfiler.collectGarbage', () => r()));
+    const refs: WeakRef<object>[] = [];
+    // (in a function of its own: the test's frame doesn't hold the last one)
+    const runOne = async () => {
+      const p = kernel.spawn({ path: 'script', cwd: '/tmp', fds: {}, run: async () => 0 });
+      p.data.channel = { sab: new SharedArrayBuffer(1 << 20) }; // what workerRunner keeps
+      refs.push(new WeakRef(p));
+      await p.wait();
+      expect((await kernel.waitpid(p.pid)).pid).toBe(p.pid);
+    };
+    for (let i = 0; i < 5; i++) await runOne();
+    for (let i = 0; i < 3; i++) { await new Promise((r) => setTimeout(r, 10)); await gc(); }
+    session.disconnect();
+    expect(refs.filter((r) => r.deref()).length).toBe(0);
+  });
+
+  it('pidfd_open: readable through epoll once the child exits (also when it exited first); pidfd_send_signal', async () => {
+    const parent = kernel.spawn({ path: 'tokio', cwd: '/tmp', fds: {}, run: hang });
+    const data = new Uint8Array(64);
+    const sys = (nr: number, args: number[]) => kernel.syscall(parent, nr, args, data);
+    const child = kernel.spawn({ path: 'git', cwd: '/tmp', fds: {}, parent, run: hang });
+    expect(child.ppid).toBe(parent.pid);
+    expect(await sys(A.SYS_pidfd_open, [child.pid, 0x40000000])).toBe(-A.EINVAL);
+    expect(await sys(A.SYS_pidfd_open, [0, 0])).toBe(-A.EINVAL);
+    expect(await sys(A.SYS_pidfd_open, [99999, 0])).toBe(-A.ESRCH);
+    const pfd = await sys(A.SYS_pidfd_open, [child.pid, A.O_NONBLOCK]);
+    expect(pfd).toBeGreaterThanOrEqual(0);
+    expect(parent.fds.getCloexec(pfd)).toBe(true);
+    expect(kernel.procfs.fsNode(`/proc/${parent.pid}/fd/${pfd}`)).toEqual({ link: 'anon_inode:[pidfd]' });
+    const ep = await sys(A.SYS_epoll_create1, [0]);
+    expect(await sys(A.SYS_epoll_ctl, [ep, A.EPOLL_CTL_ADD, pfd, A.EPOLLIN, 7, 0])).toBe(0);
+    expect(await sys(A.SYS_epoll_wait, [ep, 4, 0])).toBe(0);
+    // the child exits while the parent waits in epoll_wait (tokio's reactor)
+    const waiting = sys(A.SYS_epoll_wait, [ep, 4, 5000]);
+    await new Promise((r) => setTimeout(r, 10));
+    await kernel.exit(child, A.W_EXITCODE(3));
+    expect(await waiting).toBe(1);
+    expect(new DataView(data.buffer).getUint32(4, true)).toBe(7);
+    // then waitpid(WNOHANG) reaps it, and the pidfd stays readable
+    expect(await kernel.waitpid(child.pid, A.WNOHANG, parent)).toMatchObject({ pid: child.pid });
+    expect(await sys(A.SYS_epoll_wait, [ep, 4, 0])).toBe(1);
+    expect(await sys(A.SYS_pidfd_send_signal, [pfd, A.SIGTERM, 0, 0])).toBe(-A.ESRCH);
+
+    // a child that exits before epoll_ctl: ready at once
+    const quick = kernel.spawn({ path: 'git', cwd: '/tmp', fds: {}, parent, run: hang });
+    const qfd = await sys(A.SYS_pidfd_open, [quick.pid, 0]);
+    await kernel.exit(quick, 0);
+    const ep2 = await sys(A.SYS_epoll_create1, [0]);
+    expect(await sys(A.SYS_epoll_ctl, [ep2, A.EPOLL_CTL_ADD, qfd, A.EPOLLIN, 1, 0])).toBe(0);
+    expect(await sys(A.SYS_epoll_wait, [ep2, 4, 0])).toBe(1);
+
+    // pidfd_send_signal: a signal through the descriptor; flags must be 0; not a pidfd: EBADF
+    const victim = kernel.spawn({ path: 'sleep', cwd: '/tmp', fds: {}, parent, run: hang });
+    const vfd = await sys(A.SYS_pidfd_open, [victim.pid, 0]);
+    expect(await sys(A.SYS_pidfd_send_signal, [vfd, A.SIGKILL, 0, 1])).toBe(-A.EINVAL);
+    expect(await sys(A.SYS_pidfd_send_signal, [ep, A.SIGKILL, 0, 0])).toBe(-A.EBADF);
+    expect(await sys(A.SYS_pidfd_send_signal, [vfd, A.SIGKILL, 0, 0])).toBe(0);
+    expect(A.WTERMSIG(await victim.wait())).toBe(A.SIGKILL);
+  });
+
   it('load averages move toward the run count with 1, 5 and 15 minute windows', () => {
     const t0 = 1_000_000;
     const l = new LoadAvg(t0);

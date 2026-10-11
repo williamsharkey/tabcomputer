@@ -1,0 +1,399 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-10T22:57:45.352Z",
+  "git": {
+   "sha": "7cdc95f7ab76955f57b90413c62952d42d6ef961",
+   "short": "7cdc95f",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": false,
+  "runs": 5,
+  "machine": {
+   "id": "cfad8fbf4994",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.80GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 96,
+  "netcache": {
+   "hits": 2,
+   "misses": 0,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "kernel.syscall_rtt.sab",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 3.185,
+   "p90": 4.828,
+   "min": 2.857,
+   "max": 4.828,
+   "n": 5,
+   "samples": [
+    4.805,
+    3.185,
+    4.828,
+    2.857,
+    2.919
+   ],
+   "notes": "fd_fdstat_get → fstat from a WASM process, 20000 calls (Worker, SAB channel)"
+  },
+  {
+   "name": "kernel.memcpy_bw.wasm",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 9588,
+   "p90": 10117,
+   "min": 8866,
+   "max": 10117,
+   "n": 5,
+   "samples": [
+    9588,
+    8866,
+    9027,
+    9818,
+    10117
+   ],
+   "notes": "kbench memcpy 32 8: memory.copy (bulk memory) of a 32 MiB buffer, 8 copies after a warm-up copy, in a WASM process"
+  },
+  {
+   "name": "kernel.spawn_wait.wasm",
+   "suite": "kernel",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1.093,
+   "p90": 1.38,
+   "min": 0.85,
+   "max": 1.57,
+   "n": 10,
+   "samples": [
+    1.57,
+    1.07,
+    0.99,
+    0.85,
+    0.995,
+    1.38,
+    1.25,
+    0.985,
+    1.305,
+    1.115
+   ],
+   "notes": "kernel.spawn of kbench.wasm (cached module) → waitpid"
+  },
+  {
+   "name": "x86.blink.syscall_rt",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ns",
+   "median": 157995,
+   "p90": 173971,
+   "min": 142139,
+   "max": 173971,
+   "n": 5,
+   "samples": [
+    142139,
+    150817,
+    157995,
+    167952,
+    173971
+   ],
+   "notes": "`PBENCH_MS=500 ./pbench syscall` in Blink, guest clock (3285 ops in the last run). getppid() round trip (perf bench syscall basic)."
+  },
+  {
+   "name": "x86.blink.pipe_pingpong",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 392.7,
+   "p90": 436.1,
+   "min": 371.9,
+   "max": 436.1,
+   "n": 5,
+   "samples": [
+    392.2,
+    436.1,
+    371.9,
+    403.7,
+    392.7
+   ],
+   "notes": "`PBENCH_MS=500 ./pbench pipe` in Blink, guest clock (1198 ops in the last run). one byte each way between two processes over two pipes (perf bench sched pipe): wake-up cost."
+  },
+  {
+   "name": "x86.blink.messaging",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 572.4,
+   "p90": 578.7,
+   "min": 537.3,
+   "max": 578.7,
+   "n": 5,
+   "samples": [
+    575.5,
+    537.3,
+    572.4,
+    567.4,
+    578.7
+   ],
+   "notes": "`PBENCH_MS=500 ./pbench messaging 1 10 50` in Blink, guest clock (5000 ops in the last run). hackbench: 10 senders × 10 receivers (20 processes), 50 rounds of 100-byte pipe messages; µs per message (perf bench sched messaging -p -g 1 -l 50, fan-out of 10)."
+  },
+  {
+   "name": "x86.blink.memcpy_bw",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 598.1,
+   "p90": 610.4,
+   "min": 486.8,
+   "max": 610.4,
+   "n": 5,
+   "samples": [
+    598.6,
+    598.1,
+    486.8,
+    592.5,
+    610.4
+   ],
+   "notes": "`PBENCH_MS=500 ./pbench memcpy 32 8` in Blink, guest clock (8 ops in the last run). glibc memcpy of a 32 MiB buffer, 8 copies after a warm-up copy (perf bench mem memcpy)."
+  },
+  {
+   "name": "x86.blink.fork_exec",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 89.79,
+   "p90": 91.48,
+   "min": 84.27,
+   "max": 91.48,
+   "n": 5,
+   "samples": [
+    87.99,
+    90.92,
+    89.79,
+    91.48,
+    84.27
+   ],
+   "notes": "`PBENCH_MS=500 ./pbench forkexec` in Blink, guest clock (7 ops in the last run). fork + execv(pbench nop) + waitpid, static glibc binary."
+  },
+  {
+   "name": "x86.blink_direct.syscall_rt",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ns",
+   "median": 1370,
+   "p90": 1432,
+   "min": 1196,
+   "max": 1432,
+   "n": 5,
+   "samples": [
+    1370,
+    1397,
+    1432,
+    1196,
+    1236
+   ],
+   "notes": "`TABCOMPUTER_BLINK_DIRECT=1 PBENCH_MS=500 ./pbench syscall` in Blink, guest clock (419942 ops in the last run). getppid() round trip (perf bench syscall basic). With direct channels (TABCOMPUTER_BLINK_DIRECT=1)."
+  },
+  {
+   "name": "x86.blink_direct.pipe_pingpong",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 652.8,
+   "p90": 657.9,
+   "min": 601.1,
+   "max": 657.9,
+   "n": 5,
+   "samples": [
+    601.1,
+    608.9,
+    652.8,
+    657.8,
+    657.9
+   ],
+   "notes": "`TABCOMPUTER_BLINK_DIRECT=1 PBENCH_MS=500 ./pbench pipe` in Blink, guest clock (748 ops in the last run). one byte each way between two processes over two pipes (perf bench sched pipe): wake-up cost. With direct channels (TABCOMPUTER_BLINK_DIRECT=1)."
+  },
+  {
+   "name": "x86.blink_direct.messaging",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 594.6,
+   "p90": 613.7,
+   "min": 563.4,
+   "max": 613.7,
+   "n": 5,
+   "samples": [
+    581.1,
+    606,
+    563.4,
+    594.6,
+    613.7
+   ],
+   "notes": "`TABCOMPUTER_BLINK_DIRECT=1 PBENCH_MS=500 ./pbench messaging 1 10 50` in Blink, guest clock (5000 ops in the last run). hackbench: 10 senders × 10 receivers (20 processes), 50 rounds of 100-byte pipe messages; µs per message (perf bench sched messaging -p -g 1 -l 50, fan-out of 10). With direct channels (TABCOMPUTER_BLINK_DIRECT=1)."
+  },
+  {
+   "name": "x86.blink_direct.fork_exec",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 96.88,
+   "p90": 104.8,
+   "min": 96.12,
+   "max": 104.8,
+   "n": 5,
+   "samples": [
+    96.12,
+    104.8,
+    100.9,
+    96.88,
+    96.38
+   ],
+   "notes": "`TABCOMPUTER_BLINK_DIRECT=1 PBENCH_MS=500 ./pbench forkexec` in Blink, guest clock (6 ops in the last run). fork + execv(pbench nop) + waitpid, static glibc binary. With direct channels (TABCOMPUTER_BLINK_DIRECT=1)."
+  },
+  {
+   "name": "x86.native.syscall_rt",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ns",
+   "median": 99.7,
+   "p90": 105.3,
+   "min": 95,
+   "max": 105.3,
+   "n": 5,
+   "samples": [
+    99.7,
+    105.3,
+    95,
+    99,
+    103.9
+   ],
+   "notes": "native reference: `pbench syscall` on this machine's Linux, no emulator. getppid() round trip (perf bench syscall basic)."
+  },
+  {
+   "name": "x86.native.pipe_pingpong",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 36.46,
+   "p90": 37.92,
+   "min": 20.38,
+   "max": 37.92,
+   "n": 5,
+   "samples": [
+    20.38,
+    31.8,
+    36.49,
+    36.46,
+    37.92
+   ],
+   "notes": "native reference: `pbench pipe` on this machine's Linux, no emulator. one byte each way between two processes over two pipes (perf bench sched pipe): wake-up cost."
+  },
+  {
+   "name": "x86.native.pipe_pingpong_1cpu",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 3.158,
+   "p90": 3.775,
+   "min": 3.004,
+   "max": 3.775,
+   "n": 5,
+   "samples": [
+    3.775,
+    3.158,
+    3.102,
+    3.455,
+    3.004
+   ],
+   "notes": "native reference: `pbench pipe` on this machine's Linux, no emulator. one byte each way between two processes over two pipes (perf bench sched pipe): wake-up cost. Pinned to one CPU (taskset -c 0)."
+  },
+  {
+   "name": "x86.native.messaging",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 0.854,
+   "p90": 1.916,
+   "min": 0.722,
+   "max": 1.916,
+   "n": 5,
+   "samples": [
+    0.739,
+    1.916,
+    0.901,
+    0.722,
+    0.854
+   ],
+   "notes": "native reference: `pbench messaging 1 10 50` on this machine's Linux, no emulator. hackbench: 10 senders × 10 receivers (20 processes), 50 rounds of 100-byte pipe messages; µs per message (perf bench sched messaging -p -g 1 -l 50, fan-out of 10)."
+  },
+  {
+   "name": "x86.native.memcpy_bw",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MB/s",
+   "median": 8896,
+   "p90": 9975,
+   "min": 8111,
+   "max": 9975,
+   "n": 5,
+   "samples": [
+    8111,
+    8667,
+    9975,
+    8948,
+    8896
+   ],
+   "notes": "native reference: `pbench memcpy 32 8` on this machine's Linux, no emulator. glibc memcpy of a 32 MiB buffer, 8 copies after a warm-up copy (perf bench mem memcpy)."
+  },
+  {
+   "name": "x86.native.fork_exec",
+   "suite": "x86",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1.455,
+   "p90": 1.54,
+   "min": 1.452,
+   "max": 1.54,
+   "n": 5,
+   "samples": [
+    1.454,
+    1.452,
+    1.54,
+    1.455,
+    1.477
+   ],
+   "notes": "native reference: `pbench forkexec` on this machine's Linux, no emulator. fork + execv(pbench nop) + waitpid, static glibc binary."
+  }
+ ]
+}

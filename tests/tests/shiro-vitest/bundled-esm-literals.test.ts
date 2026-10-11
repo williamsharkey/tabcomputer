@@ -58,3 +58,24 @@ describe('bundled ESM transform in linear time', () => {
     expect(out.trimEnd().endsWith('await main();')).toBe(true);
   });
 });
+
+// A pooled node worker runs `claude` again and again: the bundle prelude's
+// unhandledrejection handler held each run's module graph from the global
+describe('bundle prelude rejection handler', () => {
+  it('is one handler for the global, not a closure over each run', () => {
+    const src = 'var __commonJS=(cb,mod)=>()=>(mod||cb((mod={exports:{}}).exports,mod),mod.exports);\nvar big = { run: 1 };\n';
+    const out = transformBundledESM(src);
+    expect(out).not.toContain('_rejHandler=function');
+    const prelude = out.slice(0, out.indexOf('var __commonJS'));
+    const listeners: unknown[] = [];
+    const g: any = { addEventListener: (type: string, fn: unknown) => { if (type === 'unhandledrejection' && !listeners.includes(fn)) listeners.push(fn); } };
+    // (run twice with a globalThis of its own, as two runs in one worker)
+    for (let i = 0; i < 2; i++) new Function('globalThis', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', prelude)(g, setTimeout, setInterval, clearTimeout, clearInterval);
+    expect(listeners).toHaveLength(1);
+    const handler = listeners[0] as (e: unknown) => void;
+    let prevented = 0;
+    handler({ reason: { _isProcessExit: true }, preventDefault: () => { prevented++; } });
+    handler({ reason: new Error('other'), preventDefault: () => { prevented++; } });
+    expect(prevented).toBe(1);
+  });
+});

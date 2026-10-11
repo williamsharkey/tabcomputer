@@ -6,6 +6,7 @@
  * runtimes, `toolchain install`), Storage (browser quota, persistence), About.
  */
 
+import { restoreEnabled, setRestoreEnabled } from '../session';
 import { keybarMode, setKeybarMode, type KeybarMode } from '../mobile';
 import type { AppContext } from '../index';
 import type { DesktopWindow } from '../wm';
@@ -31,7 +32,7 @@ const PERSON_D = 'M12 4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 1 0 0-7.2zM5 20c.8-3.8 3.6
 /** Panes in sidebar groups; `words` widen the search */
 const PANES = [
   { id: 'accounts', label: 'Accounts', group: 0, icon: paneIcon(PERSON_D, '#2f7cf6'), words: 'account sign in sign out login logout github claude code subscription plan credentials' },
-  { id: 'appearance', label: 'Appearance', group: 1, icon: paneIcon(SUN_D, '#2b2b30'), words: 'theme light dark mode system keys keyboard motion classic terminal' },
+  { id: 'appearance', label: 'Appearance', group: 1, icon: paneIcon(SUN_D, '#2b2b30'), words: 'theme light dark mode system keys keyboard motion classic terminal restore session reload' },
   { id: 'dock', label: 'Dock & Icons', group: 1, icon: paneIcon(DOCK_D, '#5b4fd6'), words: 'icon icons set theme drafting classic pearl glass foil vaporwave aurora clay swiss brutalist risograph one-bit pixel paper' },
   { id: 'network', label: 'Network', group: 2, icon: paneIcon(glyphFor('browser')!, '#1f9d8b'), words: 'internet relay github sign in account connection tcp' },
   { id: 'toolchains', label: 'Toolchains', group: 2, icon: paneIcon(CODE_D, '#e07a1f'), words: 'install compiler gcc c c++ python node java latex tex fortran cobol pascal ada debian apt programming languages' },
@@ -116,6 +117,10 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
         <div class="sd-seg" role="radiogroup" aria-label="Extra keys">
           <button data-keybar="off" role="radio">Off</button><button data-keybar="auto" role="radio">Auto</button><button data-keybar="pinned" role="radio">Always</button>
         </div></div></div>` : ''}
+      <div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Restore session on reload<div class="sd-small sd-muted">Terminals come back with their folder, variables and scrollback, and the windows that were open. A command that was running is offered again, not run (servers and Claude Code resume).</div></span>
+        <div class="sd-seg" role="radiogroup" aria-label="Restore session on reload">
+          <button data-restore="1" role="radio">On</button><button data-restore="0" role="radio">Off</button>
+        </div></div></div>
       <div class="sd-card"><div class="sd-row"><span class="sd-grow">Classic full-page terminal<div class="sd-small sd-muted">The terminal-first layout, without the desktop. Come back with <code>?ui=desktop</code>.</div></span>
         <button class="sd-btn" data-act="classic">Switch</button></div></div>
       <h3>Motion</h3>
@@ -132,6 +137,13 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       b.classList.toggle('sd-active', on);
       b.setAttribute('aria-checked', String(on));
       b.addEventListener('click', () => { setKeybarMode(b.dataset.keybar as KeybarMode); appearance(); });
+    }
+    const restoreOn = restoreEnabled();
+    for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-restore]')) {
+      const on = (b.dataset.restore === '1') === restoreOn;
+      b.classList.toggle('sd-active', on);
+      b.setAttribute('aria-checked', String(on));
+      b.addEventListener('click', () => { setRestoreEnabled(b.dataset.restore === '1'); appearance(); });
     }
     panel.querySelector('[data-act=classic]')!.addEventListener('click', () => {
       try { localStorage.setItem('tabcomputer-ui', 'terminal'); } catch {}

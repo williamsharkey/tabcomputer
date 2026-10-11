@@ -21,6 +21,7 @@ import { ICONS, GLYPHS, appIcon } from './icons';
 import { TerminalView, takeParkedMain, hasParkedMain, applyTerminalTheme, useMonoFont, allTerminalViews, terminalTheme, TERMINAL_FONT } from './terminal-app';
 import { initNetwork } from './network';
 import { loadSession, place, restoreSession, trackSession } from './session';
+import { previousLoadWedge } from '../watchdog';
 import { BRAND } from '../brand';
 import { DEV_GROUPS, DEV_TOOLS, TOOL_PATH, launchScript, type DevTool } from './devtools';
 import { setClaudeSignInUI } from '../claude-signin-ui';
@@ -609,7 +610,15 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   };
   const menus = (): MenuSpec[] => {
     const w = wm.focused();
+    // Code (the editor, src/commands/code-editor.ts): opening files first, where people look for it
+    const codeDir = w?.appId === 'code' ? (w as { codeDir?: string }).codeDir : undefined;
+    const codeItems: MenuSpec['items'] = w?.appId === 'code' ? [
+      { label: 'Open…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'file', codeDir)) },
+      { label: 'Open Folder…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'folder', codeDir)) },
+      'separator',
+    ] : [];
     const file: MenuSpec = { title: 'File', items: [
+      ...codeItems,
       { label: 'New Terminal Window', shortcut: 'Alt+Shift+Enter', action: () => openTerminal({ cwd: '/home/user' }) },
       { label: 'New Tab', shortcut: 'Alt+Shift+T', disabled: !termView(), action: () => termView()?.newTab() },
       { label: 'New Files Window', shortcut: 'Alt+Shift+F', action: () => void wm.openApp('files') },
@@ -832,10 +841,25 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
           // xterm measured the fallback if the font arrived after it was created
           .then(() => fontsAtBoot ? undefined : useMonoFont(terms)));
       }
-      hold(restoreSession(wm, session, openTerminal).finally(() => {
-        // The main terminal keeps focus (and the menu bar its app name)
-        first.win.focus();
-        trackSession(wm);
+      let restoredFocus: DesktopWindow | null = null;
+      // A fresh shell's environment: what a restored terminal's exported variables differ from
+      const baseEnv = { ...deps.shell.env };
+      const runCmd = (cmd: string, cwd: string) => {
+        const sh = deps.makeShell();
+        sh.cwd = cwd;
+        void sh.execute(cmd, () => {}, () => {});
+      };
+      // A load after one that froze doesn't restore (a session that freezes on restore can't loop)
+      const restore = !session.length ? Promise.resolve(null) : previousLoadWedge(400).then((wedge) => {
+        if (!wedge) return restoreSession(wm, session, { openTerminal, run: runCmd });
+        term.writeOutput('\x1b[2mThe last load of this tab froze: its windows were not reopened (safe-mode reset-layout forgets them).\x1b[0m\r\n');
+        return null;
+      });
+      hold(restore.catch(() => null).then((focused) => {
+        // The window that had the focus gets it back (and the menu bar its app name); else the main terminal
+        restoredFocus = focused;
+        (focused ?? first.win).focus();
+        trackSession(wm, baseEnv);
       }));
       const reveal = () => {
         if (revealed) return;
@@ -845,7 +869,9 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         void root.offsetHeight; // settle those styles while transitions are still off
         root.classList.remove('sd-booting');
         document.getElementById('boot-mark')?.remove();
-        term.term.focus();
+        // the keyboard goes to the focused window (a DOM focus on the main terminal would raise it)
+        if (restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed') restoredFocus.focus();
+        else term.term.focus();
         performance.mark('shiro:desktop:revealed');
         // A first visit gets the tour
         // A first visit gets the welcome (welcome.ts, loaded only until it's dismissed)

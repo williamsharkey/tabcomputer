@@ -239,6 +239,32 @@ describe('kernel pty: packet mode and the controlling tty (screen)', () => {
     expect(pty.sid).toBe(leader.sid);
     kernel.kill(leader.pid, A.SIGKILL);
   });
+
+  // tabcomputer#41: Claude Code drains stdin with open("/dev/tty", O_RDONLY|O_NONBLOCK)
+  // and reads until EAGAIN; /dev/tty handed back the session's shared (blocking)
+  // description, so the read waited for a key forever.
+  it('/dev/tty opens a description of its own, with the open flags (O_NONBLOCK)', async () => {
+    const { fs, shell } = await createTestShell();
+    const kernel = new Kernel({ fs, shell, registerWithProcessTable: false });
+    attachKernelTty(kernel);
+    const { pty, slave } = openpty({ jc: jobControl });
+    const proc = kernel.spawn({ path: 'claude', fds: { 0: slave, 1: slave, 2: slave }, setsid: true, run: () => new Promise<number>(() => {}) } as any);
+    proc.ctty = slave;
+    const tty = await kernel.open(proc, '/dev/tty', A.O_RDONLY | A.O_NONBLOCK) as PtyFile;
+    expect(typeof tty).not.toBe('number');
+    expect(tty).not.toBe(slave);
+    expect(tty.flags & A.O_NONBLOCK).toBeTruthy();
+    expect(slave.flags & A.O_NONBLOCK).toBeFalsy();
+    pty.setTermios(makeRaw(pty.termios));
+    expect(await tty.read(new Uint8Array(16))).toBe(-A.EAGAIN);
+    pty.input('x');
+    expect(await readStr(tty)).toBe('x');
+    // closing it leaves the session's tty open
+    await tty.close();
+    pty.input('y');
+    expect(await readStr(slave)).toBe('y');
+    kernel.kill(proc.pid, A.SIGKILL);
+  });
 });
 
 describe('kernel signals', () => {

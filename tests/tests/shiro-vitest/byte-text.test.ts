@@ -107,4 +107,22 @@ describe('binary data through string-stdio commands', () => {
     await p.wait();
     expect(out.bytes()).toEqual(every);
   });
+
+  // A command's stdin is a string (ctx.stdin): x86, WASM and node programs got
+  // U+FFFD for every byte that isn't UTF-8 (`git index-pack --stdin < pack`)
+  it('a kernel stdin given as a string reads back the bytes it stands for', async () => {
+    const stdin = new BufferFile(decodeBytes(every), 0);
+    const got = new Uint8Array(every.length + 16);
+    let n = 0;
+    for (let r; (r = await stdin.read(got.subarray(n))) > 0;) n += r;
+    expect(got.subarray(0, n)).toEqual(every);
+    const open = new BufferFile(null, 0, { open: true });
+    open.push(decodeBytes(Uint8Array.from([0x80, 0xff, 0xfe])));
+    open.end();
+    const buf = new Uint8Array(8);
+    expect(buf.subarray(0, await open.read(buf))).toEqual(Uint8Array.from([0x80, 0xff, 0xfe]));
+    const out = new BufferFile(null);
+    await out.write(every);
+    expect(encodeText(out.text())).toEqual(every);
+  });
 });

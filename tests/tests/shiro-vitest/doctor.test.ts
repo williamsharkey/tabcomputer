@@ -34,7 +34,7 @@ describe('doctor', () => {
   it('warns when this tab was built from another commit than the server deployed (reload)', async () => {
     vi.stubGlobal('__BUILD_SHA__', 'fedcba9876543210fedcba9876543210fedcba98');
     const { out } = await doctor();
-    expect(out).toMatch(/^WARN\s+build\s+#\d+ · this tab fedcba987654, server 0123456789ab \(reload to update\)/m);
+    expect(out).toMatch(/^WARN\s+build\s+#\d+ · this tab fedcba987654, server 0123456789ab: x86 programs may fail until you reload this tab/m);
   });
 
   it('prints one status line per check, never a token', async () => {
@@ -43,7 +43,7 @@ describe('doctor', () => {
     for (const l of lines) expect(l).toMatch(/^(OK|WARN|FAIL|INFO)\s+\S/);
     const label = (name: string) => lines.find((l) => new RegExp(`^\\S+\\s+${name}\\s`).test(l)) ?? '';
     expect(label('build')).toMatch(/^OK\s+build\s+#\d+ · deploy 0123456789ab/);
-    expect(label('x86 engine')).toMatch(/blink\.wasm .* sha256 [0-9a-f]{12} · same-instance fork on \(default\)/);
+    expect(label('x86 engine')).toMatch(/^OK\s+x86 engine\s+Blink · blink\.wasm .* sha256 [0-9a-f]{12} · a static program ran \(exit 0, \d+ ms\) · same-instance fork on \(default\)/);
     expect(label('relay token')).toMatch(/^OK .*→ 200/);
     expect(label('tcp connect')).toMatch(/example\.com:443/);
     expect(label('github')).toMatch(/^OK\s+github\s+gh: logged in to github\.com as octocat/);
@@ -62,7 +62,7 @@ describe('doctor', () => {
       throw new Error('offline');
     });
     expect(out).toMatch(/^WARN\s+build\s+.*\/deployed\.txt unreachable/m);
-    expect(out).toMatch(/^FAIL\s+github\s+gh: token rejected \(HTTP 401\)/m);
+    expect(out).toMatch(/^FAIL\s+github\s+gh: token rejected \(HTTP 401\): sign in again with the globe icon in the menu bar, or gh auth login/m);
     expect(out).toMatch(/^FAIL\s+relay token\s+request failed: offline/m);
     expect(code).toBe(1);
     expect(out).not.toContain(SECRET);

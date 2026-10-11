@@ -40,11 +40,11 @@ describe('execve from a multithreaded program', () => {
     expect(await runProg(bin1)).toBe('before exec tasks=1\nafter exec tasks=1\nrc 0\n');
   }, 90_000);
 
-  // Known bug (Build 966): the exec traps in Blink ("prog: memory access out of
-  // bounds", status 1) and the new image never runs. it.fails until it's fixed
-  // (then this flips: make it a plain it).
-  it.fails.skipIf(!built)('ends the other threads; the new image runs with one', async () => {
-    // (/proc/self/task lists only the main thread before perf-kernel's per-thread /proc)
-    expect(await runProg(bin)).toMatch(/^before exec tasks=[14]\nafter exec tasks=1\nrc 0\n$/);
+  // Build 966 trapped here ("prog: memory access out of bounds"): the thread
+  // blocked in read() never saw it was killed, and the exec freed memory under
+  // it (Blink patch 0128)
+  it.skipIf(!built)('ends the other threads; the new image runs with one', async () => {
+    // (/proc/self/task before the exec: 1 without per-thread /proc, up to 4 with it, depending on which threads have made a kernel call yet)
+    expect(await runProg(bin)).toMatch(/^before exec tasks=[1-4]\nafter exec tasks=1\nrc 0\n$/);
   }, 90_000);
 });

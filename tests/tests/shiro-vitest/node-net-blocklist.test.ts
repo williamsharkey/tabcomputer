@@ -46,8 +46,12 @@ describe('net.BlockList', () => {
     }
     const l = new net.BlockList();
     l.addSubnet('1.2.3.4', 32);
-    l.addSubnet('::', 0, 'ipv6');
-    expect([l.check('1.2.3.4'), l.check('1.2.3.5'), l.check('2001:db8::1', 'ipv6')]).toEqual([true, false, true]);
+    l.addSubnet('2001:db8::', 32, 'ipv6');
+    expect([l.check('1.2.3.4'), l.check('1.2.3.5'), l.check('2001:db8::1', 'ipv6'), l.check('2001:db9::1', 'ipv6')]).toEqual([true, false, true, false]);
+    // ::/0 covers IPv4 too, through the mapped form (as Node v26 does)
+    const all = new net.BlockList();
+    all.addSubnet('::', 0, 'ipv6');
+    expect([all.check('1.2.3.5'), all.check('::ffff:1.2.3.5', 'ipv6'), all.check('2001:db8::1', 'ipv6')]).toEqual([true, true, true]);
   });
 
   it('checks arguments as Node does', () => {

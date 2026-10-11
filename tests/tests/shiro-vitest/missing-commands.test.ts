@@ -557,6 +557,38 @@ describe('Missing Commands (Claude Code compat)', () => {
       expect(exitCode).toBe(1);
     });
 
+    it('takes short flags together: -qr is -q -r, and -q prints nothing (#60)', async () => {
+      await fs.mkdir('/tmp/zip60/sub', { recursive: true });
+      await fs.writeFile('/tmp/zip60/a.txt', 'a');
+      await fs.writeFile('/tmp/zip60/sub/b.txt', 'b');
+      const { zipCmd: zc, unzipCmd: uzc } = await import('@shiro/commands/zip');
+      const ctx = (args: string[]) => ({ args, fs, cwd: '/tmp', env: {}, stdin: '', stdout: '', stderr: '', shell });
+      for (const flags of [['-qr'], ['-rq'], ['-q', '-r'], ['--quiet', '--recurse-paths']]) {
+        const out = `/tmp/zip60-${flags.join('')}.zip`;
+        const z = ctx([...flags, out, 'zip60']);
+        expect(await zc.exec(z), flags.join(' ')).toBe(0);
+        expect(z.stdout, flags.join(' ')).toBe(''); // quiet
+        const l = ctx(['-l', out]);
+        expect(await uzc.exec(l)).toBe(0);
+        expect(l.stdout, flags.join(' ')).toContain('zip60/a.txt');
+        expect(l.stdout, flags.join(' ')).toContain('zip60/sub/b.txt');
+      }
+      // without -q it still says what it added
+      const loud = ctx(['-r', '/tmp/zip60-loud.zip', 'zip60']);
+      expect(await zc.exec(loud)).toBe(0);
+      expect(loud.stdout).toContain('adding: 2 files');
+    });
+
+    it('a directory without -r is "Nothing to do!", not an empty archive (#60)', async () => {
+      await fs.mkdir('/tmp/zip60e/d', { recursive: true });
+      await fs.writeFile('/tmp/zip60e/d/x.txt', 'x');
+      const { zipCmd: zc } = await import('@shiro/commands/zip');
+      const z = { args: ['/tmp/zip60e/out.zip', '/tmp/zip60e/d'], fs, cwd: '/tmp', env: {}, stdin: '', stdout: '', stderr: '', shell };
+      expect(await zc.exec(z)).toBe(12); // Info-ZIP's "nothing to do" status
+      expect(z.stderr).toContain('Nothing to do!');
+      expect(await fs.exists('/tmp/zip60e/out.zip')).toBe(false);
+    });
+
     it('should fail with invalid archive', async () => {
       const { exitCode } = await run(shell, 'unzip');
       expect(exitCode).toBe(1);

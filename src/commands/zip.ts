@@ -41,13 +41,21 @@ export const zipCmd: Command = {
   async exec(ctx) {
     let outputFile = '';
     let recursive = false;
+    let quiet = false;
     const inputPaths: string[] = [];
 
     let i = 0;
     while (i < ctx.args.length) {
       const arg = ctx.args[i];
-      if (arg === '-r' || arg === '--recurse-paths') recursive = true;
-      else if (!arg.startsWith('-')) {
+      if (arg === '--recurse-paths') recursive = true;
+      else if (arg === '--quiet') quiet = true;
+      else if (/^-[^-]/.test(arg)) {
+        // Short flags, alone or together: -qr is -q -r (it was taken for neither, #60)
+        for (const f of arg.slice(1)) {
+          if (f === 'r') recursive = true;
+          else if (f === 'q') quiet = true;
+        }
+      } else if (!arg.startsWith('-')) {
         if (!outputFile) outputFile = arg;
         else inputPaths.push(arg);
       }
@@ -91,6 +99,12 @@ export const zipCmd: Command = {
     } catch (e: any) {
       ctx.stderr = `zip: ${e.message}\n`;
       return 1;
+    }
+
+    // Nothing to put in it (a directory without -r): Info-ZIP's error, not an empty archive
+    if (entries.length === 0) {
+      ctx.stderr += `zip error: Nothing to do! (${outputFile})${!recursive ? ' (a directory needs -r)' : ''}\n`;
+      return 12;
     }
 
     // Build ZIP file
@@ -172,7 +186,7 @@ export const zipCmd: Command = {
     zipData.set(new Uint8Array(eocd), pos);
 
     await ctx.fs.writeFile(resolvedOutput, zipData);
-    ctx.stdout = `  adding: ${entries.length} files to ${outputFile}\n`;
+    if (!quiet) ctx.stdout = `  adding: ${entries.length} files to ${outputFile}\n`;
     return 0;
   },
 };

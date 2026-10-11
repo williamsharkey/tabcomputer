@@ -2123,28 +2123,31 @@ export class FileSystem {
    */
   private _canonDirs = new Map<string, string>();
 
-  private _lookupWalk(path: string, follow: boolean): { path: string; node: FSNode } | null | undefined {
+  private _lookupWalk(path: string, follow: boolean, hops = { n: 0 }): { path: string; node: FSNode } | null | undefined {
     // Symlinks in directory components are followed, as _canon does
     const parts = path.split('/').filter(Boolean);
     let cur = '';
-    let hops = 0;
     for (let i = 0; i < parts.length; i++) {
       if (parts[i] === '.' || parts[i] === '..') { cur = this.resolvePath(`${cur}/${parts[i]}`, '/'); continue; }
-      let next = `${cur}/${parts[i]}`;
+      const next = `${cur}/${parts[i]}`;
       const last = i === parts.length - 1;
-      for (;;) {
-        const node = this._getCached(next);
-        if (!node) return node; // missing (null) or unknown here (undefined)
-        if (node.type !== 'symlink' || (last && !follow)) {
-          if (last) return { path: next, node };
-          if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
-          break;
-        }
-        if (++hops > 40) return undefined;
-        const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
-        next = target.startsWith('/') ? this.resolvePath(target, '/') : this.resolvePath(target, cur || '/');
+      const node = this._getCached(next);
+      if (!node) return node; // missing (null) or unknown here (undefined)
+      if (node.type !== 'symlink' || (last && !follow)) {
+        if (last) return { path: next, node };
+        if (node.type !== 'dir') return undefined; // ENOTDIR: let stat() say so
+        cur = next;
+        continue;
       }
-      cur = next;
+      if (++hops.n > 40) return undefined;
+      // the target is walked like any path, relative to the link's own directory: it may be another
+      // link (liblapack.so.3 → /…/lapack/liblapack.so.3 → liblapack.so.3.11.0) or pass through linked directories
+      const target = node.symlinkTarget || new TextDecoder().decode(node.content!);
+      const r = this._lookupWalk(target.startsWith('/') ? target : this.resolvePath(target, cur || '/'), true, hops);
+      if (!r) return r;
+      if (last) return r;
+      if (r.node.type !== 'dir') return undefined;
+      cur = r.path === '/' ? '' : r.path;
     }
     const root = this._getCached('/');
     return root ? { path: '/', node: root } : root;

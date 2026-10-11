@@ -158,8 +158,8 @@ ${bootSection(ctx, name)}
 
 - Real Debian: \`debian install\` streams in Debian 13, then \`sudo apt update\` (about
   45 s) and \`sudo apt install -y NAME\` (Debian's own apt and dpkg, x86-64 in the
-  emulator: about a minute for a small package, python3 about 4 minutes). 496 of
-  popcon's top 500 packages pass a smoke test.
+  emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
+  popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\`
   or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
@@ -264,7 +264,8 @@ reload would end your session). The loop:
   froze, when it runs again. \`hotswap revert --all\` undoes everything now.
 - Classes and registry commands are patched in place, so existing shells run
   the new methods. A changed free function isn't, for modules that already
-  imported it; \`--wait\` says so. ~/tabcomputer/docs/HOTSWAP.md has the details.
+  imported it; \`--wait\` says so. ~/tabcomputer/docs/HOTSWAP.md has the details, and
+  ~/tabcomputer/docs/DEVELOP_IN_TAB.md walks through it, up to reporting a fix.
 - \`hotswap test\` runs vitest suites in this tab; their node:fs is an
   in-memory copy of the checkout. \`hotswap push\` uses your own \`gh auth login\`.
 

@@ -13,6 +13,7 @@ import { gitPlumbing, changeSummary, stagedCount, statusText, gitDate, unmergedP
 import { packageShadows } from '../pkg-manager';
 import { installPackIndexer } from '../git-pack-indexer';
 import { builtinCloneHandles } from './git-clone-route';
+import { githubCloneSize, githubRepo, pageCloneLimit, mb } from './git-clone-size';
 import { splitShortOptions, unknownOption, realGit, PREFER_REAL } from './git-route';
 import { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig } from './git-config';
 
@@ -497,6 +498,22 @@ async function gitMain(ctx: CommandContext): Promise<number> {
 
           const corsProxy = ctx.env['GIT_CORS_PROXY'] || `${getShiroOrigin()}/git-proxy`;
           const token = ctx.env['GITHUB_TOKEN'] || (typeof localStorage !== 'undefined' ? localStorage.getItem('tabcomputer_github_token') || '' : '');
+          // Too big for the page (#43): the full git, in its own worker, or a hint, never a frozen tab
+          const limit = pageCloneLimit(ctx.env);
+          const size = limit ? await githubCloneSize(url, { shallow: cloneDepth !== undefined, ref: cloneBranch, token, below: limit }) : null;
+          if (size && size.bytes > limit) {
+            await undo();
+            const why = `${url} is about ${mb(size.bytes)} ${size.what}, more than the built-in clone can hold in this page (TABCOMPUTER_GIT_CLONE_MAX_MB=${limit / 1e6})`;
+            if (asFullGit) {
+              ctx.stderr = `(git: ${why}; the full git does it)\n`;
+              const code = await realGit(ctx, argv, cwd0);
+              if (code !== null) return code;
+            }
+            ctx.stderr = `fatal: ${why}\n`
+              + 'hint: `pkg install git` and clone again: the full git runs in its own worker\n'
+              + `hint: or read just the files you need: gh api repos/${githubRepo(url)}/contents/PATH\n`;
+            return 128;
+          }
           try {
             await Promise.race([
               git.clone({

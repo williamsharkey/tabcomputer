@@ -336,12 +336,22 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
   // SIGINT, or the signal the abort names (timeout -s SIG -k DURATION)
   const abort = opts.abort !== undefined ? opts.abort : shell.abortController;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
+  // A hosted shell's job that stayed in the host's process group (a program's `sh -c` child)
+  // shares that group with the program that started the shell, and with whatever it runs in:
+  // signal the job's processes, not the group. When such a shell was killed, its end (this
+  // abort) SIGINTed the group: the program that spawned it, and the agent's command around
+  // that program, died with it (#90)
+  const inHostGroup = !!host && host.pgid === pgid;
+  const signalProcs = (sig: number) => {
+    if (inHostGroup) { for (const p of procs) if (p.alive) kernel.kill(p.pid, sig); }
+    else kernel.kill(-pgid, sig);
+  };
   const signalJob = (reason: { signal?: number; killAfter?: number; groupSignalled?: number } | undefined) => {
     // (`kill -- -PGID` to an in-page job: the kernel has signalled this group already)
-    if (reason?.groupSignalled !== pgid) kernel.kill(-pgid, typeof reason?.signal === 'number' ? reason.signal : A.SIGINT);
+    if (reason?.groupSignalled !== pgid) signalProcs(typeof reason?.signal === 'number' ? reason.signal : A.SIGINT);
     if (typeof reason?.killAfter === 'number') {
       clearTimeout(killTimer);
-      killTimer = setTimeout(() => { if (procs.some((p) => p.alive)) kernel.kill(-pgid, A.SIGKILL); }, reason.killAfter);
+      killTimer = setTimeout(() => { if (procs.some((p) => p.alive)) signalProcs(A.SIGKILL); }, reason.killAfter);
     }
   };
   const onAbort = () => signalJob(abort?.signal.reason as { signal?: number; killAfter?: number } | undefined);

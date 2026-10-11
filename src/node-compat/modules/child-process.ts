@@ -249,7 +249,9 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
    */
   const execAsync = async (cmd: string, env?: Record<string, unknown>, input?: string, live?: Live, inherit?: [boolean, boolean, boolean], abort?: AbortController,
     /** a kernel guest's spawn() without a shell: the program itself, as node runs it (its kill() reaches it) */
-    direct?: { argv: string[]; cwd?: string }): Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }> => {
+    direct?: { argv: string[]; cwd?: string },
+    /** a kernel guest's child: its pid once it runs (exec()'s child.pid) */
+    onPid?: (pid: number) => void): Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }> => {
     let normalized = stripShellPrefix(cmd);
     // Strip leading shell flags (-l, -i, -e) that leak through from spawn args
     normalized = normalized.replace(/^(-[a-zA-Z]+\s+)+/, '');
@@ -277,6 +279,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         // child.kill(): the signal to the child (its stdin, without control, ends with the input)
         ...(abort ? { control: (c: import('../../node-worker/child').ChildControl) => {
           c.end();
+          onPid?.(c.pid);
           const kill = () => c.kill((abort.signal.reason as { signal?: number } | undefined)?.signal ?? 15);
           if (abort.signal.aborted) kill(); else abort.signal.addEventListener('abort', kill, { once: true });
         } } : {}),
@@ -596,6 +599,34 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     }));
     return child;
   };
+  /** kill() for a child execAsync runs with `killer`: the signal to it (#89, #90); `sent` notes it */
+  const killVia = (child: any, killer: AbortController, sent: (n: number) => void) => (sig?: string | number) => {
+    const n = signalNumber(sig);
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    if (n === 0) return true;
+    sent(n);
+    child.killed = true;
+    killer.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: n }));
+    return true;
+  };
+  /** The signal that ended an execAsync child, by name, or null: a kernel guest's child says; in the page, a kill() after which it ended interrupted */
+  const endedBy = (r: { exitCode: number; signal?: number | null }, killedWith: number | null): string | null =>
+    r.signal != null ? signalName(r.signal)
+      : killedWith !== null && (r.exitCode === 130 || r.exitCode === 128 + killedWith) ? signalName(killedWith) : null;
+  /**
+   * exec()/execFile()'s end, as node's: 'exit' then 'close' with (code, signal), exitCode or
+   * signalCode, and the callback's error with code, killed and signal
+   */
+  const execEnded = (child: any, childEvents: Record<string, Function[]>, r: { stdout: string; stderr: string; exitCode: number; signal?: number | null }, killedWith: number | null, cmd: string, callback?: Function) => {
+    const signal = endedBy(r, killedWith);
+    child.exitCode = signal ? null : r.exitCode;
+    child.signalCode = signal;
+    (childEvents['exit'] || []).forEach(fn => fn(child.exitCode, signal));
+    (childEvents['close'] || []).forEach(fn => fn(child.exitCode, signal));
+    callback?.(signal || r.exitCode !== 0
+      ? Object.assign(new Error(signal ? `Command failed: ${cmd}` : `Exit code ${r.exitCode}`), { code: child.exitCode, killed: child.killed, signal, cmd })
+      : null, r.stdout, r.stderr);
+  };
   /** This process's stdout and stderr: a pipe into them doesn't end them */
   const stdio = () => { const p = deps.getProcess?.(); return [p?.stdout, p?.stderr]; };
   /** pipeable() on an exec child's `stdout_`/`stderr_` events */
@@ -768,15 +799,20 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         stdin: { write: () => true, end: () => {}, on: () => child.stdin },
         on: (ev: string, fn: Function) => { (childEvents[ev] ??= []).push(fn); return child; },
         once: (ev: string, fn: Function) => child.on(ev, fn),
-        kill: () => true,
+        killed: false,
+        exitCode: null as number | null,
+        signalCode: null as string | null,
       };
-      const p = execAsync(cmd).then(r => {
+      // kill(): the signal to its `sh -c` (it was a no-op, and the child ran on: #90)
+      const killer = new AbortController();
+      let killedWith: number | null = null;
+      child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
+      const p = execAsync(cmd, undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
-        (childEvents['close'] || []).forEach(fn => fn(r.exitCode, null));
-        callback?.(r.exitCode !== 0 ? Object.assign(new Error(`Exit code ${r.exitCode}`), { code: r.exitCode }) : null, r.stdout, r.stderr);
+        execEnded(child, childEvents, r, killedWith, cmd, callback);
       }).catch(e => callback?.(e, '', ''));
       pendingPromises.push(childWait(p));
       return child;
@@ -803,19 +839,23 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         },
         on: (ev: string, fn: Function) => { (childEvents[ev] ??= []).push(fn); return child; },
         once: (ev: string, fn: Function) => child.on(ev, fn),
-        kill: () => true,
+        killed: false,
+        exitCode: null as number | null,
+        signalCode: null as string | null,
       };
+      const killer = new AbortController();
+      let killedWith: number | null = null;
+      child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
       const cmdP = isClipCmd
-        ? new Promise<{ stdout: string; stderr: string; exitCode: number }>(resolve =>
+        ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(cmd);
+        : execAsync(cmd, undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
       const p = cmdP.then(r => {
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
-        (childEvents['close'] || []).forEach(fn => fn(r.exitCode, null));
-        callback?.(r.exitCode !== 0 ? Object.assign(new Error(`Exit code ${r.exitCode}`), { code: r.exitCode }) : null, r.stdout, r.stderr);
+        execEnded(child, childEvents, r, killedWith, cmd, callback);
       }).catch(e => {
         // CRITICAL: Always emit error+close events even when callback is null.
         // Without this, the CLI hangs forever waiting for the child process.

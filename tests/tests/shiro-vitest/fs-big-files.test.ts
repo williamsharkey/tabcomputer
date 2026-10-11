@@ -41,6 +41,22 @@ describe('FileSystem big files', { timeout: 60_000 }, () => {
     expect((await other.stat('/tmp/bf1/a.bin')).size).toBe(20000);
   });
 
+  it('writeFile queues views of the bytes (no copy of the whole file in one task); each stored block holds only itself', async () => {
+    const fs = await fresh();
+    await fs.mkdir('/tmp/bfv', { recursive: true });
+    await fs.sync();
+    const data2 = pattern(10_500, 2);
+    await fs.writeFile('/tmp/bfv/b.bin', data2);
+    const queued = [...(fs as any)._dirty.entries()].filter(([k]: [string]) => k.startsWith('\u0001b/'));
+    expect(queued).toHaveLength(11);
+    for (const [, n] of queued) expect(n.content.buffer).toBe(data2.buffer);
+    const recs = await stored(fs);
+    const id = recs.get('/tmp/bfv/b.bin').blob;
+    const blocks = blocksOf(recs, id).map((k) => recs.get(k).content as Uint8Array);
+    expect(blocks.map((b) => b.buffer.byteLength).sort((a, b) => a - b)).toEqual([...Array(10).fill(1024), 260].sort((a, b) => a - b));
+    expect(await (await fresh()).readFile('/tmp/bfv/b.bin')).toEqual(data2);
+  });
+
   it('deletes a big file\'s blocks when it is replaced, unlinked or under rm -r, and keeps them across a rename', async () => {
     const fs = await fresh();
     await fs.mkdir('/tmp/bf2/sub', { recursive: true });

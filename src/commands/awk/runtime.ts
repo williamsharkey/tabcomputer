@@ -195,6 +195,9 @@ export class Runtime {
   ENVIRON = new Map<string, AwkVal>();
   ARGV = new Map<string, AwkVal>();
   PROCINFO = new Map<string, AwkVal>();
+  /** BEGINFILE / ENDFILE rules, when the program has them */
+  beginFile: (() => Promise<void>) | null = null;
+  endFile: (() => Promise<void>) | null = null;
 
   // record
   private rec = '';
@@ -472,6 +475,7 @@ export class Runtime {
       }
       this.FILENAME = s;
       this.FNR = 0;
+      await this.beginFile?.();
       return true;
     }
     if (!this.usedFile) {
@@ -479,6 +483,7 @@ export class Runtime {
       this.cur = this.stdin();
       this.FILENAME = '-';
       this.FNR = 0;
+      await this.beginFile?.();
       return true;
     }
     return false;
@@ -499,6 +504,7 @@ export class Runtime {
           return r;
         }
         this.cur = null;
+        await this.endFile?.();
       }
       if (!(await this.openNextMain())) return null;
     }
@@ -925,6 +931,27 @@ export class Runtime {
     if (p.length < 6 || p.some((x) => Number.isNaN(x))) return -1;
     const t = utc ? Date.UTC(p[0], p[1] - 1, p[2], p[3], p[4], p[5]) : new Date(p[0], p[1] - 1, p[2], p[3], p[4], p[5]).getTime();
     return Math.floor(t / 1000);
+  }
+
+  /** `for (k in a)`'s keys: in PROCINFO["sorted_in"]'s order (gawk's @ind_str_asc and the like), else as stored */
+  forinKeys(arr: Map<string, AwkVal>): string[] {
+    const keys = [...arr.keys()];
+    const how = this.PROCINFO.has('sorted_in') ? this.S(this.PROCINFO.get('sorted_in')!) : '';
+    const m = /^@(ind|val)_(str|num|type)_(asc|desc)$/.exec(how);
+    if (!m) return keys;
+    const str = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    const numOrStr = (a: AwkVal, b: AwkVal) => (num(a) - num(b)) || str(this.S(a), this.S(b));
+    const rank = (v: AwkVal) => (typeof v === 'number' || (v instanceof SN && isNumLike(v)) ? 0 : 1);
+    const by: (a: string, b: string) => number =
+      m[1] === 'ind' ? (m[2] === 'num' ? (a, b) => numOrStr(a, b) : str)
+      : m[2] === 'num' ? (a, b) => numOrStr(arr.get(a)!, arr.get(b)!) || str(a, b)
+      : m[2] === 'str' ? (a, b) => str(this.S(arr.get(a)!), this.S(arr.get(b)!)) || str(a, b)
+      : (a, b) => {
+          const x = arr.get(a)!, y = arr.get(b)!;
+          return (rank(x) - rank(y)) || (rank(x) === 0 ? num(x) - num(y) : str(this.S(x), this.S(y))) || str(a, b);
+        };
+    keys.sort(m[3] === 'asc' ? by : (a, b) => by(b, a));
+    return keys;
   }
 
   asort(src: Map<string, AwkVal>, dest: Map<string, AwkVal> | undefined, byIndex: boolean): number {

@@ -92,6 +92,7 @@ export class Rootless {
       if (!s) { s = new GLSurfaceImpl(w, site, (x) => this.surfaces.delete(x.win)); this.surfaces.set(w, s); }
       return s;
     };
+    server.glFrame = (w) => this.surfaces.get(w)?.pixels() ?? null;
   }
 
   /** Re-place every GL surface now (after structure changes; tests call it directly). */

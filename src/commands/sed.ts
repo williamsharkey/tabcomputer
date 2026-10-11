@@ -352,6 +352,9 @@ export const sedCmd: Command = {
     // after the file (`sed -i FILE -e 's/a/b/'`, dh_installnss) still makes
     // every operand a file
     const operands: string[] = [];
+    // -f FILE: `-` and /dev/stdin are the command's stdin
+    const readScript = async (f: string) => (f === '-' || f === '/dev/stdin'
+      ? ctx.stdin : await ctx.fs.readFile(ctx.fs.resolvePath(f, ctx.cwd), 'utf8') as string).replace(/\n$/, '');
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       if (a === '--') { operands.push(...args.slice(i + 1)); break; }
@@ -366,7 +369,7 @@ export const sedCmd: Command = {
         else if (name === '--expression') { scripts.push(val ?? args[++i] ?? ''); scriptGiven = true; }
         else if (name === '--file') {
           const f = val ?? args[++i] ?? '';
-          try { scripts.push((await ctx.fs.readFile(ctx.fs.resolvePath(f, ctx.cwd), 'utf8') as string).replace(/\n$/, '')); scriptGiven = true; }
+          try { scripts.push(await readScript(f)); scriptGiven = true; }
           catch { ctx.stderr += `sed: couldn't open file ${f}: No such file or directory\n`; return 1; }
         }
         else if (name === '--line-length') lineWrap = parseInt(val ?? args[++i] ?? '70', 10);
@@ -387,11 +390,7 @@ export const sedCmd: Command = {
         else if (ch === 'l') { lineWrap = parseInt(rest || args[++i] || '70', 10); break; }
         else if (ch === 'f') {
           const f = rest || args[++i] || '';
-          try {
-            const t = f === '-' ? ctx.stdin : await ctx.fs.readFile(ctx.fs.resolvePath(f, ctx.cwd), 'utf8') as string;
-            scripts.push(t.replace(/\n$/, ''));
-            scriptGiven = true;
-          } catch { ctx.stderr += `sed: couldn't open file ${f}: No such file or directory\n`; return 1; }
+          try { scripts.push(await readScript(f)); scriptGiven = true; } catch { ctx.stderr += `sed: couldn't open file ${f}: No such file or directory\n`; return 1; }
           break;
         } else { ctx.stderr += `sed: invalid option -- '${ch}'\n`; return 1; }
       }

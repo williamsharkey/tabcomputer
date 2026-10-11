@@ -14,6 +14,7 @@ import type { Command, CommandContext } from '../commands/index';
 import { KernelStdio, execLazyStdin } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
 import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText, type ThreadState } from './procfs';
+import { KernelProfiler, type ProfileOptions, type ProfileReport } from './profiler';
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
@@ -21,7 +22,7 @@ import * as A from './abi';
 import { elfInterpreter } from '../elf-interp';
 import {
   type OpenFile, FdTable, BufferFile, DevNull, DevZero, DevRandom, DevFull,
-  RegularFile, DirFile, abortableWait, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
+  RegularFile, DirFile, abortableWait, charDevStat, openInode, openInodeSync, isInodeOpen, exchangeInodes, touchInodeCtime, inodeNumber, canWrite, refCount, renameInodes, unlinkInode, setInodeTimes, setInodeMode, flushInode, inodeStat, hasOpenInodes,
   linkCount, writeBackAll, attachInodeShared, detachOpenFileShared, unlinkedFileKey, sharedBufferOf,
 } from './fd';
 import { createPipe, Pipe, PipeEnd, FifoRdWr } from './pipe';
@@ -203,6 +204,22 @@ export class Kernel {
   /** uname(2) nodename (the prompt's \h). */
   hostname = activeProfile().hostname;
   readonly procs = new Map<number, Process>();
+  /** The attached profiler (startProfile), or null: every syscall entry checks it */
+  profiler: KernelProfiler | null = null;
+
+  /** Attach a profiler (replacing any): `strace -c`, bench probes. stopProfile() detaches it and returns its report. */
+  startProfile(opts: ProfileOptions = {}): KernelProfiler {
+    this.profiler?.stop();
+    this.profiler = new KernelProfiler(opts);
+    return this.profiler;
+  }
+
+  stopProfile(prof: KernelProfiler | null = this.profiler): ProfileReport | null {
+    if (!prof) return null;
+    prof.stop();
+    if (this.profiler === prof) this.profiler = null;
+    return prof.report();
+  }
   readonly init: Process;
   private loaders: Loader[] = [];
   private devices = new Map<string, DeviceOpener>();
@@ -1541,7 +1558,9 @@ export class Kernel {
       // A description just for the stat: O_NOCTTY (stat must not make a pty the
       // caller's controlling tty), closed after (a slave left open hides hangups)
       const f = await dev(proc, A.O_RDONLY | A.O_NOCTTY, p);
-      if (typeof f === 'number') return f;
+      // /dev/tty is a node of its own (char 5,0): stat finds it whatever opening it
+      // would do now (ENXIO without a controlling tty, EIO once its terminal closed)
+      if (typeof f === 'number') return p === '/dev/tty' ? { ...charDevStat((5 << 8) | 0), gid: 5 } : f;
       try { return await f.stat(); } finally { if (f !== proc.ctty) await f.close(); }
     }
     if (p === '/proc' || p.startsWith('/proc/')) {
@@ -1877,6 +1896,17 @@ export class Kernel {
    * Registered handlers (registerSyscalls) always take the async path.
    */
   syscallSync(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
+    const prof = this.profiler;
+    if (prof === null) return this.syscallSyncImpl(proc, nr, args, data);
+    if (!prof.wants(proc)) { prof.tid = 0; return this.syscallSyncImpl(proc, nr, args, data); }
+    const d = prof.describe(proc, nr, args, data);
+    const t0 = performance.now();
+    const r = this.syscallSyncImpl(proc, nr, args, data);
+    prof.sync(proc, nr, r, (performance.now() - t0) * 1000, d);
+    return r;
+  }
+
+  private syscallSyncImpl(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
     if (proc.state !== 'running' || proc.exiting) return undefined;
     proc.syscalls++; // (/proc CPU estimate: these take no time)
     const hs = this.syscallTable.get(nr);
@@ -1921,6 +1951,15 @@ export class Kernel {
       case A.SYS_write: {
         const f = proc.fds.get(args[0]);
         return f?.tryWrite?.(data.subarray(0, Math.min(args[1] >>> 0, data.length)));
+      }
+      case A.SYS_pread64:
+      case A.SYS_pwrite64: {
+        const f = proc.fds.get(args[0]);
+        const fn = nr === A.SYS_pread64 ? f?.tryPread : f?.tryPwrite;
+        if (!f || !fn || f.flags & A.O_PATH) return undefined;
+        const off = (args[3] | 0) * 0x100000000 + (args[2] >>> 0);
+        if (off < 0) return -A.EINVAL;
+        return fn.call(f, data.subarray(0, Math.min(args[1] >>> 0, data.length)), off);
       }
       case A.SYS_fstat:
       case A.SYS_newfstatat: {
@@ -1986,8 +2025,17 @@ export class Kernel {
       if (i >= 0) proc.calls.splice(i, 1);
     };
     // The caller awaits the call itself: the bookkeeping adds no await hop to it
+    const prof = this.profiler;
+    if (prof === null || !prof.wants(proc)) {
+      if (prof !== null) prof.tid = 0;
+      const p = this.syscallImpl(proc, nr, args, data);
+      p.then(done, done);
+      return p;
+    }
+    const c = prof.begin(proc, nr, args, data);
     const p = this.syscallImpl(proc, nr, args, data);
-    p.then(done, done);
+    c.cpuUs = (performance.now() - c.t0) * 1000;
+    p.then((r) => { done(); prof.end(c, r); }, () => { done(); prof.end(c, -A.EFAULT); });
     return p;
   }
 
@@ -3309,7 +3357,8 @@ export class Kernel {
       case A.F_GETFD: return fds.getCloexec(fd) ? A.FD_CLOEXEC : 0;
       case A.F_SETFD: return fds.setCloexec(fd, !!(arg & A.FD_CLOEXEC));
       // a socket is open for reading and writing (Linux reports O_RDWR)
-      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE) | A.O_RDWR : f.flags;
+      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux)
+      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE & ~A.O_OPEN_ONLY) | A.O_RDWR : f.flags & ~A.O_OPEN_ONLY;
       case A.F_SETFL: {
         const mask = A.O_NONBLOCK | A.O_APPEND;
         f.flags = (f.flags & ~mask) | (arg & mask);

@@ -68,6 +68,9 @@ export interface OpenFile {
    */
   tryRead?(buf: Uint8Array): number | undefined;
   tryWrite?(buf: Uint8Array): number | undefined;
+  /** pread/pwrite's fast paths, the same way */
+  tryPread?(buf: Uint8Array, off: number): number | undefined;
+  tryPwrite?(buf: Uint8Array, off: number): number | undefined;
   statSync?(): KStat | undefined;
   /** Close now if that needs no I/O (true); false = call close(). Called instead of close(), at most once. */
   closeSync?(): boolean;
@@ -1412,6 +1415,26 @@ export class RegularFile implements OpenFile {
     const n = await this.ino.readAt(buf, off);
     if (n > 0) this.note(0x1);
     return n;
+  }
+
+  /** undefined: a page of a big file must load first (pread). */
+  tryPread(buf: Uint8Array, off: number): number | undefined {
+    if (!canRead(this.flags)) return -EBADF;
+    if (off < 0) return -EINVAL;
+    const n = this.ino.readSync(buf, off);
+    if (n) this.note(0x1);
+    return n;
+  }
+
+  /** undefined: a big file must load a page or store written ones first (pwrite). */
+  tryPwrite(buf: Uint8Array, off: number): number | undefined {
+    if (!canWrite(this.flags)) return -EBADF;
+    if (off < 0) return -EINVAL;
+    const at = this.flags & O_APPEND ? this.ino.size : off;
+    if (!this.ino.writeSync(buf, at)) return undefined;
+    if (this.flags & O_DSYNC) void this.ino.flush().catch(() => {});
+    this.modified();
+    return buf.length;
   }
 
   async pwrite(buf: Uint8Array, off: number): Promise<number> {

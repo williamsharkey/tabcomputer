@@ -12,8 +12,9 @@
  * namespaces); swap.ts evaluateBundle reads it.
  */
 import type * as esbuild from 'esbuild-wasm';
-import { liveLoaders, liveModules, type LiveLoaders, type LiveMap } from './live';
+import { liveLoaders, liveModules, NOT_LIVE, type LiveLoaders, type LiveMap } from './live';
 import { carryState } from './state';
+import { quietDuring } from './swap';
 
 export interface HotswapFs {
   /** A file's text; throws if it doesn't exist or is a directory */
@@ -90,14 +91,17 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
  * source as edited, in fresh module instances. Their IndexedDB and
  * localStorage go to the runner's isolated stand-ins (`__tcTestEnv`), never
  * the page's. `vitest` is the runner's API; `@shiro/x` is src/x; npm imports
- * are the page's live ones where it has them; node:path and node:os are the
- * runner's; anything else (node:fs, ...) throws when used.
+ * are the page's live ones where it has them; node:path, node:os, node:fs (in
+ * memory over a snapshot, test-fs.ts), node:url, node:buffer and node:process are the
+ * runner's; anything else (node:child_process, ...) throws when used.
  */
 export async function buildTest(fs: HotswapFs, opts: TestBuildOptions): Promise<BuildResult> {
   return bundle(fs, { ...opts, files: [] }, opts.file);
 }
 
 const TEST_GLOBALS = ['indexedDB', 'localStorage', 'sessionStorage'];
+/** node's globals the page lacks, given to the tests' own files (test-fs.ts) */
+const NODE_GLOBALS = ['Buffer', 'process'];
 
 async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null): Promise<BuildResult> {
   const root = normalize(opts.root);
@@ -163,6 +167,9 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
           if (query === 'raw') return { path: abs, namespace: 'hs-raw' };
           // A Worker or asset URL: the page's own, which the plugin registers
           const qkey = `${keyOf(abs)}?${query}`;
+          // The page registers it when the importing module loads: load a lazy importer the page's way
+          const importer = keyOf(args.importer);
+          if (!live.has(qkey) && importer && loaders.has(importer)) await loaders.get(importer)!().catch(() => {});
           if (live.has(qkey)) return { path: qkey, namespace: 'hs-live' };
           if (testPath) return { path: args.path, namespace: 'hs-stub' };
           return { errors: [{ text: `${args.path}: Vite's ?${query} imports can't be built in the tab and the page doesn't have this one; keep it outside the swap set` }] };
@@ -206,6 +213,18 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
         const p = args.path;
         const loader = p.endsWith('.tsx') ? 'tsx' : p.endsWith('.ts') ? 'ts' : p.endsWith('.json') ? 'json' : 'js';
         let contents = await fs.readFile(p);
+        // The tests' own files (src/ is built as for the page): import.meta.url is the file's, as under
+        // node (new URL('./fixtures/x', import.meta.url)), and they get node's Buffer and process globals
+        const testOwn = testPath && loader !== 'json' && !p.startsWith(`${root}/src/`);
+        if (testOwn) contents = contents.replace(/\bimport\.meta\.url\b/g, JSON.stringify(`file://${p}`));
+        if (testOwn) {
+          for (const g of NODE_GLOBALS) {
+            if (new RegExp(`\\b${g}\\b`).test(contents) &&
+                !new RegExp(`(\\bimport\\b[^;]*\\b${g}\\b[^;]*\\bfrom\\b|\\b(const|let|var|class|function)\\s+${g}\\b)`).test(contents)) {
+              contents = `var ${g} = globalThis.__tcTestNode.${g};\n${contents}`;
+            }
+          }
+        }
         const key = keyOf(p);
         if (!testPath && !opts.freshState && key && swapSet.has(key) && loader !== 'json') contents = carryState(contents, key).code;
         return { contents, loader, resolveDir: dirOf(p) };
@@ -213,7 +232,7 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
     },
   };
 
-  const result = await (opts.build ?? pageBuild)({
+  const result = await quietDuring(() => (opts.build ?? pageBuild)({
     entryPoints: ['entry'],
     bundle: true,
     write: false,
@@ -235,10 +254,14 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
       ...opts.define,
     },
     plugins: [plugin],
-  });
+  }));
   for (const w of result.warnings) warnings.push(w.text);
   if (testPath) return { code: result.outputFiles![0].text, hash: '', keys: [], copied: [], needs: [], warnings };
-  for (const k of copied) warnings.push(`${k} isn't loaded in the page, so the bundle has its own copy (its module state is separate)`);
+  for (const k of copied) {
+    warnings.push(NOT_LIVE.test(k)
+      ? `${k} is generated or vendored, which the page doesn't make live, so the bundle has its own copy`
+      : `${k} isn't loaded in the page, so the bundle has its own copy (its module state is separate)`);
+  }
   const code = `${NEEDS_PREFIX}${JSON.stringify([...needs])}\n` +
     result.outputFiles![0].text.replace(/\bimport\((["'])tc-live:([^"']+)\1\)/g, (_m, _q, key) => `globalThis.__tabcomputerLiveImport(${JSON.stringify(key)})`);
   return { code, hash: await sha256Hex(code), keys, copied: [...copied], needs: [...needs], warnings };

@@ -624,6 +624,7 @@ async function run(msg) {
   };
   // shmobj id -> SharedArrayBuffer (shiro-kernel.js's shiro_shm_*)
   const shmObjs = new Map();
+  const shmWaiting = new Map();  // id -> shmReady's resolvers
   // One request on `ch`; the page serves it and posts 'blink-done'.
   const hosted = new Set();  // kernel pids of same-instance fork children
   // tid: the guest thread making the call (Blink patch 0127; 0: not known)
@@ -698,12 +699,20 @@ async function run(msg) {
       ch.done = null;
       if (debug) console.error(`[blink] ${debugPid} ksys ${ch.i32[CH_SYSNO]}(${Array.from(ch.i32.subarray(CH_ARGS + 1, CH_ARGS + 4)).join(',')}) = ${r}`);
       done?.({ r, hi, sig });
+    } else if (m.type === 'blink-dch') {
+      // more direct channels from the page (kernel.takeDch asked)
+      dchAsking = false;
+      for (const sab of m.sabs || []) { dchIndex.set(sab, dchIndex.size); dchSpare.push(sab); }
     } else if (m.type === 'blink-channel') {
       addChannel(m.sab);
     } else if (m.type === 'blink-shmobj') {
       // an object shared with other instances (shmobj): its buffer, before
-      // the shiro_shmobj_map reply that names it
+      // the shiro_shmobj_map reply that names it (a reply on a thread's own
+      // channel can get there first: shmReady waits for it)
       shmObjs.set(m.id, m.sab);
+      const ready = shmWaiting.get(m.id);
+      shmWaiting.delete(m.id);
+      for (const done of ready || []) done(1);
     } else if (m.type === 'blink-signal' && !exiting) {
       // The kernel signalled us: any syscall reply carries the signal word.
       if (m.pid) void call(SYS.getpid, [], m.pid, new Uint8Array(0), 0);
@@ -730,10 +739,38 @@ async function run(msg) {
       if (sig <= 32) ignLo |= 1 << (sig - 1); else ignHi |= 1 << (sig - 33);
     }
   }
+  // Direct channels (shiro.inc): one small channel per thread Worker, made and
+  // served by the page, which the thread uses itself (no proxy to this
+  // thread, no messages). shiro-kernel.js gives a Worker one before its
+  // thread runs; a few spares stay here, and the page sends more as they go.
+  // TABCOMPUTER_BLINK_DIRECT=0 (the page then sends none): the pool only.
+  const dchSpare = Array.isArray(msg.dch) ? [...msg.dch] : [];
+  // each channel's place in the order the page made them (its own list's), to name it in blink-thread
+  const dchIndex = new Map(dchSpare.map((sab, i) => [sab, i]));
+  const dchOn = dchSpare.length > 0;
+  let dchAsking = false;
   const kernel = {
     sys,
     call,
+    takeDch() {
+      const sab = dchSpare.pop();
+      if (dchOn && dchSpare.length < 2 && !dchAsking) {
+        dchAsking = true;
+        post({ type: 'blink-dch-req', n: 2 });
+      }
+      return sab;
+    },
     shm: shmObjs,
+    // 1 once object `id`'s buffer is here (Blink patch 0130: before the thread uses it)
+    shmReady(id) {
+      if (shmObjs.has(id)) return 1;
+      return new Promise((resolve) => {
+        const list = shmWaiting.get(id) || [];
+        list.push(resolve);
+        shmWaiting.set(id, list);
+        setTimeout(() => resolve(shmObjs.has(id) ? 1 : 0), 2000);  // (never came: the calls fail as before)
+      });
+    },
     // same-instance fork: this worker runs kernel process `pid` too
     hosted(pid) {
       hosted.add(pid);
@@ -745,7 +782,7 @@ async function run(msg) {
       return 0;
     },
     // a guest thread started (op 1) or ended (0) (Blink patch 0127)
-    threadNote(tid, op) { post({ type: 'blink-thread', tid, op }); },
+    threadNote(tid, op, sab) { post({ type: 'blink-thread', tid, op, dch: sab ? dchIndex.get(sab) ?? -1 : -1 }); },
     // a thread in a kernel call has a signal to take (Blink patches 0065,
     // 0507): the page interrupts the process's blocking calls
     kick() { post({ type: 'blink-kick' }); },
@@ -847,28 +884,6 @@ async function run(msg) {
       copy();
       setInterval(copy, 50);
       post({ type: 'blink-engine', gil: gil.buffer });
-    }
-    // Direct channels (Blink patch 0065): in Blink's wasm memory, used by its
-    // threads themselves and served by the page watching their state words,
-    // so a kernel call skips the proxy to this thread and both messages.
-    // The pool above stays for the rest (other processes in this instance,
-    // all direct channels busy). Opt-in, TABCOMPUTER_BLINK_DIRECT=1: the
-    // page then holds this worker's wasm memory, which (we think) a finished
-    // process gives back only at the page's next GC (peak RSS +10-17 MiB for vim
-    // and Go's net/http in Chromium, against -11-17% time).
-    const directOn = msg.env?.TABCOMPUTER_BLINK_DIRECT === '1' || (isNode && process.env.TABCOMPUTER_BLINK_DIRECT === '1');
-    if (pool.length && M._blink_shiro_direct && directOn) {
-      // 64 KiB of data each: bigger transfers take the pool (its 1 MiB
-      // chunks), and four of them cost the process 256 KiB, not 4 MiB
-      const n = 4, size = Math.min(chunk, 65536), stride = (CH_DATA + size + 63) & ~63;
-      const raw = M._malloc(n * stride + 64);
-      if (raw) {
-        const base = (raw + 63) & ~63;
-        // only the headers: the data areas are written before they're read
-        for (let i = 0; i < n; i++) M.HEAPU8.fill(0, base + i * stride, base + i * stride + CH_DATA);
-        M._blink_shiro_direct(base, n, stride, size);
-        post({ type: 'blink-direct', buffer: M.HEAPU8.buffer, base, n, stride, size });
-      }
     }
     if (msg.restore) {
       // This process is a fork(): Blink rebuilds the parent's snapshot instead of loading the program

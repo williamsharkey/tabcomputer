@@ -1,0 +1,31 @@
+From 19d575c5bc388b1ed2524b8b30c3f8be3885d48c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 00:23:30 +0000
+Subject: [PATCH] Shiro: the main thread tells the page it started, as other
+ threads do
+
+So the page knows which thread's kernel channel is whose (each thread's
+Worker has its own since 0128): shiro_thread_note runs on the thread, whose
+Worker host.mjs gave that channel.
+---
+ blink/blink.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/blink/blink.c b/blink/blink.c
+index c66cc48..d95460a 100644
+--- a/blink/blink.c
++++ b/blink/blink.c
+@@ -322,6 +322,10 @@ static int Exec(char *execfn, char *prog, char **argv, char **envp) {
+   g_shiro_system = m->system;
+   ShiroInitSystem(m->system, !old);
+   m->tid = m->system->pid;  // the main thread's tid is the (kernel's) pid
++  {
++    void shiro_thread_note(int, int);  // (shiro-kernel.js)
++    shiro_thread_note(m->tid, 1);  // this thread's kernel channel is its tid's
++  }
+ #endif
+   if (!old) {
+     // this is the first time a program is being loaded
+-- 
+2.43.0
+

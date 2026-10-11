@@ -13,6 +13,7 @@ import type { Process } from './kernel/process';
 import type { OpenFile } from './kernel/fd';
 import type { Command, CommandContext } from './commands/index';
 import { decodeBytes, encodeText } from './utils/byte-text';
+import { programFromStdin as nodeProgramFromStdin } from './commands/jseval/node-args';
 
 export class KernelStdio {
   private chain: Promise<void> = Promise.resolve();
@@ -131,9 +132,9 @@ export async function execLazyStdin(cmd: Command, ctx: CommandContext, readAll: 
     // the pipe stays open (an agent's shell). With none of those, the program is
     // stdin, or on a terminal node starts its REPL.
     // (`node -v` and `node --help` answer without reading it)
-    const programFromStdin = !ctx.args.some((a) => !a.startsWith('-') || /^(-e|--eval|-p|--print|-v|--version|-h|--help)$/.test(a)) &&
-      !(ctx.stdinIsTTY && ctx.terminal);
-    if (programFromStdin) {
+    // (node's options before the script aren't it: node-args.ts)
+    const fromStdin = nodeProgramFromStdin(ctx.args) && !(ctx.stdinIsTTY && ctx.terminal);
+    if (fromStdin) {
       ctx.stdin = await readAll();
       return cmd.exec(ctx);
     }

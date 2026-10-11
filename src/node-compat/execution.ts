@@ -460,10 +460,13 @@ export async function executeNodeScript(
     }
 
     // A script that reads piped stdin synchronously (fs.readFileSync(0), '/dev/stdin',
-    // fs.readSync(0)) can't wait for a live stream: load it before the script runs
-    // (a guest's stdin is one too; a spawned child in the page leaves its live one be)
-    if ((!ctx.stdinStream || (ctx as any).nodeGuest) && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
-      await fakeProcess.stdin?.__fd0?.fill();
+    // fs.readSync(0)) in the page can't wait for a live stream: load it before the
+    // script runs (a spawned child in the page leaves its live one be). A guest in a
+    // Worker blocks on fd 0 when the script reads it (live-stdin.ts): a script that
+    // only mentions stdin starts at once and never waits for a pipe (tabcomputer#66)
+    const fd0 = fakeProcess.stdin?.__fd0;
+    if ((!ctx.stdinStream || (ctx as any).nodeGuest) && !fd0?.blocks && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
+      await fd0?.fill();
     }
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
     // Transform TypeScript/JSX/ESM syntax for execution

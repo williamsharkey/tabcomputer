@@ -262,9 +262,17 @@ function guestIpc(sys: GuestSys, fd: number): GuestIpc {
 }
 
 /** fd 0 (a pipe or a file) as node-compat's live stdin: read when poll says so, from timers */
-function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null> } {
+function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null>; readSync(buf: Uint8Array): number } {
   const buf = new Uint8Array(65536);
   return {
+    // fs.readSync(0)/readFileSync(0): a blocking read of fd 0 (the worker waits; a signal still ends it)
+    readSync: (out) => {
+      for (;;) {
+        const n = sys.read(0, out);
+        if (n === -A.EINTR) continue;
+        return n > 0 ? n : 0;
+      }
+    },
     read: () => new Promise((resolve) => {
       let idle = 0;
       const tick = () => {

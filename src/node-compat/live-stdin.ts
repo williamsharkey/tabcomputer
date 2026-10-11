@@ -15,6 +15,13 @@
 export interface StdinStream {
   /** The next chunk, or null at EOF */
   read(): Promise<Uint8Array | null>;
+  /**
+   * A reader that can block (a kernel guest in a Worker, node-worker/guest.ts):
+   * the next bytes into `buf`, waiting for them; 0 at EOF. fs.readSync(0) and
+   * readFileSync(0) then read the pipe when the script calls them, not before
+   * it starts (tabcomputer#66).
+   */
+  readSync?(buf: Uint8Array): number;
 }
 
 export class LiveStdin {
@@ -39,10 +46,20 @@ export class LiveStdin {
     return new Promise((resolve) => { this.waiters.push({ buf, off, len, resolve }); this.demand(); });
   }
 
-  /** fs.readSync(0): what has arrived (0 at EOF), or null when nothing has yet (EAGAIN) */
+  /** Reads can wait for the pipe (StdinStream.readSync): no need to fill() before the script runs. */
+  get blocks(): boolean { return !!this.stream.readSync; }
+
+  /** fs.readSync(0): what has arrived (0 at EOF), or null when nothing has yet (EAGAIN); a blocking stream waits */
   tryRead(buf: Uint8Array, off: number, len: number): number | null {
     if (this.queue.length) return this.take(buf, off, len);
     if (this.ended) return 0;
+    if (this.stream.readSync && len > 0) {
+      const chunk = new Uint8Array(len);
+      const n = this.stream.readSync(chunk);
+      if (n <= 0) { this.ended = true; this.deliver(); return 0; }
+      buf.set(chunk.subarray(0, n), off);
+      return n;
+    }
     this.demand();
     return null;
   }
@@ -55,8 +72,13 @@ export class LiveStdin {
     }
   }
 
-  /** Everything that has arrived (readFileSync(0)) */
+  /** Everything that has arrived (readFileSync(0)); a blocking stream is read to EOF first */
   takeAll(): Uint8Array {
+    if (this.stream.readSync && !this.ended) {
+      const buf = new Uint8Array(65536);
+      for (let n = this.stream.readSync(buf); n > 0; n = this.stream.readSync(buf)) this.queue.push(buf.slice(0, n));
+      this.ended = true;
+    }
     const n = this.queue.reduce((a, c) => a + c.length, 0);
     const out = new Uint8Array(n);
     this.take(out, 0, n);

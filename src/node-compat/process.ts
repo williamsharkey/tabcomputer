@@ -446,8 +446,14 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
     const chunk = chunkOf(data);
     if (stdinEncoding && chunk === '') return;
     stdinReadBuffer.push(chunk);
-    (stdinEvents['data'] || []).forEach(f => f(chunk));
-    (stdinEvents['readable'] || []).forEach(f => f());
+    fire('data', chunk);
+    fire('readable');
+  };
+  /** Call stdin's listeners; process.exit() in one ends the script (it is recorded), not with an error (tabcomputer#66) */
+  const fire = (event: string, ...args: unknown[]) => {
+    for (const f of stdinEvents[event] || []) {
+      try { f(...args); } catch (e) { if (!(e instanceof ProcessExitError)) throw e; return; }
+    }
   };
   const forceExit = (code = 130) => {
     if (!_st.exitCalled) { _st.exitCode = code; _st.exitCalled = true; }
@@ -476,8 +482,8 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
       },
       end: () => {
         stdinEnded = true;
-        (stdinEvents['end'] || []).forEach(f => f());
-        (stdinEvents['close'] || []).forEach(f => f());
+        fire('end');
+        fire('close');
         releaseTerminal();
       },
       signal: (sig) => {
@@ -533,8 +539,8 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
         if (b) { if (b.length) emitData(b); return; }
         const t = decoder?.decode() ?? '';
         if (t) emitData(t);
-        (stdinEvents['end'] || []).forEach(f => f());
-        (stdinEvents['close'] || []).forEach(f => f());
+        fire('end');
+        fire('close');
       });
       return;
     }
@@ -543,8 +549,8 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
         if (stdinEvents['data']?.length) stdinDataTaken = true;
         emitData(ctx.stdin);
       }
-      (stdinEvents['end'] || []).forEach(f => f());
-      (stdinEvents['close'] || []).forEach(f => f());
+      fire('end');
+      fire('close');
     });
   };
   const stdinObj: any = {

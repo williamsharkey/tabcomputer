@@ -63,6 +63,10 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
   const waitsOn = new Map<string, string>();
   // The file the last _requireModule call loaded or found in the cache
   let lastResolved = '';
+  // What a request from a directory resolved to, as node's Module._pathCache: a bare name
+  // walks up node_modules, each miss a stat (a syscall in a guest), and live ES modules
+  // (TABCOMPUTER_ESM_LIVE) resolve each import more than once. Only found files are kept.
+  const resolutions = new Map<string, string>();
 
   /**
    * An ES module with top-level await runs as an async function, so require()
@@ -162,10 +166,14 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     }
 
     let resolved = modPath;
+    const resolutionKey = fromDir + '\0' + modPath;
+    const known = resolutions.get(resolutionKey);
 
+    if (known !== undefined && (moduleCache.has(known) || fileCache.has(known))) {
+      resolved = known;
     // Handle Node.js package #imports (subpath imports)
     // e.g., chalk uses `import x from '#ansi-styles'` which maps via package.json "imports"
-    if (modPath.startsWith('#')) {
+    } else if (modPath.startsWith('#')) {
       let lookupDir = fromDir;
       while (lookupDir) {
         const pkgJsonPath = `${lookupDir}/package.json`;
@@ -223,7 +231,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
 
         // Handle npm GitHub tarball extraction which creates nested structure
         // e.g., node_modules/busboy/mscdex-busboy-9aadb7a/package.json
-        if (!fileCache.has(pkgPath)) {
+        // (only where that package's directory is there: each scan reads every cached path)
+        if (!fileCache.has(pkgPath) && (ctx.fs.isDirCached?.(pkgDir) ?? true)) {
           const nestedPkg = [...fileCache.keys()].find(
             k => k.startsWith(pkgDir + '/') && k.endsWith('/package.json') && k.split('/').length === pkgDir.split('/').length + 2
           );
@@ -426,6 +435,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       }
     }
 
+    if (resolved !== known && (moduleCache.has(resolved) || fileCache.has(resolved))) resolutions.set(resolutionKey, resolved);
     if (resolveOnly) {
       if (fileCache.has(resolved) || moduleCache.has(resolved) || isFile(resolved)) return resolved;
       const err: any = new Error(`Cannot find module '${modPath}'`);

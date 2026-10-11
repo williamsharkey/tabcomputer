@@ -332,8 +332,18 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         _toWorker?: (value: any) => void;
         _terminate?: () => void;
         _exited = false;
+        stdin: any = null;
+        stdout: any;
+        stderr: any;
         constructor(filename: string | URL, options?: any) {
           makeEmitter(this);
+          // Readables as node gives every Worker (vitest's threads pool pipes them).
+          // The worker's console already writes to this process's stdout/stderr,
+          // so they carry nothing and end when it exits.
+          const { Readable } = getBuiltinModule('stream');
+          this.stdout = new Readable({ read() {} });
+          this.stderr = new Readable({ read() {} });
+          (this as any).once('exit', () => { this.stdout.push(null); this.stderr.push(null); });
           if (deps.startWorker) {
             deps.startWorker(String(filename), options ?? {}, this);
             return;

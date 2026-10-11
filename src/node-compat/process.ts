@@ -97,7 +97,7 @@ export function createFakeProcess(
     },
     argv: ['node', ...fileArgs],
     argv0: 'node',
-    execArgv: [],
+    execArgv: [...((ctx as any).nodeExecArgv ?? [])],
     execPath: '/usr/local/bin/node',
     platform: 'linux',
     arch: 'x64',

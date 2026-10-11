@@ -5,6 +5,42 @@ import { parseShellArgs } from '../../shell-args';
 import { activeProfile } from '../../profile';
 import { writeClipboard } from '../../utils/clipboard';
 
+
+/**
+ * A child's stdout/stderr stand-in as a Readable for pipe users: `pipe(dest)`
+ * writes each chunk to dest (and ends it, unless `{ end: false }` or it is stdout/stderr), `unpipe`
+ * stops that; pause/resume/isPaused are there for callers that use them.
+ * vitest's fork pool pipes the worker's output and unpipes it on stop.
+ */
+function pipeMethods(self: () => any, events: Record<string, Function[]>) {
+  const piped = new Map<any, { data: Function; end: Function }>();
+  let paused = false;
+  const drop = (ev: string, fn: Function) => { events[ev] = (events[ev] || []).filter((f) => f !== fn); };
+  return {
+    pipe: (dest: any, opts?: { end?: boolean }) => {
+      const data = (chunk: any) => { dest.write(chunk); };
+      const end = () => { piped.delete(dest); if (opts?.end !== false && dest.fd !== 1 && dest.fd !== 2) dest.end?.(); };
+      (events['data'] ??= []).push(data);
+      (events['end'] ??= []).push(end);
+      piped.set(dest, { data, end });
+      dest.emit?.('pipe', self());
+      return dest;
+    },
+    unpipe: (dest?: any) => {
+      for (const [d, h] of [...piped]) {
+        if (dest !== undefined && d !== dest) continue;
+        drop('data', h.data); drop('end', h.end); piped.delete(d);
+        d.emit?.('unpipe', self());
+      }
+      return self();
+    },
+    pause: () => { paused = true; return self(); },
+    resume: () => { paused = false; return self(); },
+    isPaused: () => paused,
+    readable: true,
+  };
+}
+
 /** Marks the wait a running child (ref()'d) puts on its parent: process.exit() doesn't wait for it */
 export const CHILD_HOLD = Symbol('child hold');
 const childWait = <T>(p: Promise<T>): Promise<T> => Object.assign(p, { [CHILD_HOLD]: true });
@@ -821,7 +857,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           off: (ev: string, fn: Function) => { stdoutEvents[ev] = (stdoutEvents[ev] || []).filter(f => f !== fn); return child.stdout; },
           removeListener: (ev: string, fn: Function) => child.stdout.off(ev, fn),
           removeAllListeners: (ev?: string) => { if (ev) delete stdoutEvents[ev]; else Object.keys(stdoutEvents).forEach(k => delete stdoutEvents[k]); return child.stdout; },
-          pipe: (dest: any) => dest,
+          ...pipeMethods(() => child.stdout, stdoutEvents),
           setEncoding: () => child.stdout,
           destroy: () => child.stdout,
           [Symbol.asyncIterator]: makeStreamIterator(stdoutEvents),
@@ -832,7 +868,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           off: (ev: string, fn: Function) => { stderrEvents[ev] = (stderrEvents[ev] || []).filter(f => f !== fn); return child.stderr; },
           removeListener: (ev: string, fn: Function) => child.stderr.off(ev, fn),
           removeAllListeners: (ev?: string) => { if (ev) delete stderrEvents[ev]; else Object.keys(stderrEvents).forEach(k => delete stderrEvents[k]); return child.stderr; },
-          pipe: (dest: any) => dest,
+          ...pipeMethods(() => child.stderr, stderrEvents),
           setEncoding: () => child.stderr,
           destroy: () => child.stderr,
           [Symbol.asyncIterator]: makeStreamIterator(stderrEvents),

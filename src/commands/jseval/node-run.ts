@@ -17,6 +17,20 @@ import { readClaudeTransform, saveClaudeTransform } from '../../claude-transform
  *   - process.env, process.cwd(), process.exit()
  *   - require() for CommonJS modules and npm packages
  */
+/** Options runNode handles itself */
+const NODE_OWN_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-v', '--version', '-h', '--help']);
+/** node options whose value can be the next word (`--conditions node`, `-r dotenv/config`) */
+const NODE_VALUE_OPTIONS = new Set([
+  '-C', '--conditions', '-r', '--require', '--import', '--loader', '--experimental-loader', '--title',
+  '--input-type', '--env-file', '--env-file-if-exists', '--inspect-port', '--debug-port', '--redirect-warnings',
+  '--diagnostic-dir', '--report-dir', '--report-directory', '--report-filename', '--heapsnapshot-signal',
+  '--icu-data-dir', '--openssl-config', '--tls-cipher-list', '--disable-warning', '--watch-path',
+  '--experimental-default-type', '--unhandled-rejections', '--test-reporter', '--test-reporter-destination',
+  '--test-name-pattern', '--test-skip-pattern', '--secure-heap', '--secure-heap-min', '--stack-trace-limit',
+]);
+/** Options that load code before the script: not implemented, so said rather than silently dropped */
+const NODE_PRELOAD_OPTIONS = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader']);
+
 /** `node ARGS` in this JS realm (the page, or a node-worker guest): arguments, the script, then node-compat */
 export async function runNode(ctx: CommandContext): Promise<number> {
   let code = '';
@@ -24,10 +38,23 @@ export async function runNode(ctx: CommandContext): Promise<number> {
 
   // Parse args — once we see a script file, everything after is script args
   const fileArgs: string[] = [];
+  /** node's own options before the script: process.execArgv */
+  const execArgv: string[] = [];
   let foundScript = false;
   for (let i = 0; i < ctx.args.length; i++) {
+    const a = ctx.args[i];
     if (foundScript) {
       fileArgs.push(ctx.args[i]);
+    } else if (a === '--') {
+      fileArgs.push(...ctx.args.slice(i + 1, i + 2));
+      foundScript = true;
+    } else if (a.startsWith('-') && a !== '-' && !NODE_OWN_FLAGS.has(a)) {
+      // Any other option (vitest's fork passes `--conditions node`): it is
+      // not the script. One that takes a value takes the next word too.
+      execArgv.push(a);
+      const name = a.split('=')[0];
+      if (!a.includes('=') && NODE_VALUE_OPTIONS.has(name) && i + 1 < ctx.args.length) execArgv.push(ctx.args[++i]);
+      if (NODE_PRELOAD_OPTIONS.has(name)) ctx.stderr += `node: ${name} is not supported here; ignored\n`;
     } else if (ctx.args[i] === '-e' || ctx.args[i] === '--eval') {
       code = ctx.args[++i] || '';
     } else if (ctx.args[i] === '-p' || ctx.args[i] === '--print') {
@@ -49,6 +76,8 @@ export async function runNode(ctx: CommandContext): Promise<number> {
       foundScript = true;
     }
   }
+
+  (ctx as any).nodeExecArgv = execArgv;
 
   // If no -e flag, read from file
   let scriptPath = '';

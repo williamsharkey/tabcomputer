@@ -448,15 +448,28 @@ export function createNetModule(deps: NetDeps = {}): any {
     createConnection: connect,
     connect,
     BlockList,
-    isIP: (input: string) => ipFamily(String(input)),
+    SocketAddress,
+    // (an IPv6 zone ID, fe80::1%eth0, is part of a valid address)
+    isIP: (input: string) => ipFamily(noZone(String(input))),
     isIPv4: (input: string) => ipFamily(String(input)) === 4,
-    isIPv6: (input: string) => ipFamily(String(input)) === 6,
+    isIPv6: (input: string) => ipFamily(noZone(String(input))) === 6,
     getDefaultAutoSelectFamily: () => false,
     setDefaultAutoSelectFamily: () => {},
   };
 }
 
 type IpFamily = 'ipv4' | 'ipv6';
+/** An IPv6 address without its zone ID: node accepts fe80::1%eth0 and ignores the zone */
+const noZone = (a: string): string => { const i = a.indexOf('%'); return i > 0 && a.includes(':') ? a.slice(0, i) : a; };
+const received = (v: unknown) => v === null ? 'null' : typeof v === 'object' ? `an instance of ${(v as object).constructor?.name ?? 'Object'}` : `type ${typeof v} (${typeof v === 'string' ? `'${v}'` : String(v)})`;
+/** The text of an address argument: a string or a SocketAddress, else ERR_INVALID_ARG_TYPE (as node) */
+const addressArg = (v: unknown, name: string): string => {
+  if (v instanceof SocketAddress) return v.address;
+  if (typeof v === 'string') return v;
+  throw Object.assign(new TypeError(`The "${name}" argument must be an instance of SocketAddress or of type string. Received ${received(v)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+};
+/** The family of an argument: a SocketAddress's own, else `family` */
+const familyArg = (v: unknown, family: unknown): IpFamily => famOf(v instanceof SocketAddress ? v.family : family);
 const famOf = (f: unknown): IpFamily => {
   const v = String(f ?? 'ipv4').toLowerCase();
   if (v !== 'ipv4' && v !== 'ipv6') throw Object.assign(new TypeError(`The argument 'family' must be one of: 'ipv4', 'ipv6'. Received '${f}'`), { code: 'ERR_INVALID_ARG_VALUE' });
@@ -464,12 +477,13 @@ const famOf = (f: unknown): IpFamily => {
 };
 /** An address as a number (IPv4: 32 bits, IPv6: 128), or throws as node does */
 function ipValue(address: unknown, family: IpFamily): bigint {
-  const a = String((address as any)?.address ?? address);
+  const raw = String(address instanceof SocketAddress ? address.address : address);
+  const a = family === 'ipv6' ? noZone(raw) : raw;
   if (family === 'ipv4') {
-    if (ipFamily(a) !== 4) throw Object.assign(new TypeError(`Invalid IPv4 address: ${a}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    if (ipFamily(a) !== 4) throw Object.assign(new TypeError('Invalid socket address'), { code: 'ERR_INVALID_ADDRESS' });
     return a.split('.').reduce((n, p) => (n << 8n) | BigInt(Number(p)), 0n);
   }
-  if (ipFamily(a) !== 6) throw Object.assign(new TypeError(`Invalid IPv6 address: ${a}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  if (ipFamily(a) !== 6) throw Object.assign(new TypeError('Invalid socket address'), { code: 'ERR_INVALID_ADDRESS' });
   return ipv6Groups(a).reduce((n, g) => (n << 16n) | BigInt(g), 0n);
 }
 const MAPPED = 0xffffn << 32n; // ::ffff:0:0/96
@@ -479,31 +493,84 @@ export class BlockList {
   private list: { family: IpFamily; lo: bigint; hi: bigint; text: string }[] = [];
   static isBlockList(v: unknown): boolean { return v instanceof BlockList; }
   addAddress(address: unknown, family?: string): void {
-    const f = famOf((address as any)?.family ?? family), v = ipValue(address, f);
-    this.list.push({ family: f, lo: v, hi: v, text: `Address: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(address as any)?.address ?? address}` });
+    const text = addressArg(address, 'address');
+    const f = familyArg(address, family), v = ipValue(text, f);
+    this.list.push({ family: f, lo: v, hi: v, text: `Address: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${text}` });
   }
   addRange(start: unknown, end: unknown, family?: string): void {
-    const f = famOf((start as any)?.family ?? family), lo = ipValue(start, f), hi = ipValue(end, f);
+    const t1 = addressArg(start, 'start'), t2 = addressArg(end, 'end');
+    const f = familyArg(start, family), lo = ipValue(t1, f), hi = ipValue(t2, f);
     if (lo > hi) throw Object.assign(new RangeError('The value of "start" is out of range. It must be <= "end".'), { code: 'ERR_INVALID_ARG_VALUE' });
-    this.list.push({ family: f, lo, hi, text: `Range: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(start as any)?.address ?? start}-${(end as any)?.address ?? end}` });
+    this.list.push({ family: f, lo, hi, text: `Range: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${t1}-${t2}` });
   }
   addSubnet(net: unknown, prefix: number, family?: string): void {
-    const f = famOf((net as any)?.family ?? family), bits = f === 'ipv4' ? 32 : 128;
+    const text = addressArg(net, 'net');
+    const f = familyArg(net, family), bits = f === 'ipv4' ? 32 : 128;
     if (!Number.isInteger(prefix) || prefix < 0 || prefix > bits) throw Object.assign(new RangeError(`The value of "prefix" is out of range. It must be >= 0 && <= ${bits}. Received ${prefix}`), { code: 'ERR_OUT_OF_RANGE' });
     const host = (1n << BigInt(bits - prefix)) - 1n;
-    const lo = ipValue(net, f) & ~host;
-    this.list.push({ family: f, lo, hi: lo | host, text: `Subnet: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(net as any)?.address ?? net}/${prefix}` });
+    const lo = ipValue(text, f) & ~host;
+    this.list.push({ family: f, lo, hi: lo | host, text: `Subnet: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${text}/${prefix}` });
   }
   check(address: unknown, family?: string): boolean {
-    const f = famOf((address as any)?.family ?? family);
-    let v: bigint;
-    try { v = ipValue(address, f); } catch { return false; }
+    // As node: a string that isn't an address of the family (or a family that isn't one) is no match
+    const text = addressArg(address, 'address');
+    if (family !== undefined && !(address instanceof SocketAddress) && typeof family !== 'string') {
+      throw Object.assign(new TypeError(`The "family" argument must be of type string. Received ${received(family)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    let f: IpFamily, v: bigint;
+    try { f = familyArg(address, family); v = ipValue(text, f); } catch { return false; }
     // the same address in the other family: a.b.c.d is ::ffff:a.b.c.d
     const v4 = f === 'ipv4' ? v : (v >> 32n) === 0xffffn ? v & 0xffffffffn : null;
     const v6 = f === 'ipv6' ? v : MAPPED | v;
     return this.list.some((r) => r.family === 'ipv4' ? v4 !== null && v4 >= r.lo && v4 <= r.hi : v6 >= r.lo && v6 <= r.hi);
   }
   get rules(): string[] { return this.list.map((r) => r.text).reverse(); }
+}
+
+/** net.SocketAddress: an address, port, family and IPv6 flow label, checked as node checks them. */
+export class SocketAddress {
+  readonly #address: string;
+  readonly #port: number;
+  readonly #family: IpFamily;
+  readonly #flowlabel: number;
+  constructor(options: { address?: string; port?: number; family?: string; flowlabel?: number } = {}) {
+    if (options === null || typeof options !== 'object') {
+      throw Object.assign(new TypeError(`The "options" argument must be of type object. Received ${received(options)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    const family = famOf(options.family ?? 'ipv4');
+    const address = options.address ?? (family === 'ipv4' ? '127.0.0.1' : '::');
+    if (typeof address !== 'string') throw Object.assign(new TypeError(`The "options.address" property must be of type string. Received ${received(address)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    const port = options.port ?? 0;
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+      throw Object.assign(new RangeError(`options.port should be >= 0 and < 65536. Received ${received(port)}.`), { code: 'ERR_SOCKET_BAD_PORT' });
+    }
+    const flowlabel = options.flowlabel ?? 0;
+    if (typeof flowlabel !== 'number' || !Number.isInteger(flowlabel) || flowlabel < 0 || flowlabel > 0xffffffff) {
+      throw Object.assign(new RangeError(`The value of "options.flowlabel" is out of range. It must be >= 0 && <= 4294967295. Received ${flowlabel}`), { code: 'ERR_OUT_OF_RANGE' });
+    }
+    try { ipValue(address, family); } catch { throw Object.assign(new Error('Invalid socket address'), { code: 'ERR_INVALID_ADDRESS' }); }
+    this.#address = address;
+    this.#port = port;
+    this.#family = family;
+    this.#flowlabel = flowlabel;
+  }
+  get address(): string { return this.#address; }
+  get port(): number { return this.#port; }
+  get family(): IpFamily { return this.#family; }
+  get flowlabel(): number { return this.#flowlabel; }
+  toJSON() { return { address: this.#address, port: this.#port, family: this.#family, flowlabel: this.#flowlabel }; }
+  static isSocketAddress(value: unknown): value is SocketAddress { return value instanceof SocketAddress; }
+  /** 'host:port' or '[v6]:port', as node parses it (through URL); undefined when it doesn't */
+  static parse(input: string): SocketAddress | undefined {
+    if (typeof input !== 'string') throw Object.assign(new TypeError(`The "input" argument must be of type string. Received ${received(input)}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    try {
+      const { hostname, port } = new URL(`http://${input}`);
+      if (hostname.startsWith('[') && hostname.endsWith(']')) return new SocketAddress({ address: hostname.slice(1, -1), port: Number(port) | 0, family: 'ipv6' });
+      return new SocketAddress({ address: hostname, port: Number(port) | 0 });
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 /** The pre-relay inert socket, kept for tls (no TLS implementation in the Node shim). */

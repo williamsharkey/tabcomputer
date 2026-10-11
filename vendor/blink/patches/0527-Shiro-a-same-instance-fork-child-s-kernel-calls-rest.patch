@@ -1,0 +1,39 @@
+From 3a015a06dd1a6c0d766fc03bf9cbd7215e7e323e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 06:00:21 +0000
+Subject: [PATCH] Shiro: a same-instance fork child's kernel calls restart
+ after an SA_RESTART handler, as its parent's do (LTP prctl03's waitpid came
+ back EINTR)
+
+---
+ blink/shiro.inc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index aaa73d2..e0407eb 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -302,6 +302,8 @@ static void ShiroInterruptThread(struct Machine *m2) {
+   }
+ }
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_forkrestart(void) { return 1; }
++
+ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+                        int inlen, int outcap, bool restart, bool intr) {
+   int args[12], r, as;
+@@ -324,7 +326,10 @@ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+     r = ShiroKsys(nr, args, as, data, inlen, outcap);
+     if (held) GilAcquire();
+     res = (i64)(u64)(u32)r | (i64)args[0] << 32;
+-    if (res == -EINTR_LINUX && intr && !as) {
++    // (a same-instance fork child calls as itself and takes its own
++    // signals, so it restarts as SA_RESTART says; a vfork child runs on its
++    // parent's thread and doesn't)
++    if (res == -EINTR_LINUX && intr && !t_vfork) {
+       int k;
+       if (m && atomic_load_explicit(&m->killed, memory_order_acquire)) return res;
+       if (CheckInterrupt(m, restart)) return -EINTR_LINUX;
+-- 
+2.43.0
+

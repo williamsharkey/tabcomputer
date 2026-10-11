@@ -715,34 +715,57 @@ export class Kernel {
     for (const f of files) if (refCount(f) === 0) { this.locks.release(f); this.flocks.release(f); }
     this.shm.detachAll(proc);
     this.sem.exited(proc);
+    const reaper = this.subreaperOf(proc);
     for (const child of this.procs.values()) {
-      if (child.ppid === proc.pid) {
-        // An orphan: init reaps it as soon as it is a zombie, as Linux's does
-        child.ppid = 1;
-        child.data.orphaned = true;
-        if (child.state === 'zombie') this.procs.delete(child.pid);
+      if (child.ppid !== proc.pid) continue;
+      if (reaper) {
+        // the nearest living ancestor with PR_SET_CHILD_SUBREAPER adopts it;
+        // a zombie tells it at once (Linux's reparent_leader)
+        child.ppid = reaper.pid;
+        if (child.state === 'zombie' && child.exitStatus !== undefined) this.notifyParentOfExit(reaper, child, child.exitStatus);
+        continue;
       }
+      // An orphan: init reaps it as soon as it is a zombie, as Linux's does
+      child.ppid = 1;
+      child.data.orphaned = true;
+      if (child.state === 'zombie') this.procs.delete(child.pid);
     }
     proc.markExited(status);
     this.logTrap(proc, status);
     const parent = this.procs.get(proc.ppid);
-    if (parent && parent.pid !== 1) {
-      const killed = A.WIFSIGNALED(status);
-      this.deliver(parent, A.SIGCHLD, {
-        signo: A.SIGCHLD, code: !killed ? A.CLD_EXITED : status & 0x80 ? A.CLD_DUMPED : A.CLD_KILLED,
-        pid: proc.pid, uid: proc.ruid ?? proc.uid, status: killed ? A.WTERMSIG(status) : A.WEXITSTATUS(status),
-      });
-    }
     if (proc.ppid === 1) {
       // A child the page spawned directly (ppid 1) waits for its runner's waitpid
       if (proc.data.orphaned) this.procs.delete(proc.pid);
       else this.scheduleInitReap(proc);
+    } else if (parent) {
+      this.notifyParentOfExit(parent, proc, status);
     }
-    // A parent ignoring SIGCHLD or with SA_NOCLDWAIT leaves no zombie: the
-    // child is reaped now, and a wait for it ends in ECHILD (Linux)
-    else if (parent && (parent.dispositions.get(A.SIGCHLD) === 'ignore' ||
-             ((parent.sigactions.get(A.SIGCHLD)?.flags ?? 0) & A.SA_NOCLDWAIT))) this.procs.delete(proc.pid);
     this.notify();
+  }
+
+  /**
+   * SIGCHLD to `parent` for its child's exit. A parent ignoring SIGCHLD or
+   * with SA_NOCLDWAIT leaves no zombie: the child is reaped now, and a wait
+   * for it ends in ECHILD (Linux)
+   */
+  private notifyParentOfExit(parent: Process, child: Process, status: number): void {
+    const killed = A.WIFSIGNALED(status);
+    this.deliver(parent, A.SIGCHLD, {
+      signo: A.SIGCHLD, code: !killed ? A.CLD_EXITED : status & 0x80 ? A.CLD_DUMPED : A.CLD_KILLED,
+      pid: child.pid, uid: child.ruid ?? child.uid, status: killed ? A.WTERMSIG(status) : A.WEXITSTATUS(status),
+    });
+    if (parent.dispositions.get(A.SIGCHLD) === 'ignore' ||
+        ((parent.sigactions.get(A.SIGCHLD)?.flags ?? 0) & A.SA_NOCLDWAIT)) this.procs.delete(child.pid);
+  }
+
+  /** The nearest living ancestor of `proc` that set PR_SET_CHILD_SUBREAPER (Linux's find_new_reaper) */
+  private subreaperOf(proc: Process): Process | undefined {
+    const seen = new Set<number>();
+    for (let p = this.procs.get(proc.ppid); p && p.pid !== 1 && !seen.has(p.pid); p = this.procs.get(p.ppid)) {
+      seen.add(p.pid);
+      if (p.data.subreaper && !p.exiting) return p;
+    }
+    return undefined;
   }
 
   /**
@@ -2476,6 +2499,8 @@ export class Kernel {
           return nr === A.SYS_getpgid ? p.pgid : p.sid;
         }
         case A.SYS_prctl: { // PR_SET_NAME (15), len; data = the name: the main thread's is the process's comm
+          // PR_SET_CHILD_SUBREAPER (36): orphaned descendants come to it (exit)
+          if (args[0] === 36) { proc.data.subreaper = !!args[1]; return 0; }
           if (args[0] !== 15) return -A.EINVAL;
           proc.data.comm = new TextDecoder().decode(data.subarray(0, Math.min(15, args[1] >>> 0)));
           return 0;

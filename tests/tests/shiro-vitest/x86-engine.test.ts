@@ -348,6 +348,14 @@ const haveFallocate = readFileSync(resolve(__dirname, '../../../public/engines/b
 const memfdfallocBin = join(out, 'memfdfalloc');
 const haveMemfdfalloc = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sealbusy') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', memfdfallocBin, 'memfdfalloc.c']);
+// Blink 0526/0527: PR_SET_CHILD_SUBREAPER is the kernel's; a fork child's calls restart after SA_RESTART
+const subreaperBin = join(out, 'subreaper');
+const haveSubreaper = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_forkrestart') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', subreaperBin, 'subreaper.c']);
+// Blink 0528: RLIMIT_SIGPENDING for tkill/tgkill of a real-time signal
+const sigpendingBin = join(out, 'sigpending');
+const haveSigpending = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sigpending') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', sigpendingBin, 'sigpending.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1099,6 +1107,18 @@ it.skipIf(!haveMemfdfalloc)('fallocate extends, keeps the size or punches zeros;
   const { shell } = await setup(readFileSync(memfdfallocBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('grow 0 100 keep 0 100 punch 0 0 100 no keep 95 bad 22 rdonly 9\nmapped 16 shrink 0 private 0 seals 14 grow 1 punch 1 trunc 1 size 8192\n');
+}, 60_000);
+
+it.skipIf(!haveSubreaper)('PR_SET_CHILD_SUBREAPER: an orphaned grandchild comes to the subreaper, which waits for it; in a fork child, waitpid restarts after an SA_RESTART SIGCHLD (LTP prctl03)', async () => {
+  const { shell } = await setup(readFileSync(subreaperBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('set 0\nchild flag 0\nwaitpid 1\ngrandchild reparented 1\nwait 1 sigchld 2\nflag 1\n');
+}, 60_000);
+
+it.skipIf(!haveSigpending)('RLIMIT_SIGPENDING 0: tgkill of a real-time signal to another thread is EAGAIN, a standard one still goes (LTP tgkill02)', async () => {
+  const { shell } = await setup(readFileSync(sigpendingBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('default 0 zero rt 11 zero standard 0\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

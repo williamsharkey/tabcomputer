@@ -109,7 +109,10 @@ export function extractHeredocs(src: string, store: HeredocStore): string {
       i = j + 1;
       continue;
     }
-    if (ch === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+    // A here-string: past all three, or its last two read as `<<WORD` (eval of
+    // 'a\nb <<<"x"' took the rest of the input as a here-doc ending in x)
+    if (ch === '<' && src[i + 1] === '<' && src[i + 2] === '<') { out += '<<<'; i += 3; continue; }
+    if (ch === '<' && src[i + 1] === '<') {
       const m = /^<<(-?)[ \t]*((?:'[^'\n]*'|"[^"\n]*"|\\.|[^\s;&|()<>'"\\])+)/.exec(src.slice(i));
       if (m) {
         const word = m[2];

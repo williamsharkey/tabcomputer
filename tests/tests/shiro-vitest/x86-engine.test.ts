@@ -331,6 +331,10 @@ const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const mapthreadsBin = join(out, 'mapthreads');
 const haveMapthreads = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapsgil') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', mapthreadsBin, 'mapthreads.c']);
+// Blink 0521: a timer's signal is queued once, its later expiries overruns
+const timerqueueBin = join(out, 'timerqueue');
+const haveTimerqueue = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_timerq') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', timerqueueBin, 'timerqueue.c', '-lrt']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1057,6 +1061,12 @@ it.skipIf(!haveTimerthread)('a SIGEV_THREAD timer runs its function in another t
   const { shell } = await setup(readFileSync(timerthreadBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('runs 1 value 42 other thread 1\nchild runs 0\nparent runs 1\n');
+}, 60_000);
+
+it.skipIf(!haveTimerqueue)('a timer\'s signal held by its thread is queued once, with the expiries since as its overruns (a slow SIGEV_THREAD helper ran the function once per expiry: fork_18-1 under load)', async () => {
+  const { shell } = await setup(readFileSync(timerqueueBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('taken 1 overruns many queued behind 0 or 1\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

@@ -671,10 +671,20 @@ const scheduleMacrotask: (fn: () => void) => void = (() => {
 
 /** The node as IndexedDB should store it: a view into a larger buffer is
  *  copied out, since IndexedDB clones the whole ArrayBuffer behind it. */
+/**
+ * A copy of `bytes` (or of [start, end) of it). Not `bytes.slice()`: a Node
+ * Buffer (isomorphic-git's, npm's) slices to a view, and IndexedDB clones a
+ * view's whole buffer: each 1 MiB block of a 265 MB pack from git clone was
+ * stored as 265 MB (a 16 s freeze, then "storage full", tabcomputer#28).
+ */
+function copyBytes(bytes: Uint8Array, start?: number, end?: number): Uint8Array {
+  return Uint8Array.prototype.slice.call(bytes, start, end);
+}
+
 function storableNode(node: FSNode): FSNode {
   if (node.blob) return node.content ? { ...node, content: null } : node;
   const c = node.content;
-  if (c && (c.byteOffset !== 0 || c.byteLength !== c.buffer.byteLength)) return { ...node, content: c.slice() };
+  if (c && (c.byteOffset !== 0 || c.byteLength !== c.buffer.byteLength)) return { ...node, content: copyBytes(c) };
   return node;
 }
 
@@ -1498,7 +1508,7 @@ export class FileSystem {
   /** Queue `content` as blob `id`'s blocks (copies: IndexedDB clones a view's whole buffer). */
   private _queueBlocks(id: string, content: Uint8Array): void {
     const B = FileSystem.BLOCK;
-    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), content.slice(off, off + B));
+    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), copyBytes(content, off, off + B));
   }
 
   /**
@@ -1653,7 +1663,7 @@ export class FileSystem {
           small = [];
           return this.writeFile(path, all, options?.mode !== undefined ? { mode: options.mode } : undefined);
         }
-        if (block) this._queueBlock(blockKey(id, index), (block as Uint8Array).slice(0, blockLen));
+        if (block) this._queueBlock(blockKey(id, index), copyBytes(block as Uint8Array, 0, blockLen));
         block = null;
         const existing = await this._get(path);
         if (existing?.type === 'dir') { this._noteBlob(WRITING_KEY + id, null); throw fsError('EISDIR', `EISDIR: illegal operation on a directory, write '${path}'`); }
@@ -2516,7 +2526,7 @@ export class FileSystem {
     // whole ArrayBuffer behind a typed array (a WebC volume file would carry
     // its entire container)
     const content = typeof data === 'string' ? encodeText(data)
-      : data.byteOffset !== 0 || data.byteLength !== data.buffer.byteLength ? data.slice() : data;
+      : data.byteOffset !== 0 || data.byteLength !== data.buffer.byteLength ? copyBytes(data) : data;
     // (its type, number and mode: an idle file's old bytes aren't read to replace them)
     const existing = await this._getMeta(path);
     const created = this._createdNow.delete(path) || !existing;

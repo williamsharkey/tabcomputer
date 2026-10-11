@@ -21,6 +21,9 @@ export function createOsModule(ctx: CommandContext): any {
     },
     freemem: () => 4 * 1024 * 1024 * 1024, // 4GB default
     EOL: '\n',
+    // (one priority for every process here; Claude Code lowers a background host's by 5)
+    getPriority: () => 0,
+    setPriority: () => {},
     userInfo: () => ({ username: 'user', homedir: ctx.env['HOME'] || '/home/user', shell: '/bin/sh', uid: 1000, gid: 1000 }),
     // Loopback plus one external interface: the page reaches the network
     // (through fetch), and yarn reads "no interfaces" as offline

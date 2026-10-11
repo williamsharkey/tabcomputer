@@ -42,6 +42,8 @@ export function createUrlModule(cwd: () => string = () => '/'): any {
     // As node: a relative path is resolved against the cwd, and the path is a
     // URL pathname (rolldown's ids like "\0rolldown/runtime.js" made file://%00...,
     // an invalid URL)
+    // A host name as ASCII (punycode), '' when it isn't one, as node's
+    domainToASCII: (d: string) => { try { return new URL('http://' + String(d)).hostname; } catch { return ''; } },
     pathToFileURL: (path: string) => {
       let p = String(path);
       if (!p.startsWith('/')) p = (cwd().replace(/\/$/, '') || '') + '/' + p;

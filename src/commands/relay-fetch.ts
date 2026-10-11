@@ -7,24 +7,50 @@
  */
 import type { ByteStream, HeaderList } from '../browser/http1';
 import type { NetFetcher } from '../browser/netfetch';
+import { AF_INET, SOCK_STREAM } from '../kernel/abi';
+import { getShiroOrigin } from '../utils/shiro-origin';
 
-let fetcher: Promise<NetFetcher> | null = null;
+/**
+ * Where TCP sockets come from: the page's kernel network stack, or a kernel
+ * guest's own (node in a Worker: src/node-worker/net.ts, socket syscalls).
+ */
+export interface SocketStack {
+  socket(family: number, type: number): {
+    connectHost(host: string, port: number): Promise<number>;
+    read(buf: Uint8Array): Promise<number>;
+    write(bytes: Uint8Array): Promise<number>;
+    close(): Promise<void> | void;
+  } | number;
+}
 
-async function makeFetcher(): Promise<NetFetcher> {
-  const [{ NetFetcher }, tls, net] = await Promise.all([
-    import('../browser/netfetch'), import('../browser/tls'), import('../kernel/net'),
-  ]);
+/**
+ * A kernel guest's way out: its sockets, and the Worker's own fetch (not node's,
+ * which sends localhost to the guest's kernel ports) for the page's files.
+ */
+export interface GuestNet { sockets: SocketStack; fetch: typeof fetch }
+
+/** One fetcher (its connections) per stack: the page's, and each guest's while it lives */
+let pageFetcher: Promise<NetFetcher> | null = null;
+const guestFetchers = new WeakMap<SocketStack, Promise<NetFetcher>>();
+
+async function makeFetcher(guest: GuestNet | null): Promise<NetFetcher> {
+  const stack = guest?.sockets ?? null;
+  const [{ NetFetcher }, tls] = await Promise.all([import('../browser/netfetch'), import('../browser/tls')]);
+  const sockets: SocketStack = stack ?? (await import('../kernel/net')).netStack as unknown as SocketStack;
+  const errno = stack ? (e: number) => `errno ${e}` : (await import('../kernel/net')).errnoName;
   if (!tls.hasTrustRoots()) {
     // the Browser app's roots: Mozilla's plus the ones the user added (a company proxy's CA)
     const { kvGet } = await import('../browser/kv');
     const extra = (await kvGet<string>('extraRoots').catch(() => undefined)) ?? '';
-    tls.setTrustRoots(async () => (await fetch('browse/cacert.pem')).text(), extra);
+    // (a Worker's relative URLs are its script's: the page's origin instead)
+    const roots = typeof window !== 'undefined' ? 'browse/cacert.pem' : `${getShiroOrigin()}/browse/cacert.pem`;
+    tls.setTrustRoots(async () => (await (guest?.fetch ?? fetch)(roots)).text(), extra);
   }
   const dial = async (host: string, port: number): Promise<ByteStream> => {
-    const s = net.netStack.socket(net.AF_INET, net.SOCK_STREAM) as import('../kernel/net').KSocket;
-    if (typeof s === 'number') throw new Error(`socket: ${net.errnoName(-s)}`);
+    const s = sockets.socket(AF_INET, SOCK_STREAM);
+    if (typeof s === 'number') throw new Error(`socket: ${errno(-s)}`);
     const r = await s.connectHost(host, port);
-    if (r < 0) { void s.close(); throw new Error(`Failed to connect to ${host} port ${port}: ${net.errnoName(-r)}`); }
+    if (r < 0) { void s.close(); throw new Error(`Failed to connect to ${host} port ${port}: ${errno(-r)}`); }
     return {
       async read() {
         const buf = new Uint8Array(64 * 1024);
@@ -34,7 +60,7 @@ async function makeFetcher(): Promise<NetFetcher> {
       async write(d) {
         for (let off = 0; off < d.length;) {
           const n = await s.write(d.subarray(off));
-          if (n < 0) throw new Error(`write: ${net.errnoName(-n)}`);
+          if (n < 0) throw new Error(`write: ${errno(-n)}`);
           off += n;
         }
       },
@@ -49,9 +75,18 @@ export function relayAvailable(): boolean {
   return typeof window !== 'undefined' && typeof WebSocket !== 'undefined' && typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
 }
 
-/** fetch() over the relay: redirects followed (unless `redirect: 'manual'`), content decoded. */
-export async function relayFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  fetcher ??= makeFetcher().catch((e) => { fetcher = null; throw e; });
+/**
+ * fetch() over the relay: redirects followed (unless `redirect: 'manual'`), content
+ * decoded. `guest`: a kernel guest's sockets (node in a Worker has no page of its own).
+ */
+export async function relayFetch(url: string, init: RequestInit = {}, guest: GuestNet | null = null): Promise<Response> {
+  const stack = guest?.sockets;
+  let fetcher = stack ? guestFetchers.get(stack) : pageFetcher;
+  if (!fetcher) {
+    const forget = () => { if (stack) guestFetchers.delete(stack); else pageFetcher = null; };
+    fetcher = makeFetcher(guest).catch((e) => { forget(); throw e; });
+    if (stack) guestFetchers.set(stack, fetcher); else pageFetcher = fetcher;
+  }
   const f = await fetcher;
   const { decodeBody } = await import('../browser/netfetch');
   let method = (init.method ?? 'GET').toUpperCase();

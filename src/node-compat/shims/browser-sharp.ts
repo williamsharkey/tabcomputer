@@ -26,22 +26,31 @@ async function decode(bytes: Uint8Array): Promise<ImageBitmap> {
   return createImageBitmap(blob);
 }
 
-async function encode(bitmap: ImageBitmap, w: number, h: number, format: OutFormat, quality?: number): Promise<Uint8Array> {
+/**
+ * The image drawn at w x h (the size before rotation), turned by `turns`
+ * quarter turns clockwise; the canvas is h x w for an odd number of turns.
+ */
+function draw(g: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, bitmap: ImageBitmap, w: number, h: number, turns: number, format: OutFormat): void {
+  const [cw, ch] = turns % 2 ? [h, w] : [w, h];
+  if (format === 'jpeg') { g.fillStyle = '#fff'; g.fillRect(0, 0, cw, ch); } // no alpha in JPEG
+  g.translate(cw / 2, ch / 2);
+  g.rotate(turns * Math.PI / 2);
+  g.drawImage(bitmap, -w / 2, -h / 2, w, h);
+}
+
+async function encode(bitmap: ImageBitmap, w: number, h: number, format: OutFormat, quality?: number, turns = 0): Promise<Uint8Array> {
   const type = `image/${format}`;
   const q = quality === undefined ? undefined : Math.max(0, Math.min(1, quality / 100));
+  const [cw, ch] = turns % 2 ? [h, w] : [w, h];
   if (typeof OffscreenCanvas !== 'undefined') {
-    const canvas = new OffscreenCanvas(w, h);
-    const g = canvas.getContext('2d')!;
-    if (format === 'jpeg') { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); } // no alpha in JPEG
-    g.drawImage(bitmap, 0, 0, w, h);
+    const canvas = new OffscreenCanvas(cw, ch);
+    draw(canvas.getContext('2d')!, bitmap, w, h, turns, format);
     const blob = await canvas.convertToBlob({ type, quality: q });
     return new Uint8Array(await blob.arrayBuffer());
   }
   const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const g = canvas.getContext('2d')!;
-  if (format === 'jpeg') { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); }
-  g.drawImage(bitmap, 0, 0, w, h);
+  canvas.width = cw; canvas.height = ch;
+  draw(canvas.getContext('2d')!, bitmap, w, h, turns, format);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, q));
   if (!blob) throw new Error(`sharp: could not encode ${format}`);
   return new Uint8Array(await blob.arrayBuffer());
@@ -66,6 +75,8 @@ export function createBrowserSharp(toNodeBuffer: (bytes: Uint8Array) => any, rea
     let resize: ResizeOpts | null = null;
     let format: OutFormat | null = null;
     let quality: number | undefined;
+    /** rotate(): quarter turns clockwise (other angles are not supported and ignored) */
+    let turns = 0;
     let bytesP: Promise<Uint8Array> | null = null;
     const bytes = () => bytesP ??= (async () => {
       if (typeof input === 'string') return readFile(input);
@@ -77,7 +88,7 @@ export function createBrowserSharp(toNodeBuffer: (bytes: Uint8Array) => any, rea
     const render = async (): Promise<{ data: Uint8Array; info: any }> => {
       const src = await bytes();
       const srcFormat = sniffFormat(src);
-      if (!resize && (!format || format === srcFormat) && quality === undefined) {
+      if (!resize && !turns && (!format || format === srcFormat) && quality === undefined) {
         const bmp = await decode(src);
         const info = { format: srcFormat, width: bmp.width, height: bmp.height, size: src.length, channels: 4 };
         bmp.close?.();
@@ -86,9 +97,10 @@ export function createBrowserSharp(toNodeBuffer: (bytes: Uint8Array) => any, rea
       const bmp = await decode(src);
       const [w, h] = resize ? targetSize(bmp.width, bmp.height, resize) : [bmp.width, bmp.height];
       const out = format ?? (srcFormat === 'jpeg' ? 'jpeg' : srcFormat === 'webp' ? 'webp' : 'png');
-      const data = await encode(bmp, w, h, out, quality ?? (out === 'png' ? undefined : 80));
+      const data = await encode(bmp, w, h, out, quality ?? (out === 'png' ? undefined : 80), turns);
       bmp.close?.();
-      return { data, info: { format: out, width: w, height: h, size: data.length, channels: out === 'jpeg' ? 3 : 4 } };
+      const [ow, oh] = turns % 2 ? [h, w] : [w, h];
+      return { data, info: { format: out, width: ow, height: oh, size: data.length, channels: out === 'jpeg' ? 3 : 4 } };
     };
 
     const self = () => instance;
@@ -125,7 +137,12 @@ export function createBrowserSharp(toNodeBuffer: (bytes: Uint8Array) => any, rea
       },
       stats: async () => ({ channels: [], isOpaque: true }),
       clone: () => sharp(input),
-      withMetadata: self, rotate: self, flip: self, flop: self, flatten: self, removeAlpha: self,
+      rotate: (angle?: number) => {
+        const q = Math.round((((angle ?? 0) % 360) + 360) % 360 / 90);
+        if (((angle ?? 0) % 90) === 0) turns = (turns + q) % 4;
+        return instance;
+      },
+      withMetadata: self, flip: self, flop: self, flatten: self, removeAlpha: self,
       ensureAlpha: self, normalize: self, normalise: self, sharpen: self, blur: self, greyscale: self,
       grayscale: self, trim: self, extend: self, extract: self, composite: self, modulate: self, tint: self,
       avif: self, gif: self, tiff: self, timeout: self, toColourspace: self, toColorspace: self,

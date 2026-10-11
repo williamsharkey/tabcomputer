@@ -4,9 +4,10 @@
  * Programs like Claude Code shell out to these to copy and paste. Native
  * Claude Code probes xclip, then xsel, before falling back to a native
  * clipboard addon that hangs under the x86 emulator, so xclip and xsel
- * answer everything they're asked: text only, and a read that can't be
- * done (no permission, an image target) prints nothing instead of failing
- * into that fallback. A write the browser refuses (the tab isn't focused)
+ * answer everything they're asked: text, and an image on the clipboard for
+ * `xclip -t TARGETS -o` and `xclip -t image/png -o` (Claude Code's image
+ * paste); a text read that can't be done (no permission) prints nothing
+ * instead of failing into that fallback. A write the browser refuses (the tab isn't focused)
  * exits 1 with a message; the text is kept, so pbpaste and `xclip -o` give
  * it back, and it reaches the browser when the window next gets focus
  * (utils/clipboard.ts).
@@ -15,7 +16,8 @@
  */
 
 import { Command, CommandContext } from './index';
-import { readClipboard, writeClipboard } from '../utils/clipboard';
+import { readClipboard, readClipboardImage, writeClipboard } from '../utils/clipboard';
+import { decodeBytes } from '../utils/byte-text';
 
 /** Write the clipboard; on a refusal say so (the text is kept and retried on focus): exit 1 */
 async function copy(ctx: CommandContext, name: string, text: string): Promise<number> {
@@ -51,7 +53,7 @@ const TEXT_TARGETS = ['TARGETS', 'UTF8_STRING', 'STRING', 'TEXT', 'text/plain', 
 
 export const xclipCmd: Command = {
   name: 'xclip',
-  description: 'Copy to or paste from the clipboard (xclip-compatible, text only)',
+  description: 'Copy to or paste from the clipboard (xclip-compatible: text, and images out)',
   async exec(ctx) {
     let out = false;
     let target: string | null = null;
@@ -72,7 +74,21 @@ export const xclipCmd: Command = {
       else files.push(a[i]);
     }
     if (out) {
-      if (target === 'TARGETS') { ctx.stdout += TEXT_TARGETS.join('\n') + '\n'; return 0; }
+      // An image on the clipboard is a target too (Claude Code's image paste lists the
+      // targets, then saves `-t image/png -o > file`)
+      if (target === 'TARGETS') {
+        const image = await readClipboardImage();
+        ctx.stdout += [...TEXT_TARGETS, ...(image ? [image.type] : [])].join('\n') + '\n';
+        return 0;
+      }
+      if (target && /^image\//i.test(target)) {
+        const image = await readClipboardImage();
+        if (image && image.type.toLowerCase() === target.toLowerCase()) {
+          if (ctx.stdoutBytes) ctx.stdoutBytes(image.bytes);
+          else ctx.stdout += decodeBytes(image.bytes); // (byte-exact: a redirect writes the same bytes)
+          return 0;
+        }
+      }
       if (target && !/^(UTF8_STRING|STRING|TEXT|text\/plain)/i.test(target)) {
         ctx.stderr += `Error: target ${target} not available\n`;
         return 1;

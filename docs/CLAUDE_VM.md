@@ -96,12 +96,12 @@ Counts are textual uses in the 45 MB of JS.
 | `Bun.stdin.stream()` | 3 | piped input (hooks, editors) | `process.stdin` as a ReadableStream |
 | `Bun.file` | 1 | a socket path as a spawn's stdio | with `Bun.spawn` |
 | `Bun.sleepSync` | 1 | a short poll loop | Atomics.wait / busy wait |
-| `Bun.serve`, `Bun.listen`, `Bun.connect` | 4, 2, 2 | local servers (sign-in callback, previews), proxies, reachability probes | onto `http`/`net`; check which matter |
+| `Bun.serve`, `Bun.listen`, `Bun.connect` | 4, 2, 2 | local servers (a loopback MCP server for plugins, previews, `claude gateway`), proxies, reachability probes | onto `http`/`net` (the sign-in callback is node's `http`, not `Bun.serve`) |
 | `Bun.Terminal` | 2 | background tasks in a pty | it already falls back ("Bun.Terminal unavailable (running under Node?)") |
 | `Bun.version`, `.main`, `.isStandaloneExecutable` | 1 each | runtime checks | values |
 | `Bun.unsafe.setJITPolicy`, `Bun.gc`, `Bun.generateHeapSnapshot` | 4, 1, 1 | JIT hints, diagnostics | no-ops |
 | `Bun.JSONL?.parseChunk`, `Bun.FetchSession` | 1, 1 | optional (`?.`, `typeof` checks) | leave undefined |
-| `Bun.Image`, `Bun.WebView`, `Bun.SQL`, `Bun.Transpiler` | 2, 1, 1, 1 | images, a browser view, `claude gateway`, TS config files | later, or throw |
+| `Bun.Image`, `Bun.WebView`, `Bun.SQL`, `Bun.Transpiler` | 2, 1, 1, 1 | images (sharp-like: metadata, resize, rotate, jpeg/png/webp, toBuffer), a browser view, `claude gateway`, `.ts` function hooks | `Image` on the browser's decoders; the rest absent |
 | `Bun.ant.getPeerPid/getPeerUid/memoryPressureLevel/setDumpable` | 1 each | Anthropic's Bun fork: sockets' peers, memory pressure | optional; check each call site |
 | `bun:ffi` | 7 | dlopen of libc/libSystem/ntdll for ttyname, openat, login_tty… | every use is in try/catch with a fallback: a module that throws |
 | `bun:jsc` | 2 | `edenGC()`, `heapStats()` | optional: no-ops |
@@ -131,8 +131,7 @@ a module, tested against what Bun 1.4.2 returns for the same calls
 | `spawn.ts` | `spawn`, `file`, `stdin` | child_process: Bun's stdio defaults, web streams, FileSink stdin, `exited`/`exitCode`/`signalCode`/`kill`/`onExit`, ENOENT thrown at once, `Bun.file(fd\|path)` as stdio |
 | `serve.ts` | `serve` | the process's `http`: `fetch(req, server)` and `routes` (exact, `:param`, `*`, per method), `error()`, a thrown handler a 500; `port`, `url`, `stop()` (a promise), `reload`, `fetch` without the network, `requestIP` |
 | `sockets.ts` | `listen`, `connect` | the process's `net`: Bun's handlers (open, data as a Buffer, drain, end, close, error, timeout, connectError), `write` returning the bytes taken, `readyState`; a refused connect rejects with "Failed to connect" and the system's code. On node-compat a listener's port is known when `listen`/`serve` returns, as in Bun |
-
-Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-clis'.
+| `image.ts` | `Image` | node-compat's browser sharp (`shims/browser-sharp.ts`: createImageBitmap and a canvas, in the page or a Worker); `maxPixels` makes a larger image fail to decode (`claude-vm-bun-image.test.ts`) |
 
 ## How `claude --vm` runs it
 
@@ -225,9 +224,76 @@ redoes only the second. `tests/browser/claude-restore.mjs` with
 `CLAUDE_BUILD=vm TOOL=1`: a model turn (a local stand-in for the Messages
 API), a Bash tool call, and the session resumed after a reload.
 
-## Not done yet
+## Sign-in
 
-- The page's memory: ~1.2 GB renderer RSS at the prompt.
-- Sign-in against claude.ai (the OAuth callback server runs on
-  `Bun.serve`; the browser's redirect to it is untried), background tasks (`Bun.Terminal`), the
-  voice and clipboard addons (they fail to load, as Claude Code allows).
+Claude Code's own sign-in works under `--vm` as it does for the other builds;
+nothing in it is `--vm`-specific. What 2.1.296 does:
+
+- `claude` signed out (after the theme picker, "Select login method"), `/login`
+  in a session, and `claude auth login` (`claude login`, `loginArgs` in
+  `claude.ts`) run the same flow. It makes a PKCE verifier and a state,
+  starts a callback server with node's `http.createServer` on `127.0.0.1:0`
+  (not `Bun.serve`), and builds two authorize URLs with the same state and
+  challenge: the manual one (redirect
+  `https://platform.claude.com/oauth/code/callback`), which it prints, and the
+  automatic one (redirect `http://localhost:PORT/callback`), which it opens.
+  Both carry `code=true`. The claude.ai URL is
+  `https://claude.com/cai/oauth/authorize`.
+- Opening is `$BROWSER URL` (or the `browser` setting), else `xdg-open URL`,
+  through `child_process` (execa). On Linux with neither `DISPLAY` nor
+  `WAYLAND_DISPLAY` and no `$BROWSER` it opens nothing. tabcomputer's shell
+  sets `BROWSER=xdg-open` (`main.ts`) and `--vm` passes the shell's
+  environment, so the builtin `xdg-open` (`open-url.ts`) gets the automatic
+  URL, rewrites it to the manual redirect and opens it in a new tab, or offers
+  an Open card when the browser blocks the tab.
+- `auth login` reads `code#state` lines from stdin (readline); a session's
+  `/login` has its "Paste code here if prompted >" box. A pasted code ends the
+  wait without the callback, and the token exchange (`POST
+  https://platform.claude.com/v1/oauth/token`, axios) names the manual
+  redirect. node-compat's fetch sends it through the server's `/api/platform/`
+  proxy. Then come the profile, roles and bootstrap calls (`/api/anthropic/`),
+  and the tokens go to `~/.claude/.credentials.json`.
+
+`tests/browser/claude-vm-signin.mjs` runs all of it in Chromium on the real
+binary, with a stand-in for the account (a front proxy answers the token
+exchange and the account calls): `auth login` (the opened URL, the exchange's
+redirect, code, state and verifier, the saved tokens, `auth status`),
+`BLOCK=1` (the Open card carries the same URL), and `LOGIN=session` (the
+first run's `/login`, then the session's input box and a resize).
+
+What only a real account can confirm: the platform's code page for this
+client and redirect, the real token exchange through `/api/platform/` (the
+stand-in replaces exactly that hop), the Console (API key) method, which mints
+a key with `create_api_key`, and a subscription's profile in the session.
+
+## Parity
+
+How `--vm` differs from the native build on Linux, read from 2.1.296's module
+graph (its Node builtin imports, `Bun.*`, `bun:*`, `process.execPath` spawns)
+and checked in Chromium where noted. Most user-visible first.
+
+| # | Gap | Impact | Status |
+|---|---|---|---|
+| 1 | Terminal resize and resume after Ctrl-Z: node in a Worker (the default on a cross-origin isolated page, so every `--vm` session) never got `SIGWINCH` or `SIGCONT`, so stdout's `'resize'` and `process.on('SIGWINCH'/'SIGCONT')` never fired and Claude Code kept its old width | high | **fixed**: the guest catches both once a listener asks (`node-worker/guest.ts`, `node-compat/process.ts`); `execSync`'s wait restarts after a caught signal (`node-worker/child.ts`). `node-worker.test.ts`, and the resize step of `claude-vm-signin.mjs` |
+| 2 | Sign-in | high | **works**, above |
+| 3 | `fetch` of a site without CORS headers from node in a Worker (WebFetch, remote HTTP/SSE MCP servers, any script) failed with "Failed to fetch". In the page, node-compat retries such a request over the TCP relay; the guest had no relay | high | **fixed**: the retry goes over the guest's own kernel sockets (`relay-fetch.ts`, `GuestNet`); checked against example.com through a local relay. `relay-fetch-guest.test.ts` |
+| 4 | `Bun.Image` missing: an image that had to be resized or converted (a large screenshot given to Read, a pasted image, compression to the API's limits, attachment previews) failed with "Unable to resize image" | medium-high | **fixed**: `bun/image.ts`; browser sharp's `rotate()` now turns by quarter turns |
+| 5 | Image paste: Claude Code lists `xclip -t TARGETS -o` and saves `xclip -t image/png -o > file`; `xclip` was text only | medium | **fixed in `xclip`** (`navigator.clipboard.read()`, `browser-open.test.ts`); untested live: Chrome's permission prompt, and whether Ctrl+V reaches Claude Code |
+| 6 | Self re-exec: `process.execPath` is `/usr/local/bin/node` while `Bun.isStandaloneExecutable` is true, so `[execPath, ...args]` runs node without the launcher: background sessions (`--bg-pty-host`, `--bg-spare`), agent-team teammates in tmux, `claude plugin eval`, the self-hosted runner, function-hook builds (`--smol`), and `CLAUDE_CODE_EXECPATH` in the Bash tool | medium | open. A wrapper as execPath (`exec node vm-main.mjs "$@"`) fixes the spawn, but a background-session spare would then boot a second Claude Code that fails on `Bun.Terminal` (7): do both together. Making `isStandaloneExecutable` false instead changes install-type detection and more |
+| 7 | `Bun.Terminal` (the background sessions' pty host) | medium | open ("Bun.Terminal unavailable"); needs an implementation on kernel ptys. The Bash tool's `run_in_background` doesn't use it |
+| 8 | Git worktrees (`--worktree`, EnterWorktree): `git worktree add` | medium-low | open, not `--vm`-specific: the builtin git has only `worktree list` (`git-route.ts`) and refuses linked worktrees; Debian's git (`debian install`) has them |
+| 9 | OAuth for remote MCP servers: the callback is `localhost:PORT/callback` in the tab, which the user's browser can't reach | low-medium | open, not `--vm`-specific; Claude Code's own fallback (paste the redirect URL in `/mcp`) works |
+| 10 | Node builtins node-compat lacked, so they were auto-stubbed (they exist and do nothing; a `*Sync` returns `''`) | low-medium | **fixed**: `fs.ftruncateSync` (the in-place write fallback kept the old tail), `fchmodSync`, `mkdtempSync` (returned `''`), `statfs(Sync)`, `fs/promises` `lutimes`/`statfs`, `os.getPriority`/`setPriority`, `url.domainToASCII`, `v8.getHeapSpaceStatistics`, `tls.checkServerIdentity`. **Open**: `crypto.createCipheriv`/`createDecipheriv` (AES-256-GCM: the claude.ai MCP connectors' discovery cache), `generateKeyPairSync`/`sign`/`verify` (Cowork remote device keys, DPoP), `X509Certificate` (custom CA and gateway checks), `zlib.createZstdDecompress` (the native updater, which tabcomputer's `claude update` replaces), `http2.Http2ServerRequest`, `child_process.ChildProcess`. `claude-vm-node-builtins.test.ts` checks every builtin member the bundle imports |
+| 11 | `new WebSocket(url, { protocols, headers, ... })` (Bun's options form): the MCP `ws` transport, remote-io, the agent proxy; the browser's WebSocket takes no options and sends no headers | low | open |
+| 12 | Plugin function hooks: `new Worker(hooks-worker.js)`, `Bun.Transpiler` for `.ts`, and a self re-exec (6) | low | open |
+| 13 | Voice input (`audio-capture.node`), the native clipboard addon, `claude gateway` (`Bun.SQL`), `Bun.WebView` | low | not available; Claude Code checks for each. The text clipboard goes through `xclip` |
+| 14 | Telemetry, error reports, feature flags, Remote Control | by design | off unless `TABCOMPUTER_CLAUDE_TELEMETRY=1` (`quietEnv`), as for native |
+| 15 | The npm build's tabcomputer defaults (`node-compat/process.ts`: `ANTHROPIC_MODEL`, background tasks off, tool concurrency 4) key on a `claude-code` script path | by design | `--vm` keeps Claude Code's own defaults, as native does, so background Bash tasks are on: untested live |
+| 16 | `bun:ffi` (ttyname, `*at` directory streams, `login_tty`), `bun:jsc` | none seen | every use falls back when `dlopen` throws; `bun:jsc`'s are no-ops |
+| 17 | IDE integration | n/a | the IDE runs the WebSocket server and writes `~/.claude/ide/*.lock`; nothing in a tab does |
+| 18 | The page's memory: ~1.2 GB renderer RSS at the prompt | — | open |
+
+Expected to work, not run live yet: hooks and the status line (`sh -c`
+children with JSON on stdin), MCP stdio servers (`spawn` with pipes), the
+claude.ai MCP proxy (`/api/mcp-proxy/`), subagents (in-process). `/resume` is
+covered by `claude-restore.mjs` with `CLAUDE_BUILD=vm`.

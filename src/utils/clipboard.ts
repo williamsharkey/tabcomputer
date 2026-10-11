@@ -76,6 +76,23 @@ export async function readClipboard(): Promise<string> {
   return localText ?? '';
 }
 
+/**
+ * The image on the browser clipboard (navigator.clipboard.read: Chrome gives
+ * images as image/png), or null when there is none or the browser refuses
+ * (no permission, the tab isn't focused).
+ */
+export async function readClipboardImage(): Promise<{ type: string; bytes: Uint8Array } | null> {
+  const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+  if (!clip?.read) return null;
+  try {
+    for (const item of await clip.read()) {
+      const type = item.types.find((t) => /^image\//.test(t));
+      if (type) return { type, bytes: new Uint8Array(await (await item.getType(type)).arrayBuffer()) };
+    }
+  } catch { /* no permission, not focused */ }
+  return null;
+}
+
 /** (tests) Forget the local text */
 export function resetClipboard(): void {
   localText = null;

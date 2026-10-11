@@ -16,6 +16,7 @@ import { spawn, BunFile, stdinOf, type SpawnEnv, type SpawnOptions } from './spa
 import { CellSegmenter } from './cell-segmenter';
 import { serve } from './serve';
 import { listen, connect } from './sockets';
+import { createImageClass } from './image';
 
 export interface BunEnv extends SpawnEnv {
   /** Bun.version, Bun.main */
@@ -55,6 +56,7 @@ export function createBun(env: BunEnv): Record<string, unknown> {
   const toBuffer = (b: Uint8Array) => (env.Buffer ? env.Buffer.from(b.buffer, b.byteOffset, b.byteLength) : b);
   const hash: any = (data: unknown) => crc32(data); // (Bun's default is wyhash; nothing here calls it bare)
   hash.crc32 = crc32;
+  let Image: unknown;
   return {
     version: env.version ?? '1.3.0',
     main: env.main ?? '',
@@ -75,6 +77,7 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     serve: (opts: any) => serve(env, opts),
     listen: (opts: any) => listen(env, opts),
     connect: (opts: any) => connect(env, opts),
+    get Image() { return Image ??= createImageClass(toBuffer); },
     gc() {},
     unsafe: { setJITPolicy() {} },
     generateHeapSnapshot: () => ({}),

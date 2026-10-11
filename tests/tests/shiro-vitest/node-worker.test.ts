@@ -398,6 +398,41 @@ w.terminate();
     expect(tty.pty.termios.lflag & 0o12).toBe(0o12);
   }, 60_000);
 
+  it("on a pty: a resize is stdout's 'resize' and 'SIGWINCH'; a continue after a stop is 'SIGCONT' (Ink redraws on them)", async () => {
+    const { shell } = await createTestShell();
+    const tty = new TtySession();
+    let screen = '';
+    tty.pty.onOutput((b) => { screen += new TextDecoder().decode(b); });
+    shell.setTerminal({ tty, writeOutput: (s: string) => { screen += s; }, write: (s: string) => { screen += s; }, getSize: () => ({ cols: 80, rows: 24 }), onResize: () => () => {},
+      enterStdinPassthrough() {}, exitStdinPassthrough() {}, enterRawMode() {}, exitRawMode() {}, isRawMode: () => false, term: { buffer: { active: { type: 'normal' } } } } as any);
+    const until = async (cond: () => boolean) => { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > 15_000) throw new Error(`timed out: ${JSON.stringify(screen)}`); await new Promise((r) => setTimeout(r, 10)); } };
+    const js = [
+      'process.stdout.on("resize", () => console.log("resize " + process.stdout.columns + "x" + process.stdout.rows))',
+      'process.on("SIGWINCH", () => console.log("winch"))',
+      'process.on("SIGCONT", () => { console.log("cont"); process.exit(0) })',
+      'process.stdin.setRawMode(true); process.stdin.resume()',
+      // execSync is not cut short by a resize; "p" prints the pid for the stop below
+      'process.stdin.on("data", (d) => { if (String(d) === "p") console.log("pid " + process.pid); if (String(d) === "x") console.log("sync " + require("child_process").execSync("sleep 0.5; echo done").toString().trim()) })',
+      'console.log("ready " + process.stdout.columns)',
+    ].join('; ');
+    const r = shell.execute(`export TABCOMPUTER_NODE_WORKER=1; node -e '${js}'`, () => {}, () => {});
+    await until(() => screen.includes('ready'));
+    tty.pty.input('x');
+    await new Promise((r) => setTimeout(r, 100));
+    tty.pty.setWinsize({ cols: 100, rows: 30 });
+    await until(() => screen.includes('resize 100x30') && screen.includes('winch'));
+    await until(() => screen.includes('sync done'));
+    // ^Z and fg, as job control does them
+    tty.pty.input('p');
+    await until(() => /pid \d+/.test(screen));
+    const pid = Number(/pid (\d+)/.exec(screen)![1]);
+    tty.pty.jc.kill(pid, 19); // SIGSTOP
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await r).toBe(128 + 19); // (the shell's wait ends at the stop, as bash's does)
+    tty.pty.jc.kill(pid, 18); // SIGCONT
+    await until(() => screen.includes('cont'));
+  }, 60_000);
+
   for (const mode of ['1', '0']) {
     it(`spawn() with stdio 'inherit' gives the child the terminal itself (codex's launcher), ${mode === '1' ? 'as a guest' : 'in the page'}`, async () => {
       const { shell, fs } = await createTestShell();

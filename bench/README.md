@@ -72,7 +72,7 @@ JS: handy for poking at something a benchmark flagged.
 ## Native Claude Code, interactive (`claude`)
 
 Opt-in: `node bench/run.mjs --suites claude --modes isolated --no-gh` (about
-N min for 3 rounds). Needs the two native fixtures above
+15 min per round; `--runs 1` for one). Needs the two native fixtures above
 (`bench/.cache/fixtures/claude-native`, `ld-musl-x86_64.so.1`). Each round
 is a fresh profile with the binary copied in, `~/.claude.json` seeded
 (onboarding done, the key approved, `~/w` trusted, so no dialogs), and
@@ -84,15 +84,19 @@ through server.mjs's TCP relay.
 Times are taken in the page with `performance.now()`, from the
 `term.input()` that types the key to the xterm buffer showing its effect
 (`onWriteParsed`), and, in each `.frame` twin, to the end of the animation
-frame that paints it:
+frame that paints it. A key counts as echoed when a line holding Claude's
+input mark (`❯` or `>`, also inside a `│` box) starts with every key typed so
+far, so the same letter elsewhere on screen doesn't count. agent-clis and
+perf-kernel use the same definitions.
 
 | metric | from → to |
 |---|---|
 | `claude_native.start.cold.first_screen` | Enter on `claude` (first launch in the profile) → Claude's first output |
 | `claude_native.start.cold.prompt` | Enter → the idle prompt (`❯` and the shortcuts hint) |
 | `claude_native.start.warm.*` | the same for the second launch in the same page |
-| `claude_native.echo.first` | the first key typed at the prompt → its echo |
-| `claude_native.echo.{p50,p90,p99,max}` | each of 34 more keys, typed one at a time 150 ms after the previous echo → its echo |
+| `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
+| `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
+| `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |
 | `claude_native.echo_burst.total` | 10 keys typed at once → the last echoed |
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
 

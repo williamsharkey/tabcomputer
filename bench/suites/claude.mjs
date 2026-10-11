@@ -10,8 +10,10 @@
 // the same page, Blink's and the kernel's caches warm):
 //   claude_native.start.{cold,warm}.first_screen   Enter on `claude` → first output from Claude
 //   claude_native.start.{cold,warm}.prompt         Enter → the input prompt, idle (❯ and the shortcuts hint)
-//   claude_native.echo.first                       first key at the prompt → its echo (the first input Claude handles)
-//   claude_native.echo.{p50,p90,p99,max}           keys typed one at a time, ECHO_GAP_MS apart, each → its echo
+//   claude_native.rss_at_prompt                    renderer RSS at the cold prompt
+//   claude_native.echo.first                       first key, 1.5 s after the prompt → its echo (the first input Claude handles)
+//   claude_native.echo.{p50,p90,p99,max}           after SETTLE_MS, keys typed one at a time, ECHO_GAP_MS after
+//                                                  the previous echo, each → the input line starting with all keys so far
 //   claude_native.echo_burst.total                 ECHO_BURST keys typed at once → the last one echoed
 //   claude_native.turn                             Enter on a prompt → the mocked reply shows
 // Each has a `.frame` twin for the painted frame. `claude_native.native.*` is
@@ -33,6 +35,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ECHO_KEYS = 'benchechoqwertyuiopasdfghjklzxcvbnm'; // no spaces: trailing blanks are trimmed from rows
 const ECHO_GAP_MS = 150;
 const ECHO_BURST = 'zyxwvutsrq';
+const SETTLE_MS = 20000; // before the steady-state echo series
+const TURN_LIMIT_MS = 180000;
 const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
@@ -68,7 +72,11 @@ const install = (h) => h.eval(() => {
     if (data) T.input(data, true);
     check();
   });
-  window.__cn = { screen, until, T };
+  /** The text after Claude's input mark (❯ or >, also inside a │ box) on each line that has one. */
+  const inputs = (s) => s.split('\n').map((l) => /^\s*(?:│\s*)?[❯>]\s?(.*)$/.exec(l)?.[1]).filter((x) => x != null);
+  /** True when an input line starts with `typed`: the echo, not the same letters elsewhere on screen. */
+  const echoed = (s, typed) => inputs(s).some((x) => x.startsWith(typed));
+  window.__cn = { screen, until, inputs, echoed, T };
 });
 
 /**
@@ -139,13 +147,13 @@ const startClaude = (h, cmd, limitMs) => guarded(h, 'claude start', () => h.eval
 
 /** Types `keys` one at a time, waiting for each echo; [{ parsed, frame }]. */
 const echoKeys = (h, keys, gapMs, limitMs) => h.eval(async ([keys, gapMs, limitMs]) => {
-  const { until, screen } = window.__cn;
+  const { until, screen, echoed } = window.__cn;
   const out = [];
   let typed = '';
   for (const k of keys) {
     typed += k;
     const want = typed;
-    const r = await until(k, (s) => s.includes(want), limitMs);
+    const r = await until(k, (s) => echoed(s, want), limitMs);
     if (!r) return { out, error: `no echo of ${JSON.stringify(want)} in ${limitMs} ms: ${screen().slice(-600)}` };
     out.push(r);
     await new Promise((res) => setTimeout(res, gapMs));
@@ -153,10 +161,10 @@ const echoKeys = (h, keys, gapMs, limitMs) => h.eval(async ([keys, gapMs, limitM
   return { out };
 }, [keys, gapMs, limitMs]);
 
-/** Clears Claude's input line: Ctrl-U until the prompt holds no typed text. */
+/** Clears Claude's input line: Ctrl-U until the input line no longer starts with `typed`. */
 const clearInput = (h, typed) => h.eval(async (typed) => {
-  const { until } = window.__cn;
-  await until('\x15', (s) => !s.includes(typed.slice(0, 6)), 10000);
+  const { until, echoed } = window.__cn;
+  await until('\x15', (s) => !echoed(s, typed.slice(0, 1)), 10000);
 }, typed);
 
 async function exitClaude(h) {
@@ -177,24 +185,32 @@ async function round(h, add, mock, { cold }) {
   const tag = cold ? 'cold' : 'warm';
   const s = await startClaude(h, cmd, 600000);
   if (!s.prompt) h.log(`    ${tag} start screen:\n${s.screen.trimEnd()}`);
-  if (!s.prompt) throw new Error(`${tag} start: no prompt in 600 s (mock saw ${mock.calls()} calls: ${mock.paths.slice(-5).join(', ')}): ${s.screen.trimEnd().split('\\n').slice(-12).join(' | ').slice(-1200)}`);
+  if (!s.prompt) throw new Error(`${tag} start: no prompt in 600 s (mock saw ${mock.calls()} calls: ${mock.paths.slice(-5).join(', ')}): ${s.screen.trimEnd().split('\n').slice(-12).join(' | ').slice(-1200)}`);
   if (s.firstScreen) add(`start.${tag}.first_screen`, s.firstScreen.parsed);
   add(`start.${tag}.prompt`, s.prompt.parsed); add(`start.${tag}.prompt.frame`, s.prompt.frame);
-  await h.page.waitForTimeout(1500); // let startup work (MCP, hooks) settle
   if (cold) {
-    const e = await echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000);
+    add('rss_at_prompt', (await h.rendererRss()) / 2 ** 20);
+    await h.page.waitForTimeout(1500);
+    // the first key Claude handles, right after its prompt
+    const f = await echoKeys(h, ECHO_KEYS[0], 0, 60000);
+    if (f.error) throw new Error(f.error);
+    add('echo.first', f.out[0].parsed); add('echo.first.frame', f.out[0].frame);
+    await clearInput(h, ECHO_KEYS[0]);
+    // steady state: after the startup work (MCP, hooks, the first render passes) is done
+    await h.page.waitForTimeout(SETTLE_MS);
+    const e = await guarded(h, 'echo', () => echoKeys(h, ECHO_KEYS, ECHO_GAP_MS, 30000));
     if (e.error) throw new Error(e.error);
-    add('echo.first', e.out[0].parsed); add('echo.first.frame', e.out[0].frame);
-    for (const r of e.out.slice(1)) { add('echo', r.parsed); add('echo.frame', r.frame); }
+    for (const r of e.out) { add('echo', r.parsed); add('echo.frame', r.frame); }
     await clearInput(h, ECHO_KEYS);
     await h.page.waitForTimeout(500);
-    // a burst: every key in one go (fast typing / a paste of single keys)
+    // a burst: every key in one go (fast typing), first key → the last one echoed
     const b = await h.eval(async (keys) => {
-      const { until, T } = window.__cn;
+      const { until, echoed, T } = window.__cn;
       const t0 = performance.now();
       for (const k of keys.slice(0, -1)) T.input(k, true);
-      const r = await until(keys.slice(-1), (s) => s.includes(keys), 30000);
-      return r && { parsed: r.parsed + 0, frame: r.frame, total: performance.now() - t0 };
+      const off = performance.now() - t0; // until() times from its own start
+      const r = await until(keys.slice(-1), (s) => echoed(s, keys), 30000);
+      return r && { parsed: r.parsed + off, frame: r.frame + off };
     }, ECHO_BURST);
     if (b) { add('echo_burst.total', b.parsed); add('echo_burst.total.frame', b.frame); }
     await clearInput(h, ECHO_BURST);
@@ -202,8 +218,11 @@ async function round(h, add, mock, { cold }) {
     // one turn against the mock
     await h.eval((l) => window.__cn.T.input(l, true), 'bench turn 1: say something');
     await h.page.waitForTimeout(500);
-    const t = await h.eval(() => window.__cn.until('\r', (s) => /BENCH-REPLY-1/.test(s), 600000));
+    const calls = mock.calls();
+    const t = await guarded(h, 'turn', () => h.eval((ms) => window.__cn.until('\r', (s) => /BENCH-REPLY-1/.test(s), ms), TURN_LIMIT_MS));
     if (t) { add('turn', t.parsed); add('turn.frame', t.frame); }
+    else h.log(`    turn: no reply in ${TURN_LIMIT_MS / 1000} s; the mock saw ${mock.calls() - calls} model calls (${mock.paths.slice(-6).join(', ') || 'no requests'}): ${(await h.eval(() => window.__cn.screen())).split('\n').filter((l) => l.trim()).slice(-8).join(' | ').slice(-600)}`);
+    await h.eval(() => window.__cn.T.input('\x1b', true)); // Esc: stop a turn still running
     await h.page.waitForTimeout(1000);
   }
   await exitClaude(h);
@@ -274,9 +293,10 @@ export async function run(h) {
   S('start.warm.first_screen', 'ms', 'second launch in the same page: Enter → first output');
   S('start.warm.prompt', 'ms', 'second launch: Enter → idle prompt');
   S('start.warm.prompt.frame', 'ms', 'same, painted');
-  S('echo.first', 'ms', 'first key typed at the prompt → its echo in the buffer');
+  S('rss_at_prompt', 'MiB', 'renderer RSS (workers included) at the cold prompt');
+  S('echo.first', 'ms', 'first key typed at the prompt (1.5 s after it shows) → its echo on the input line');
   S('echo.first.frame', 'ms', 'same, painted');
-  P('echo', `key → its echo in the buffer, keys ${ECHO_GAP_MS} ms apart after each echo`);
+  P('echo', `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
   P('echo.frame', 'key → the painted frame showing it');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');

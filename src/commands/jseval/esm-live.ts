@@ -48,14 +48,78 @@ function redeclared(src: string, inCode: (i: number) => boolean, locals: Map<str
   for (const m of src.matchAll(/\bfunction\b\s*\*?\s*[\w$]*\s*\(([^()]*)\)/g)) add(m[1], m.index!);
   // (a method's parameters: `getFullName(test, separator) {` beside an imported `separator`;
   // an `if (…) {` condition's names come along, which only keeps them copies)
-  for (const m of src.matchAll(/[\w$]\s*\(([^()]*)\)\s*\{/g)) add(m[1], m.index!);
+  // (found from the `(`, then the word character before it: a regex starting at every word
+  // character was a quarter of this pass's time)
+  for (const m of src.matchAll(/\(([^()]*)\)\s*\{/g)) {
+    let k = m.index! - 1;
+    while (k >= 0 && /\s/.test(src[k])) k--;
+    if (k >= 0 && isIdent(src.charCodeAt(k)) && src.charCodeAt(k) <= 127) add(m[1], k);
+  }
   for (const m of src.matchAll(/\(([^()]*)\)\s*=>/g)) add(m[1], m.index!);
-  for (const m of src.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) if (inCode(m.index!) && locals.has(m[1])) found.add(m[1]);
+  // (`x =>`: from each `=>`, the word before it)
+  for (const m of src.matchAll(/=>/g)) {
+    let k = m.index! - 1;
+    while (k >= 0 && /\s/.test(src[k])) k--;
+    const end = k + 1;
+    while (k >= 0 && isIdent(src.charCodeAt(k))) k--;
+    const start = k + 1;
+    if (start === end || !isIdentStart(src.charCodeAt(start))) continue;
+    if (k >= 0 && (isIdent(src.charCodeAt(k)) || src[k] === '.' || src[k] === '$')) continue;
+    const name = src.slice(start, end);
+    if (inCode(start) && locals.has(name)) found.add(name);
+  }
   for (const m of src.matchAll(/\b(?:let|const|var|function\s*\*?|class)\s+([A-Za-z_$][\w$]*)/g)) if (inCode(m.index!) && locals.has(m[1])) found.add(m[1]);
   for (const m of src.matchAll(/\b(?:let|const|var)\s*([{[][^=;]*)=/g)) add(m[1], m.index!);
   // (`for (const { x } of list)`: destructured with no `=`)
   for (const m of src.matchAll(/\b(?:let|const|var)\s*([{[][^;=]*?)\s+(?:of|in)\b/g)) add(m[1], m.index!);
   return found;
+}
+
+/**
+ * The statement that ends a module (general mode): its exports whose values can't change
+ * any more become plain properties, so an importer's reads (`__shiro_live0.f`, every call
+ * of an imported function) stop going through a getter. Getters made astro dev ~0.5 s
+ * slower to start. Only a top-level const, function or class nothing assigns to settles;
+ * a let or var, and a re-export (its module may still be loading), stay getters. A value
+ * that can't be read yet (a throw) leaves all of them getters.
+ */
+function settled(src: string, inCode: (i: number) => boolean, settle: [string, string][], imports: Map<string, unknown>): string {
+  if (!settle.length) return '';
+  const space = (k: number) => src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r';
+  /** The identifier ending just before `end` (spaces skipped), unless it is a member (`.x`) */
+  const wordBefore = (end: number): { word: string; start: number } | null => {
+    let k = end - 1;
+    while (k >= 0 && space(k)) k--;
+    const to = k + 1;
+    while (k >= 0 && isIdent(src.charCodeAt(k))) k--;
+    if (to === k + 1 || !isIdentStart(src.charCodeAt(k + 1)) || src[k] === '.') return null;
+    return { word: src.slice(k + 1, to), start: k + 1 };
+  };
+  const constLike = new Set<string>(), changing = new Set<string>();
+  // declarations (a list's names after the first aren't seen: those stay getters)
+  for (const m of src.matchAll(/(?<![\w$.])(let|var|const|class|function)(?![\w$])\s*\*?\s*([A-Za-z_$][\w$]*)/g)) {
+    if (!inCode(m.index!)) continue;
+    (m[1] === 'let' || m[1] === 'var' ? changing : constLike).add(m[2]);
+  }
+  // assignments, from each `=` (`f = …`, `f += …`; not `==`, `=>`, `<=`, `x.f =`) and `++`/`--`
+  // (a destructuring assignment, `[f] = …`, isn't seen: rare for an export)
+  for (const m of src.matchAll(/(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?![=>])/g)) {
+    if (!inCode(m.index!) || src[m.index! - 1] === '=' || src[m.index! - 1] === '!') continue;
+    const w = wordBefore(m.index!);
+    // (`const f = …` declares it)
+    if (w && !/^(?:const|let|var)$/.test(wordBefore(w.start)?.word ?? '')) changing.add(w.word);
+  }
+  for (const m of src.matchAll(/\+\+|--/g)) {
+    if (!inCode(m.index!)) continue;
+    const w = wordBefore(m.index!);
+    if (w) changing.add(w.word);
+    const after = /^\s*([A-Za-z_$][\w$]*)/.exec(src.slice(m.index! + 2, m.index! + 66));
+    if (after) changing.add(after[1]);
+  }
+  const ok = settle.filter(([, local]) => !imports.has(local) && constLike.has(local) && !changing.has(local));
+  if (!ok.length) return '';
+  const props = ok.map(([name, local]) => `${JSON.stringify(name)}: { value: ${local}, writable: true, enumerable: true, configurable: true }`);
+  return `\n;try { Object.defineProperties(__shiro_module.exports, {${props.join(', ')}}); } catch {}\n`;
 }
 
 export function liveEsbuildChunk(src: string): string {
@@ -119,6 +183,8 @@ function liveBindings(src: string, general: boolean): string {
 
   // Local export lists become getters; the statements are removed
   const getters: string[] = [];
+  /** (general) exports [name, local] that become plain values once the module has run (settled) */
+  const settle: [string, string][] = [];
   const removals: [number, number][] = [];
   // (export statements left to the transform as they are: names in them aren't rewritten)
   const keep: [number, number][] = [];
@@ -162,6 +228,7 @@ function liveBindings(src: string, general: boolean): string {
       const imp = locals.get(local);
       const value = imp ? `__shiro_live${imp[0]}.${imp[1]}` : local;
       getters.push(getter(name, value));
+      if (general && !imp) settle.push([name, local]);
     }
     removals.push([m.index!, m.index! + m[0].length]);
   }
@@ -169,12 +236,12 @@ function liveBindings(src: string, general: boolean): string {
   // the value at the end, which the getter's setter takes as the same value
   if (general) {
     for (const m of src.matchAll(/(?<![\w$.])export\s+(?:async\s+)?(?:function\s*\*?|class|let|const|var)\s+([\w$]+)/g)) {
-      if (inCode(m.index!)) getters.push(getter(m[1], m[1]));
+      if (inCode(m.index!)) { getters.push(getter(m[1], m[1])); settle.push([m[1], m[1]]); }
     }
   }
   // An imported name the module declares again (rolldown's chunks reuse names in nested
   // scopes, `catch (error)` beside an imported `error`; esbuild renames those) keeps the copy
-  for (const name of redeclared(src, inCode, locals)) locals.delete(name);
+  if (locals.size) for (const name of redeclared(src, inCode, locals)) locals.delete(name);
   if (!locals.size && !getters.length) return src;
 
   const out: string[] = [];
@@ -212,6 +279,13 @@ function liveBindings(src: string, general: boolean): string {
   const directives = /^(?:\s*(?:(['"])use [\w ]+\1\s*;?))*/.exec(src)![0];
   if (directives) { out.push(directives); last = directives.length; }
   out.push(header);
+  const tail = general ? settled(src, inCode, settle, locals) : '';
+  // (no imported name to rewrite: only the export lists go, no need to read the code)
+  if (!locals.size) {
+    for (const [from, to] of removals) emit(from, to, '');
+    out.push(src.slice(last), tail);
+    return out.join('');
+  }
 
   // Bracket stack: '(' '[' or '{' tagged object (o), block (b) or class body (c)
   const stack: string[] = [];
@@ -272,7 +346,7 @@ function liveBindings(src: string, general: boolean): string {
     prevWord = '';
     i++;
   }
-  out.push(src.slice(last));
+  out.push(src.slice(last), tail);
 
   function isObjectBrace(): boolean {
     if (prev === 'w') return OBJECT_AFTER_WORD.has(prevWord);

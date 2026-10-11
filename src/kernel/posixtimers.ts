@@ -42,6 +42,8 @@ interface Timer {
   queued: boolean; // its signal was sent and may still be pending
   cur: number; // expiries while that signal was pending
   last: number; // overruns of the last signal taken
+  /** The queued signal's siginfo: its si_overrun follows `cur` until it is taken */
+  info?: A.SigInfo;
   tid?: number; // SIGEV_THREAD_ID: the thread its signal is for
 }
 
@@ -129,11 +131,14 @@ export class PosixTimers {
       // A signal that would only be discarded isn't generated, and the last
       // signal's overruns stay the reported ones (Linux 6.13's ignored timers)
       if (!tm.queued && PosixTimers.discarded(proc, tm.signo)) tm.cur = 0;
-      else if (tm.queued) tm.cur = Math.min(DELAYTIMER_MAX, tm.cur + 1 + missed);
-      else {
+      else if (tm.queued) {
+        tm.cur = Math.min(DELAYTIMER_MAX, tm.cur + 1 + missed);
+        if (tm.info) tm.info.overrun = tm.cur;
+      } else {
         tm.queued = true;
         tm.cur = Math.min(DELAYTIMER_MAX, missed);
-        this.deliver(proc, tm.signo, { signo: tm.signo, code: A.SI_TIMER, timerid: tm.id, overrun: 0, value: tm.value, tid: tm.tid });
+        tm.info = { signo: tm.signo, code: A.SI_TIMER, timerid: tm.id, overrun: tm.cur, value: tm.value, tid: tm.tid };
+        this.deliver(proc, tm.signo, tm.info);
       }
     }
     if (tm.interval > 0) {
@@ -197,6 +202,7 @@ export class PosixTimers {
     // stopped then armed again ran its function for the old expiries too)
     this.dropPending(proc, tm);
     tm.cur = 0;
+    tm.last = 0; // (Linux: it_overrun_last)
     if (tm.handle) clearTimeout(tm.handle);
     tm.handle = undefined;
     tm.interval = value > 0 ? interval : 0;

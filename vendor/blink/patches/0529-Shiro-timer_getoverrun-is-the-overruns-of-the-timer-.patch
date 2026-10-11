@@ -1,0 +1,124 @@
+From d753789f67e6bf1f9b3ce5ac23d76e218f76630b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 06:06:14 +0000
+Subject: [PATCH] Shiro: timer_getoverrun is the overruns of the timer's signal
+ the process took last, not the kernel's latest handed over (LTP
+ timer_settime03)
+
+---
+ blink/machine.h |  2 ++
+ blink/shiro.inc | 56 ++++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 55 insertions(+), 3 deletions(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 5600c99..d20f27c 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -335,6 +335,8 @@ struct System {
+   bool kmask_ok;  // Shiro: the kernel has this process's signal mask...
+   u64 kmask;      // ...this one (what every thread blocks)
+   void *shiro_sigq;  // Shiro: siginfo of the kernel's signals not yet delivered
++  int shiro_tov[8][2];  // Shiro: a timer's id and the overruns of its signal taken last
++  int shiro_ntov;
+ #ifdef HAVE_THREADS
+   pthread_cond_t_ machines_cond;
+   pthread_mutex_t_ machines_lock;
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index cdcd192..f53ae15 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2002,6 +2002,45 @@ static void ShiroDropTimerSiginfo(struct Machine *m, int id) {
+   UNLOCK(&s->machines_lock);
+ }
+ 
++// timer_getoverrun is the overruns of the timer's signal the process took
++// last (its handler ran, or sigwait took it), which Blink knows: the kernel
++// has handed later ones over by then (LTP timer_settime03). del: the timer
++// was deleted or set again (the kernel's count, 0 after a set, is then it).
++EMSCRIPTEN_KEEPALIVE int blink_shiro_overrun(void) { return 1; }
++
++static void ShiroNoteOverrun(struct System *s, int id, int ov, bool del) {
++  int i;
++  LOCK(&g_shiro_sigq_lock);
++  for (i = 0; i < s->shiro_ntov && s->shiro_tov[i][0] != id; ++i) {
++  }
++  if (i == s->shiro_ntov) {
++    if (del) goto Done;
++    if (i == ARRAYLEN(s->shiro_tov)) {  // (the oldest goes: the kernel's count is its fallback)
++      memmove(s->shiro_tov, s->shiro_tov + 1, sizeof(s->shiro_tov[0]) * --i);
++    }
++    s->shiro_ntov = i + 1;
++  }
++  if (del) {
++    memmove(s->shiro_tov + i, s->shiro_tov + i + 1, sizeof(s->shiro_tov[0]) * (--s->shiro_ntov - i));
++  } else {
++    s->shiro_tov[i][0] = id;
++    s->shiro_tov[i][1] = ov;
++  }
++Done:
++  UNLOCK(&g_shiro_sigq_lock);
++}
++
++static bool ShiroLastOverrun(struct System *s, int id, i64 *ov) {
++  bool found = false;
++  int i;
++  LOCK(&g_shiro_sigq_lock);
++  for (i = 0; i < s->shiro_ntov && !found; ++i) {
++    if ((found = s->shiro_tov[i][0] == id)) *ov = s->shiro_tov[i][1];
++  }
++  UNLOCK(&g_shiro_sigq_lock);
++  return found;
++}
++
+ // Takes the oldest siginfo queued for `sig` into `si` (32 bytes; none: just
+ // drops it). With more of that signal queued, it stays pending in `m`.
+ bool ShiroTakeSiginfo(struct Machine *m, int sig, u8 *si) {
+@@ -2026,6 +2065,9 @@ bool ShiroTakeSiginfo(struct Machine *m, int sig, u8 *si) {
+   UNLOCK(&g_shiro_sigq_lock);
+   if (!q) return false;
+   if (si) memcpy(si, q->info, 32);
++  if (((i32 *)q->info)[2] == -2) {  // SI_TIMER: si_tid, si_overrun
++    ShiroNoteOverrun(s, ((i32 *)q->info)[4], ((i32 *)q->info)[5], false);
++  }
+   free(q);
+   if (more) {
+     m->signals |= (u64)1 << (sig - 1);
+@@ -4420,6 +4462,9 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+         if (r != -EAGAIN_LINUX || (ms >= 0 && left < 50)) break;
+       }
+       if (r == -ENOSYS_LINUX) return false;
++      if (r > 0 && (i32)Read32(si + 8) == -2) {  // a timer's, from the kernel: its overruns
++        ShiroNoteOverrun(m->system, (i32)Read32(si + 16), (i32)Read32(si + 20), false);
++      }
+       if (r > 0 && b && CopyToUserWrite(m, b, si, 128) == -1) r = -EFAULT_LINUX;
+       break;
+     }
+@@ -4494,7 +4539,7 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       u8 its[32];
+       if (CopyFromUserRead(m, its, c, 32) == -1) { r = -EFAULT_LINUX; break; }
+       r = ShiroCall(m, 223, A12((int)a, (int)b), its, 32, 32, false, false);
+-      if (r >= 0) ShiroDropTimerSiginfo(m, (int)a);
++      if (r >= 0) ShiroDropTimerSiginfo(m, (int)a), ShiroNoteOverrun(m->system, (int)a, 0, true);
+       if (r >= 0 && d && CopyToUserWrite(m, d, its, 32) == -1) r = -EFAULT_LINUX;
+       break;
+     }
+@@ -4504,9 +4549,14 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       if (r >= 0 && CopyToUserWrite(m, b, its, 32) == -1) r = -EFAULT_LINUX;
+       break;
+     }
+-    case 0x0E1: r = KS(m, 225, A12((int)a)); break;                   // timer_getoverrun
++    case 0x0E1:                                                       // timer_getoverrun
++      if ((r = KS(m, 225, A12((int)a))) >= 0) ShiroLastOverrun(m->system, (int)a, &r);
++      break;
+     case 0x0E2:                                                       // timer_delete
+-      if ((r = KS(m, 226, A12((int)a))) >= 0) ShiroDropTimerSiginfo(m, (int)a);
++      if ((r = KS(m, 226, A12((int)a))) >= 0) {
++        ShiroDropTimerSiginfo(m, (int)a);
++        ShiroNoteOverrun(m->system, (int)a, 0, true);
++      }
+       break;
+     case 0x092: case 0x093:                                           // sched_get_priority_max/min
+       r = a == 1 || a == 2 ? (nr == 0x092 ? 99 : 1) : a == 0 || a == 3 || a == 5 ? 0 : -EINVAL_LINUX;
+-- 
+2.43.0
+

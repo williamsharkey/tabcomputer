@@ -356,6 +356,10 @@ const haveSubreaper = readFileSync(resolve(__dirname, '../../../public/engines/b
 const sigpendingBin = join(out, 'sigpending');
 const haveSigpending = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_sigpending') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', sigpendingBin, 'sigpending.c']);
+// Blink 0529: timer_getoverrun is the overruns of the signal taken last
+const overrunBin = join(out, 'overrun');
+const haveOverrun = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_overrun') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', overrunBin, 'overrun.c', '-lrt']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1119,6 +1123,12 @@ it.skipIf(!haveSigpending)('RLIMIT_SIGPENDING 0: tgkill of a real-time signal to
   const { shell } = await setup(readFileSync(sigpendingBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('default 0 zero rt 11 zero standard 0\n');
+}, 60_000);
+
+it.skipIf(!haveOverrun)('timer_getoverrun in the handler is that signal\'s overruns, capped at DELAYTIMER_MAX like si_overrun, and 0 after timer_settime (LTP timer_settime03)', async () => {
+  const { shell } = await setup(readFileSync(overrunBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('overrun max 1 si_overrun max 1 after settime 0\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

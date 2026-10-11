@@ -1,5 +1,6 @@
 import { ipcLine, ipcReader } from '../ipc';
 import { stdinPipe } from '../live-stdin';
+import { signalNumber, signalName } from '../signals';
 import type { CommandContext } from '../../commands/index';
 import { parseShellArgs } from '../../shell-args';
 import { activeProfile } from '../../profile';
@@ -246,7 +247,9 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
    * (codex's npm launcher runs its native binary so, which waited for EOF on a
    * stdin that wasn't the tty); otherwise its output is node's (inherited())
    */
-  const execAsync = async (cmd: string, env?: Record<string, unknown>, input?: string, live?: Live, inherit?: [boolean, boolean, boolean], abort?: AbortController): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+  const execAsync = async (cmd: string, env?: Record<string, unknown>, input?: string, live?: Live, inherit?: [boolean, boolean, boolean], abort?: AbortController,
+    /** a kernel guest's spawn() without a shell: the program itself, as node runs it (its kill() reaches it) */
+    direct?: { argv: string[]; cwd?: string }): Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }> => {
     let normalized = stripShellPrefix(cmd);
     // Strip leading shell flags (-l, -i, -e) that leak through from spawn args
     normalized = normalized.replace(/^(-[a-zA-Z]+\s+)+/, '');
@@ -268,8 +271,15 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       // A real child process; files it changed are read again afterwards
       const outDec = new TextDecoder(), errDec = new TextDecoder();
       const r = await deps.guest.runChild(normalized, {
-        input, cwd: ctx.cwd,
+        input, cwd: direct?.cwd ?? ctx.cwd,
+        ...(direct ? { argv: direct.argv } : {}),
         ...(inherit ? { inherit } : {}),
+        // child.kill(): the signal to the child (its stdin, without control, ends with the input)
+        ...(abort ? { control: (c: import('../../node-worker/child').ChildControl) => {
+          c.end();
+          const kill = () => c.kill((abort.signal.reason as { signal?: number } | undefined)?.signal ?? 15);
+          if (abort.signal.aborted) kill(); else abort.signal.addEventListener('abort', kill, { once: true });
+        } } : {}),
         ...(env ? { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])) } : {}),
         ...(live ? {
           onStdout: (b: Uint8Array) => { const t = outDec.decode(b, { stream: true }); if (t) live.out(t); },
@@ -283,7 +293,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       fileCache.clear();
       const dec = new TextDecoder();
-      return { stdout: dec.decode(r.stdout), stderr: dec.decode(r.stderr), exitCode: r.status ?? 128 + (r.signal ?? 0) };
+      return { stdout: dec.decode(r.stdout), stderr: dec.decode(r.stderr), exitCode: r.status ?? 128 + (r.signal ?? 0), signal: r.signal };
     }
     // Drain pending IDB writes so shell commands can see files written by
     // writeFileSync (which only updates fileCache + queues async IDB write).
@@ -405,7 +415,20 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     const unhold = () => { const r = release; release = null; r?.(); };
     child.ref = () => { hold(); return child; };
     child.unref = () => { unhold(); return child; };
-    child.kill = () => { child.killed = true; pipe.end(); return true; };
+    // kill(): the signal to the child's process (process.ts, ctx.onKill): its listeners take it,
+    // or it ends the child, which then reports (null, 'SIGTERM') as node's do (#89)
+    let onKill: ((sig: number) => boolean) | null = null;
+    let pendingKill: number | null = null;
+    let killedBy: number | null = null;
+    const deliverKill = (n: number) => { if (!onKill!(n)) { killedBy = n; pipe.end(); } };
+    child.kill = (sig?: string | number) => {
+      const n = signalNumber(sig);
+      if (exited) return false;
+      if (n === 0) return true;
+      child.killed = true;
+      if (onKill) deliverKill(n); else pendingKill = n;
+      return true;
+    };
     // the parent's writes still in flight before it started the child (not the waits added after)
     const before = deps.pendingPromises.slice();
     hold();
@@ -418,6 +441,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       args, fs: ctx.fs, cwd, env: { ...sh.env }, stdin: '', stdout: '', stderr: '', shell: sh,
       stdinIsTTY: false, stdoutIsTTY: false,
       stdinStream: pipe.stream, stdoutBytes: out, stderrBytes: err,
+      onKill: (fn) => { onKill = fn; if (pendingKill !== null) { const n = pendingKill; pendingKill = null; deliverKill(n); } },
     };
     (sh as any).cwd = cwd;
     const run = (async () => {
@@ -427,14 +451,18 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     })();
     run.then((code) => code, (e) => { cctx.stderr += String(e?.message ?? e) + '\n'; return 1; }).then((code: number) => {
       exited = true;
+      // (killed before its process was there to take it: the kill ended it)
+      if (pendingKill !== null) killedBy = pendingKill;
       // anything the child left in its ctx (an error report) goes out too
       if (cctx.stdout) out(new TextEncoder().encode(cctx.stdout));
       if (cctx.stderr) err(new TextEncoder().encode(cctx.stderr));
       deliver(() => {
         for (const ev of ['end', 'close']) { (io.stdoutEvents[ev] || []).forEach((fn) => fn()); (io.stderrEvents[ev] || []).forEach((fn) => fn()); }
-        child.exitCode = code;
-        (io.events['exit'] || []).forEach((fn) => fn(code, null));
-        (io.events['close'] || []).forEach((fn) => fn(code, null));
+        const signal = signalName(killedBy);
+        child.exitCode = signal ? null : code;
+        child.signalCode = signal;
+        (io.events['exit'] || []).forEach((fn) => fn(child.exitCode, signal));
+        (io.events['close'] || []).forEach((fn) => fn(child.exitCode, signal));
         io.resolve({ stdout: '', stderr: '', exitCode: code });
         unhold();
       });
@@ -494,9 +522,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     const unhold = () => { const r = release; release = null; r?.(); };
     child.ref = () => { hold(); return child; };
     child.unref = () => { unhold(); return child; };
-    const SIG: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
     child.kill = (sig?: string | number) => {
-      const n = typeof sig === 'number' ? sig : SIG[sig ?? 'SIGTERM'] ?? 15;
+      const n = signalNumber(sig);
       const ok = control?.kill(n) ?? false;
       if (ok) child.killed = true;
       return ok;
@@ -527,8 +554,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       ipcIn = ipcReader((m) => deliver(() => (io.events['message'] || []).forEach((fn) => fn(m, undefined))));
     }
     hold();
-    // (a forked node runs as itself, the channel its fd 3, with this process's environment unless given one)
-    const direct = wantsIpc && io.argv && /(^|\/)node$/.test(io.argv[0]) ? ['node', ...io.argv.slice(1)] : undefined;
+    // Without a shell the program runs as itself, as node's spawn: kill() reaches it, not an
+    // `sh -c` around it (whose end SIGINTed its job's group, this process too). A forked node
+    // has the channel as its fd 3, with this process's environment unless given one
+    const direct = !io.argv || isShellBin(io.argv[0]) ? undefined
+      : /(^|\/)node$/.test(io.argv[0]) ? ['node', ...io.argv.slice(1)] : io.argv;
     const envGiven = opts?.env ?? (direct ? proc?.env : undefined);
     const env = envGiven ? Object.fromEntries(Object.entries(envGiven).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])) : undefined;
     deps.guest!.runChild(cmd, {
@@ -558,7 +588,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const code = r.status ?? 128 + (r.signal ?? 0);
       for (const ev of ['end', 'close']) { (io.stdoutEvents[ev] || []).forEach((fn) => fn()); (io.stderrEvents[ev] || []).forEach((fn) => fn()); }
       child.exitCode = r.status;
-      child.signalCode = r.signal === null ? null : Object.keys(SIG).find((k) => SIG[k] === r.signal) ?? null;
+      child.signalCode = signalName(r.signal);
       (io.events['exit'] || []).forEach((fn) => fn(r.status, child.signalCode));
       (io.events['close'] || []).forEach((fn) => fn(r.status, child.signalCode));
       io.resolve({ stdout: '', stderr: '', exitCode: code });
@@ -618,7 +648,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   const guestThrow = (cmd: string, g: ReturnType<typeof guestSync>) => {
     if (g.r.status === 0) return;
     const err: any = new Error(`Command failed: ${cmd}${g.r.stderr.length ? '\n' + new TextDecoder().decode(g.r.stderr) : ''}`);
-    Object.assign(err, { status: g.r.status, signal: g.r.signal, stdout: g.stdout, stderr: g.stderr, pid: g.r.pid, output: [null, g.stdout, g.stderr] });
+    Object.assign(err, { status: g.r.status, signal: signalName(g.r.signal), stdout: g.stdout, stderr: g.stderr, pid: g.r.pid, output: [null, g.stdout, g.stderr] });
     throw err;
   };
   const cpModule: any = {
@@ -693,7 +723,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       if (deps.guest) {
         const g = guestSync(fullCmd, opts);
-        return { pid: g.r.pid, output: [null, g.stdout, g.stderr], stdout: g.stdout, stderr: g.stderr, status: g.r.status, signal: g.r.signal === null ? null : (['', 'SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', 'SIGBUS', 'SIGFPE', 'SIGKILL', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGALRM', 'SIGTERM'][g.r.signal] || `SIG${g.r.signal}`) };
+        return { pid: g.r.pid, output: [null, g.stdout, g.stderr], stdout: g.stdout, stderr: g.stderr, status: g.r.status, signal: signalName(g.r.signal) };
       }
       const wantString = opts?.encoding && opts.encoding !== 'buffer';
       const wrap = (s: string) => wantString ? s : FakeBuffer.from(s);
@@ -860,6 +890,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         };
       };
       const killer = new AbortController();
+      /** the signal kill() sent, if it did */
+      let killedWith: number | null = null;
       const child: any = {
         pid: Math.floor(Math.random() * 10000) + 1000,
         stdin: {
@@ -898,8 +930,10 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         emit: (ev: string, ...args: any[]) => { (events[ev] || []).forEach(fn => fn(...args)); },
         // (in the page: the forked shell's abort, which signals the kernel programs it runs)
         kill: (sig?: string | number) => {
-          if (child.exitCode !== null) return false;
-          const n = typeof sig === 'number' ? sig : ({ SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 } as Record<string, number>)[sig ?? 'SIGTERM'] ?? 15;
+          const n = signalNumber(sig);
+          if (child.exitCode !== null || child.signalCode !== null) return false;
+          if (n === 0) return true;
+          killedWith ??= n;
           killer.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: n }));
           child.killed = true;
           return true;
@@ -938,9 +972,14 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         return spawnNodeLive(child, args, opts, { stdoutEvents, stderrEvents, events, inheritOut, inheritErr, resolve: (v) => _resolveChild?.(v) });
       }
       const cmdPromise = isClipboardCmd
-        ? new Promise<{ stdout: string; stderr: string; exitCode: number }>(resolve =>
+        ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(fullCmd, opts?.env, undefined, live, [inherits(opts?.stdio, 0), inheritOut, inheritErr], killer);
+        : execAsync(fullCmd, opts?.env, undefined, live, [inherits(opts?.stdio, 0), inheritOut, inheritErr], killer,
+          // (a kernel guest's child without a shell: the program itself, as spawnGuestLive's)
+          deps.guest && args && !opts?.shell && !isShellBin(cmd) && !/(^|\/)rg$/.test(cmd) ? {
+            argv: /(^|\/)node$/.test(cmd) ? ['node', ...args.map(String)] : [cmd, ...args.map(String)],
+            ...(opts?.cwd ? { cwd: ctx.fs.resolvePath(String(opts.cwd), ctx.cwd) } : {}),
+          } : undefined);
       const p = cmdPromise.then(r => {
         const writePromises: Promise<any>[] = [];
         // Write output to stdio file paths FIRST (before emitting events, because
@@ -974,9 +1013,14 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           if (r.stderr && !live) (stderrEvents['data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
           (stderrEvents['end'] || []).forEach(fn => fn());
           (stderrEvents['close'] || []).forEach(fn => fn());
-          child.exitCode = r.exitCode;
-          (events['close'] || []).forEach(fn => fn(r.exitCode, null));
-          (events['exit'] || []).forEach(fn => fn(r.exitCode, null));
+          // A signal ended it: (null, 'SIGTERM'), as node's (#89). A kernel guest's child says so;
+          // in the page, a kill() after which the child ended interrupted (130) or by that signal
+          const signal = r.signal != null ? signalName(r.signal)
+            : killedWith !== null && (r.exitCode === 130 || r.exitCode === 128 + killedWith) ? signalName(killedWith) : null;
+          child.exitCode = signal ? null : r.exitCode;
+          child.signalCode = signal;
+          (events['exit'] || []).forEach(fn => fn(child.exitCode, signal));
+          (events['close'] || []).forEach(fn => fn(child.exitCode, signal));
           _resolveChild?.({ stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.exitCode });
         });
       }).catch((err) => {

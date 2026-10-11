@@ -3,6 +3,7 @@ import { asyncContext } from './async-context';
 import type { CommandContext } from '../commands/index';
 import type { SharedState } from './types';
 import { ProcessExitError } from '../commands/jseval/utils';
+import { signalName } from './signals';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { CLAUDE_CODE_DEFAULT_MODEL } from '../claude-code-version';
 import { TtyStdin, ttySessionOf } from './tty-stdin';
@@ -250,6 +251,27 @@ export function createFakeProcess(
   };
 
   // Add exitCode as a getter/setter (CLI reads and writes process.exitCode)
+  // A parent's child.kill() (this node is its child in the page): the signal's listeners
+  // take it, as node's do (not SIGKILL's or SIGSTOP's); else it ends the process (#89)
+  ctx.onKill?.((sig) => {
+    const name = signalName(sig);
+    const listeners = name && sig !== 9 && sig !== 19 ? processEvents[name] : undefined;
+    if (listeners?.length) {
+      try { for (const fn of [...listeners]) fn(name); } catch (e: any) {
+        // (a listener that throws: the child's uncaught error, which ends it with 1)
+        if (!(e instanceof ProcessExitError)) {
+          try { fp.stderr?.write?.(`${e?.stack ?? e}\n`); } catch { /* no stderr */ }
+          if (!_st.exitCalled) { _st.exitCode = 1; _st.exitCalled = true; }
+          _st.deferredExitResolve?.(_st.exitCode);
+        }
+      }
+      return true;
+    }
+    if (!_st.exitCalled) { _st.exitCode = 128 + sig; _st.exitCalled = true; }
+    _st.deferredExitResolve?.(_st.exitCode);
+    return false;
+  });
+
   Object.defineProperty(fp, 'exitCode', {
     // What was set reads back (node's `if (process.exitCode == null) process.exitCode = 1` works)
     get: () => _st.exitCalled ? _st.exitCode : exitCodeSet,

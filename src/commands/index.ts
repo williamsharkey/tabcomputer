@@ -54,6 +54,12 @@ export interface CommandContext {
   stdinReadable?: boolean;
   /** A live stdin read as its data arrives, chunks then null at EOF (a spawned node child's pipe: node-compat/live-stdin.ts) */
   stdinStream?: { read(): Promise<Uint8Array | null> };
+  /**
+   * A node child in the page (child_process spawnNodeLive): the node it runs gives its
+   * parent's child.kill() here. `deliver(sig)` is true when the signal's listeners took it,
+   * false when it ends the process, as the signal would (tabcomputer#89).
+   */
+  onKill?: (deliver: (sig: number) => boolean) => void;
   /** Byte writers that get the command's stdout/stderr as it writes them, bytes as written (a spawned node child's pipes) */
   stdoutBytes?: (b: Uint8Array) => void;
   stderrBytes?: (b: Uint8Array) => void;

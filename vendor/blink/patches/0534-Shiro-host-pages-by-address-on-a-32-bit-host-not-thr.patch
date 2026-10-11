@@ -1,4 +1,4 @@
-From 7da184ea3746b8d1206cb33a9a4c18bdf7c3c77f Mon Sep 17 00:00:00 2001
+From 61d9f2973ed9d736ae7ac552ea672591276437c0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 08:27:44 +0000
 Subject: [PATCH] Shiro: host pages by address on a 32-bit host, not through
@@ -7,9 +7,9 @@ Subject: [PATCH] Shiro: host pages by address on a 32-bit host, not through
 
 ---
  blink/machine.h      | 7 ++++++-
- blink/memorymalloc.c | 7 ++++++-
+ blink/memorymalloc.c | 8 +++++++-
  blink/shiro.inc      | 4 ++++
- 3 files changed, 16 insertions(+), 2 deletions(-)
+ 3 files changed, 17 insertions(+), 2 deletions(-)
 
 diff --git a/blink/machine.h b/blink/machine.h
 index 2afbff3..733de58 100644
@@ -31,18 +31,19 @@ index 2afbff3..733de58 100644
    } else {
      return g_hostpages.p[(entry & PAGE_TA) >> 12];
 diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
-index 278e917..006743d 100644
+index 278e917..cc9b3df 100644
 --- a/blink/memorymalloc.c
 +++ b/blink/memorymalloc.c
-@@ -222,9 +222,14 @@ static void FreeHostPage(struct HostPage *hp) {
+@@ -222,9 +222,15 @@ static void FreeHostPage(struct HostPage *hp) {
    free(hp);
  }
  
 +// Shiro: by address on wasm (HostPagesByAddress). The index table grew by
-+// one entry per page ever allocated, without a lock: two threads allocating
-+// at once took the same index, and a page table then resolved to another
-+// process's live page (a fork child's restore wrote the parent's data into
-+// it: "pt & PAGE_V" in ReserveVirtual, "impossible memory" in FreePage)
++// one entry per page ever allocated (never reused, grown without a lock),
++// and AllocateAnonymousPage kept index << 12 in a 32-bit size_t: past 2^20
++// allocations an entry named an older page, so a fork child's new page
++// table could be another process's live page ("pt & PAGE_V" in
++// ReserveVirtual, "impossible memory" in FreePage: debian's forkmaps)
  static u64 TrackHostPage(u8 *ptr) {
    u64 entry;
 -  if (HasLinearMapping()) {

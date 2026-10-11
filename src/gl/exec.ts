@@ -2151,7 +2151,10 @@ export class Executor {
       const s = gl.createShader(type)!;
       gl.shaderSource(s, src);
       gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${gl.getShaderInfoLog(s)}\n`;
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(s) ?? '';
+        o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${log}\n${errorContext(gl.getShaderSource(s) ?? '', log)}`;
+      }
       return s;
     };
     const vs = mk(gl.VERTEX_SHADER, vt.source), fs = mk(gl.FRAGMENT_SHADER, ft.source);
@@ -2886,6 +2889,14 @@ function normalize(type: string, v: number): number {
   }
   return v;
 }
+/** The translated lines around each line a compile log names (numbered after the translation's `#line 1`), for the app's log. */
+function errorContext(source: string, log: string): string {
+  const at = source.indexOf('\n#line 1\n');
+  const lines = (at >= 0 ? source.slice(at + 9) : source).split('\n');
+  const nums = [...new Set([...log.matchAll(/ERROR: \d+:(\d+):/g)].map((m) => +m[1]))].slice(0, 3);
+  return nums.map((n) => `--- translated, around line ${n} ---\n${lines.slice(Math.max(0, n - 3), n + 2).map((l, i) => `${Math.max(1, n - 2) + i}: ${l}`).join('\n')}\n`).join('');
+}
+
 export function webglTarget(target: number): number {
   switch (target) {
     case E.TEXTURE_1D: case E.TEXTURE_RECTANGLE: case E.TEXTURE_2D: return E.TEXTURE_2D;

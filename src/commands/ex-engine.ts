@@ -35,8 +35,10 @@ export interface ExHost {
   readFile(path: string): Promise<string | null>;
   writeFile(path: string, text: string, append: boolean): Promise<void>;
   resolve(path: string): string;
-  /** Output of :p, :=, ... */
+  /** Output of :p, :nu, :l */
   print(s: string): void;
+  /** Messages (:=, :s///n's count): none in silent mode */
+  message(s: string): void;
   /** Run a shell command with this input, its output back (:r !cmd, :{range}!cmd) */
   run?(cmd: string, input: string): Promise<string>;
   /** More script lines, for a/i/c in a script (null at the end) */
@@ -75,7 +77,7 @@ const CLASS: Record<string, string> = {
 };
 
 /** A Vim pattern as a JavaScript regex source, and whether \c / \C set the case */
-export function vimRegex(pat: string): { src: string; ci: boolean | null; multiline: boolean } {
+export function vimRegex(pat: string): { src: string; ci: boolean | null; multiline: boolean; full: string; prefix: string | null } {
   let mode: 'magic' | 'very' | 'nomagic' = 'magic';
   let ci: boolean | null = null;
   let out = '';
@@ -141,8 +143,11 @@ export function vimRegex(pat: string): { src: string; ci: boolean | null; multil
     out += esc(c);
   }
   if (ze >= 0) out = out.slice(0, ze) + '(?=' + out.slice(ze) + ')';
+  // \zs: a lookbehind for searches; :s matches the prefix too and replaces after it
+  const prefix = zs >= 0 ? out.slice(0, zs) : null;
+  const full = out;
   if (zs >= 0) out = '(?<=' + out.slice(0, zs) + ')' + out.slice(zs);
-  return { src: out, ci, multiline };
+  return { src: out, ci, multiline, full, prefix };
 }
 
 /** \{n,m} / \{-n,m} (at i: the '{'; very magic: no backslash) → a JS quantifier */
@@ -375,7 +380,12 @@ export class ExSession {
     if (whole || (cmd === 'read' && /^\s*!/.test(s.slice(i)))) { arg = s.slice(i); end = s.length; }
     else {
       let k = i;
-      let a = '';
+      // :s/pat/rep/: a | inside the pattern or the replacement is theirs
+      if (cmd === 'substitute' && s[k] && !/[\s\w"|&]/.test(s[k])) {
+        const p = until(s, k + 1, s[k]);
+        k = p.closed ? until(s, p.end, s[k]).end : p.end;
+      }
+      let a = s.slice(i, k);
       for (; k < s.length; k++) {
         if (s[k] === '\\' && s[k + 1] === '|') { a += '|'; k++; continue; }
         if (s[k] === '|') break;
@@ -437,6 +447,7 @@ export class ExSession {
         const global = flags.includes('g');
         const countOnly = flags.includes('n');
         let matches = 0, lastLine = -1;
+        const countLines = new Set<number>();
         const multiline = vimRegex(pat === '' ? buf.lastPattern ?? '' : pat).multiline;
         if (multiline) {
           // a pattern with \n: over the range's text, joined
@@ -461,7 +472,7 @@ export class ExSession {
             if (mm[0] === '') re.lastIndex++;
           }
           if (!matches) { if (flags.includes('e')) return { quit: false }; throw new ExError(`E486: Pattern not found: ${pat}`); }
-          if (countOnly) { this.host.print(`${matches} match${matches === 1 ? '' : 'es'}\n`); return { quit: false }; }
+          if (countOnly) { this.host.message(`${matches} match${matches === 1 ? '' : 'es'}\n`); return { quit: false }; }
           out += text.slice(at);
           let count = to - from + 1;
           if (out.endsWith('\n')) out = out.slice(0, -1);
@@ -471,22 +482,29 @@ export class ExSession {
           buf.cur = Math.min(from + newLines.length - 1, this.last);
           return { quit: false };
         }
+        // \zs: the whole match is found, the part after the prefix replaced
+        const vr = vimRegex(buf.lastSub.pat);
+        const pre = vr.prefix !== null ? new RegExp(vr.prefix, 'y' + (re.flags.includes('i') ? 'i' : '')) : null;
+        const sre = pre ? new RegExp(vr.full, re.flags) : re;
         for (let ln = from; ln <= to; ln++) {
           const line = buf.lines[ln].t;
-          re.lastIndex = 0;
+          sre.lastIndex = 0;
           let out = '', at = 0, hit = 0;
           let mm: RegExpExecArray | null;
-          while ((mm = re.exec(line)) !== null) {
+          while ((mm = sre.exec(line)) !== null) {
             hit++;
-            out += line.slice(at, mm.index) + expandRep(rep, mm, prevRep);
+            let skip = 0;
+            if (pre) { pre.lastIndex = mm.index; const pm = pre.exec(line); skip = pm ? pm[0].length : 0; }
+            const shown = Object.assign([mm[0].slice(skip), ...mm.slice(1)], { index: mm.index + skip, input: mm.input, groups: mm.groups }) as unknown as RegExpExecArray;
+            out += line.slice(at, mm.index + skip) + expandRep(rep, shown, prevRep);
             at = mm.index + mm[0].length;
-            if (mm[0] === '') { if (mm.index < line.length) out += line[mm.index]; at++; re.lastIndex = at; }
+            if (mm[0] === '') { if (mm.index < line.length) out += line[mm.index]; at++; sre.lastIndex = at; }
             if (!global || at > line.length) break;
           }
           if (!hit) continue;
           matches += hit;
           out += line.slice(at);
-          if (countOnly) { lastLine = ln; continue; }
+          if (countOnly) { lastLine = ln; countLines.add(ln); continue; }
           const parts = out.split('\n');
           buf.lines[ln].t = parts[0];
           buf.modified = true; buf.empty = false;
@@ -498,7 +516,7 @@ export class ExSession {
           lastLine = ln;
         }
         if (!matches) { if (flags.includes('e')) return { quit: false }; throw new ExError(`E486: Pattern not found: ${pat}`); }
-        if (countOnly) { this.host.print(`${matches} match${matches === 1 ? '' : 'es'} on ${new Set([lastLine]).size} line\n`); return { quit: false }; }
+        if (countOnly) { this.host.message(`${matches} match${matches === 1 ? '' : 'es'} on ${countLines.size} line${countLines.size === 1 ? '' : 's'}\n`); return { quit: false }; }
         buf.cur = lastLine;
         if (flags.includes('p')) this.host.print(buf.lines[lastLine].t + '\n');
         return { quit: false };
@@ -726,10 +744,10 @@ export class ExSession {
         }
         const lines = text === '' ? [] : text.replace(/\n$/, '').split('\n');
         const at = given ? to + 1 : buf.cur + 1;
-        if (buf.empty && buf.lines.length === 1 && buf.lines[0].t === '' && lines.length) {
-          buf.lines.splice(at, 0, ...lines.map((t) => ({ t })));
-        } else buf.lines.splice(at, 0, ...lines.map((t) => ({ t })));
-        if (lines.length) { buf.modified = true; buf.empty = false; buf.cur = at + lines.length - 1; }
+        // (into an empty buffer, Vim reads them above its one empty line)
+        const into = buf.empty && buf.lines.length === 1 && buf.lines[0].t === '' ? 0 : at;
+        buf.lines.splice(into, 0, ...lines.map((t) => ({ t })));
+        if (lines.length) { buf.modified = true; buf.empty = false; buf.cur = into + lines.length - 1; }
         return { quit: false };
       }
       case '!': {
@@ -748,13 +766,13 @@ export class ExSession {
         for (let k = from; k <= to; k++) {
           let t = buf.lines[k].t;
           if (cmd === 'list') t = t.replace(/\t/g, '^I') + '$';
-          this.host.print((cmd === 'number' || cmd === '#' || a.includes('#') ? `${String(k + 1).padStart(3)} ` : '') + t + '\n');
+          this.host.print((cmd === 'number' || cmd === '#' || a.includes('#') ? `${String(k + 1).padStart(7)} ` : '') + t + '\n');
         }
         buf.cur = to;
         return { quit: false };
       }
       case '=': {
-        this.host.print(`${given ? to + 1 : buf.lines.length}\n`);
+        this.host.message(`${given ? to + 1 : buf.lines.length}\n`);
         return { quit: false };
       }
       case 'append': case 'insert': case 'change': {

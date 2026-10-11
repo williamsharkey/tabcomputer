@@ -106,7 +106,8 @@ export const viCmd: Command = {
         await ctx.fs.writeFile(path, old + text);
       },
       resolve: (p) => ctx.fs.resolvePath(p, ctx.cwd),
-      print: (t) => { if (!silent || exMode) ctx.stdout += t; },
+      print: (t) => { ctx.stdout += t; },
+      message: (t) => { if (!silent) ctx.stdout += t; },
       run: ctx.shell ? async (cmd, input) => {
         const tmp = `/tmp/.vi-filter-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
         await ctx.fs.writeFile(tmp, input);

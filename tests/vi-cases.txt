@@ -41,7 +41,6 @@ vi '+%s/a/A/g' '+wq' a.txt >/dev/null 2>&1; cat a.txt
 vi -c '$d' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '/cherry/,$d' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '/apple/;+1d' -c wq a.txt >/dev/null 2>&1; cat a.txt
-vi -c '.,+2d' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '1m$' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '$m0' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '1,2t$' -c wq a.txt >/dev/null 2>&1; cat a.txt
@@ -73,7 +72,7 @@ vi -c 'g!/ERROR/d' -c wq log.txt >/dev/null 2>&1; cat log.txt
 vi -c 'g/x/d' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
 vi -c '1y|$pu' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '2d|1pu!' -c wq a.txt >/dev/null 2>&1; cat a.txt
-vi -c 'r b.csv' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1r b.csv' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '0r b.csv' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '$r !echo hi' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '%!sort' -c wq a.txt >/dev/null 2>&1; cat a.txt

@@ -1,0 +1,52 @@
+From 2af69dcee2f2402cd460da48ba7c452401796a70 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 02:57:14 +0000
+Subject: [PATCH] Shiro wjit: pointers past 2 GiB of wasm memory reach its
+ JavaScript unsigned
+
+EM_JS parameters come as signed 32-bit numbers: past 2 GiB a pointer is
+negative, so wj_install's (imp >> 2) read the import table from outside
+the heap and WebAssembly.Table.get threw ('Argument 0 must be convertible
+to a valid number'; perf bench sched messaging, 40 processes in one
+instance). Pointers are made unsigned (>>> 0) and shifted with >>>.
+---
+ blink/wjit.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index d2d7977..064761f 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -106,9 +106,11 @@ static _Atomic(long) g_wj_blocks, g_wj_bytes, g_wj_failed, g_wj_insns,
+ 
+ EM_JS(int, wj_install,
+       (const u8 *p, int n, int k, int *out, const int *imp, int nimp, int post, int have), {
++  // (pointers come signed: past 2 GiB of wasm memory they are negative)
++  p >>>= 0, out >>>= 0, imp >>>= 0;
+   var st = Module['wjStats'] || (Module['wjStats'] = {c : 0, i : 0, n : 0});
+   var env = {m : wasmMemory};
+-  for (var j = 0; j < nimp; j++) env[j] = wasmTable.get(HEAP32[(imp >> 2) + j]);
++  for (var j = 0; j < nimp; j++) env[j] = wasmTable.get(HEAP32[(imp >>> 2) + j]);
+   var inst;
+   try {
+     var t0 = performance.now();
+@@ -144,7 +146,7 @@ EM_JS(int, wj_install,
+   for (var i = 0; i < k; i++) {
+     var idx = free.pop();
+     wasmTable.set(idx, inst.exports['f' + i]);
+-    HEAP32[(out >> 2) + i] = idx;
++    HEAP32[(out >>> 2) + i] = idx;
+   }
+   return 0;
+ });
+@@ -210,6 +212,7 @@ void WjFlushPosts(void) {
+ 
+ // BLINK_WJIT_DUMP=<pc>: Node only, writes that region's module to /tmp
+ EM_JS(void, wj_dump, (const u8 *p, int n, const char *name), {
++  p >>>= 0;
+   var fs = globalThis.process && process.getBuiltinModule && process.getBuiltinModule('fs');
+   if (fs) fs.writeFileSync('/tmp/' + UTF8ToString(name) + '.wasm', HEAPU8.slice(p, p + n));
+ });
+-- 
+2.43.0
+

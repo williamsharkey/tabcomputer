@@ -192,6 +192,11 @@ export class PosixTimers {
     const interval = PosixTimers.spec(io, 0), value = PosixTimers.spec(io, 16);
     if (interval === null || value === null) return -A.EINVAL;
     this.gettime(proc, id, io);
+    // its signal still pending goes, and the overruns with it: Linux 6.13
+    // drops a re-armed or disarmed timer's signal (a SIGEV_THREAD timer
+    // stopped then armed again ran its function for the old expiries too)
+    this.dropPending(proc, tm);
+    tm.cur = 0;
     if (tm.handle) clearTimeout(tm.handle);
     tm.handle = undefined;
     tm.interval = value > 0 ? interval : 0;
@@ -216,12 +221,17 @@ export class PosixTimers {
     tm.deadline = 0;
     t!.delete(id);
     // its signal still pending goes with it (Linux frees the timer's sigqueue entry)
+    this.dropPending(proc, tm);
+    return 0;
+  }
+
+  private dropPending(proc: Process, tm: Timer): void {
     if (tm.queued && PosixTimers.pending(proc, tm.signo)) {
       const q = proc.siginfo.get(tm.signo);
-      const left = q?.filter((i) => !(i.code === A.SI_TIMER && i.timerid === id)) ?? [];
+      const left = q?.filter((i) => !(i.code === A.SI_TIMER && i.timerid === tm.id)) ?? [];
       if (left.length) proc.siginfo.set(tm.signo, left);
       else proc.dropSignal(tm.signo);
     }
-    return 0;
+    tm.queued = false;
   }
 }

@@ -340,10 +340,11 @@ function keepCompiledModule(key: unknown, module: unknown, size: number, ownBudg
  * A Blink process's guest threads, for the kernel's per-thread state
  * (/proc/PID/task/TID): proc.data.engineThreads, the tids running (Blink
  * patch 0127 tells their start and end; the main thread's is the pid), and
- * proc.data.engineCalls, the kernel call each is in and since when (by the
+ * proc.data.engineCalls, the kernel call each is in, its arguments (the
+ * channel's 12 words: 64-bit ones as lo, hi) and since when (by the
  * tid on the call; a call without one isn't listed).
  */
-export interface EngineCall { nr: number; since: number }
+export interface EngineCall { nr: number; since: number; args: number[] }
 function engineCalls(proc: Process): Map<number, EngineCall> {
   return (proc.data.engineCalls ??= new Map<number, EngineCall>()) as Map<number, EngineCall>;
 }
@@ -362,7 +363,7 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     let result = fast;
     if (result === undefined) {
       const calls = tid && !as ? engineCalls(proc) : null;
-      calls?.set(tid, { nr, since: Date.now() });
+      calls?.set(tid, { nr, since: Date.now(), args });
       try {
         result = target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
       } finally {

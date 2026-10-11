@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createTestShell } from './helpers';
 import { installNodeWorker } from './node-worker-setup';
 import { TtySession } from '@shiro/kernel/pty';
+import { setNodeWorkerPoolIdleMs } from '@shiro/node-worker/host';
 
 let cleanup: () => void;
 beforeAll(async () => { cleanup = await installNodeWorker(); }, 120_000);
@@ -473,6 +474,14 @@ w.terminate();
     // a guest killed mid-run: its worker is gone, the next node starts fresh
     r = await sh(`node -e 'globalThis.__poolKilled = 1; setInterval(() => {}, 1000)' < /dev/null & sleep 0.5; kill -9 %1; wait; node -e 'console.log(String(globalThis.__poolKilled))' < /dev/null`);
     expect(r.out.trim().split('\n').pop()).toBe('undefined');
+  }, 60_000);
+
+  it('a pooled worker unused for a while goes (it held the last program\'s heap)', async () => {
+    setNodeWorkerPoolIdleMs(300);
+    try {
+      const r = await sh(`node -e 'globalThis.__poolIdle = 1' < /dev/null; sleep 1; node -e 'console.log(String(globalThis.__poolIdle))' < /dev/null`);
+      expect(r.out).toBe('undefined\n');
+    } finally { setNodeWorkerPoolIdleMs(120_000); }
   }, 60_000);
 
   it("pbcopy from a guest reaches the page's clipboard", async () => {

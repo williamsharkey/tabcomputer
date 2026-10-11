@@ -126,14 +126,32 @@ interface Pooled {
   lease: Lease | null;
   /** terminate() came; waiting for the guest to say it's idle */
   returning: ReturnType<typeof setTimeout> | null;
+  /** In the pool: when it goes unused for POOL_IDLE_MS it is terminated */
+  idleTimer?: ReturnType<typeof setTimeout>;
 }
 interface Lease { msg: ((m: unknown) => void)[]; err: ((e: unknown) => void)[]; exit: ((c: number) => void)[] }
 const idle: Pooled[] = [];
 const MAX_IDLE = 2;
+/**
+ * How long a pooled worker waits for the next node: it keeps the last program's heap
+ * (an exited claude --vm's ~150 MB) until it runs another one or goes
+ */
+let POOL_IDLE_MS = 120_000;
+/** (tests) */
+export function setNodeWorkerPoolIdleMs(ms: number): void { POOL_IDLE_MS = ms; }
+
+/** Into the pool (or gone, when it is full) */
+function pool(p: Pooled): void {
+  if (idle.length >= MAX_IDLE) { discard(p); return; }
+  idle.push(p);
+  clearTimeout(p.idleTimer);
+  p.idleTimer = setTimeout(() => discard(p), POOL_IDLE_MS);
+}
 
 function discard(p: Pooled): void {
   if (p.returning) clearTimeout(p.returning);
   p.returning = null;
+  clearTimeout(p.idleTimer);
   p.lease = null;
   const i = idle.indexOf(p);
   if (i >= 0) idle.splice(i, 1);
@@ -142,13 +160,13 @@ function discard(p: Pooled): void {
 
 function pooledWorker(): Pooled {
   const reused = idle.pop();
-  if (reused) return reused;
+  if (reused) { clearTimeout(reused.idleTimer); return reused; }
   const p: Pooled = { w: createNodeWorker(), lease: null, returning: null };
   const giveBack = () => {
     if (p.returning) clearTimeout(p.returning);
     p.returning = null;
     if (idle.includes(p)) return;
-    if (idle.length < MAX_IDLE) idle.push(p); else discard(p);
+    pool(p);
   };
   p.w.onMessage((m: any) => {
     if (m?.type === 'node-guest-idle') { if (p.returning) giveBack(); return; }
@@ -181,7 +199,7 @@ function lease(p: Pooled): GuestWorker {
       // A guest that ended itself (its mark in the channel) is back at its event loop in a moment
       // and takes the next start message then: lend it at once. Any other waits for 'idle', or goes.
       const w = sab ? new Int32Array(sab) : null;
-      if (w && Atomics.load(w, w.length - 1) === EXITING_MARK) { if (idle.length < MAX_IDLE) idle.push(p); else discard(p); return; }
+      if (w && Atomics.load(w, w.length - 1) === EXITING_MARK) { pool(p); return; }
       p.returning = setTimeout(() => discard(p), 1000);
     },
   };

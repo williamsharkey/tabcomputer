@@ -273,8 +273,9 @@ API), a Bash tool call, and the session resumed after a reload.
 - The page's memory. Measured on perf2 (Build 985, measureUserAgentSpecificMemory):
   at the prompt Claude Code's Worker is ~150-230 MB and the page's JS ~60 MB, over
   the page's own ~325 MB of SharedArrayBuffers (performance.memory counts those
-  too: its ~1.2 GB was mostly them). The first run's extraction leaves ~300 MB in
-  the page's JS until a reload, and an exited claude's Worker (~150 MB) stays.
+  too: its ~1.2 GB was mostly them). The first run's extraction leaves ~250 MB of
+  garbage in the page's JS that V8 collects within a minute or so. An exited
+  claude's Worker (~150 MB) stays pooled for the next node, warm, for 2 minutes.
 - Sign-in against claude.ai (the OAuth callback server runs on
   `Bun.serve`; the browser's redirect to it is untried).
 - Voice input end to end: the microphone is there, but the voice stream is a

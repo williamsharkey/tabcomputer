@@ -45,7 +45,7 @@ const FUNCTION_RENAMES: [RegExp, string][] = [
 ];
 const TYPE_RENAMES: [RegExp, string][] = [
   [/\bsampler1D\b/g, 'sampler2D'], [/\bsampler2DRect\b/g, 'sampler2D'], [/\bsampler1DShadow\b/g, 'sampler2DShadow'],
-  [/\bsampler2DRectShadow\b/g, 'sampler2DShadow'], [/\bsampler1DArray\b/g, 'sampler2DArray'],
+  [/\bsampler2DRectShadow\b/g, 'sampler2DShadow'],
   [/\bisampler1D\b/g, 'isampler2D'], [/\busampler1D\b/g, 'usampler2D'],
 ];
 
@@ -119,6 +119,15 @@ export function translateShader(input: string, stage: 'vertex' | 'fragment' | 'g
     const names = [...bufferSamplers.keys()].join('|');
     src = src.replace(new RegExp(`\\btexelFetch\\s*\\(\\s*(${names})\\s*,`, 'g'), '_tc_texelFetchBuffer($1,');
     src = src.replace(new RegExp(`\\btextureSize\\s*\\(\\s*(${names})\\s*\\)`, 'g'), '_tc_textureSizeBuffer($1)');
+  }
+  // 1D array textures are 2D here, one row per layer (exec.ts): texelFetch(s, ivec2(x, layer), lod) and textureSize
+  // carry over; texture() and textureLod() take the layer index, so they go through helpers
+  const arrays1D = new Map<string, string>();
+  for (const m of src.matchAll(/\b([iu]?)sampler1DArray\s+(\w+)/g)) arrays1D.set(m[2], m[1]);
+  src = src.replace(/\b([iu]?)sampler1DArray\b/g, '$1sampler2D');
+  if (arrays1D.size) {
+    const names = [...arrays1D.keys()].join('|');
+    src = src.replace(new RegExp(`\\btexture(Lod)?\\s*\\(\\s*(${names})\\s*,`, 'g'), (_m, lod: string | undefined, n: string) => `_tc_texture1DArray${lod ?? ''}(${n},`);
   }
   for (const [re, to] of TYPE_RENAMES) src = src.replace(re, to);
   for (const [re, to] of FUNCTION_RENAMES) src = src.replace(re, to);
@@ -217,6 +226,12 @@ export function translateShader(input: string, stage: 'vertex' | 'fragment' | 'g
   if (/\b_tc_shadow\b/.test(src)) helpers.push('vec4 _tc_shadow(sampler2DShadow s, vec3 c) { return vec4(texture(s, c)); }');
   if (/\b_tc_shadowProj\b/.test(src)) helpers.push('vec4 _tc_shadowProj(sampler2DShadow s, vec4 c) { return vec4(textureProj(s, c)); }');
   if (/\b_tc_texture1D\b/.test(src)) helpers.push('vec4 _tc_texture1D(sampler2D s, float x) { return texture(s, vec2(x, 0.5)); }\nvec4 _tc_texture1D(sampler2D s, float x, float b) { return texture(s, vec2(x, 0.5), b); }');
+  for (const p of new Set(arrays1D.values())) {
+    const v = { '': 'vec4', i: 'ivec4', u: 'uvec4' }[p];
+    const row = 'vec2(c.x, (floor(c.y + 0.5) + 0.5) / float(textureSize(s, 0).y))';
+    if (/\b_tc_texture1DArray\b/.test(src)) helpers.push(`${v} _tc_texture1DArray(highp ${p}sampler2D s, vec2 c) { return texture(s, ${row}); }`, `${v} _tc_texture1DArray(highp ${p}sampler2D s, vec2 c, float b) { return texture(s, ${row}, b); }`);
+    if (/\b_tc_texture1DArrayLod\b/.test(src)) helpers.push(`${v} _tc_texture1DArrayLod(highp ${p}sampler2D s, vec2 c, float l) { return textureLod(s, vec2(c.x, (floor(c.y + 0.5) + 0.5) / float(textureSize(s, int(l)).y)), l); }`);
+  }
   if (/\b_tc_texelFetchBuffer\b/.test(src)) {
     for (const [p, v] of [['', 'vec4'], ['i', 'ivec4'], ['u', 'uvec4']]) {
       if (![...bufferSamplers.values()].includes(p)) continue;

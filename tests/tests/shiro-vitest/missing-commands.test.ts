@@ -552,14 +552,18 @@ describe('Missing Commands (Claude Code compat)', () => {
       expect(unzipCtx.stdout).toContain('zip-list.txt');
     });
 
-    it('should fail with no arguments', async () => {
-      const { exitCode } = await run(shell, 'zip');
-      expect(exitCode).toBe(1);
+    it('prints usage with no arguments, as Info-ZIP does on a terminal', async () => {
+      const z = await run(shell, 'zip');
+      expect(z.exitCode).toBe(0);
+      expect(z.output).toContain('zip [-options]');
+      const u = await run(shell, 'unzip');
+      expect(u.exitCode).toBe(0);
+      expect(u.output).toContain('Usage: unzip');
     });
 
-    it('should fail with invalid archive', async () => {
-      const { exitCode } = await run(shell, 'unzip');
-      expect(exitCode).toBe(1);
+    it('fails on a missing or invalid archive', async () => {
+      expect((await run(shell, 'unzip /tmp/no-such.zip')).exitCode).toBe(9);
+      expect((await run(shell, 'echo text > /tmp/not.zip; unzip /tmp/not.zip')).exitCode).toBe(9);
     });
   });
 });

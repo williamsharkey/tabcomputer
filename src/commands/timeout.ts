@@ -1,6 +1,6 @@
 import type { Command } from './index';
 import { quoteArgsForShell, terminalForCommand } from '../shell';
-import { signalNumber, signalName } from '../kernel/signals';
+import { signalNumber, signalName, TIMEOUT_EXPIRED_EVENT } from '../kernel/signals';
 
 /** Seconds after the signal before SIGKILL when there is no -k (GNU timeout waits forever) */
 const DEFAULT_KILL_AFTER = 5;
@@ -126,7 +126,11 @@ export const timeout: Command = {
       // SIGKILL after DEFAULT_KILL_AFTER rather than holding the tty forever.
       if (verbose) ctx.stderr += `timeout: sending signal ${signalName(sig)} to command '${command[0]}'\n`;
       // (an AbortError still, for fetch and the like; shell-kernel.ts reads signal and killAfter)
-      own.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: sig, killAfter: (kill ?? DEFAULT_KILL_AFTER) * 1000 }));
+      const reason = Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: sig, killAfter: (kill ?? DEFAULT_KILL_AFTER) * 1000 });
+      // Aborted already (the shell around timeout went away, #53): abort() would do
+      // nothing, so the signal goes to COMMAND's job through the expiry event
+      if (own.signal.aborted) own.signal.dispatchEvent(new CustomEvent(TIMEOUT_EXPIRED_EVENT, { detail: reason }));
+      else own.abort(reason);
       const status = await run;
       flush();
       if (preserveStatus) return status === 130 ? 128 + sig : status; // (130: an in-page command the abort stopped)

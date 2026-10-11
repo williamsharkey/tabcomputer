@@ -16,6 +16,7 @@ import type { Runner, Kernel } from './kernel/kernel';
 import type { Process } from './kernel/process';
 import type { OpenFile } from './kernel/fd';
 import * as A from './kernel/abi';
+import { TIMEOUT_EXPIRED_EVENT } from './kernel/signals';
 import { packageOfPath, packageShadows, packageKernelProgram } from './pkg-manager';
 import { nodeKernelProgram } from './node-worker/boot';
 import { elfInterpreter, missingInterpreterMessage } from './elf-interp';
@@ -326,14 +327,22 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
   // SIGINT, or the signal the abort names (timeout -s SIG -k DURATION)
   const abort = shell.abortController;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
-  const onAbort = () => {
-    const reason = abort?.signal.reason as { signal?: number; killAfter?: number } | undefined;
+  const signalJob = (reason: { signal?: number; killAfter?: number } | undefined) => {
     kernel.kill(-pgid, typeof reason?.signal === 'number' ? reason.signal : A.SIGINT);
     if (typeof reason?.killAfter === 'number') {
+      clearTimeout(killTimer);
       killTimer = setTimeout(() => { if (procs.some((p) => p.alive)) kernel.kill(-pgid, A.SIGKILL); }, reason.killAfter);
     }
   };
+  const onAbort = () => signalJob(abort?.signal.reason as { signal?: number; killAfter?: number } | undefined);
+  // timeout's expiry on a signal that was already aborted (by the shell around
+  // timeout): abort() can't fire again, so timeout sends this (#53)
+  const onExpire = (e: Event) => signalJob((e as CustomEvent).detail);
   abort?.signal.addEventListener('abort', onAbort);
+  abort?.signal.addEventListener(TIMEOUT_EXPIRED_EVENT, onExpire);
+  // An abort while the job was still being set up was dispatched before this
+  // listener existed: act on it now, or the job runs on with nothing to stop it (#53)
+  if (abort?.signal.aborted) onAbort();
   let exitCode: number;
   try {
     if (tty) {
@@ -345,6 +354,7 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     }
   } finally {
     abort?.signal.removeEventListener('abort', onAbort);
+    abort?.signal.removeEventListener(TIMEOUT_EXPIRED_EVENT, onExpire);
     clearTimeout(killTimer);
   }
   const stopped = exitCode > 128 && procs.some((p) => p.state === 'stopped');

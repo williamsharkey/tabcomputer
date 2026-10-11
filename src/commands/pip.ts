@@ -386,6 +386,84 @@ export async function uninstall(fs: FileSystem, dist: Installed): Promise<number
   return n;
 }
 
+// ── editable installs (pip install -e DIR) ───────────────────────────
+
+/** pyproject.toml's [project] table, as pip reads it for an editable install */
+async function readPyproject(fs: FileSystem, dir: string): Promise<any> {
+  let text: string;
+  try { text = await fs.readFile(`${dir}/pyproject.toml`, 'utf8') as string; } catch {
+    const legacy = (await fs.exists(`${dir}/setup.py`)) || (await fs.exists(`${dir}/setup.cfg`));
+    throw new Error(legacy
+      ? `${dir}: a setup.py/setup.cfg project: editable installs here need a pyproject.toml [project] table`
+      : `${dir} does not appear to be a Python project: no pyproject.toml`);
+  }
+  const { parse } = await import('smol-toml');
+  const data: any = parse(text);
+  if (!data.project?.name) throw new Error(`${dir}/pyproject.toml has no [project] name (setuptools-only metadata isn't read here)`);
+  return data.project;
+}
+
+/**
+ * An editable install of a pure-Python project, as PEP 660's: a .pth file that puts its
+ * source on sys.path (src/ when it has one), a dist-info pip list/show/uninstall know
+ * (direct_url.json says editable), and its [project.scripts]. The dependencies are the
+ * caller's to resolve: returned as requirements, the extras' included.
+ */
+export async function installEditable(fs: FileSystem, dir: string, extras: string[], target: PipTarget): Promise<{ name: string; version: string; requires: string[] }> {
+  const project = await readPyproject(fs, dir);
+  const name: string = project.name;
+  const norm = normalizeName(name).replace(/-/g, '_');
+  const root = (await fs.exists(`${dir}/src`)) && (await fs.stat(`${dir}/src`)).isDirectory() ? `${dir}/src` : dir;
+  // A dynamic version: the package's __version__, if it has one in its __init__.py
+  let version: string | undefined = typeof project.version === 'string' ? project.version : undefined;
+  if (!version) {
+    for (const init of [`${root}/${norm}/__init__.py`, `${root}/${norm}.py`]) {
+      try {
+        const m = /^__version__\s*=\s*['"]([^'"]+)['"]/m.exec(await fs.readFile(init, 'utf8') as string);
+        if (m) { version = m[1]; break; }
+      } catch { /* not this one */ }
+    }
+  }
+  version ??= '0+editable';
+  const deps: string[] = Array.isArray(project.dependencies) ? project.dependencies.map(String) : [];
+  const optional: Record<string, string[]> = project['optional-dependencies'] ?? {};
+  const requires = [...deps];
+  for (const e of extras) requires.push(...(optional[e] ?? []).map(String));
+  const site = target.site;
+  const distInfo = `${norm}-${version}.dist-info`;
+  const pth = `__editable__.${norm}-${version}.pth`;
+  const record: string[] = [];
+  await writeFile(fs, `${site}/${pth}`, root + '\n');
+  record.push(`${pth},,`);
+  const metadata = ['Metadata-Version: 2.1', `Name: ${name}`, `Version: ${version}`];
+  if (typeof project.description === 'string') metadata.push(`Summary: ${project.description}`);
+  if (typeof project['requires-python'] === 'string') metadata.push(`Requires-Python: ${project['requires-python']}`);
+  for (const d of deps) metadata.push(`Requires-Dist: ${d}`);
+  for (const [extra, list] of Object.entries(optional)) {
+    metadata.push(`Provides-Extra: ${extra}`);
+    for (const d of list) metadata.push(`Requires-Dist: ${d}${String(d).includes(';') ? ` and extra == "${extra}"` : `; extra == "${extra}"`}`);
+  }
+  const files: [string, string][] = [
+    ['METADATA', metadata.join('\n') + '\n'],
+    ['INSTALLER', 'pip\n'],
+    ['REQUESTED', ''],
+    ['direct_url.json', JSON.stringify({ url: `file://${dir}`, dir_info: { editable: true } }) + '\n'],
+  ];
+  for (const [f, text] of files) { await writeFile(fs, `${site}/${distInfo}/${f}`, text); record.push(`${distInfo}/${f},,`); }
+  if (target.scripts) {
+    for (const group of ['scripts', 'gui-scripts']) {
+      for (const [script, spec] of Object.entries(project[group] ?? {})) {
+        const dest = `${target.scripts}/${script}`;
+        await writeFile(fs, dest, consoleScript(target.python, String(spec)), 0o755);
+        record.push(`${relPath(site, dest)},,`);
+      }
+    }
+  }
+  record.push(`${distInfo}/RECORD,,`);
+  await writeFile(fs, `${site}/${distInfo}/RECORD`, record.join('\n') + '\n');
+  return { name, version, requires };
+}
+
 // ── the command ──────────────────────────────────────────────────────
 
 const HELP = `Usage:
@@ -506,14 +584,19 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
     const reqFiles: string[] = [];
     for (let f = value('-r', '--requirement'); f; f = value('-r', '--requirement')) reqFiles.push(f);
     value('-c', '--constraint'); value('--extra-index-url'); value('--trusted-host');
-    if (rest.some(a => a === '-e' || a === '--editable')) {
-      ctx.stderr += 'pip: editable installs (-e) are not supported yet\n';
-      return 1;
+    // -e DIR (or DIR[extra,...]): an editable install of a local pure-Python project
+    const editables: string[] = [];
+    for (let i = 0; i < rest.length;) {
+      const a = rest[i];
+      if ((a === '-e' || a === '--editable') && i + 1 < rest.length) { editables.push(rest[i + 1]); rest.splice(i, 2); continue; }
+      if (a.startsWith('--editable=')) { editables.push(a.slice('--editable='.length)); rest.splice(i, 1); continue; }
+      if (/^-e[^-]/.test(a)) { editables.push(a.slice(2)); rest.splice(i, 1); continue; }
+      i++;
     }
     const target2: PipTarget = tgt ? { site: fs.resolvePath(tgt, ctx.cwd), scripts: null, python: target.python, prefix: fs.resolvePath(tgt, ctx.cwd) } : target;
     const specs = rest.filter(a => !a.startsWith('-'));
     for (const f of reqFiles) specs.push(...await readRequirements(fs, f, ctx.cwd));
-    if (!specs.length) { ctx.stderr += 'ERROR: You must give at least one requirement to install (see "pip help install")\n'; return 1; }
+    if (!specs.length && !editables.length) { ctx.stderr += 'ERROR: You must give at least one requirement to install (see "pip help install")\n'; return 1; }
 
     const pypi = new PyPI(index ? index.replace(/\/simple\/?$/, '').replace(/\/$/, '') : 'https://pypi.org', fetchFn);
     const log = quiet ? () => {} : out;
@@ -528,11 +611,24 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
           continue;
         }
         if (s === '.' || s.startsWith('./') || s.startsWith('/') || s.endsWith('.tar.gz') || s.endsWith('.zip')) {
-          throw new Error(`${s}: installing from a source tree or sdist is not supported yet (build a wheel elsewhere, or install from PyPI)`);
+          throw new Error(`${s}: installing from a source tree or sdist is not supported yet (pip install -e ${s} installs a pure-Python project in place)`);
         }
         roots.push(parseRequirement(s));
       }
-      const installed = await listInstalled(fs, target2.site);
+      let installed = await listInstalled(fs, target2.site);
+      // Editables first: each in place, then its dependencies with the rest
+      const editableNames: string[] = [];
+      for (const e of editables) {
+        const m = /^(.*?)(?:\[([^\]]*)\])?$/.exec(e)!;
+        const dir = fs.resolvePath(m[1] || '.', ctx.cwd);
+        log(`Obtaining file://${dir}\n`);
+        const old = installed.get(normalizeName((await readPyproject(fs, dir)).name));
+        if (old) await uninstall(fs, old);
+        const ed = await installEditable(fs, dir, (m[2] ?? '').split(',').map((x) => x.trim()).filter(Boolean), target2);
+        editableNames.push(`${ed.name}-${ed.version}`);
+        if (!noDeps) roots.push(...ed.requires.map(parseRequirement));
+      }
+      if (editables.length) installed = await listInstalled(fs, target2.site);
       const plan = await resolve(pypi, roots, installed, { upgrade, noDeps, pre, forceReinstall, log });
 
       if (sub === 'download') {
@@ -554,7 +650,10 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         toInstall.push({ name: w.name, version: w.version, data, requested: true });
       }
       for (const c of plan.install) toInstall.push({ name: c.name, version: c.version, data: await download(c, fetchFn, log), requested: plan.requested.has(normalizeName(c.name)) });
-      if (!toInstall.length) return 0;
+      if (!toInstall.length) {
+        if (editableNames.length) log(`Successfully installed ${editableNames.join(' ')}\n`);
+        return 0;
+      }
       log(`Installing collected packages: ${toInstall.map(t => t.name).join(', ')}\n`);
       for (const t of toInstall) {
         const old = installed.get(normalizeName(t.name));
@@ -565,7 +664,7 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         }
         await installWheel(fs, t.data, target2, { requested: t.requested });
       }
-      log(`Successfully installed ${toInstall.map(t => `${t.name}-${t.version}`).join(' ')}\n`);
+      log(`Successfully installed ${[...editableNames, ...toInstall.map(t => `${t.name}-${t.version}`)].join(' ')}\n`);
       return 0;
     } catch (e: any) {
       ctx.stderr += `ERROR: ${e?.message ?? e}\n`;

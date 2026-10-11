@@ -403,6 +403,9 @@ const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const smapsBin = join(out, 'smaps');
 const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
+// read of a pipe's write end and write of its read end are EBADF, not a wait
+const pipeebadfBin = join(out, 'pipeebadf');
+const havePipeebadf = tryBuild('gcc', ['-static', '-O1', '-w', '-o', pipeebadfBin, 'pipeebadf.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -596,8 +599,13 @@ describe.skipIf(!haveFork || !haveForkShared || !haveShfutex || !haveOrphan || !
       'killed spinning child: signaled=1 sig=9\nSIGTERM to pausing child: signaled=1 sig=15\n');
     await run(shell, 'rm -f /tmp/orphan.out');
     await run(shell, `${sif} x`);
-    await run(shell, 'sleep 1');
-    expect((await run(shell, 'cat /tmp/orphan.out')).output).toContain('child outlived parent');
+    // (the child writes 300 ms on; under load, give it longer than that)
+    let got = '';
+    for (let i = 0; i < 20 && !got.includes('child outlived parent'); i++) {
+      await run(shell, 'sleep 0.5');
+      got = (await run(shell, 'cat /tmp/orphan.out')).output;
+    }
+    expect(got).toContain('child outlived parent');
   }, 60_000);
 
   it.skipIf(!haveMtchild)("ends a child's other threads with it", async () => {
@@ -1232,6 +1240,12 @@ it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('size 1024 rss 8 locked 0\nmsync 0\nmlocked rss 1024 locked 1024 rollup 1\n' +
     'msync locked -1 16\nmunlocked locked 0 msync 0\n');
+}, 60_000);
+
+it.skipIf(!havePipeebadf)('read of a pipe\'s write end and write of its read end fail EBADF at once (LTP pipe03 hung)', async () => {
+  const { shell } = await setup(readFileSync(pipeebadfBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('write read end -1 9 read write end -1 9\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

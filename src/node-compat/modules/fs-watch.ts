@@ -114,7 +114,14 @@ export function createWatchApi(deps: WatchDeps) {
       if (!recursive && rel.includes('/')) return null;
       return rel;
     };
-    const queue = (eventType: Change['eventType'], filename: string) => deliverWatchEvent(() => emit({ eventType, filename }));
+    // (checked again when delivered: a new file's 'rename' and 'change' come from one write, and
+    // when a storm's delivery goes on in a later task, chokidar has watched the file by the
+    // 'change', hands it to the file's watcher, and reports a change: Astro restarted when its
+    // update check created .astro/settings.json)
+    const queue = (eventType: Change['eventType'], filename: string, p?: string, at?: number) => deliverWatchEvent(() => {
+      if (at !== undefined && p !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) return;
+      emit({ eventType, filename });
+    });
     // A change from before this subscription (one relayed late to a guest) is already in
     // what its subscriber read, and so is one from before this process started watching
     // that file itself: chokidar found .astro/settings.json by reading its directory,
@@ -142,11 +149,11 @@ export function createWatchApi(deps: WatchDeps) {
         if (name === null) continue;
         if (at !== undefined && p !== target && at < (fileWatchSince.get(p) ?? 0)) { if (gone) known.delete(p); else known.add(p); continue; }
         // (a mode or times change: Node reports 'change', as Linux's IN_ATTRIB)
-        if (event === 'attrib') { queue('change', name); continue; }
-        if (event === 'write' && known.has(p)) { queue('change', name); continue; }
-        if (event === 'write') { known.add(p); queue('rename', name); queue('change', name); continue; }
+        if (event === 'attrib') { queue('change', name, p, at); continue; }
+        if (event === 'write' && known.has(p)) { queue('change', name, p, at); continue; }
+        if (event === 'write') { known.add(p); queue('rename', name, p, at); queue('change', name, p, at); continue; }
         if (gone) known.delete(p); else known.add(p);
-        queue('rename', name);
+        queue('rename', name, p, at);
       }
     });
     return () => { off(); if (!dirWatch && fileWatchSince.get(target) === since) fileWatchSince.delete(target); };

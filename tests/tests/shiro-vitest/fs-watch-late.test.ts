@@ -53,6 +53,33 @@ describe('fs.watch and changes relayed late', () => {
     expect(seen.filter((s) => s.startsWith('fresh'))).toEqual([]);
     dir.close(); file.close(); fresh.close();
   });
+
+  it("a new file's 'change' from the write that made it doesn't come after its own watch began", async () => {
+    const listeners = new Set<(event: string, path: string, newPath?: string, detail?: { at?: number }) => void>();
+    const ctx: any = {
+      cwd: '/', fs: {
+        resolvePath: (p: string) => p,
+        isDirCached: (p: string) => p === '/d',
+        readdirCached: (p: string) => (p === '/d' ? [] : undefined),
+        onChange: (fn: any) => { listeners.add(fn); return () => listeners.delete(fn); },
+      },
+    };
+    const api = createWatchApi({ ctx, fileCache: new Map(), getBuiltinModule: (n: string) => (n === 'fs' ? { existsSync: () => true } : n === 'events' ? { EventEmitter } : { Buffer }) });
+    const seen: string[] = [];
+    let file: any = null;
+    // (as chokidar: the directory's 'rename' for a new file starts that file's own watch)
+    const dir = api.watch('/d', (t: string, n: string) => {
+      seen.push(`dir ${t} ${n}`);
+      if (t === 'rename' && !file) file = api.watch('/d/new.json', (t2: string, n2: string) => seen.push(`file ${t2} ${n2}`));
+    });
+    for (const fn of [...listeners]) fn('write', '/d/new.json', undefined, { at: now() });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual(['dir rename new.json']);
+    for (const fn of [...listeners]) fn('write', '/d/new.json', undefined, { at: now() });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual(['dir rename new.json', 'dir change new.json', 'file change new.json']);
+    dir.close(); file.close();
+  });
 });
 
 // A storm (rm -rf node_modules under a recursive watcher) mustn't run every

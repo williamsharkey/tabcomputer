@@ -1,0 +1,114 @@
+From ab35d86e691d79c1ff4585b99d41a2bd5ae9b586 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 03:21:10 +0000
+Subject: [PATCH] Shiro: a hosted fork child's and a vfork child's kernel calls
+ take the thread's direct channel too
+
+The call's process (as) goes with the request in the channel's last word,
+and the page serves it as that process (KernelChannel procOf). A signal
+that rides on the reply goes to that child's System, as host.mjs does for
+the pool (a vfork child's stays with the parent until it execs). Before,
+only the process's own calls skipped the proxy to host.mjs's thread: a
+pipe ping-pong between a process and its same-instance child went from
+290 to 656 us once the parent's calls were direct and the child's not.
+---
+ blink/shiro.inc | 54 ++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 47 insertions(+), 7 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index d86fdb7..34d528d 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -138,7 +138,7 @@ static void ShiroSyncMask(struct Machine *);
+ #include <emscripten/threading.h>
+ void blink_shiro_signal(int);
+ extern int shiro_dch_size(void);
+-extern int shiro_dch_post(int nr, const int *args, const void *data, int inlen);
++extern int shiro_dch_post(int nr, const int *args, const void *data, int inlen, int as);
+ extern int shiro_dch_state(void);
+ extern int shiro_dch_cas(int old, int now);
+ extern void shiro_dch_wait(int val, int ms);
+@@ -162,12 +162,14 @@ static void ShiroDirectDying(void) {
+ 
+ // One call on this thread's channel: false if it has none (or it's closed).
+ // Sets *r, args[0] (the high word) and *sig as the channel does.
+-static bool ShiroDirectCall(int nr, int args[12], void *data, int inlen,
+-                            int outcap, int *r, int *sig) {
++// as: the process the call is for (a hosted fork child's or a vfork child's
++// pid), 0 for this one: the page serves it as that process (KernelChannel procOf)
++static bool ShiroDirectCallAs(int nr, int args[12], int as, void *data, int inlen,
++                              int outcap, int *r, int *sig) {
+   int size;
+   double end;
+   if (t_dch_dead || !(size = shiro_dch_size()) || inlen > size || outcap > size) return false;
+-  if (!shiro_dch_post(nr, args, data, inlen)) {  // the page closed it
++  if (!shiro_dch_post(nr, args, data, inlen, as)) {  // the page closed it
+     t_dch_dead = true;
+     return false;
+   }
+@@ -201,6 +203,11 @@ static bool ShiroDirectCall(int nr, int args[12], void *data, int inlen,
+   return true;
+ }
+ 
++static bool ShiroDirectCall(int nr, int args[12], void *data, int inlen,
++                            int outcap, int *r, int *sig) {
++  return ShiroDirectCallAs(nr, args, 0, data, inlen, outcap, r, sig);
++}
++
+ void blink_shiro_signal_info(int, int, int, int, int, int, int, int, int);
+ static bool g_shiro_siginfo = true;  // the kernel has call 1030
+ static void ShiroDrainSignals(int);
+@@ -236,14 +243,47 @@ static void ShiroDrainSignals(int sig) {
+   }
+ }
+ 
++// A signal that rode on the reply to a child's call (as): a hosted fork
++// child's goes to its own System, as host.mjs does for the pool; a vfork
++// child's stays with this process until the child execs or exits
++void blink_shiro_signal_pid_info(int, int, int, int, int, int, int, int, int, int);
++void blink_shiro_signal_pid(int, int);
++static void ShiroDrainSignalsAs(int as, int sig) {
++  int a2[12], r, sig2, pid = t_vfork ? 0 : as;
++  i32 w[32];
++  if (!as) {
++    ShiroDrainSignals(sig);
++    return;
++  }
++  while (sig) {
++    memset(a2, 0, sizeof(a2));
++    a2[0] = sig;
++    sig2 = 0;
++    if (g_shiro_siginfo && ShiroDirectCallAs(1030, a2, as, w, 0, 128, &r, &sig2) && !r && w[0] == sig) {
++      if (pid) blink_shiro_signal_pid_info(pid, sig, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++      else blink_shiro_signal_info(sig, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++    } else if (pid) {
++      blink_shiro_signal_pid(pid, sig);
++    } else {
++      blink_shiro_signal(sig);
++    }
++    ShiroDrainSignalsAs(as, sig2);  // (one that rode on that reply)
++    memset(a2, 0, sizeof(a2));
++    if (!ShiroDirectCallAs(15, a2, as, 0, 0, 0, &(int){0}, &sig)) {
++      shiro_ksys(15, a2, as, 0, 0, 0);
++      sig = 0;
++    }
++  }
++}
++
+ static int ShiroKsys(int nr, int args[12], int as, void *data, int inlen, int outcap) {
+   int r, sig, hi;
+-  if (as || !ShiroDirectCall(nr, args, data, inlen, outcap, &r, &sig)) {
++  if (!ShiroDirectCallAs(nr, args, as, data, inlen, outcap, &r, &sig)) {
+     return shiro_ksys(nr, args, as, data, inlen, outcap);
+   }
+-  // a signal for the guest rode on the reply
++  // a signal for the guest (or the child the call was for) rode on the reply
+   hi = args[0];
+-  ShiroDrainSignals(sig);
++  ShiroDrainSignalsAs(as, sig);
+   args[0] = hi;
+   return r;
+ }
+-- 
+2.43.0
+

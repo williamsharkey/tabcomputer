@@ -146,17 +146,27 @@ export function installWasmLoader(kernel: Kernel): void {
   });
 }
 
-/** The WASIX calls Shiro's process shim for wasi-libc programs uses (scripts/pkgbuild/compat/wasi-proc.c). */
-const SHIM_WASIX = new Set(['proc_spawn3', 'proc_join', 'fd_pipe', 'fd_dup', 'getcwd']);
+/**
+ * The WASIX calls Shiro's shims for wasi-libc programs use: processes
+ * (scripts/pkgbuild/compat/wasi-proc.c) and sockets (wasi-sock.c). pkg's
+ * python3 links both; counted as WASIX libc, run by path it got only "/" and
+ * could not open its own stdlib under /usr ("Failed to import encodings").
+ */
+export const SHIM_WASIX = new Set([
+  'proc_spawn3', 'proc_join', 'proc_signal', 'fd_pipe', 'fd_dup', 'getcwd', 'resolve',
+  'sock_open', 'sock_connect', 'sock_bind', 'sock_listen', 'sock_accept_v2', 'sock_addr_local', 'sock_addr_peer',
+  'sock_send_to', 'sock_recv_from', 'sock_set_opt_flag', 'sock_set_opt_size', 'sock_set_opt_time',
+  'sock_get_opt_flag', 'sock_get_opt_size',
+]);
 
 /**
  * "/usr", "/home", ...: preopened by name for a spawned WASM program, as
  * runPackageBinary does at the prompt, because some wasi-libc builds never
  * match a "/" preopen against "/usr/...". Not for WASIX-libc programs (their
  * libc matches "/", and dash's strips the wrong prefix when several match);
- * wasi-libc programs that only use the process shim's calls still get them.
+ * wasi-libc programs that only use the shims' calls still get them.
  */
-async function childPreopens(kernel: Kernel, module: WebAssembly.Module): Promise<string[]> {
+export async function childPreopens(kernel: Kernel, module: WebAssembly.Module): Promise<string[]> {
   const wasixLibc = WebAssembly.Module.imports(module).some(i => i.module === 'wasix_32v1' && !SHIM_WASIX.has(i.name));
   const fs = kernel.fs;
   if (wasixLibc || !fs) return [];

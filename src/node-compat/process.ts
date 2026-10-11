@@ -8,6 +8,7 @@ import { CLAUDE_CODE_DEFAULT_MODEL } from '../claude-code-version';
 import { TtyStdin, ttySessionOf } from './tty-stdin';
 import { nodeGuestOf } from '../node-worker/hooks';
 import { encodeText } from '../utils/byte-text';
+import { CHILD_HOLD } from './modules/child-process';
 
 /**
  * Create the fake process object for the Node.js compat layer.
@@ -529,7 +530,10 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
         return ctx.stdin ? encodeText(ctx.stdin) : null;
       };
     })(),
-  }, (p) => pendingPromises.push(p));
+  // A pending read holds the script as an open pipe does, until process.exit():
+  // after it, drainPending lets go of it (CHILD_HOLD), or a pipe that never closes
+  // (an agent's shell) kept an exited script waiting forever (tabcomputer#66)
+  }, (p) => pendingPromises.push(Object.assign(p, { [CHILD_HOLD]: true })));
   /** Deliver piped input: 'data', 'readable', then 'end' and 'close' (a live pipe: as it arrives) */
   const flow = () => {
     if (stdinTTY || stdinEnded) return;

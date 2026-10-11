@@ -316,7 +316,7 @@ async function diff(ctx: CommandContext, args: string[]): Promise<number> {
 async function push(ctx: CommandContext, args: string[]): Promise<number> {
   const root = await checkoutRoot(ctx, args);
   if (!root) return 1;
-  let message = '', repo = 'williamsharkey/shiro', branch = '';
+  let message = '', repo = 'williamsharkey/tabcomputer', branch = '';
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-m' || a === '--message') message = args[++i] ?? '';
@@ -338,7 +338,7 @@ async function push(ctx: CommandContext, args: string[]): Promise<number> {
   try {
     const r = await pushSource(ctx.fs as any, root, (method, path, body) => ghApi(token, method, path, body), { repo, branch, message, author });
     ctx.stdout += `${r.created ? 'created' : 'updated'} ${repo} branch ${r.branch}: ${r.commit.slice(0, 12)} (${r.files} file(s))\n${r.url}\n`;
-    ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base unix/integration\n`;
+    ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base main\n`;
     return 0;
   } catch (e: any) {
     ctx.stderr += `hotswap push: ${e?.message ?? e}\n`;

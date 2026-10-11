@@ -322,6 +322,7 @@ export async function executeNodeScript(
         case 'tabcomputer:claude-vm': return {
           load: () => import('../claude-vm/bun').then((m) => ({ ...m, createBun: (env: any) => m.createBun({ page: guest?.page?.call ? { call: guest.page.call } : undefined, ...env }) })),
           codeCache: () => import('../claude-vm/code-cache'),
+          transformSync: guest?.transformSync,
         };
         case 'bun:ffi': return { dlopen() { throw new Error('bun:ffi is not available here'); }, FFIType: {}, ptr() { return 0; }, CString: class {} };
         case 'bun:jsc': return { edenGC() {}, fullGC() {}, gcAndSweep() {}, heapStats: () => ({ heapSize: 0, heapCapacity: 0, objectCount: 0, objectTypeCounts: {}, protectedObjectTypeCounts: {} }), memoryUsage: () => ({}) };
@@ -364,7 +365,14 @@ export async function executeNodeScript(
         case 'https':
         case 'node:https': return createHttpsModule({ ctx, iframeServer, fakeConsole, getBuiltinModule, trackAsync, atExit: atExplicitExit });
         case 'net':
-        case 'node:net': return createNetModule({ Buffer: FakeBuffer, ...(nodeGuestOf(ctx)?.netStack ? { stack: nodeGuestOf(ctx)!.netStack as any } : {}) });
+        case 'node:net': return createNetModule({ Buffer: FakeBuffer, ...(nodeGuestOf(ctx)?.netStack ? { stack: nodeGuestOf(ctx)!.netStack as any } : {
+          // (in the page: a Unix socket's file on this filesystem, as the X server makes its own)
+          unix: {
+            resolve: (p: string) => ctx.fs.resolvePath(p, ctx.cwd),
+            exists: (p: string) => ctx.fs.exists(p),
+            create: async (p: string) => { await ctx.fs.writeFile(p, new Uint8Array(0)); return 0; },
+          },
+        }) });
         case 'tls':
         case 'node:tls': return createTlsModule({ getBuiltinModule });
         case 'http2':

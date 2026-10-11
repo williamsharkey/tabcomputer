@@ -4,19 +4,23 @@
  * net.Socket / net.Server are real TCP over kernel sockets (src/kernel/net.ts):
  * outbound connections go through the server's TCP relay, localhost reaches
  * net servers in the same page, and a net.Server is also published on the
- * virtual-server port table. tls has no userspace TLS implementation here, so
+ * virtual-server port table. A path instead of a port is a Unix domain socket
+ * (the kernel's AF_UNIX): Claude Code's background sessions talk over them.
+ * tls has no userspace TLS implementation here, so
  * it keeps the old inert socket instead of sending plaintext to a TLS port.
  */
 
 import {
-  netStack, NetStack, KSocket, AF_INET, AF_INET6, SOCK_STREAM, SHUT_WR, IPPROTO_TCP, TCP_NODELAY,
-  SOL_SOCKET, SO_KEEPALIVE, errnoName, ipFamily, ipv6Groups,
+  netStack, NetStack, KSocket, AF_INET, AF_INET6, AF_UNIX, SOCK_STREAM, SHUT_WR, IPPROTO_TCP, TCP_NODELAY,
+  SOL_SOCKET, SO_KEEPALIVE, errnoName, ipFamily, ipv6Groups, type UnixOps,
 } from '../../kernel/net';
 
 export interface NetDeps {
   /** Buffer implementation for 'data' chunks (Uint8Array when absent). */
   Buffer?: { from(data: any, encoding?: string): any };
   stack?: NetStack;
+  /** Unix sockets on the page's stack: their socket files (a guest's stack has the kernel's) */
+  unix?: UnixOps;
 }
 
 type Listener = (...args: any[]) => void;
@@ -68,6 +72,8 @@ function sysError(errno: number, syscall: string, address?: string, port?: numbe
 }
 
 const familyName = (f: number) => (f === AF_INET6 ? 'IPv6' : 'IPv4');
+/** A Unix socket's path where node takes one: a string that isn't a port number */
+const pathArg = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' && !/^\s*\d+\s*$/.test(v) ? v : undefined);
 
 export function createNetModule(deps: NetDeps = {}): any {
   const stack = deps.stack ?? netStack;
@@ -145,11 +151,9 @@ export function createNetModule(deps: NetDeps = {}): any {
         opts = { port: args[0], host: typeof args[1] === 'string' ? args[1] : undefined };
         cb = typeof args[1] === 'function' ? args[1] : args[2];
       }
+      if (typeof args[0] === 'string' && pathArg(args[0]) !== undefined) opts = { path: args[0] };
       if (cb) this.once('connect', cb);
-      if (opts.path !== undefined) {
-        queueMicrotask(() => this.destroy(sysError(-97, 'connect', opts.path))); // EAFNOSUPPORT: no unix sockets
-        return this;
-      }
+      if (opts.path !== undefined) return this.connectPath(String(opts.path));
       const port = Number(opts.port);
       const host: string = opts.host || 'localhost';
       if (opts.allowHalfOpen !== undefined) this.allowHalfOpen = !!opts.allowHalfOpen;
@@ -168,6 +172,27 @@ export function createNetModule(deps: NetDeps = {}): any {
         this.pending = false;
         const peer = k.getpeername();
         if (typeof peer !== 'number' && !ipFamily(host)) this.emit('lookup', null, peer.address, peer.family === AF_INET6 ? 6 : 4, host);
+        this.emit('connect');
+        this.emit('ready');
+        for (const q of this.queued.splice(0)) this.enqueueWrite(q.data, q.cb);
+        if (this.endRequested) this.finishEnd();
+        this.startReading();
+      })();
+      return this;
+    }
+
+    /** A Unix domain socket (the kernel's AF_UNIX) */
+    private connectPath(path: string): this {
+      this.connecting = true;
+      const k = stack.socket(AF_UNIX, SOCK_STREAM) as KSocket;
+      this._ksock = k;
+      (async () => {
+        const addr = { family: AF_UNIX, address: path, port: 0 };
+        const r = deps.unix && stack instanceof NetStack ? await stack.connectUnix(k, addr, deps.unix) : await k.connect(addr);
+        if (this.destroyed) { void k.close(); return; }
+        this.connecting = false;
+        if (r < 0) { this.destroy(sysError(r, 'connect', path)); return; }
+        this.pending = false;
         this.emit('connect');
         this.emit('ready');
         for (const q of this.queued.splice(0)) this.enqueueWrite(q.data, q.cb);
@@ -370,27 +395,51 @@ export function createNetModule(deps: NetDeps = {}): any {
     listen(...args: any[]): this {
       let port = 0, host: string | undefined, backlog = 511;
       const cb = typeof args[args.length - 1] === 'function' ? args.pop() : undefined;
+      let path: string | undefined;
       if (typeof args[0] === 'object' && args[0] !== null) {
         port = Number(args[0].port ?? 0); host = args[0].host; backlog = args[0].backlog ?? backlog;
+        if (typeof args[0].path === 'string') path = args[0].path;
+      } else if ((path = pathArg(args[0])) !== undefined) {
+        if (typeof args[1] === 'number') backlog = args[1];
       } else {
         port = Number(args[0] ?? 0);
         if (typeof args[1] === 'string') { host = args[1]; if (typeof args[2] === 'number') backlog = args[2]; }
         else if (typeof args[1] === 'number') backlog = args[1];
       }
       if (cb) this.once('listening', cb);
-      const fam = host && ipFamily(host) === 6 ? AF_INET6 : AF_INET;
+      const fam = path !== undefined ? AF_UNIX : host && ipFamily(host) === 6 ? AF_INET6 : AF_INET;
       const k = stack.socket(fam, SOCK_STREAM) as KSocket;
-      const addr = host && ipFamily(host) ? canonicalIp(host) : fam === AF_INET6 ? '::' : '0.0.0.0';
-      let r = k.bind({ family: fam, address: addr, port });
+      const addr = path ?? (host && ipFamily(host) ? canonicalIp(host) : fam === AF_INET6 ? '::' : '0.0.0.0');
+      const fail = (r: number) => {
+        void k.close();
+        this.emit('error', path !== undefined ? sysError(r, 'listen', path) : sysError(r, 'listen', addr, port));
+      };
+      // A Unix socket in the page: its socket file on this process's filesystem (a guest's bind is the kernel's)
+      if (path !== undefined && deps.unix && stack instanceof NetStack) {
+        void stack.bindUnix(k, { family: AF_UNIX, address: path, port: 0 }, deps.unix).then((r) => {
+          if (r === 0) r = k.listen(backlog);
+          if (r < 0) { fail(r); return; }
+          this.ksock = k;
+          this.listening = true;
+          this.emit('listening');
+          this.accepting(k);
+        });
+        return this;
+      }
+      let r = k.bind({ family: fam, address: addr, port: path !== undefined ? 0 : port });
       if (r === 0) r = k.listen(backlog);
       if (r < 0) {
-        void k.close();
-        queueMicrotask(() => this.emit('error', sysError(r, 'listen', addr, port)));
+        queueMicrotask(() => fail(r));
         return this;
       }
       this.ksock = k;
       this.listening = true;
       queueMicrotask(() => this.emit('listening'));
+      this.accepting(k);
+      return this;
+    }
+
+    private accepting(k: KSocket): void {
       (async () => {
         for (;;) {
           const c = await k.accept();
@@ -402,7 +451,6 @@ export function createNetModule(deps: NetDeps = {}): any {
           this.emit('connection', s);
         }
       })();
-      return this;
     }
 
     /** node's listening handle: set while listening, null before and after (supertest closes a server only if it has one) */
@@ -413,6 +461,8 @@ export function createNetModule(deps: NetDeps = {}): any {
     address() {
       if (!this.ksock || !this.listening) return null;
       const a = this.ksock.getsockname();
+      // (a Unix socket's address is its path, as node's)
+      if (a.family === AF_UNIX) return a.address;
       return { address: a.address, family: familyName(a.family), port: a.port };
     }
 

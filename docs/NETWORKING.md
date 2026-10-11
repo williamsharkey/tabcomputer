@@ -31,7 +31,9 @@ guest (x86 / WASM / node net)                         server.mjs                
   `SCM_RIGHTS` passes open file descriptions: the bytes that carry them start
   a message of their own and the descriptions arrive with them (`recvmsg`),
   or are closed by a plain `recv`. `SO_PEERCRED` gives the peer's pid.
-  No AF_UNIX datagrams yet.
+  No AF_UNIX datagrams yet. node's `net.connect(path)` and
+  `server.listen(path)` use these stream sockets (node-compat's net-tls.ts;
+  in the page, with the socket file on node's filesystem).
 - `listen()` also publishes the port on tabcomputer's virtual-server table
   (`iframeServer.serve`, the table `http.createServer` uses). Each virtual HTTP
   request (preview pane, `iframeServer.fetch`) becomes an accepted connection

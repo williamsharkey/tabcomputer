@@ -187,13 +187,43 @@ function lease(p: Pooled): GuestWorker {
   };
 }
 
+const transformInstalled = new WeakSet<Kernel>();
+
+/**
+ * SYS_shiro_transform: TypeScript/JSX through the page's esbuild, for a guest
+ * that must have it at once (Bun.Transpiler's transformSync in claude --vm):
+ * the guest blocks while the page compiles.
+ */
+export function installNodeSyscalls(kernel: Kernel): void {
+  if (transformInstalled.has(kernel)) return;
+  transformInstalled.add(kernel);
+  kernel.registerSyscalls([A.SYS_shiro_transform], async (_proc, _nr, args, data) => {
+    let req: { code: string; loader: string };
+    try { req = JSON.parse(A.decodeText(data.slice(0, Math.min(args[0], data.length)))); } catch { return -A.EINVAL; }
+    if (typeof req?.code !== 'string' || !['js', 'jsx', 'ts', 'tsx'].includes(req.loader)) return -A.EINVAL;
+    let reply: unknown;
+    try {
+      const { withEsbuild } = await import('../commands/build');
+      const r = await withEsbuild((e) => e.transform(req.code, { loader: req.loader as 'ts', format: 'esm', target: 'esnext', jsx: 'transform', logLevel: 'silent' }));
+      reply = { code: r.code };
+    } catch (e: any) {
+      const errs = Array.isArray(e?.errors) && e.errors.length ? e.errors : [{ text: e?.message ?? String(e) }];
+      reply = { errors: errs.map((x: any) => ({ message: x.text, line: x.location?.line, column: x.location?.column })) };
+    }
+    const out = new TextEncoder().encode(JSON.stringify(reply));
+    if (out.length > data.length) return -A.E2BIG;
+    data.set(out);
+    return out.length;
+  });
+}
+
 /** The kernel Runner: the process's program is a node guest worker */
 export function nodeWorkerRunner(): Runner {
-  return (proc, kernel) => workerRunner((p) => {
+  return (proc, kernel) => (installNodeSyscalls(kernel), workerRunner((p) => {
     const w = lease(pooledWorker());
     wire(w, p, kernel);
     return w;
-  }, { dataSize: 1 << 20, startData: { pageOrigin: getShiroOrigin() } })(proc, kernel);
+  }, { dataSize: 1 << 20, startData: { pageOrigin: getShiroOrigin() } })(proc, kernel));
 }
 
 /** `#!/usr/bin/env node`, `#!/usr/bin/env -S node --flag`, `#!/usr/local/bin/node`: the flags after node, or null */

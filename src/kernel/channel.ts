@@ -258,7 +258,7 @@ export class GuestSys {
    * posix_spawn. Without `fds` the child inherits every non-cloexec fd; `fds`
    * maps child fd → parent fd (only those, unless `inherit`). Returns the pid or -errno.
    */
-  spawn(path: string, argv: string[] = [path], opts: { env?: Record<string, string>; cwd?: string; fds?: [number, number][]; inherit?: boolean; pgid?: number; setsid?: boolean; sigdefault?: number[] } = {}): number {
+  spawn(path: string, argv: string[] = [path], opts: { env?: Record<string, string>; cwd?: string; fds?: [number, number][]; inherit?: boolean; pgid?: number; setsid?: boolean; ctty?: number; sigdefault?: number[] } = {}): number {
     const len = this.putStr(JSON.stringify({ path, argv, ...opts }));
     return len < 0 ? -A.E2BIG : this.ch.call(A.SYS_spawn, len);
   }

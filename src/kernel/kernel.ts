@@ -97,6 +97,12 @@ export interface SpawnOptions {
   pgid?: number;
   /** Start a new session (setsid) in the child. */
   setsid?: boolean;
+  /**
+   * With `setsid`: the child fd whose terminal becomes the new session's
+   * controlling tty (login_tty, or Bun.spawn's `terminal`), with the child's
+   * group in the foreground.
+   */
+  ctty?: number;
   /** Run this instead of resolving `path` through the loaders. */
   run?: Runner;
   /** User id of the child (`sudo`: 0). Default: the parent's. */
@@ -611,6 +617,14 @@ export class Kernel {
     if (cpu) this.setCpuLimit(proc, cpu.cur, cpu.max);
     for (const h of [...this.spawnHooks]) {
       try { h(proc); } catch (e) { console.warn('[kernel] onSpawn hook failed', e); }
+    }
+    // (after the hooks: job control knows the process, and TIOCSCTTY finds it)
+    if (opts.setsid && opts.ctty !== undefined) {
+      const tty = fds.get(opts.ctty);
+      if (tty?.kind === 'pty' && tty.ioctl) {
+        proc.ctty = tty;
+        void tty.ioctl(A.TIOCSCTTY, new Uint8Array(4), proc.syscallSignal);
+      }
     }
     this.notify();
     void this.start(proc, opts.run);
@@ -3736,7 +3750,7 @@ export class Kernel {
    */
   private async sysSpawn(proc: Process, req: {
     path: string; argv?: string[]; env?: Record<string, string>; cwd?: string;
-    fds?: [number, number][]; inherit?: boolean; pgid?: number; setsid?: boolean; sigdefault?: number[];
+    fds?: [number, number][]; inherit?: boolean; pgid?: number; setsid?: boolean; ctty?: number; sigdefault?: number[];
   }): Promise<number> {
     if (!req || typeof req.path !== 'string') return -A.EINVAL;
     let map: Record<number, OpenFile> | undefined;
@@ -3759,7 +3773,7 @@ export class Kernel {
     if (!runner) return -A.ENOENT;
     const child = this.spawn({
       path: req.path, argv: req.argv, env: req.env ?? proc.env, cwd, fds: map, inheritFds: req.inherit,
-      parent: proc, pgid: req.pgid, setsid: req.setsid, run: runner,
+      parent: proc, pgid: req.pgid, setsid: req.setsid, ctty: typeof req.ctty === 'number' ? req.ctty : undefined, run: runner,
       inheritSignals: true, sigdefault: Array.isArray(req.sigdefault) ? req.sigdefault : undefined,
     });
     return child.pid;

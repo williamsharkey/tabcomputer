@@ -57,6 +57,13 @@ export interface NodeGuestHooks {
    * (tabcomputer#91)
    */
   signals?: { watch(sig: number, on: boolean): void; onSignal(fn: (sig: number) => void): void };
+  /**
+   * TypeScript/JSX to an ES module with the page's esbuild, blocking until it is done
+   * (SYS_shiro_transform: Bun.Transpiler in claude --vm). Throws with `errors` as Bun's.
+   */
+  transformSync?(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx'): string;
+  /** A new pseudo-terminal whose programs this node starts (Bun.Terminal in claude --vm): pty.ts; -errno when there is none */
+  openPty?(opts: { cols: number; rows: number }): PtyHost | number;
   /** node:wasi's preview1 imports: blocking syscalls on this thread's channel (modules/wasi.ts) */
   wasi?: import('../node-compat/modules/wasi').WasiSys;
 }
@@ -95,4 +102,34 @@ export interface GuestIpc {
   /** Start reading: chunks to `fn`, then null at the channel's end */
   onData(fn: (b: Uint8Array | null) => void): void;
   close(): void;
+}
+
+/** termios flags of a pty, as Bun.Terminal shows them */
+export interface PtyFlags { iflag: number; oflag: number; cflag: number; lflag: number }
+
+/**
+ * A pseudo-terminal owned by a program (node-worker/pty.ts as a kernel guest,
+ * node-compat/pty-page.ts in the page): its master side, and programs started
+ * with the slave as their stdio and controlling tty.
+ */
+export interface PtyHost {
+  /** What the programs write, as it comes; null once the pty is closed */
+  onData(fn: (b: Uint8Array | null) => void): void;
+  /** Keyboard input: bytes the programs read. The number taken (0 once closed). */
+  write(b: Uint8Array): number;
+  resize(cols: number, rows: number): void;
+  getFlags(): PtyFlags;
+  setFlags(f: Partial<PtyFlags>): void;
+  /** Run argv[0] (or `path`) in a new session on this pty; -errno if it can't start */
+  spawn(argv: string[], opts: { path?: string; cwd?: string; env?: Record<string, string> }): PtyChild | number;
+  close(): void;
+  readonly closed: boolean;
+}
+
+export interface PtyChild {
+  pid: number;
+  /** kill(2): 0 or -errno */
+  kill(sig: number): number;
+  /** How it ended: the exit code, or the signal that ended it */
+  exited: Promise<{ status: number | null; signal: number | null }>;
 }

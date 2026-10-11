@@ -40,6 +40,7 @@ const ECHO_GAP_MS = 150;
 const ECHO_BURST = 'zyxwvutsrq';
 const SETTLE_MS = 20000; // before the steady-state echo series
 const TURN_LIMIT_MS = 180000;
+const EXIT_LIMIT_MS = 30000;
 const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
@@ -183,21 +184,35 @@ const clearInput = (h, typed) => h.eval(async (typed) => {
   await until('\x15', (s) => !echoed(s, typed.slice(0, 1)), 10000);
 }, typed);
 
+const sideSh = (h, cmd) => h.eval(async (c) => { const sh = window.__tabcomputer.shell.fork(); sh.terminal = null; let o = ''; const code = await sh.execute(c, (x) => { o += x; }, (x) => { o += x; }); return { code, out: o }; }, cmd);
+
+/**
+ * /exit (its Enter on its own: text and CR in one input are a paste), then the shell's prompt
+ * must come back: a marker the shell prints, alone on its line. Returns ms from the Enter to the
+ * shell's marker ({ ms }), or { hung, recovered } when Claude didn't exit within EXIT_LIMIT_MS:
+ * then its process is killed from a side shell, and `recovered` says whether the shell came back.
+ */
 async function exitClaude(h) {
-  // /exit (its Enter on its own: text and CR in one input are a paste), then the shell's prompt
-  // must come back: a marker echoed by the shell, alone on its line
-  const ok = await h.eval(async () => {
+  const ms = await h.eval(async (limit) => {
     const { until, T } = window.__cn;
     T.input('\x15', true);
     await new Promise((r) => setTimeout(r, 300));
     T.input('/exit', true);
     await new Promise((r) => setTimeout(r, 500));
+    const t0 = performance.now();
     T.input('\r', true);
-    await until('', () => T.buffer.active.type === 'normal', 30000);
-    await new Promise((r) => setTimeout(r, 1000));
-    return !!await until('echo @@cn-$((6*7))\r', (s) => /^@@cn-42$/m.test(s), 60000);
-  });
-  if (!ok) throw new Error(`claude did not exit on /exit: ${(await h.eval(() => window.__cn.screen())).split('\n').filter((l) => l.trim()).slice(-6).join(' | ').slice(-400)}`);
+    await until('', () => T.buffer.active.type === 'normal', limit);
+    // typed now, the line waits in the terminal until the shell reads it
+    const r = await until('echo @@cn-$((6*7))\r', (s) => /^@@cn-42$/m.test(s), limit);
+    return r && performance.now() - t0;
+  }, EXIT_LIMIT_MS);
+  if (ms != null) return { ms };
+  const ps = (await sideSh(h, 'ps -ef')).out;
+  const pids = ps.split('\n').filter((l) => /claude-code\/cli\.js|\.local\/bin\/claude/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
+  h.log(`    claude did not exit within ${EXIT_LIMIT_MS / 1000} s of /exit; still running: ${pids.join(' ') || 'none'}; killing it`);
+  if (pids.length) await sideSh(h, `kill -9 ${pids.join(' ')}`);
+  const back = await h.eval(() => window.__cn.until('', (s) => /^@@cn-42$/m.test(s), 30000));
+  return { hung: true, recovered: !!back };
 }
 
 async function round(h, add, mock, { cold, build }) {
@@ -252,7 +267,12 @@ async function round(h, add, mock, { cold, build }) {
     await h.eval(() => window.__cn.T.input('\x1b', true)); // Esc: stop a turn still running
     await h.page.waitForTimeout(1000);
   }
-  await exitClaude(h);
+  const ex = await exitClaude(h);
+  if (!ex.hung) add(`exit.${tag}`, ex.ms);
+  else {
+    add(`exit_hung.${tag}`, 1);
+    if (!ex.recovered) throw new Error(`claude --${build} was still running ${EXIT_LIMIT_MS / 1000} s after /exit, and kill -9 did not give the shell back: the rest of the round is skipped`);
+  }
 }
 
 /** The same binary natively in a pty on this machine: { start: {first, prompt}, echo: [ms] } per round. */
@@ -337,6 +357,11 @@ async function measureBuild(h, build, mock, rounds) {
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');
+  S('exit.cold', 'ms', '`/exit` Enter → the shell runs the next command (after the turn)');
+  S('exit.warm', 'ms', 'same, second launch (no turn)');
+  for (const t of ['cold', 'warm']) {
+    if (R[`exit_hung.${t}`]) h.sample(`${pre}.exit_hung.${t}`, R[`exit_hung.${t}`], 'count', { notes: `rounds where claude was still running ${EXIT_LIMIT_MS / 1000} s after /exit (killed to go on)` });
+  }
 }
 
 export async function run(h) {

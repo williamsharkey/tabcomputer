@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2136/2417 (88.4%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2148/2417 (88.9%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -25,7 +25,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 |---|---|---|---|
 | smoke | 0/18 | 18/18 | 0 |
 | comments | 0/2 | 2/2 | 0 |
-| quote | 0/33 | 29/33 | 4 |
+| quote | 0/33 | 32/33 | 1 |
 | word-split | 1/53 | 51/53 | 2 |
 | word-eval | 0/8 | 8/8 | 0 |
 | var-sub | 0/6 | 3/6 | 3 |
@@ -42,7 +42,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | here-doc | 0/32 | 30/32 | 2 |
 | redirect | 3/39 | 37/39 | 2 |
 | if_ | 0/5 | 5/5 | 0 |
-| loop | 1/28 | 27/29 | 2 |
+| loop | 1/28 | 29/29 | 0 |
 | case_ | 0/13 | 13/13 | 0 |
 | sh-func | 0/11 | 12/12 | 0 |
 | func-parsing | 1/12 | 10/12 | 2 |
@@ -115,10 +115,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | redirect-command | — | 23/23 | 0 |
 | redirect-multi | — | 13/13 | 0 |
 | redir-order | — | 5/5 | 0 |
-| arith-context | — | 12/16 | 4 |
+| arith-context | — | 15/16 | 1 |
 | arith-dynamic | — | 2/4 | 2 |
 | for-expr | — | 7/8 | 1 |
-| bugs | — | 23/29 | 6 |
+| bugs | — | 24/29 | 5 |
 | toysh-posix | — | 17/23 | 6 |
 | toysh | — | 6/8 | 2 |
 | blog1 | — | 4/9 | 5 |
@@ -128,7 +128,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | ble-idioms | — | 23/26 | 3 |
 | ble-features | — | 4/4 | 0 |
 | ble-unset | — | 0/2 | 2 |
-| nocasematch-match | — | 3/6 | 3 |
+| nocasematch-match | — | 6/6 | 0 |
 | command-sub-ksh | — | 0/0 | 0 |
 | paren-ambiguity | — | 7/9 | 2 |
 | parse-errors | — | 25/25 | 0 |
@@ -143,7 +143,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 
 <details><summary>Failing cases</summary>
 
-- **quote**: $'' octal escapes don't have leading 0; $'' octal escapes with fewer than 3 chars; $'' supports \cA escape for Ctrl-A - mask with 0x1f; \c' is an escape, unlike bash
+- **quote**: \c' is an escape, unlike bash
 - **word-split**: IFS and joining arrays by assignments; IFS=x and '' and $@ (#2)
 - **var-sub**: Braced block inside ${}; Descriptor redirect to bad "$@"; Here doc with bad "$@" delimiter
 - **var-sub-quote**: part_value tree on RHS
@@ -154,7 +154,6 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **command-sub**: Syntax errors with double quotes within backticks
 - **here-doc**: Here doc with bad comsub delimiter; Function def and execution with here doc
 - **redirect**: 1\>&2- (Bash bug: fail to restore closed fd); \<\> for read/write named pipes (hang/timeout)
-- **loop**: bad arg to break; too many args to continue
 - **func-parsing**: Function name with $; Function name with command sub
 - **builtin-printf**: printf %c unicode - prints the first BYTE of a string - it does not respect UTF-8; bash truncates long strftime string at 128; printf positive integer overflow; printf negative integer overflow
 - **builtin-eval-source**: eval usage; Source with syntax error
@@ -206,10 +205,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **var-ref**: ${!a[@]-'default'} is legal but fails with more than one element; var ref TO array with arbitrary subscripts; Var Ref Code Injection $(tee PWNED); ${!array_ref:-set} and ${!array_ref:=assign}; Array indirect expansion with suffix operators; Array indirect expansion with replacements; Array indirect expansion with @? conversion
 - **xtrace**: xtrace with unprintable chars
 - **sh-options-bash**: export SHELLOPTS does cross-process tracing; export SHELLOPTS does cross-process tracing with bash; OSH calling bash with SHELLOPTS does not change braceexpand
-- **arith-context**: $[ is a synonym for $((; $[$var is a synonym for $(($var (#2426); $[$undefined] is a synonym for $(($undefined (#2566); Empty expression a[]
+- **arith-context**: Empty expression a[]
 - **arith-dynamic**: Double quotes; Substitutions
 - **for-expr**: Accepts { } syntax too
-- **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution; Crash after changing $[] to be alias of $(( ))
+- **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution
 - **toysh-posix**: IFS; IFS - http://landley.net/notes.html#05-03-2020; IFS=x and '' and unquoted $@ - reduction of case above - copied into spec/word-split; for loop parsing - http://landley.net/notes.html#04-03-2020; IFS 4; Command Sub Syntax Error
 - **toysh**: char class / extglob; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
 - **blog1**: ${##}; ${###}; ${####}; ${##2}; ${###2}
@@ -217,7 +216,6 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **nix-idioms**: ${!ref} to undefined string var is fatal, INCONSISTENT with array; export with dynamic var name +=
 - **ble-idioms**: shopt -u expand_aliases and eval; Issue #1069 [53] BUG: a[1 + 1]=2, etc. fails; Issue #1069 [59] - Assigning Str to BashArray/BashAssoc should not remove BashArray/BashAssoc
 - **ble-unset**: [bash_unset] dynamic-unset for nested tempenvs; [bash_unset] local-unset for nested tempenvs
-- **nocasematch-match**: [[ equality matching; [[ regex matching; case matching
 - **paren-ambiguity**: (( closed with ) ) after multiple lines is command - #2337; $(( closed with ) ) after multiple lines is command - #2337
 - **unicode**: OSH source code doesn't have to be valid Unicode (like other shells)
 - **nul-bytes**: printf - literal NUL in format string; printf - NUL byte in value (OSH and zsh agree); NUL bytes with echo $'\0' (OSH and zsh agree); NUL bytes and IFS splitting; NUL bytes with test -n; NUL bytes with test -f; NUL bytes with ${#s} (OSH and zsh agree); Compare \x00 byte versus \x01 byte - command sub; Compare \x00 byte versus \x01 byte - read builtin; Compare \x00 byte versus \x01 byte - read -n; Compare \x00 byte versus \x01 byte - mapfile builtin; Strip ops # ## % %% with NUL bytes; Issue 2269 Reduction; Issue 2269 - Do NUL bytes match ? in ${a#?}

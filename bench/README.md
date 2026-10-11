@@ -182,8 +182,9 @@ then the same binary natively on this machine, `--runs` times each:
 
 In `--quick`: all but `messaging`. Counts are picked by pbench so a run
 takes about `PBENCH_MS` (500) ms, guest clock. Full runs add
-`x86.blink_direct.*` (Blink's direct kernel channels,
-`TABCOMPUTER_BLINK_DIRECT=1`) and `x86.native.pipe_pingpong_1cpu` (pinned
+`x86.blink_pool.*` (Blink's pool channels only, `TABCOMPUTER_BLINK_DIRECT=0`;
+`x86.blink.*` is the default, direct channels; before Build 975 the full run's
+extra rows were `x86.blink_direct.*`, direct channels opted in) and `x86.native.pipe_pingpong_1cpu` (pinned
 with `taskset -c 0`). WASI equivalents: `kernel.syscall_rtt.sab` (fstat
 round trip), `kernel.pipe_pingpong` (kbench `ping` ↔ `pong`, two kernel
 pipes), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),

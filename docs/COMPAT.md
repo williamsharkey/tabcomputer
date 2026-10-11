@@ -784,19 +784,35 @@ tabcomputer changes these programs needed (tests in `x86-engine.test.ts`,
 `git` without `pkg install git` is the built-in (isomorphic-git,
 `src/commands/git.ts`; the plumbing in `src/commands/git-plumbing.ts`). It
 answers what git UIs (tig, lazygit) and agents call; tests in
-`git.test.ts` (plumbing) and `compat-tools.test.ts` (tig, lazygit).
-`pkg install git` replaces it with the real git (in Blink).
+`git.test.ts` (plumbing), `git-gnu.test.ts` (agent sessions, against git's
+own output) and `compat-tools.test.ts` (tig, lazygit). `pkg install git`
+replaces it with the real git (in Blink).
+
+Against git 2.43: `tests/git-cases.txt` holds 252 agent-style sessions
+(status, diff, log, show, add, commit, branch, checkout/switch, merge with
+and without conflicts, stash, restore, reset, rm, mv, clean, rev-parse,
+ls-files, blame, tag, describe, remote, `.gitignore`), each run by the
+built-in and by git on the same files with fixed identities and dates
+(`GNU_DIFF=1 GNU_DIFF_NO_PKG=1 GNU_DIFF_CASES=$PWD/git-cases.txt
+GNU_DIFF_PRELUDE=$PWD/git-cases-prelude.sh`, `gnu-tools-diff.test.ts`):
+245 print the same output, commit hashes included, and exit status. The
+other seven: `reflog` (isomorphic-git keeps none), `count-objects`,
+`diff --color`, `config --list` (isomorphic-git's `init` writes
+`core.filemode=false` and `core.ignorecase=true`), the `Unmerged` row of
+`diff --stat` during a conflict, an empty `cherry-pick`'s "currently
+cherry-picking" state, and an ordering of stderr against stdout.
 
 What the built-in doesn't have goes to the real git: a subcommand it lacks
-(`blame`, `bisect`, `submodule`, `describe`, `restore`, `clean`,
-`worktree add`, ...), or an option it doesn't know (each subcommand lists
+(`bisect`, `submodule`, `worktree add`, `apply`, ...), or an option it doesn't know (each subcommand lists
 its options in `src/commands/git-route.ts`), runs `/usr/bin/git` with the
 same command line, installing the package on first use (a note on stderr;
 `pkg remove git` goes back). `rebase`, `cherry-pick` and `revert` go to it
-too, as the built-in's versions replay whole files. Without the x86 engine
-or offline, the built-in says what it didn't understand as git does
-(`error: unknown option`, exit 129; `git: 'blame' is not a git command`,
-exit 1) instead of ignoring it. Combined short options (`-qb NAME`,
+first too; without it the built-in's `cherry-pick` and `revert` apply a
+commit only where HEAD hasn't changed the same files since (no three-way
+merge), and say so otherwise. Without the x86 engine or offline, the
+built-in says what it didn't understand as git does (`error: unknown
+option`, exit 129; `git: 'bisect' is not a git command`, exit 1) instead
+of ignoring it. Combined short options (`-qb NAME`,
 `-qam MSG`) are split first. tig and lazygit only use what the built-in
 has (their tests check that nothing went to the full git).
 
@@ -817,14 +833,18 @@ login`), not git's credential helpers.
 | --- | --- |
 | global options | `-C DIR`, `-c k=v`, `--no-pager`/`-P`, `--no-optional-locks`, `--literal-pathspecs`, `--git-dir=`, `--work-tree=`; from a subdirectory (the nearest `.git` up) |
 | `rev-parse` | `--show-toplevel --git-dir --absolute-git-dir --git-common-dir --is-inside-work-tree --is-bare-repository --show-cdup --show-prefix`, `--abbrev-ref`, `--symbolic-full-name`, `--verify -q`, `--short[=N]`; revisions `X~N X^N @ @{u} X^{commit}`; several in one call, in order |
-| `status` | `--porcelain[=v1\|v2]`, `-z`, `-b`/`-sb`, `-u[no\|normal\|all]` |
+| `status` | git's long format (hints, upstream ahead/behind, `No commits yet`, detached HEAD, a merge in progress with `Unmerged paths`), `-s`, `--porcelain[=v1\|v2]`, `-z`, `-b`/`-sb`, `-u[no\|normal\|all]`; staged exact renames (`R  a -> b`); paths with spaces quoted |
 | `log`, `show` | `--format`/`--pretty` (`%H %h %T %t %P %p %s %b %B %f %d %D %m %n %x00`, `%a*`/`%c*` with `n e d D i I t r s`, `%gd %gs`), oneline/short/medium/full/fuller/raw, `-z`, `--decorate`, `--date=`, `--parents`, ranges `A..B A...B ^A`, `--all --branches --tags`, `-n --skip --reverse --no-merges --first-parent --author --grep -- paths`, `--name-status --numstat --stat -p --patch-with-stat`; `log -g` reads `.git/logs/HEAD` (isomorphic-git keeps no reflog, so it is empty) |
-| `diff`, `diff-files`, `diff-index` | the patch (index lines, `@@ -1 +1,2 @@` hunks, binary files), `--cached`, revisions and ranges, `--name-status --name-only --numstat --stat --shortstat --raw --patch-with-stat`, `-z`, `--quiet --exit-code`; untracked files are not in a diff |
+| `diff`, `diff-files`, `diff-index` | the patch (Myers diff with git's sliding of change groups; index lines, hunk headers with the function line, `-U N`, `\ No newline at end of file`, binary files), `--cached`, revisions and ranges, `--no-index`, `--name-status --name-only --numstat --stat --shortstat --raw --patch-with-stat` (`--stat` scaled to 80 columns as git does), `-z`, `--quiet --exit-code`; untracked files are not in a diff. Git's indent heuristic isn't: a hunk can place an inserted block one line apart from git's |
 | refs | `for-each-ref --format` (`refname[:short\|lstrip=N]`, `objectname[:short]`, `objecttype`, `HEAD`, `subject`, `body`, author/committer name/email/date, `upstream[:short\|track\|trackshort\|remotename]`), `--sort`, `--count`, `--points-at`; `show-ref`; `symbolic-ref`; `branch -v -vv --format --show-current` |
 | objects, index | `cat-file -t -s -p -e`, `REV:path`, `--batch[-check]`; `ls-files -z -m -o -d -s --exclude-standard`; `update-index --add --remove [--stdin -z]`; `merge-base [--is-ancestor\|--all]`; `rev-list [--count --left-right --parents]`; `worktree list [--porcelain]` |
 | `config` | `--get --get-all --get-regexp --list -z/--null --name-only --type=bool\|int --default`, `--global/--local/--system`, `/etc/gitconfig` and `-c` overrides |
-| porcelain fixes | `merge --no-ff --ff-only -m -q` (the work tree follows the merge); `log --graph` (topo order); `ls-remote URL` outside a repository; `fetch -q`; `push -f -u`; `clone --branch --depth=N`; `commit -am`/`-qam` (`-a` stages tracked changes), `-q`, `-F`; `checkout -q -b NAME [START]`, `-qb`, `-B`, `checkout REV -- paths` (HEAD stays on the branch), a remote branch, a commit; `switch`; `add -u`/`-A`/`--`/deletions; `stash -q`, `stash push -m`, `stash list --format/-z` (`%gd %gs %ct`), `stash@{N}` from the newest; `fetch --all` with no remotes |
-| the full git's | `apply` (hunk staging), `rebase`, `cherry-pick`, `revert`, `blame`, `bisect`, `describe`, `restore`, `clean`, `submodule`, `worktree add`, `notes`, signing, `log --since`, ...: run by `/usr/bin/git`, installed on first use |
+| `commit` | `-m`/`-F`/`-a`/`-q`/`--amend`/`--no-edit`/`--allow-empty`; nothing staged is refused with the status (exit 1), as git; the summary (`[main (root-commit) abc1234]`, totals, `create mode`); the author and committer from `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (names, emails, `*_DATE`) before the config, as git; `--amend` keeps the author; concluding a merge (MERGE_HEAD's parent, MERGE_MSG) |
+| `merge` | fast-forward and merge commits with git's diffstat, `--no-ff --ff-only -m -q`; a conflict leaves the markers (`<<<<<<< HEAD`), the index's stages (`UU`), MERGE_HEAD and MERGE_MSG, and stages the cleanly merged files; `merge --abort`; `git add` then `git commit` concludes it |
+| work tree | `rm [-r --cached -f -n -q]` (refusing local changes as git), `mv [-f -k -n -v]` (directories too), `restore [--staged --worktree --source]`, `checkout [REV] -- paths`, `reset [--soft\|--mixed\|--hard] [REV] [paths]` (git's messages, ORIG_HEAD), `clean [-n -f -d -x -X -e]`; pathspecs are files, directories, `.` and globs |
+| branches, tags | `branch` create/`-d` (unmerged refused)/`-D`/`-m`/list (detached HEAD), `checkout`/`switch` (`-b -c -B --detach`, local changes that would be overwritten stop it); `tag` (`-a -m -F -f -d -l PATTERN -n[N] --sort=[-]v:refname --contains --points-at`), `describe [--tags --always --long --abbrev=N --dirty --exact-match]` |
+| more | `stash` (push/save `-u -m -q`, pop/apply `--index`, list, show `-p`, drop, clear) as stash commits on refs/stash with its reflog, as git keeps them; `blame` (`-L -s -e -l --porcelain`, the work tree's changes as `Not Committed Yet`); `check-ignore [-v -q -n]`; `remote add/remove/rename/get-url/set-url -v`; `shortlog [-s -n -e]`; `log --graph` (topo order); `ls-remote URL` outside a repository; `fetch -q`; `push -f -u`; `clone --branch --depth=N`; `add -u`/`-A`/`--`/deletions (an ignored path refused without `-f`); `fetch --all` with no remotes |
+| the full git's | `apply` (hunk staging), `rebase`, `bisect`, `submodule`, `worktree add`, `notes`, signing, `log --since`, ...: run by `/usr/bin/git`, installed on first use |
 
 ### Popular CLI tools from Debian (apt)
 

@@ -155,4 +155,8 @@ it('finds the windows a batch makes current (present.ts routes their frames)', a
   const { ab } = await import('./gl-encode');
   const b = concat(batch(0, [['tcCreateContext', 1, 0, 2, 1, 0], ['tcMakeCurrent', 1, 0x400002, 0x400002, 0x100]]), batch(1, [['glClear', 1], ['tcMakeCurrent', 1, 0x400003, 0x400004, 0x100]]));
   expect(windowsMadeCurrent(ab(b))).toEqual([0x400002, 0x400003, 0x400004]);
+  // pbuffers aren't X windows: left out, in the batch that creates them and later ones
+  const pb = new Set<number>();
+  expect(windowsMadeCurrent(ab(batch(0, [['tcCreatePbuffer', 0x400007, 16, 16], ['tcMakeCurrent', 1, 0x400007, 0x400007, 0x100]])), pb)).toEqual([]);
+  expect(windowsMadeCurrent(ab(batch(0, [['tcMakeCurrent', 1, 0x400007, 0x400002, 0x100]])), pb)).toEqual([0x400002]);
 });

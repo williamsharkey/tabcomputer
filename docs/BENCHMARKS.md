@@ -401,6 +401,24 @@ untouched kernel metrics differ by up to 2× against it). Kernel/net/x86
 metrics swing ±25% between identical runs here, so a flag on them was re-run
 3× alternating base/new before being called noise.
 
+### unix/perf-kernel, round 12: x86 IPC with Blink 0133 (direct channels by default)
+
+Blink 0130–0133 (each thread's own direct channel; a hosted fork child's
+kernel calls on its thread's channel) made direct channels the default. The
+pool-only path is `TABCOMPUTER_BLINK_DIRECT=0`. pbench in isolated Chromium,
+7 runs each, guest clock:
+
+| | direct (default) | pool only | native |
+|---|---:|---:|---:|
+| `syscall_rt` (getppid round trip) | 2.6 µs | 124 µs | 0.11 µs |
+| `pipe_pingpong` | 51.6 µs | 308 µs | 26.5 µs |
+| `messaging 1 10 50` (µs per message, 3 rounds) | 502 / 498 / 529 | 441 / 446 / 461 | 0.72 |
+
+- pipe_pingpong went from 656 µs with direct channels on (before 0133) to
+  52 µs, 6× faster than the pool. getppid is 48× faster than the pool.
+- messaging (20 processes, fan-out of 10) is ~12% slower with direct
+  channels than with the pool, in all 3 rounds. Not investigated yet.
+
 ### unix/perf-kernel, round 11: where native Claude Code spends its time, from the kernel
 
 `node bench/claude-profile.mjs --keys 30` (native Claude Code 2.1.296,

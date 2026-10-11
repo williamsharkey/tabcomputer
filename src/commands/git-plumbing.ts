@@ -11,7 +11,8 @@
  */
 import git, { TREE, STAGE, WORKDIR } from './git-cached';
 import type { CommandContext } from './index';
-import { resolveRevision, readFileAtRef, unifiedDiff } from './git-utils';
+import { decodeBytes } from '../utils/byte-text';
+import { resolveRevision, unifiedDiff, diffLines, diffCounts, formatStatRows } from './git-utils';
 
 type Fs = any;
 interface CommitInfo { oid: string; commit: any; payload?: string }
@@ -90,7 +91,7 @@ async function peel(fs: Fs, dir: string, oid: string): Promise<{ oid: string; ty
 }
 
 async function objectType(fs: Fs, dir: string, oid: string): Promise<string> {
-  return (await git.readObject({ fs, dir, oid, format: 'deflated' }).catch(() => git.readObject({ fs, dir, oid }))).type;
+  return (await git.readObject({ fs, dir, oid, format: 'content' })).type;
 }
 
 async function currentBranch(fs: Fs, dir: string): Promise<string | undefined> {
@@ -251,7 +252,15 @@ async function rev(fs: Fs, dir: string, spec: string): Promise<string> {
     if (!u) throw new Error(`no upstream configured for branch '${b ?? 'HEAD'}'`);
     s = u.ref;
   }
-  if (/^stash(@\{\d+\})?$/.test(s)) throw new Error(`bad revision '${spec}'`);
+  // stash@{N}: the stash reflog's Nth newest entry
+  const st = /^stash(?:@\{(\d+)\})?$/.exec(s);
+  if (st) {
+    const log = await fs.promises.readFile(`${dir}/.git/logs/refs/stash`, 'utf8').catch(() => '') as string;
+    const lines = log.split('\n').filter(Boolean).reverse();
+    const line = lines[Number(st[1] ?? 0)];
+    if (!line) throw new Error(`bad revision '${spec}'`);
+    s = line.split(' ')[1];
+  }
   let oid = await resolveRevision(fs, dir, s);
   if (want === 'tree') oid = (await git.readCommit({ fs, dir, oid })).commit.tree;
   else if (want) oid = (await peel(fs, dir, oid)).oid;
@@ -496,21 +505,170 @@ async function entries(fs: Fs, dir: string, withWork: boolean, ref = 'HEAD'): Pr
   return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
+/**
+ * The index's conflicted paths and their stages (1 base, 2 ours, 3 theirs),
+ * read from .git/index itself: isomorphic-git's walkers see one entry a path.
+ */
+export async function unmergedPaths(fs: Fs, dir: string): Promise<Map<string, Set<number>>> {
+  const out = new Map<string, Set<number>>();
+  const buf: Uint8Array | null = await fs.promises.readFile(`${dir}/.git/index`).catch(() => null);
+  if (!buf || typeof buf === 'string' || buf.length < 12) return out;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const version = dv.getUint32(4);
+  if (version !== 2 && version !== 3) return out;
+  const n = dv.getUint32(8);
+  let off = 12;
+  const dec = new TextDecoder();
+  for (let i = 0; i < n && off + 62 <= buf.length; i++) {
+    const flags = dv.getUint16(off + 60);
+    const extended = version === 3 && (flags & 0x4000) !== 0;
+    const nameAt = off + 62 + (extended ? 2 : 0);
+    let end = nameAt;
+    while (end < buf.length && buf[end] !== 0) end++;
+    const stage = (flags >> 12) & 3;
+    if (stage) {
+      const path = dec.decode(buf.subarray(nameAt, end));
+      (out.get(path) ?? out.set(path, new Set()).get(path)!).add(stage);
+    }
+    // entries pad with NULs to a multiple of 8 bytes
+    off += ((end - off + 8) & ~7);
+  }
+  return out;
+}
+
+/** git's C-style quoting of a path that needs it: spaces, quotes, backslashes, control characters, non-ASCII bytes */
+export function quotePath(p: string): string {
+  if (!/[\x00-\x20"\\\x7f-\uffff]/.test(p)) return p;
+  const esc: Record<string, string> = { '"': '\\"', '\\': '\\\\', '\t': '\\t', '\n': '\\n', '\r': '\\r', '\x07': '\\a', '\b': '\\b', '\f': '\\f', '\v': '\\v' };
+  let out = '';
+  for (const b of new TextEncoder().encode(p)) {
+    const c = String.fromCharCode(b);
+    if (esc[c]) out += esc[c];
+    else if (b < 0x20 || b >= 0x7f) out += '\\' + b.toString(8).padStart(3, '0');
+    else out += c;
+  }
+  return `"${out}"`;
+}
+
+/** XY of a conflicted path, from its stages */
+function unmergedCode(stages: Set<number>): string {
+  const has = (k: number) => stages.has(k);
+  if (has(2) && has(3)) return has(1) ? 'UU' : 'AA';
+  if (has(1) && has(3)) return 'DU';
+  if (has(1) && has(2)) return 'UD';
+  if (has(2)) return 'AU';
+  if (has(3)) return 'UA';
+  return 'DD';
+}
+
+/** Repository-relative path of `spec` given from `prefix` (the working directory's path in the repository) */
+export function repoPath(prefix: string, spec: string): string {
+  const parts: string[] = [];
+  for (const seg of (prefix + spec).split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop(); else parts.push(seg);
+  }
+  return parts.join('/');
+}
+
+/** A pathspec as a test on repository paths */
+export function pathspec(prefix: string, spec: string): (p: string) => boolean {
+  const full = repoPath(prefix, spec);
+  if (!full) return () => true;
+  if (/[*?[]/.test(full)) {
+    const re = new RegExp('^' + full.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '(/.*)?$');
+    return (p) => re.test(p);
+  }
+  return (p) => p === full || p.startsWith(full + '/');
+}
+
+/** A .gitignore pattern as a test on a path relative to the file's directory (git's rules) */
+function gitignoreRegex(pattern: string): { re: RegExp; dirOnly: boolean } {
+  let p = pattern;
+  const dirOnly = p.endsWith('/');
+  if (dirOnly) p = p.slice(0, -1);
+  const anchored = p.includes('/');
+  if (p.startsWith('/')) p = p.slice(1);
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*' && p[i + 1] === '*') {
+      // **/ any leading directories, /** everything inside, a/**/b zero or more directories
+      if (p[i + 2] === '/') { re += '(?:.*/)?'; i += 2; }
+      else { re += '.*'; i += 1; }
+    } else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else if (c === '[') { const j = p.indexOf(']', i + 1); if (j > i) { re += '[' + p.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'; i = j; } else re += '\\['; }
+    else if (c === '\\' && i + 1 < p.length) { re += p[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    else re += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return { re: new RegExp(anchored ? `^${re}$` : `(?:^|/)${re}$`), dirOnly };
+}
+
+/**
+ * The .gitignore rule that decides `path` (the last one that matches it or a
+ * directory above it, from .git/info/exclude and each .gitignore down to it),
+ * or null: what `git check-ignore -v` reports
+ */
+export async function ignoreRule(fs: Fs, dir: string, path: string, isDir = false): Promise<{ source: string; line: number; pattern: string; negated: boolean } | null> {
+  const parts = path.split('/');
+  // the deciding rule for each prefix: a directory ignored ignores what is inside it
+  const read = async (f: string) => (await fs.promises.readFile(`${dir}/${f}`, 'utf8').catch(() => null)) as string | null;
+  const sources: { file: string; base: string }[] = [{ file: '.git/info/exclude', base: '' }];
+  for (let k = 0; k < parts.length; k++) sources.push({ file: [...parts.slice(0, k), '.gitignore'].join('/'), base: parts.slice(0, k).join('/') });
+  const texts = new Map<string, string | null>();
+  for (const s of sources) texts.set(s.file, await read(s.file));
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const sub = parts.slice(0, depth).join('/');
+    const subIsDir = depth < parts.length || isDir;
+    let found: { source: string; line: number; pattern: string; negated: boolean } | null = null;
+    for (const s of sources) {
+      if (s.base && !(sub === s.base || sub.startsWith(s.base + '/'))) continue;
+      if (s.base === sub) continue;
+      const text = texts.get(s.file);
+      if (!text) continue;
+      const rel = s.base ? sub.slice(s.base.length + 1) : sub;
+      text.split('\n').forEach((raw, i) => {
+        const line = raw.replace(/(?<!\\)\s+$/, '');
+        if (!line || line.startsWith('#')) return;
+        const negated = line.startsWith('!');
+        const { re, dirOnly } = gitignoreRegex(negated ? line.slice(1) : line);
+        if (dirOnly && !subIsDir) return;
+        if (re.test(rel)) found = { source: s.file, line: i + 1, pattern: line, negated };
+      });
+    }
+    // a directory excluded: everything under it is, whatever the rules for its files
+    if (found && !(found as any).negated && depth < parts.length) return found;
+    if (depth === parts.length) return found;
+  }
+  return null;
+}
+
 /** Ignored by .gitignore (untracked files only) */
 async function ignored(fs: Fs, dir: string, path: string): Promise<boolean> {
   return git.isIgnored({ fs, dir, filepath: path }).catch(() => false);
 }
 
-interface Status { path: string; x: string; y: string; e: Entry }
+interface Status { path: string; x: string; y: string; e: Entry; from?: string; conflict?: boolean }
+/** By path; a path both deleted and untracked (rm --cached) lists the deletion first */
+const byPath = (a: Status, b: Status) => (a.path < b.path ? -1 : a.path > b.path ? 1 : (a.x === '?' ? 1 : 0) - (b.x === '?' ? 1 : 0));
 async function statusList(fs: Fs, dir: string, untracked: 'no' | 'normal' | 'all'): Promise<Status[]> {
   const out: Status[] = [];
+  const conflicts = await unmergedPaths(fs, dir);
+  for (const [path, stages] of conflicts) {
+    const code = unmergedCode(stages);
+    out.push({ path, x: code[0], y: code[1], e: { path }, conflict: true });
+  }
   for (const e of await entries(fs, dir, true)) {
+    if (conflicts.has(e.path)) continue;
     if (!e.stage && !e.head) {
       if (untracked === 'no' || !e.work || await ignored(fs, dir, e.path)) continue;
       out.push({ path: e.path, x: '?', y: '?', e });
       continue;
     }
     let x = ' ', y = ' ';
+    // (in HEAD, gone from the index, still in the work tree: a deletion, and untracked)
+    if (e.head && !e.stage && e.work && untracked !== 'no' && !(await ignored(fs, dir, e.path))) out.push({ path: e.path, x: '?', y: '?', e });
     if (e.stage && !e.head) x = 'A';
     else if (!e.stage && e.head) x = 'D';
     else if (e.stage && e.head && (e.stage.oid !== e.head.oid || e.stage.mode !== e.head.mode)) x = 'M';
@@ -538,12 +696,112 @@ async function statusList(fs: Fs, dir: string, untracked: 'no' | 'normal' | 'all
       }
       if (!folded.has(key)) folded.set(key, { ...s, path: key });
     }
-    return [...out.filter((s) => s.x !== '?'), ...folded.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+    return [...out.filter((s) => s.x !== '?'), ...folded.values()].sort(byPath);
   }
-  return out.sort((a, b) => (a.path < b.path ? -1 : 1));
+  return out.sort(byPath);
+}
+
+/** Staged renames, as git shows them by default: a deletion and an addition of the same blob (exact renames only) */
+function withRenames(list: Status[]): Status[] {
+  const deleted = list.filter((s) => s.x === 'D' && s.y === ' ' && s.e.head);
+  const used = new Set<Status>();
+  const out: Status[] = [];
+  for (const s of list) {
+    if (s.x === 'A' && s.e.stage) {
+      const d = deleted.find((x) => !used.has(x) && x.e.head!.oid === s.e.stage!.oid);
+      if (d) { used.add(d); out.push({ ...s, x: 'R', from: d.path }); continue; }
+    }
+    out.push(s);
+  }
+  return out.filter((s) => !used.has(s));
+}
+
+/** `git status` without -s or --porcelain: git's long format, hints and all */
+async function longStatus(fs: Fs, dir: string, list: Status[], prefix: string, cache: Map<string, any>): Promise<string> {
+  const b = await currentBranch(fs, dir);
+  const h = await headOid(fs, dir);
+  let out = b ? `On branch ${b}\n` : `HEAD detached at ${h ? h.slice(0, 7) : '(unknown)'}\n`;
+  const up = b ? await upstreamOf(fs, dir, b) : null;
+  if (up && h) {
+    let ab: [number, number] | null = null;
+    try { ab = await aheadBehind(fs, dir, h, await git.resolveRef({ fs, dir, ref: up.ref }), cache); } catch { ab = null; }
+    const n = (k: number) => `${k} commit${k === 1 ? '' : 's'}`;
+    if (!ab) out += `Your branch is based on '${up.short}', but the upstream is gone.\n  (use "git branch --unset-upstream" to fixup)\n`;
+    else if (ab[0] && ab[1]) out += `Your branch and '${up.short}' have diverged,\nand have ${ab[0]} and ${ab[1]} different commits each, respectively.\n  (use "git pull" if you want to integrate the remote branch with yours)\n`;
+    else if (ab[0]) out += `Your branch is ahead of '${up.short}' by ${n(ab[0])}.\n  (use "git push" to publish your local commits)\n`;
+    else if (ab[1]) out += `Your branch is behind '${up.short}' by ${n(ab[1])}, and can be fast-forwarded.\n  (use "git pull" to update your local branch)\n`;
+    else out += `Your branch is up to date with '${up.short}'.\n`;
+    out += '\n';
+  }
+  if (!h) out += '\nNo commits yet\n\n';
+  const conflicted = list.filter((s) => s.conflict);
+  const merging = !!(await fs.promises.readFile(`${dir}/.git/MERGE_HEAD`).catch(() => null));
+  if (merging) {
+    out += conflicted.length
+      ? 'You have unmerged paths.\n  (fix conflicts and run "git commit")\n  (use "git merge --abort" to abort the merge)\n\n'
+      : 'All conflicts fixed but you are still merging.\n  (use "git commit" to conclude merge)\n\n';
+  }
+  list = list.filter((s) => !conflicted.includes(s));
+  const show = (p: string) => relTo(prefix, p);
+  const label = (c: string) => ({ M: 'modified:   ', A: 'new file:   ', D: 'deleted:    ', R: 'renamed:    ', T: 'typechange: ' } as Record<string, string>)[c] ?? 'modified:   ';
+  const staged = list.filter((s) => s.x !== ' ' && s.x !== '?');
+  const unstaged = list.filter((s) => s.y !== ' ' && s.x !== '?');
+  const untracked = list.filter((s) => s.x === '?');
+  const sections: string[] = [];
+  if (staged.length) {
+    sections.push('Changes to be committed:\n'
+      + (merging ? '' : h ? '  (use "git restore --staged <file>..." to unstage)\n' : '  (use "git rm --cached <file>..." to unstage)\n')
+      + staged.map((s) => `\t${label(s.x)}${s.from ? `${show(s.from)} -> ` : ''}${show(s.path)}\n`).join(''));
+  }
+  if (conflicted.length) {
+    const what: Record<string, string> = { UU: 'both modified:', AA: 'both added:', DU: 'deleted by us:', UD: 'deleted by them:', AU: 'added by us:', UA: 'added by them:', DD: 'both deleted:' };
+    sections.push('Unmerged paths:\n  (use "git add <file>..." to mark resolution)\n'
+      + conflicted.map((s) => `\t${(what[s.x + s.y] ?? 'both modified:').padEnd(17)}${show(s.path)}\n`).join(''));
+  }
+  if (unstaged.length) {
+    sections.push('Changes not staged for commit:\n'
+      + `  (use "git add${unstaged.some((s) => s.y === 'D') ? '/rm' : ''} <file>..." to update what will be committed)\n`
+      + '  (use "git restore <file>..." to discard changes in working directory)\n'
+      + unstaged.map((s) => `\t${label(s.y)}${show(s.path)}\n`).join(''));
+  }
+  if (untracked.length) {
+    sections.push('Untracked files:\n  (use "git add <file>..." to include in what will be committed)\n'
+      + untracked.map((s) => `\t${show(s.path)}\n`).join(''));
+  }
+  out += sections.join('\n');
+  if (sections.length) out += '\n';
+  if (!staged.length) {
+    if (unstaged.length || conflicted.length) out += 'no changes added to commit (use "git add" and/or "git commit -a")\n';
+    else if (untracked.length) out += 'nothing added to commit but untracked files present (use "git add" to track)\n';
+    else out += h ? 'nothing to commit, working tree clean\n' : 'nothing to commit (create/copy files and use "git add" to track)\n';
+  }
+  return out;
 }
 
 const oct = (m?: number) => (m ? m.toString(8).padStart(6, '0') : '000000');
+
+/** What commit and merge print after their first line: the totals (merge: each file's row first), then created and deleted files */
+export async function changeSummary(fs: Fs, dir: string, from: string | null, to: string, rows: boolean): Promise<string> {
+  const ch = await changesBetween(fs, dir, from, to);
+  if (!ch.length) return '';
+  let out = await formatChanges(fs, dir, ch, rows ? 'stat' : 'shortstat', false, '', { from, to });
+  for (const c of ch) if (c.status !== 'M') out += ` ${c.status === 'A' ? 'create' : 'delete'} mode ${oct(c.mode ?? 0o100644)} ${c.path}\n`;
+  return out;
+}
+
+/** HEAD, index and work tree by path, a revision's oid, and .gitignore: for the work-tree commands (git-worktree.ts) */
+export { entries as pathEntries, changesBetween as changesBetweenTrees, rev as resolveSpec, ignored as isIgnoredPath, headOid as headCommitOid, currentBranch as branchName };
+export type { Entry as PathEntry };
+
+/** Changes the index holds against HEAD (what a commit would record) */
+export async function stagedCount(fs: Fs, dir: string): Promise<number> {
+  return (await changesFor(fs, dir, await headOid(fs, dir), 'index')).length;
+}
+
+/** `git status`'s long text */
+export async function statusText(fs: Fs, dir: string, prefix = ''): Promise<string> {
+  return longStatus(fs, dir, withRenames(await statusList(fs, dir, 'normal')), prefix, new Map());
+}
 const ZERO = '0'.repeat(40);
 
 // ── The commands ──────────────────────────────────────────────────────────
@@ -615,6 +873,100 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         }
       }
       ctx.stdout += out.map((x) => x + '\n').join('');
+      return 0;
+    }
+
+    case 'check-ignore': {
+      // paths that .gitignore excludes (exit 0), or none (1); -v names the rule, -n lists the rest too
+      const verbose = args.includes('-v') || args.includes('--verbose'), quiet = args.includes('-q') || args.includes('--quiet');
+      const nonMatching = args.includes('-n') || args.includes('--non-matching');
+      const paths = args.includes('--stdin') ? ctx.stdin.split(nul ? '\0' : '\n').filter(Boolean) : args.filter((a) => !a.startsWith('-'));
+      if (!paths.length) return fail('no path specified');
+      const tracked = new Set(await git.listFiles({ fs, dir }).catch(() => [] as string[]));
+      let any = false;
+      for (const p of paths) {
+        const full = (prefix + p).replace(/^\.\//, '').replace(/\/$/, '');
+        const isDir = await fs.promises.stat(`${dir}/${full}`).then((st: any) => st.isDirectory(), () => p.endsWith('/'));
+        const rule = tracked.has(full) && !args.includes('--no-index') ? null : await ignoreRule(fs, dir, full, isDir);
+        const hit = !!rule && !rule.negated;
+        if (hit) any = true;
+        if (quiet) continue;
+        // (-v names the deciding rule, a negating one too)
+        if (verbose && rule) ctx.stdout += `${rule.source}:${rule.line}:${rule.pattern}\t${p}${nul ? '\0' : '\n'}`;
+        else if (verbose && nonMatching) ctx.stdout += `::\t${p}${nul ? '\0' : '\n'}`;
+        else if (hit) ctx.stdout += p + (nul ? '\0' : '\n');
+      }
+      return any ? 0 : 1;
+    }
+
+    case 'shortlog': {
+      // commits by author: -s counts only, -n by count, -e with email; the rest are log's revision options
+      const summary = args.includes('-s') || args.includes('--summary') || /^-[sne]*s[sne]*$/.test(args.find((a) => /^-[sne]+$/.test(a)) ?? '');
+      const byCount = args.some((a) => a === '-n' || a === '--numbered' || /^-[sne]*n[sne]*$/.test(a));
+      const withEmail = args.some((a) => a === '-e' || a === '--email' || /^-[sne]*e[sne]*$/.test(a));
+      const logArgs = args.filter((a) => !/^-[sne]+$/.test(a) && !['--summary', '--numbered', '--email'].includes(a));
+      // (no revision and stdin not a terminal: git reads a log from stdin, and summarizes nothing here)
+      if (!logArgs.some((a) => !a.startsWith('-')) && !logArgs.includes('--all') && ctx.stdinIsTTY === false) return 0;
+      const o = await logOptions(fs, dir, logArgs);
+      const groups = new Map<string, string[]>();
+      for (const c of await walk(fs, dir, o.walk, cache)) {
+        const key = withEmail ? `${c.commit.author.name} <${c.commit.author.email}>` : c.commit.author.name;
+        (groups.get(key) ?? groups.set(key, []).get(key)!).push(subjectOf(c.commit.message));
+      }
+      const keys = [...groups.keys()].sort((a, b) => (byCount ? groups.get(b)!.length - groups.get(a)!.length : 0) || (a < b ? -1 : a > b ? 1 : 0));
+      for (const k of keys) {
+        const subjects = groups.get(k)!;
+        if (summary) ctx.stdout += `${String(subjects.length).padStart(6)}\t${k}\n`;
+        else ctx.stdout += `${k} (${subjects.length}):\n${[...subjects].reverse().map((x) => `      ${x}\n`).join('')}\n`;
+      }
+      return 0;
+    }
+
+    case 'describe': {
+      // the nearest tag (annotated, or any with --tags) and how many commits since: TAG-N-gHASH
+      const tagsToo = args.includes('--tags') || args.includes('--all'), always = args.includes('--always'), long = args.includes('--long');
+      const exact = args.includes('--exact-match');
+      let abbrev = 7;
+      const ab = args.find((a) => a.startsWith('--abbrev='));
+      if (ab) abbrev = Number(ab.slice(9));
+      const dirtyArg = args.find((a) => a === '--dirty' || a.startsWith('--dirty='));
+      const dirtyMark = dirtyArg ? (dirtyArg.includes('=') ? dirtyArg.slice(8) : '-dirty') : null;
+      const specs = args.filter((a) => !a.startsWith('-'));
+      if (dirtyMark !== null && specs.length) return fail('option \'--dirty\' and commit-ishes cannot be used together');
+      const out: string[] = [];
+      for (const spec of specs.length ? specs : ['HEAD']) {
+        let oid: string;
+        try { oid = await (await peel(fs, dir, await rev(fs, dir, spec))).oid; }
+        catch { return fail(`Not a valid object name ${spec}`); }
+        const tags: { name: string; commit: string; annotated: boolean }[] = [];
+        for (const t of await git.listTags({ fs, dir }).catch(() => [] as string[])) {
+          const toid = await git.resolveRef({ fs, dir, ref: `refs/tags/${t}` }).catch(() => null);
+          if (!toid) continue;
+          const annotated = (await objectType(fs, dir, toid)) === 'tag';
+          tags.push({ name: t, commit: (await peel(fs, dir, toid)).oid, annotated });
+        }
+        const usable = tags.filter((t) => tagsToo || t.annotated);
+        const mine = await ancestors(fs, dir, [oid], cache);
+        let best: { name: string; depth: number } | null = null;
+        for (const t of usable) {
+          if (!mine.has(t.commit)) continue;
+          const theirs = await ancestors(fs, dir, [t.commit], cache);
+          let depth = 0;
+          for (const c of mine) if (!theirs.has(c)) depth++;
+          if (!best || depth < best.depth || (depth === best.depth && t.name < best.name)) best = { name: t.name, depth };
+        }
+        const dirty = dirtyMark !== null && (await statusList(fs, dir, 'no')).length ? dirtyMark : '';
+        if (best && (best.depth === 0 || !exact)) {
+          // (--abbrev=0: the tag alone)
+          out.push((best.depth === 0 && !long) || abbrev === 0 ? best.name + dirty : `${best.name}-${best.depth}-g${oid.slice(0, abbrev)}${dirty}`);
+          continue;
+        }
+        if (exact) return fail(`no tag exactly matches '${oid}'`);
+        if (always) { out.push(oid.slice(0, abbrev) + dirty); continue; }
+        if (!tags.length) return fail('No names found, cannot describe anything.');
+        return fail(`No annotated tags can describe '${oid}'.\nHowever, there were unannotated tags: try --tags.`);
+      }
+      ctx.stdout += out.map((l) => l + '\n').join('');
       return 0;
     }
 
@@ -764,7 +1116,8 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
       const full = args.includes('--full-name');
       const pats = args.slice(args.indexOf('--') >= 0 ? args.indexOf('--') + 1 : 0).filter((a) => !a.startsWith('-'));
       const show = (p: string) => (full ? p : relTo(prefix, p));
-      const inScope = (p: string) => (!prefix || p.startsWith(prefix)) && (!pats.length || pats.some((x) => { const q = prefix + x.replace(/^\.\/?/, ''); return !q || p === q || p.startsWith(q.replace(/\/?$/, '/')); }));
+      const tests = pats.map((x) => pathspec(prefix, x));
+      const inScope = (p: string) => (!prefix || p.startsWith(prefix)) && (!tests.length || tests.some((t) => t(p)));
       const sep = nul ? '\0' : '\n';
       const ents = await entries(fs, dir, modified || others || deleted);
       for (const e of ents) {
@@ -830,13 +1183,14 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
       const porc = args.find((a) => a === '--porcelain' || a.startsWith('--porcelain='));
       const short = args.includes('-s') || args.includes('--short');
       const branchHdr = args.includes('-b') || args.includes('--branch');
-      if (!porc && !nul && !(short && branchHdr)) return null;
       const v2 = porc === '--porcelain=v2' || porc === '--porcelain=2';
       const uArg = args.find((a) => a.startsWith('-u') || a.startsWith('--untracked-files'));
       const uVal = uArg ? (uArg.includes('=') ? uArg.split('=')[1] : uArg.slice(2)) : '';
       const untracked = uVal === 'no' ? 'no' : uVal === 'all' || nul ? 'all' : 'normal';
       const end = nul ? '\0' : '\n';
-      const list = await statusList(fs, dir, untracked);
+      let list = await statusList(fs, dir, untracked);
+      if (!v2) list = withRenames(list);
+      if (!porc && !short && !nul) { ctx.stdout += await longStatus(fs, dir, list, prefix, cache); return 0; }
       const b = await currentBranch(fs, dir);
       const h = await headOid(fs, dir);
       const up = b ? await upstreamOf(fs, dir, b) : null;
@@ -861,57 +1215,56 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         else if (up) hdr += `...${up.short}` + (ab && (ab[0] || ab[1]) ? ` [${[ab[0] ? `ahead ${ab[0]}` : '', ab[1] ? `behind ${ab[1]}` : ''].filter(Boolean).join(', ')}]` : '');
         ctx.stdout += hdr + end;
       }
-      for (const s of list) ctx.stdout += `${s.x}${s.y} ${show(s.path)}${end}`;
+      // (a path with a space or a special character is quoted, as git does; not with -z)
+      const q = (p: string) => (nul ? p : quotePath(p));
+      for (const s of list) {
+        if (s.from) ctx.stdout += nul ? `${s.x}${s.y} ${show(s.path)}\0${show(s.from)}\0` : `${s.x}${s.y} ${q(show(s.from))} -> ${q(show(s.path))}${end}`;
+        else ctx.stdout += `${s.x}${s.y} ${q(show(s.path))}${end}`;
+      }
       return 0;
     }
 
     case 'log':
     case 'show': {
-      if (sub === 'show' && !args.some((a) => a.startsWith('--format') || a.startsWith('--pretty') || a === '-s' || a === '--no-patch' || a === '--name-status' || a === '--numstat' || a === '--name-only' || a === '--stat')) return null;
       if (sub === 'log' && (args.includes('-g') || args.includes('--walk-reflogs'))) return reflogLog(ctx, fs, dir, args);
-      const o = await logOptions(fs, dir, sub === 'show' ? ['-1', '--no-walk', ...args] : args);
-      const commits = await walk(fs, dir, o.walk, cache);
-      const decor = o.decorate || /%[dD]/.test(o.format ?? '') ? await decorations(fs, dir, o.decorate === 'full') : undefined;
-      const parts: string[] = [];
-      const graph = args.includes('--graph') ? new Graph(!!o.walk.firstParent) : null;
-      const ordered = graph || args.includes('--topo-order') ? topoOrder(commits) : commits;
-      for (const c of ordered) {
-        let text: string;
-        if (o.style === 'format') text = formatPretty(c, o.format!, { decor, date: o.date });
-        else if (o.style === 'oneline') text = `${o.abbrev ? c.oid.slice(0, 7) : c.oid}${decor?.get(c.oid)?.length ? ` (${decor.get(c.oid)!.join(', ')})` : ''} ${subjectOf(c.commit.message)}`;
-        else if (o.style === 'raw') text = `commit ${[c.oid, ...(o.parents ? c.commit.parent : [])].join(' ')}\n` + rawCommit(c).replace(/\n\n([^]*)$/, (_m, msg: string) => '\n\n' + msg.replace(/\n$/, '').split('\n').map((l: string) => '    ' + l).join('\n') + '\n');
-        else {
-          const d = decor?.get(c.oid);
-          text = `commit ${[c.oid, ...(o.parents ? c.commit.parent : [])].join(' ')}${d?.length ? ` (${d.join(', ')})` : ''}\n`;
-          if (c.commit.parent.length > 1) text += `Merge: ${c.commit.parent.map((p: string) => p.slice(0, 7)).join(' ')}\n`;
-          text += `Author: ${c.commit.author.name} <${c.commit.author.email}>\n`;
-          if (o.style === 'fuller') text += `AuthorDate: ${gitDate(c.commit.author, o.date)}\nCommit:     ${(c.commit.committer ?? c.commit.author).name} <${(c.commit.committer ?? c.commit.author).email}>\nCommitDate: ${gitDate(c.commit.committer ?? c.commit.author, o.date)}\n`;
-          else if (o.style !== 'short') text += `Date:   ${gitDate(c.commit.author, o.date)}\n`;
-          const msg = o.style === 'short' ? subjectOf(c.commit.message) : c.commit.message.replace(/\n+$/, '');
-          text += `\n${msg.split('\n').map((l: string) => '    ' + l).join('\n')}\n`;
+      if (sub === 'show') {
+        // `rev:path` is the blob's content; an annotated tag shows itself, then what it points at
+        const dd = args.indexOf('--');
+        const before = dd >= 0 ? args.slice(0, dd) : args;
+        const specs = before.filter((a, i) => !a.startsWith('-') && !/^(-n|--format|--pretty|-U|--unified)$/.test(before[i - 1] ?? ''));
+        if (!specs.length) specs.push('HEAD');
+        const rest: string[] = [];
+        for (const spec of specs) {
+          const colon = spec.indexOf(':');
+          if (colon >= 0 && !spec.startsWith(':')) {
+            const path = spec.slice(colon + 1).replace(/^\.\//, prefix);
+            const r = spec.slice(0, colon) || 'HEAD';
+            let oid: string;
+            try { oid = await rev(fs, dir, r); } catch { return fail(`invalid object name '${r}'.`); }
+            const blob = await git.readBlob({ fs, dir, oid, filepath: path }).catch(() => null);
+            if (!blob) return fail(`path '${path}' does not exist in '${r}'`);
+            ctx.stdout += decodeBytes(blob.blob);
+            continue;
+          }
+          let oid: string;
+          try { oid = await rev(fs, dir, spec); } catch { return fail(`ambiguous argument '${spec}': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'`); }
+          if (await objectType(fs, dir, oid) === 'tag') {
+            const { tag } = await git.readTag({ fs, dir, oid });
+            ctx.stdout += `tag ${tag.tag}\nTagger: ${tag.tagger.name} <${tag.tagger.email}>\nDate:   ${gitDate(tag.tagger)}\n\n${tag.message.replace(/\n*$/, '\n')}\n`;
+            oid = (await peel(fs, dir, oid)).oid;
+          }
+          rest.push(oid);
         }
-        if (o.changes) {
-          const parent = c.commit.parent[0] ?? null;
-          const ch = await changesBetween(fs, dir, parent, c.oid);
-          const extra = await formatChanges(fs, dir, ch, o.changes, nul, prefix, { from: parent, to: c.oid });
-          if (extra) text = text ? text.replace(/\n$/, '') + '\n\n' + extra.replace(/\n$/, '') : extra.replace(/\n$/, '');
-        }
-        if (graph) text = graph.draw(c, text, o.style !== 'oneline' && o.style !== 'format');
-        parts.push(text);
+        if (!rest.length) return 0;
+        const flags = before.filter((a) => !specs.includes(a));
+        const o = await logOptions(fs, dir, ['--no-walk', ...flags, ...rest, ...(dd >= 0 ? args.slice(dd) : [])]);
+        // (show prints the patch unless -s / --no-patch, and lists each commit once, in the order given)
+        if (o.changes === undefined && !flags.includes('-s') && !flags.includes('--no-patch')) o.changes = 'patch';
+        o.walk.max = rest.length;
+        return showCommits(ctx, fs, dir, o, args, nul, prefix, cache, 'show');
       }
-      if (!parts.length) return 0;
-      if (graph && o.style !== 'oneline' && o.style !== 'format') {
-        // each commit ends with its lanes as the separator line; not after the last
-        ctx.stdout += parts.join('\n').replace(/\n[| ]*$/, '') + '\n';
-        return 0;
-      }
-      const sep = nul ? '\0' : o.style === 'format' || o.style === 'oneline' ? '\n' : '\n';
-      if (o.style === 'medium' || o.style === 'raw' || o.style === 'fuller' || o.style === 'short' || o.style === 'full') {
-        ctx.stdout += parts.join(nul ? '\0' : '\n') + (nul ? '' : '');
-      } else {
-        ctx.stdout += parts.join(sep) + (o.terminate ? (nul ? '\0' : '\n') : '');
-      }
-      return 0;
+      const o = await logOptions(fs, dir, args);
+      return showCommits(ctx, fs, dir, o, args, nul, prefix, cache, 'log');
     }
 
     case 'update-index': {
@@ -947,15 +1300,31 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         let ch = await changesFor(fs, dir, from, to);
         if (paths.length) ch = ch.filter((c) => paths.some((p) => c.path === p || c.path.startsWith(p + '/')));
         if (args.includes('--quiet')) return ch.length ? 1 : 0;
-        ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to });
+        ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to }, contextOf(args));
         return args.includes('--exit-code') && ch.length ? 1 : 0;
       }
-      if (args.includes('--no-index')) return null;
+      if (args.includes('--no-index')) {
+        // two files outside the index: their diff, exit 1 when they differ
+        const files = args.filter((x) => !x.startsWith('-'));
+        if (files.length !== 2) return fail('usage: git diff --no-index [<options>] <path> <path>', 129);
+        const read = async (f: string) => {
+          const d = await fs.promises.readFile(f.startsWith('/') ? f : `${workDir}/${f}`).catch(() => null);
+          return d === null ? null : typeof d === 'string' ? d : decodeBytes(d);
+        };
+        const [x, y] = [await read(files[0]), await read(files[1])];
+        if (x === null || y === null) return fail(`Could not access '${x === null ? files[0] : files[1]}'`, 1);
+        if (x === y) return 0;
+        if (args.includes('--quiet')) return 1;
+        const name = (f: string) => f.replace(/^\/+/, '');
+        const hunks = unifiedDiff(diffLines(x), diffLines(y), { context: contextOf(args) });
+        ctx.stdout += `diff --git a/${name(files[0])} b/${name(files[1])}\n--- a/${name(files[0])}\n+++ b/${name(files[1])}\n${hunks}`;
+        return 1;
+      }
       const { from, to, paths } = await diffSides(fs, dir, args, prefix);
       let ch = await changesFor(fs, dir, from, to);
       if (paths.length) ch = ch.filter((c) => paths.some((p) => c.path === p || c.path.startsWith(p.replace(/\/?$/, '/'))));
       if (args.includes('--quiet')) return ch.length ? 1 : 0;
-      ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to });
+      ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to }, contextOf(args));
       return args.includes('--exit-code') && ch.length ? 1 : 0;
     }
 
@@ -1059,6 +1428,63 @@ async function refAtom(fs: Fs, dir: string, r: { ref: string; oid: string; c: Co
   }
 }
 
+/** log and show: the walked commits in the chosen format, with their changes */
+async function showCommits(ctx: CommandContext, fs: Fs, dir: string, o: LogOptions, args: string[], nul: boolean, prefix: string, cache: Map<string, any>, sub: string): Promise<number> {
+  void sub;
+  const commits = await walk(fs, dir, o.walk, cache);
+  const decor = o.decorate || /%[dD]/.test(o.format ?? '') ? await decorations(fs, dir, o.decorate === 'full') : undefined;
+  const parts: string[] = [];
+  const graph = args.includes('--graph') ? new Graph(!!o.walk.firstParent) : null;
+  const ordered = graph || args.includes('--topo-order') ? topoOrder(commits) : commits;
+  for (const c of ordered) {
+    let text: string;
+    if (o.style === 'format') text = formatPretty(c, o.format!, { decor, date: o.date });
+    else if (o.style === 'oneline') text = `${o.abbrev ? c.oid.slice(0, 7) : c.oid}${decor?.get(c.oid)?.length ? ` (${decor.get(c.oid)!.join(', ')})` : ''} ${subjectOf(c.commit.message)}`;
+    else if (o.style === 'raw') text = `commit ${[c.oid, ...(o.parents ? c.commit.parent : [])].join(' ')}\n` + rawCommit(c).replace(/\n\n([^]*)$/, (_m, msg: string) => '\n\n' + msg.replace(/\n$/, '').split('\n').map((l: string) => '    ' + l).join('\n') + '\n');
+    else {
+      const d = decor?.get(c.oid);
+      text = `commit ${[c.oid, ...(o.parents ? c.commit.parent : [])].join(' ')}${d?.length ? ` (${d.join(', ')})` : ''}\n`;
+      if (c.commit.parent.length > 1) text += `Merge: ${c.commit.parent.map((p: string) => p.slice(0, 7)).join(' ')}\n`;
+      text += `Author: ${c.commit.author.name} <${c.commit.author.email}>\n`;
+      if (o.style === 'fuller') text += `AuthorDate: ${gitDate(c.commit.author, o.date)}\nCommit:     ${(c.commit.committer ?? c.commit.author).name} <${(c.commit.committer ?? c.commit.author).email}>\nCommitDate: ${gitDate(c.commit.committer ?? c.commit.author, o.date)}\n`;
+      else if (o.style !== 'short') text += `Date:   ${gitDate(c.commit.author, o.date)}\n`;
+      const msg = o.style === 'short' ? subjectOf(c.commit.message) : c.commit.message.replace(/\n+$/, '');
+      text += `\n${msg.split('\n').map((l: string) => '    ' + l).join('\n')}\n`;
+    }
+    // (a merge's changes aren't shown, as git without -m / --cc)
+    if (o.changes && c.commit.parent.length < 2) {
+      const parent = c.commit.parent[0] ?? null;
+      const ch = await changesBetween(fs, dir, parent, c.oid);
+      const extra = await formatChanges(fs, dir, ch, o.changes, nul, prefix, { from: parent, to: c.oid }, contextOf(args));
+      // git's layout: oneline and format: lines run straight on; a tformat gets a blank line; the
+      // long formats a blank line, and one after the changes before the next commit
+      if (extra) {
+        const ex = extra.replace(/\n$/, '');
+        // (an empty --format: the changes alone)
+        if (o.style === 'format' && text === '') text = o.terminate ? ex : `${ex}\n`;
+        else if (o.style === 'oneline') text = `${text}\n${ex}`;
+        else if (o.style === 'format') text = o.terminate ? `${text}\n\n${ex}` : `${text}\n${ex}\n`;
+        else text = `${text.replace(/\n$/, '')}\n\n${ex}\n`;
+      }
+    }
+    if (graph) text = graph.draw(c, text, o.style !== 'oneline' && o.style !== 'format');
+    parts.push(text);
+  }
+  if (!parts.length) return 0;
+  if (graph && o.style !== 'oneline' && o.style !== 'format') {
+    // each commit ends with its lanes as the separator line; not after the last
+    ctx.stdout += parts.join('\n').replace(/\n[| ]*$/, '') + '\n';
+    return 0;
+  }
+  const sep = nul ? '\0' : o.style === 'format' || o.style === 'oneline' ? '\n' : '\n';
+  if (o.style === 'medium' || o.style === 'raw' || o.style === 'fuller' || o.style === 'short' || o.style === 'full') {
+    ctx.stdout += parts.join(nul ? '\0' : '\n') + (nul ? '' : '');
+  } else {
+    ctx.stdout += parts.join(sep) + (o.terminate ? (nul ? '\0' : '\n') : '');
+  }
+  return 0;
+}
+
 // ── log options ───────────────────────────────────────────────────────────
 
 interface LogOptions { walk: WalkOpts; specs: string[]; style: string; format?: string; terminate: boolean; date: string; decorate?: string; abbrev: boolean; parents: boolean; changes?: string }
@@ -1119,7 +1545,7 @@ async function logOptions(fs: Fs, dir: string, args: string[]): Promise<LogOptio
 
 // ── diff ──────────────────────────────────────────────────────────────────
 
-interface Change { path: string; status: 'A' | 'M' | 'D'; old?: string; new?: string; newWork?: boolean }
+interface Change { path: string; status: 'A' | 'M' | 'D'; old?: string; new?: string; newWork?: boolean; mode?: number }
 
 /** What a diff compares: commits (oid), 'index' or 'work' */
 type Side = string;
@@ -1146,6 +1572,18 @@ async function diffSides(fs: Fs, dir: string, args: string[], prefix: string): P
   return cached ? { from: head, to: 'index', paths } : { from: 'index', to: 'work', paths };
 }
 
+/** -U N, -UN, --unified=N: lines of context (3) */
+function contextOf(args: string[]): number {
+  let n = 3;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    const m = /^(?:-U|--unified=)(\d+)$/.exec(a);
+    if (m) n = Number(m[1]);
+    else if ((a === '-U' || a === '--unified') && /^\d+$/.test(args[i + 1] ?? '')) n = Number(args[++i]);
+  }
+  return n;
+}
+
 /** What a diff prints, from its options (null: the command's default) */
 function changeMode(args: string[]): string | null {
   const patch = args.some((a) => a === '-p' || a === '-u' || a === '--patch');
@@ -1170,7 +1608,7 @@ async function changesBetween(fs: Fs, dir: string, a: string | null, b: string):
       if (tb === 'tree' || ta === 'tree') return true;
       const ob = nb ? await nb.oid() : undefined, oa = na ? await na.oid() : undefined;
       if (ob === oa) return true;
-      out.push({ path, status: !oa ? 'A' : !ob ? 'D' : 'M', old: oa, new: ob });
+      out.push({ path, status: !oa ? 'A' : !ob ? 'D' : 'M', old: oa, new: ob, mode: await (nb ?? na).mode() });
       return true;
     },
   });
@@ -1209,22 +1647,18 @@ async function textOf(fs: Fs, dir: string, oid: string | undefined, path: string
   return new TextDecoder().decode(bytes);
 }
 
-async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nul: boolean, prefix: string, sides: { from: Side | null; to: Side }): Promise<string> {
+async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nul: boolean, prefix: string, sides: { from: Side | null; to: Side }, context = 3): Promise<string> {
   void prefix; void sides;
   const counts = async (c: Change): Promise<[number, number] | null> => {
     const a = await textOf(fs, dir, c.old, c.path, false);
     const b = await textOf(fs, dir, c.new, c.path, !!c.newWork && c.status !== 'D');
     if (a === null || b === null) return null;
-    const al = a ? a.replace(/\n$/, '').split('\n') : [], bl = b ? b.replace(/\n$/, '').split('\n') : [];
-    const d = unifiedDiff(al, bl);
-    let plus = 0, minus = 0;
-    for (const l of d.split('\n')) { if (l.startsWith('+') && !l.startsWith('+++')) plus++; else if (l.startsWith('-') && !l.startsWith('---')) minus++; }
-    return [plus, minus];
+    return diffCounts(a, b);
   };
   let out = '';
   if (mode === 'patch-with-stat') {
     const stat = await formatChanges(fs, dir, ch, 'stat', nul, prefix, sides);
-    return stat + (stat ? '\n' : '') + await formatChanges(fs, dir, ch, 'patch', nul, prefix, sides);
+    return stat + (stat ? '\n' : '') + await formatChanges(fs, dir, ch, 'patch', nul, prefix, sides, context);
   }
   if (mode === 'raw') {
     const z = '0'.repeat(40);
@@ -1243,13 +1677,17 @@ async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nu
     }
   } else if (mode === 'stat' || mode === 'shortstat') {
     let files = 0, ins = 0, del = 0;
-    const rows: [string, number, number][] = [];
-    for (const c of ch) { const n = (await counts(c)) ?? [0, 0]; files++; ins += n[0]; del += n[1]; rows.push([c.path, n[0], n[1]]); }
-    if (mode === 'stat') {
-      const w = Math.max(0, ...rows.map((r) => r[0].length));
-      for (const [p, a, d] of rows) out += ` ${p.padEnd(w)} | ${String(a + d).padStart(3)} ${'+'.repeat(Math.min(a, 40))}${'-'.repeat(Math.min(d, 40))}\n`;
+    const rows: { name: string; add: number; del: number; binary?: string }[] = [];
+    for (const c of ch) {
+      const n = await counts(c);
+      files++;
+      if (!n) { rows.push({ name: c.path, add: 0, del: 0, binary: 'Bin' }); continue; }
+      ins += n[0]; del += n[1];
+      rows.push({ name: c.path, add: n[0], del: n[1] });
     }
-    if (files) out += ` ${files} file${files === 1 ? '' : 's'} changed` + (ins ? `, ${ins} insertion${ins === 1 ? '' : 's'}(+)` : '') + (del ? `, ${del} deletion${del === 1 ? '' : 's'}(-)` : '') + '\n';
+    if (mode === 'stat') out += formatStatRows(rows);
+    // (neither: both, as 0)
+    if (files) out += ` ${files} file${files === 1 ? '' : 's'} changed` + (ins || !del ? `, ${ins} insertion${ins === 1 ? '' : 's'}(+)` : '') + (del || !ins ? `, ${del} deletion${del === 1 ? '' : 's'}(-)` : '') + '\n';
   } else if (mode === 'patch') {
     const short = (o?: string) => (o ?? '0'.repeat(40)).slice(0, 7);
     for (const c of ch) {
@@ -1263,10 +1701,13 @@ async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nu
         out += `Binary files ${c.status === 'A' ? '/dev/null' : `a/${c.path}`} and ${c.status === 'D' ? '/dev/null' : `b/${c.path}`} differ\n`;
         continue;
       }
-      out += `--- ${c.status === 'A' ? '/dev/null' : `a/${c.path}`}\n+++ ${c.status === 'D' ? '/dev/null' : `b/${c.path}`}\n`;
-      out += unifiedDiff(a ? a.replace(/\n$/, '').split('\n') : [], b ? b.replace(/\n$/, '').split('\n') : []);
+      const hunks = unifiedDiff(diffLines(a ?? ''), diffLines(b ?? ''), { context });
+      if (!hunks) continue; // (an empty file added or removed: no hunk, as git)
+      // (a name with a space gets a tab after it, as git writes it)
+      const tab = c.path.includes(' ') ? '\t' : '';
+      out += `--- ${c.status === 'A' ? '/dev/null' : `a/${c.path}${tab}`}\n+++ ${c.status === 'D' ? '/dev/null' : `b/${c.path}${tab}`}\n`;
+      out += hunks;
     }
   }
-  void readFileAtRef;
   return out;
 }

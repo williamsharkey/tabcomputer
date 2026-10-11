@@ -1,0 +1,118 @@
+# vi/vim run without a terminal: -c commands, +cmd, -es and ex scripts on
+# stdin, against Vim 9 (GNU_DIFF=1 GNU_DIFF_CASES=../tests/vi-cases.txt ...
+# gnu-tools-diff). Vim writes its screen to a non-terminal stdout, so the
+# cases look at the files and exit statuses.
+vi -c '%s/apple/APPLE/g' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
+vim -c '%s/apple/APPLE/g' -c 'wq' a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/apple/X/|wq' a.txt >/dev/null 2>&1; cat a.txt
+vi -c 's/banana/B/' -c 'x' a.txt >/dev/null 2>&1; cat a.txt
+vi -c '2,4d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'g/apple/d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'v/apple/d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'g/^$/d' -c wq src/sub/notes.md >/dev/null 2>&1; cat src/sub/notes.md
+vi -c '%s/\(\d\+\)-\(\d\+\)/\2-\1/' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c '%s/\v(\d+)-(\d+)/\2-\1/' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c '%s/\<a/A/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/a\|e/_/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/^/> /' -c wq src/lib.ts >/dev/null 2>&1; cat src/lib.ts
+vi -c '%s/$/;/' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/\s\+$//e' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/apple/\U&/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/\w\+/\u&/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/,/\r/g' -c wq b.csv >/dev/null 2>&1; cat b.csv
+vi -c '%s/\n/,/' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1,3s/\n/ /' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/apple/X/gi' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/\capple/X/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/an\zsa/X/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/a\zen/X/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/p\{2}/PP/' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/[[:digit:]]/#/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s#/#|#g' -c wq src/main.ts >/dev/null 2>&1; cat src/main.ts
+vi -c '%s/zzz/y/' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
+vi -c '%s/zzz/y/|wq' a.txt >/dev/null 2>&1 </dev/null; echo $?; cat a.txt
+vi -c '%s/apple/X/' a.txt >/dev/null 2>&1 </dev/null; echo $?; cat a.txt
+vi -c 'q!' a.txt >/dev/null 2>&1; echo $?
+vi -c 'd' -c 'q' a.txt >/dev/null 2>&1 </dev/null; echo $?; cat a.txt
+vi -c 'cq' a.txt >/dev/null 2>&1; echo $?
+vi +3 -c 'd' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi +/cherry -c 'd' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi '+%s/a/A/g' '+wq' a.txt >/dev/null 2>&1; cat a.txt
+vi -c '$d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '/cherry/,$d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '/apple/;+1d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '.,+2d' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1m$' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '$m0' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1,2t$' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1co 3' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1,3j' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '1,3j!' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%j' -c wq src/sub/deep.js >/dev/null 2>&1; cat src/sub/deep.js
+vi -c '%>' -c wq src/lib.ts >/dev/null 2>&1; cat -A src/lib.ts
+vi -c '%<' -c wq src/sub/deep.js >/dev/null 2>&1; cat src/sub/deep.js
+vi -c 'sort' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort!' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort n' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort u' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort ui' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort i' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'sort /\d\+-\d\+-/' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'sort /\w\+ / r' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c '%norm A;' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%norm I// ' -c wq src/lib.ts >/dev/null 2>&1; cat src/lib.ts
+vi -c 'g/apple/norm A!' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%norm x' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '2norm dd' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'g/ERROR/m0' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'g/^/m0' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'g/ERROR/s/2024/YEAR/' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'g/ERROR/t$' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'g/ERROR/j' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'g!/ERROR/d' -c wq log.txt >/dev/null 2>&1; cat log.txt
+vi -c 'g/x/d' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
+vi -c '1y|$pu' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '2d|1pu!' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'r b.csv' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '0r b.csv' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '$r !echo hi' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%!sort' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '2,4!tr a-z A-Z' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'w out.txt' -c 'q' a.txt >/dev/null 2>&1; cat out.txt
+vi -c '1,2w part.txt' -c 'q' a.txt >/dev/null 2>&1; cat part.txt
+vi -c '1w >> b.csv' -c 'q' a.txt >/dev/null 2>&1; cat b.csv
+vi -c 'wq' noeol.txt >/dev/null 2>&1; od -c noeol.txt
+vi -c 'x' noeol.txt >/dev/null 2>&1; od -c noeol.txt
+vi -c 'wq' crlf.txt >/dev/null 2>&1; od -c crlf.txt
+vi -c '%s/one/ONE/' -c 'wq' crlf.txt >/dev/null 2>&1; od -c crlf.txt
+vi -c 'set ff=unix' -c 'wq' crlf.txt >/dev/null 2>&1; od -c crlf.txt
+vi -c 'wq' new.txt >/dev/null 2>&1; echo $?; wc -c new.txt
+vi -c 'r a.txt' -c 'wq' new.txt >/dev/null 2>&1; cat new.txt
+vi -c 'normal ihello' -c wq new.txt >/dev/null 2>&1; cat new.txt
+vi -c 'ka' -c '3' -c "'a,.d" -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'exe "%s/apple/E/g"' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c 'silent! %s/zzz/y/' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
+vi -c '%s/apple/A/g | %s/banana/B/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/a/b/g' -c 'q' a.txt >/dev/null 2>&1 </dev/null; echo $?; cat a.txt
+vi -c '%s/a/b/g' -c 'q!' a.txt >/dev/null 2>&1; echo $?; cat a.txt
+vi -c '%s/a/b/g' -c 'up' -c 'q' a.txt >/dev/null 2>&1; cat a.txt
+vim -es -c '%s/apple/X/g' -c wq a.txt; echo $?; cat a.txt
+vim -es -c '%s/zzz/X/g' -c wq a.txt; echo $?
+vim -es -c '%s/apple/Y/' a.txt </dev/null; echo $?; cat a.txt
+printf '%%s/apple/Z/g\nwq\n' | vim -es a.txt; echo $?; cat a.txt
+printf '1d\nx\n' | ex -s a.txt; echo $?; cat a.txt
+printf '$a\nnew last\n.\nw\nq\n' | ex -s a.txt; cat a.txt
+printf '1i\nfirst\n.\nwq\n' | ex -s a.txt; cat a.txt
+printf '2,3c\nchanged\n.\nwq\n' | ex -s a.txt; cat a.txt
+ex -sc '%p|q' a.txt
+ex -s -c 'p' -c 'q' a.txt
+ex -s -c '2p' -c 'q' a.txt
+ex -s -c '=' -c 'q' a.txt
+ex -s -c '/cherry/=' -c 'q' a.txt
+ex -s -c 'g/apple/p' -c 'q' a.txt
+ex -s -c 'g/apple/nu' -c 'q' a.txt
+ex -s -c '%s/a/A/gn' -c 'q' a.txt; echo $?
+ex -s -c '%s/apple/X/|x' a.txt; cat a.txt
+ex -s +'%s/apple/W/g' +x a.txt; cat a.txt
+ex -s -c 'zzz' -c q a.txt; echo $?
+ex -s -c 'w' -c q nope/x.txt; echo $?

@@ -5,6 +5,15 @@
 set -euo pipefail
 src=$1 root=$2 sha=$3
 cd "$src"
+# The droplet has 2 GB; vite build needs ~1.1 GB of heap, past node's default
+# limit there (Build 978's first deploy died "heap out of memory"). Give it 1.5 GB,
+# with a swapfile so a peak can't get the live server OOM-killed.
+if ! swapon --show=NAME --noheadings | grep -q .; then
+  [ -f /swapfile ] || { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null; }
+  swapon /swapfile || echo "swapon failed; building without swap"
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+export NODE_OPTIONS="--max-old-space-size=1536${NODE_OPTIONS:+ $NODE_OPTIONS}"
 npm ci --no-audit --no-fund
 npm run build
 rel=$root/releases/$sha

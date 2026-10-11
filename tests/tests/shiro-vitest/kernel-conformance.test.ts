@@ -1029,6 +1029,7 @@ describe('kernel syscalls found by LTP', () => {
     p.childCpuMs = 0;
     const c = kernel.spawn({ path: 'kid', cwd: '/tmp/kc', fds: {}, parent: p, run: () => new Promise<number>((r) => setTimeout(() => r(0), 120)) });
     c.syscalls = 1;
+    c.cpuSince = Date.now();  // (computing from its first call)
     const d = new Uint8Array(16);
     expect(await kernel.syscall(p, A.SYS_wait4, [c.pid, 0], d)).toBe(c.pid);
     const us = Number(new DataView(d.buffer).getBigInt64(4, true));
@@ -1187,14 +1188,23 @@ describe('kernel syscalls found by LTP', () => {
     // (SIGXCPU blocked, as a handler would keep it running)
     p.sigmask.add(A.SIGXCPU);
     p.inSyscall = 0;
-    const st = p as { startTime: number };
-    st.startTime = Date.now() - 1200;
+    p.cpuSince = Date.now() - 1200;
     await new Promise((r) => setTimeout(r, 300));
     expect(sigs).toEqual([A.SIGXCPU]);
-    st.startTime -= 1000;
+    p.cpuSince -= 1000;
     await new Promise((r) => setTimeout(r, 300));
     kernel.deliver = deliver;
     expect(sigs).toEqual([A.SIGXCPU, A.SIGKILL]);
+  });
+
+  it('a fork child\'s CPU time starts at its first kernel call, not at the fork that made it (the copy of its parent is the parent\'s: LTP times03)', async () => {
+    const p = kernel.spawn({ path: 'cpustart', cwd: '/tmp/kc', fds: {}, run: () => new Promise<number>(() => {}) });
+    const c = kernel.vfork(p);
+    c.syscalls = 1;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ProcFs.cpuMs(c)).toBe(0);
+    expect(await kernel.syscall(c, A.SYS_getpid, [])).toBe(c.pid);
+    expect(ProcFs.cpuMs(c)).toBeLessThan(50);
   });
 
   it('a thread-directed signal left to its default action goes to the engine (the thread may block it), not the process\'s default action, job control or not (Open POSIX fork_18-1)', async () => {

@@ -150,12 +150,12 @@ export class ProcFs {
 
   /** CPU time of `p` in ms (see the file comment). */
   static cpuMs(p: Process, now = Date.now()): number {
-    if (!p.syscalls) return 0;
+    if (!p.syscalls || !p.cpuSince) return 0;
     const end = p.state === 'zombie' && p.exitTime ? p.exitTime : now;
     const asleep = p.engineSleeps > 0 ? Math.max(0, end - p.engineSleepSince) : 0;
     // and a call it is blocked in now (wait4, a read): counted once it ends, as kernelMs
     const blocked = p.state !== 'zombie' && p.inSyscall > 0 && end - p.syscallSince >= 2 ? end - p.syscallSince : 0;
-    return Math.max(0, end - p.startTime - p.kernelMs - Math.max(asleep, blocked));
+    return Math.max(0, end - p.cpuSince - p.kernelMs - Math.max(asleep, blocked));
   }
 
   /** The system part of cpuMs: what the engine reported, at most the CPU time. */

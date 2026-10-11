@@ -36,7 +36,7 @@ export const debianCmd: Command = {
         return 0;
       }
       // Debian grows to hundreds of MB (apt lists, packages): keep it from eviction
-      void import('../storage').then(m => m.requestPersistentStorage('debian install'));
+      void import('../storage').then(m => m.requestPersistentStorage('debian install', true));
       const bi = rest.indexOf('--base');
       const base = bi >= 0 ? rest[bi + 1] : undefined;
       const r = await rootfs.installRootfs(ctx.fs, { base, progress: (m) => out(m) });

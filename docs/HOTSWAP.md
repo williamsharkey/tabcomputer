@@ -5,17 +5,21 @@ An agent in a tab (Claude Code, or you at the prompt) can change tabcomputer's o
 ## The workflow
 
 ```sh
-git clone --depth 1 https://github.com/williamsharkey/shiro ~/shiro   # a checkout in the tab
-cd ~/shiro && git checkout -b fix/my-change
+hotswap checkout                         # this build's own source, in ~/shiro
+cd ~/shiro
 vi src/shell.ts                          # edit
 hotswap build src/shell.ts               # optional: build only and report
 hotswap apply src/shell.ts               # swap it in; reverts by itself in 90 s
 echo $BASH_VERSION; ...                  # try it in this tab
+hotswap test shell-posix shell-syntax    # run vitest suites from the checkout in the tab
 hotswap confirm                          # keep it (this page load only)
-hotswap test shell-posix shell-syntax   # run vitest suites from the checkout in the tab
-git commit -am 'shell: ...' && git push -u origin fix/my-change
+hotswap diff                             # what you changed
+hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build's commit
 ```
 
+- `hotswap checkout [DIR] [--force]` downloads `assets/hotswap-source-<sha>.tar.gz` from the page's own origin and unpacks it into DIR (`~/shiro` by default). A production build emits that tarball (`hotswapSource` in `vite-plugin-hotswap.ts`, about 3 MB). It holds the build's `src/`, `profiles/`, the vitest suites and the root files a build needs, plus `.hotswap-source.json`: the commit, the build number, and each file's git blob id. So the checkout matches the running page exactly. A dev server has no tarball. A deploy keeps older builds' tarballs for a week, like other assets. A `git clone` of the whole repository would also work but is several hundred MB (`public/pkg`), too much for a tab.
+- `hotswap diff [--stat] [FILE...]` compares the checkout with its manifest: modified, added (under the source directories) and deleted files, as unified diffs against the copy of the tarball kept in `.hotswap/`.
+- `hotswap push BRANCH -m MSG [--repo OWNER/NAME] [--force]` commits those changes on top of the build's commit with GitHub's REST API (blobs, a tree on the commit's tree, a commit, a ref; `src/hotswap/source.ts`). It uses the `gh auth login` token and the name and email in `~/.gitconfig`. The default repository is williamsharkey/shiro. A second push to the same branch from the same checkout adds a commit on top of the first. A branch that moved elsewhere is refused unless `--force` is given.
 - `hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...` builds the files named, the *swap set*, with the page's esbuild-wasm and swaps them in. The root defaults to the nearest directory above the cwd that has `src/shell.ts`.
 - Every apply arms a TTL, 90 s by default. If `hotswap confirm` doesn't come in time, the swap reverts by itself. A swap that breaks the shell can't run `confirm`, so it undoes itself.
 - `hotswap revert [--all]` undoes the newest swap, or all of them. `hotswap status` lists what's applied, what each swap changed, and the time left on its TTL.
@@ -80,4 +84,4 @@ The live map stops tree-shaking from removing unused exports of `src/` modules, 
 
 ## Tests
 
-`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, the test runner, and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it copies `src/` into the tab, edits `src/shell.ts` with sed, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts. Last, it runs three shell suites with `hotswap test` and checks that the tab's own file and localStorage key are unchanged.
+`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, the test runner, checkout/diff/push (with a fake GitHub), and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it runs `hotswap checkout`, edits `src/shell.ts` with sed, checks `hotswap diff`, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts. Last, it runs three shell suites with `hotswap test` and checks that the tab's own file and localStorage key are unchanged.

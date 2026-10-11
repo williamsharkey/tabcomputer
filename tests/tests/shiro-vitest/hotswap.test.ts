@@ -423,3 +423,115 @@ describe('outer', () => {
     expect(only.results.map((r) => r.name)).toEqual(['outer > adds 1 + 2', 'outer > adds 2 + 2']);
   });
 });
+
+describe('hotswap: checkout, diff and push of the build source', () => {
+  // A filesystem in memory with the calls source.ts uses
+  function memFs() {
+    const files = new Map<string, Uint8Array>();
+    const dirs = new Set<string>(['/']);
+    const enc = new TextEncoder();
+    const parent = (p: string) => p.slice(0, p.lastIndexOf('/')) || '/';
+    return {
+      files,
+      async readFile(p: string, e?: 'utf8') {
+        const d = files.get(p);
+        if (!d) throw new Error('ENOENT ' + p);
+        return e ? new TextDecoder().decode(d) : d;
+      },
+      async writeFile(p: string, d: Uint8Array | string) {
+        if (!dirs.has(parent(p))) throw new Error('ENOENT dir ' + parent(p));
+        files.set(p, typeof d === 'string' ? enc.encode(d) : d);
+      },
+      async mkdir(p: string) { for (let d = p; d !== '/'; d = parent(d)) dirs.add(d); },
+      async readdir(p: string) {
+        const names = new Set<string>();
+        for (const k of [...files.keys(), ...dirs]) if (k !== p && parent(k) === p) names.add(k.slice(p.length + 1));
+        if (!dirs.has(p)) throw new Error('ENOENT ' + p);
+        return [...names];
+      },
+      async stat(p: string) {
+        const isDir = dirs.has(p), isFile = files.has(p);
+        if (!isDir && !isFile) throw new Error('ENOENT ' + p);
+        return { isDirectory: () => isDir, isFile: () => isFile };
+      },
+      async unlink(p: string) { files.delete(p); },
+    };
+  }
+
+  async function tarball() {
+    const { tar } = await import('../../../vite-plugin-hotswap');
+    const zlib = await import('node:zlib');
+    const crypto = await import('node:crypto');
+    const sha1 = (b: Buffer) => crypto.createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
+    const src: [string, Buffer][] = [
+      ['src/shell.ts', Buffer.from('export class Shell {}\n')],
+      ['src/old.ts', Buffer.from('export const old = 1;\n')],
+      ['tests/tests/shiro-vitest/' + 'deep/'.repeat(25) + 'long.test.ts', Buffer.from('// a path over 100 bytes\n')],
+    ];
+    const manifest = { sha: 'b'.repeat(40), build: '961', files: Object.fromEntries(src.map(([p, d]) => [p, sha1(d)])) };
+    return new Uint8Array(zlib.gzipSync(tar([['.hotswap-source.json', Buffer.from(JSON.stringify(manifest))], ...src])));
+  }
+
+  it('unpacks the tarball, finds changes, and pushes them on the build commit', async () => {
+    const src = await import('@shiro/hotswap/source');
+    const fs = memFs();
+    const gz = await tarball();
+    const m = await src.checkoutSource(fs as any, '/home/user/shiro', { fetch: (async () => new Response(gz)) as any, url: 'http://x/' });
+    expect(m.build).toBe('961');
+    expect(fs.files.has('/home/user/shiro/tests/tests/shiro-vitest/' + 'deep/'.repeat(25) + 'long.test.ts')).toBe(true);
+    expect(await src.sourceChanges(fs as any, '/home/user/shiro')).toEqual([]);
+    await expect(src.checkoutSource(fs as any, '/home/user/shiro', { fetch: (async () => new Response(gz)) as any, url: 'http://x/' })).rejects.toThrow(/not empty/);
+
+    await fs.writeFile('/home/user/shiro/src/shell.ts', 'export class Shell { hi() { return 1; } }\n');
+    await fs.writeFile('/home/user/shiro/src/new.ts', 'export const n = 2;\n');
+    await fs.unlink('/home/user/shiro/src/old.ts');
+    expect(await src.sourceChanges(fs as any, '/home/user/shiro')).toEqual([
+      { path: 'src/new.ts', status: 'A' }, { path: 'src/old.ts', status: 'D' }, { path: 'src/shell.ts', status: 'M' },
+    ]);
+    expect(await src.baseText(fs as any, '/home/user/shiro', 'src/shell.ts')).toBe('export class Shell {}\n');
+
+    // GitHub, faked
+    const calls: [string, string, any][] = [];
+    let branchHead: string | null = null;
+    let n = 0;
+    const api = async (method: string, path: string, body?: any) => {
+      calls.push([method, path, body]);
+      if (method === 'GET' && path.endsWith(`/git/commits/${'b'.repeat(40)}`)) return { status: 200, data: { tree: { sha: 'basetree' } } };
+      if (method === 'GET' && path.includes('/git/ref/heads/')) return branchHead ? { status: 200, data: { object: { sha: branchHead } } } : { status: 404, data: {} };
+      if (method === 'POST' && path.endsWith('/git/blobs')) return { status: 201, data: { sha: `blob${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/trees')) return { status: 201, data: { sha: `tree${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/commits')) return { status: 201, data: { sha: `commit${++n}` } };
+      if (method === 'POST' && path.endsWith('/git/refs')) { branchHead = body.sha; return { status: 201, data: {} }; }
+      if (method === 'PATCH') { branchHead = body.sha; return { status: 200, data: {} }; }
+      return { status: 500, data: { message: 'unexpected ' + method + ' ' + path } };
+    };
+    const r1 = await src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'shell: hi' });
+    expect(r1).toMatchObject({ created: true, files: 3, branch: 'fix/x' });
+    const tree = calls.find((c) => c[1].endsWith('/git/trees'))![2];
+    expect(tree.base_tree).toBe('basetree');
+    expect(tree.tree).toEqual([
+      { path: 'src/new.ts', mode: '100644', type: 'blob', sha: 'blob1' },
+      { path: 'src/old.ts', mode: '100644', type: 'blob', sha: null },
+      { path: 'src/shell.ts', mode: '100644', type: 'blob', sha: 'blob2' },
+    ]);
+    const commit = calls.find((c) => c[1].endsWith('/git/commits') && c[0] === 'POST')![2];
+    expect(commit.parents).toEqual(['b'.repeat(40)]);
+    expect(atob(calls.find((c) => c[1].endsWith('/git/blobs'))![2].content)).toBe('export const n = 2;\n');
+
+    // a second push from this checkout goes on top of the first
+    calls.length = 0;
+    const r2 = await src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'more' });
+    expect(r2.created).toBe(false);
+    expect(calls.find((c) => c[1].endsWith('/git/commits') && c[0] === 'POST')![2].parents).toEqual([r1.commit]);
+    // a branch someone else moved is refused without --force
+    branchHead = 'someoneelse';
+    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'm' })).rejects.toThrow(/wasn't pushed from this checkout/);
+  });
+
+  it('names the source tarball after the build commit', async () => {
+    const { sourceTarName } = await import('../../../vite-plugin-hotswap');
+    const { sourceUrl } = await import('@shiro/hotswap/source');
+    const sha = 'abcdef0123456789'.repeat(2) + 'abcdef01';
+    expect(sourceUrl(sha, 'https://tabcomputer.com/')).toBe(`https://tabcomputer.com/${sourceTarName(sha)}`);
+  });
+});

@@ -8,7 +8,8 @@ import { evaluateBundle, hotswap, type ModuleReport, type SwapRecord } from '../
  * an auto-revert unless confirmed (docs/HOTSWAP.md).
  */
 
-const USAGE = `Usage: hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...
+const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/shiro)
+       hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...
        hotswap build [--root DIR] FILE...   build and report, swap nothing
        hotswap confirm [--persist] [ID]     keep pending swaps (stop their TTL)
        hotswap revert [--all]               undo the newest swap (or all)
@@ -16,6 +17,9 @@ const USAGE = `Usage: hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...
        hotswap persisted [clear]            swaps re-applied at boot
        hotswap test [--root DIR] [-t RE] [-v] SUITE...
                                             run vitest suites from the checkout in this tab
+       hotswap diff [--stat] [FILE...]       changes since the checkout
+       hotswap push BRANCH -m MSG [--repo OWNER/NAME] [--force]
+                                            commit them on the build's commit, as a GitHub branch
 
 FILEs are paths in a checkout of tabcomputer's source (default root: the
 nearest directory above the cwd with src/shell.ts). Classes exported by a
@@ -134,6 +138,9 @@ export const hotswapCmd: Command = {
     }
 
     if (sub === 'test') return runTests(ctx, args);
+    if (sub === 'checkout') return checkout(ctx, args);
+    if (sub === 'diff') return diff(ctx, args);
+    if (sub === 'push') return push(ctx, args);
 
     if (sub !== 'apply' && sub !== 'build') { ctx.stderr += `hotswap: unknown subcommand '${sub}'\n${USAGE}`; return 2; }
 
@@ -245,4 +252,92 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
   }
   if (names.length > 1) out(`Tests: ${passed} passed${failed ? `, ${failed} failed` : ''}${skipped ? `, ${skipped} skipped` : ''}\n`);
   return failed ? 1 : 0;
+}
+
+const home = (ctx: CommandContext) => ctx.env['HOME'] || '/home/user';
+
+async function checkout(ctx: CommandContext, args: string[]): Promise<number> {
+  const force = args.includes('--force');
+  const dirArg = args.find((a) => !a.startsWith('-'));
+  const dir = ctx.fs.resolvePath(dirArg ? dirArg.replace(/^~(?=\/|$)/, home(ctx)) : `${home(ctx)}/shiro`, ctx.cwd);
+  const { checkoutSource } = await import('../hotswap/source');
+  try {
+    const m = await checkoutSource(ctx.fs as any, dir, { force });
+    ctx.stdout += `checked out build ${m.build} (${m.sha ? m.sha.slice(0, 12) : 'no commit'}), ${Object.keys(m.files).length} files, in ${dir}\n`;
+    ctx.stdout += `edit, then: cd ${dir} && hotswap apply src/shell.ts\n`;
+    return 0;
+  } catch (e: any) {
+    ctx.stderr += `hotswap checkout: ${e?.message ?? e}\n`;
+    return 1;
+  }
+}
+
+async function checkoutRoot(ctx: CommandContext, args: string[]): Promise<string | null> {
+  const i = args.indexOf('--root');
+  if (i >= 0) { const r = ctx.fs.resolvePath(args[i + 1] ?? '.', ctx.cwd); args.splice(i, 2); return r; }
+  const root = await findRoot(ctx, ctx.cwd);
+  if (!root) ctx.stderr += 'hotswap: no checkout found above the cwd (a directory with src/shell.ts); pass --root DIR\n';
+  return root;
+}
+
+async function diff(ctx: CommandContext, args: string[]): Promise<number> {
+  const root = await checkoutRoot(ctx, args);
+  if (!root) return 1;
+  const stat = args.includes('--stat');
+  const only = args.filter((a) => !a.startsWith('-')).map((a) => {
+    const abs = ctx.fs.resolvePath(a, ctx.cwd);
+    return abs.startsWith(root + '/') ? abs.slice(root.length + 1) : a;
+  });
+  const { sourceChanges, baseText } = await import('../hotswap/source');
+  let changes;
+  try { changes = await sourceChanges(ctx.fs as any, root); } catch (e: any) { ctx.stderr += `hotswap diff: ${e?.message ?? e}\n`; return 1; }
+  if (only.length) changes = changes.filter((c) => only.includes(c.path));
+  if (!changes.length) { ctx.stdout += 'No changes since the checkout.\n'; return 0; }
+  if (stat) { for (const c of changes) ctx.stdout += `${c.status} ${c.path}\n`; return 0; }
+  const tmp = `/tmp/hotswap-diff-${Date.now().toString(36)}`;
+  await ctx.fs.mkdir(tmp, { recursive: true });
+  for (const c of changes) {
+    const a = c.status === 'A' ? '/dev/null' : `${tmp}/a`;
+    const b = c.status === 'D' ? '/dev/null' : `${root}/${c.path}`;
+    if (c.status !== 'A') await ctx.fs.writeFile(`${tmp}/a`, (await baseText(ctx.fs as any, root, c.path)) ?? '');
+    let out = '';
+    await ctx.shell.execute(`diff -u --label 'a/${c.path}' --label 'b/${c.path}' '${a}' '${b}'`, (x) => { out += x; }, (x) => { out += x; });
+    ctx.stdout += out.replace(/\r\n/g, '\n');
+  }
+  await ctx.fs.rm(tmp, { recursive: true }).catch(() => {});
+  return 0;
+}
+
+async function push(ctx: CommandContext, args: string[]): Promise<number> {
+  const root = await checkoutRoot(ctx, args);
+  if (!root) return 1;
+  let message = '', repo = 'williamsharkey/shiro', branch = '', force = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-m' || a === '--message') message = args[++i] ?? '';
+    else if (a === '--repo' || a === '-R') repo = args[++i] ?? repo;
+    else if (a === '--force' || a === '-f') force = true;
+    else if (a.startsWith('-')) { ctx.stderr += `hotswap push: unknown option ${a}\n`; return 2; }
+    else branch = a;
+  }
+  if (!branch || !message) { ctx.stderr += 'Usage: hotswap push BRANCH -m MSG [--repo OWNER/NAME] [--force]\n'; return 2; }
+  const { getToken, ghApi } = await import('./gh');
+  const token = getToken(ctx);
+  if (!token) { ctx.stderr += 'hotswap push: not signed in to GitHub: run gh auth login\n'; return 1; }
+  const { pushSource } = await import('../hotswap/source');
+  let author: { name: string; email: string } | undefined;
+  try {
+    const cfg = await ctx.fs.readFile(`${home(ctx)}/.gitconfig`, 'utf8') as string;
+    const name = /^\s*name\s*=\s*(.+)$/m.exec(cfg)?.[1]?.trim(), email = /^\s*email\s*=\s*(.+)$/m.exec(cfg)?.[1]?.trim();
+    if (name && email) author = { name, email };
+  } catch { /* GitHub uses the token's account */ }
+  try {
+    const r = await pushSource(ctx.fs as any, root, (method, path, body) => ghApi(token, method, path, body), { repo, branch, message, force, author });
+    ctx.stdout += `${r.created ? 'created' : 'updated'} ${repo} branch ${r.branch}: ${r.commit.slice(0, 12)} (${r.files} file(s))\n${r.url}\n`;
+    ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base unix/integration\n`;
+    return 0;
+  } catch (e: any) {
+    ctx.stderr += `hotswap push: ${e?.message ?? e}\n`;
+    return 1;
+  }
 }

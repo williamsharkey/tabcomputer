@@ -1,4 +1,8 @@
 import path from 'path';
+import fs from 'fs';
+import zlib from 'zlib';
+import crypto from 'crypto';
+import { execSync } from 'child_process';
 import type { Plugin } from 'vite';
 
 /**
@@ -55,6 +59,78 @@ export function hotswapLiveModules(root: string): Plugin {
         code: `${code}\n${extra}`,
         map: null,
       };
+    },
+  };
+}
+
+/** What `hotswap checkout` gets: the source of this build (src/hotswap/source.ts) */
+const SOURCE_DIRS = ['src', 'profiles', 'tests/tests/shiro-vitest'];
+const SOURCE_FILES = ['tsconfig.json', 'package.json', 'build-number.txt', 'vite.config.ts', 'vite-plugin-hotswap.ts', 'AGENTS.md', 'CLAUDE.md', 'docs/HOTSWAP.md'];
+const SOURCE_SKIP = /^tests\/tests\/shiro-vitest\/fixtures\//;
+
+/** The tarball's name for a build ('' sha: outside a git checkout) */
+export function sourceTarName(sha: string): string {
+  // (under assets/: release.sh keeps a week of old assets, so tabs opened before a deploy still find theirs)
+  return `assets/hotswap-source-${sha ? sha.slice(0, 12) : 'nogit'}.tar.gz`;
+}
+
+function tarHeader(name: string, size: number, type: string): Buffer {
+  const h = Buffer.alloc(512);
+  h.write(name.slice(0, 100), 0, 'utf8');
+  h.write('0000644\0', 100);
+  h.write('0000000\0', 108);
+  h.write('0000000\0', 116);
+  h.write(size.toString(8).padStart(11, '0') + '\0', 124);
+  h.write('00000000000\0', 136);
+  h.fill(' ', 148, 156);
+  h.write(type, 156);
+  h.write('ustar\0' + '00', 257, 'binary');
+  let sum = 0;
+  for (const b of h) sum += b;
+  h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+  return h;
+}
+
+export function tar(entries: [string, Buffer][]): Buffer {
+  const parts: Buffer[] = [];
+  const pad = (n: number) => Buffer.alloc((512 - (n % 512)) % 512);
+  for (const [name, data] of entries) {
+    if (Buffer.byteLength(name) > 100) {
+      const long = Buffer.from(name + '\0');
+      parts.push(tarHeader('././@LongLink', long.length, 'L'), long, pad(long.length));
+    }
+    parts.push(tarHeader(name, data.length, '0'), data, pad(data.length));
+  }
+  parts.push(Buffer.alloc(1024));
+  return Buffer.concat(parts);
+}
+
+const gitBlobSha = (data: Buffer) => crypto.createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex');
+
+/**
+ * Emit the build's own source as assets/hotswap-source-<sha>.tar.gz, with a
+ * manifest (.hotswap-source.json: the commit, build number, git blob ids)
+ * that `hotswap diff` and `hotswap push` work from.
+ */
+export function hotswapSource(root: string, sha: string): Plugin {
+  return {
+    name: 'tabcomputer-hotswap-source',
+    apply: 'build',
+    generateBundle() {
+      let listed: string[];
+      try {
+        listed = execSync('git ls-files --cached --others --exclude-standard -z', { cwd: root, maxBuffer: 64 << 20 }).toString().split('\0').filter(Boolean);
+      } catch {
+        return; // not a git checkout: no source tarball
+      }
+      const files = listed.filter((f) => (SOURCE_FILES.includes(f) || SOURCE_DIRS.some((d) => f.startsWith(d + '/'))) && !SOURCE_SKIP.test(f))
+        .filter((f) => fs.existsSync(path.join(root, f)) && fs.statSync(path.join(root, f)).isFile())
+        .sort();
+      const entries: [string, Buffer][] = files.map((f) => [f, fs.readFileSync(path.join(root, f))]);
+      const build = fs.readFileSync(path.join(root, 'build-number.txt'), 'utf8').trim();
+      const manifest = { sha, build, files: Object.fromEntries(entries.map(([f, d]) => [f, gitBlobSha(d)])) };
+      entries.unshift(['.hotswap-source.json', Buffer.from(JSON.stringify(manifest, null, 1))]);
+      this.emitFile({ type: 'asset', fileName: sourceTarName(sha), source: zlib.gzipSync(tar(entries), { level: 9 }) });
     },
   };
 }

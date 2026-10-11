@@ -1000,6 +1000,22 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    native output, with the JIT on, with this off, and with the JIT off.
    Profiling harness: tests/tests/shiro-vitest/claude-native-profile.test.ts
    (opt-in, CLAUDE_NATIVE_BIN=...).
+118. Patch 0138: a compiled loop that spends its budget (1024 backward
+   jumps) sets `m->wjspin`, the region chain stops there, and Actor gives
+   the GIL to a waiting thread at once. Actor yields every kGilSlice (4096)
+   of its iterations, and one compiled entry counted as one iteration
+   though it can run 64 chained regions of 1024 loop iterations: a compiled
+   spin-wait held the GIL for up to seconds per handoff while the thread it
+   waited for couldn't run (Blender's startup hung with the JIT on).
+   fixtures/x86/spinhandoff.c: 38.6 → 6.7 ms per handoff (interpreted 1.5).
+119. Patch 0139: movd/movq and scalar SSE add/sub/mul/div/min/max/sqrt
+   use L_X/L_Y as scratch, not L_CX/L_CY. A flag consumer fused with its
+   producer (cmp + setcc/jcc/cmov) recomputes the condition from the
+   producer's operands in those locals, across instructions that write no
+   flags, so `cmp; movd; setne` read the wrong flags. Firefox's parser
+   took `++i` for a pre-decrement (GeneralParser::unaryExpr; gui's bisect
+   with BLINK_WJIT_BISECT, which 0136 made work above 2 GiB).
+   fixtures/x86/flagfuse.c: 10 shapes, 0 wrong (JIT on and off, native).
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each

@@ -136,6 +136,10 @@ const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
 const zombiekillBin = join(out, 'zombiekill');
 const haveZombiekill = tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiekillBin, 'zombiekill.c']);
+const flagfuseBin = join(out, 'flagfuse');
+const haveFlagfuse = tryBuild('gcc', ['-static', '-O1', '-o', flagfuseBin, 'flagfuse.c']);
+const spinhandoffBin = join(out, 'spinhandoff');
+const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1610,6 +1614,27 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
     expect(Date.now() - t0).toBeLessThan(15_000);
+  }, 60_000);
+
+  // a fused cmp+setcc across an instruction that writes no flags: movd/movq and
+  // scalar SSE arithmetic used the producer's locals as scratch (Firefox's
+  // parser took ++i for a pre-decrement: gui's bisect; patch 0139)
+  it.skipIf(!haveFlagfuse)('flags fused across movd, movq and scalar SSE arithmetic are the producer\'s, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(flagfuseBin));
+    const r = await run(shell, './prog 2000; BLINK_WJIT=0 ./prog 200');
+    const lines = r.output.replace(/\r\n/g, '\n').trim().split('\n');
+    expect(lines).toHaveLength(20);
+    for (const l of lines) expect(l).toMatch(/ 0 of \d+ wrong$/);
+  }, 60_000);
+
+  // two threads that hand a flag back and forth by spinning: compiled code
+  // held the GIL for up to seconds per handoff (Blender's startup; patch 0138)
+  it.skipIf(!haveSpinhandoff)('threads that spin on each other hand the GIL over promptly in compiled code', async () => {
+    const { shell } = await setup(readFileSync(spinhandoffBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog 300 2>/dev/null');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('300 rounds\n');
+    expect(Date.now() - t0).toBeLessThan(20_000);
   }, 60_000);
 
   // small callees compiled into their caller's region, their rets going back

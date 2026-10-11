@@ -372,6 +372,10 @@ const havePidfd = readFileSync(resolve(__dirname, '../../../public/engines/blink
 const emptyatBin = join(out, 'emptyat');
 const haveEmptyat = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_emptyat') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', emptyatBin, 'emptyat.c']);
+// Blink 0534: host pages by address (forks of a process with many pages)
+const forkmapsBin = join(out, 'forkmaps');
+const haveForkmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_hostaddr') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', forkmapsBin, 'forkmaps.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1169,6 +1173,13 @@ it.skipIf(!haveEmptyat)('an empty path in the *at calls is ENOENT, or dirfd itse
   expect(r.output.replace(/\r\n/g, '\n')).toBe('fchmodat 2\nfchownat 0 0 2\nfaccessat2 0 0 2 0\nfaccessat2 badflag 22\nfstatat 0 0 2\nstatx 0 2\n' +
     'utimensat null 0 empty 2 emptyflag 0 opath 0\nmtime 2\nmknodat 2 unlinkat 2 mkdirat 2\nreadlinkat 2\nopenat 2\n');
 }, 60_000);
+
+it.skipIf(!haveForkmaps)('a process with 984 private file mappings forks and execs 100 times (Blink aborted "pt & PAGE_V" around fork 60: debian\'s forkmaps, ldconfig, dracut-install)', async () => {
+  const { shell } = await setup(readFileSync(forkmapsBin));
+  // (without the JIT: its modules, compiled in the background, would reach the cache count a later test checks)
+  const r = await run(shell, 'BLINK_WJIT=0 ./prog 984 100');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('ok 984 100\n');
+}, 180_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));

@@ -1,0 +1,50 @@
+From eb5d934ce3c6f8c709c9b82163c1c5c390402941 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 11:58:50 +0000
+Subject: [PATCH] Shiro: compiled code does andps/andnps/orps (and the pd
+ forms) itself
+
+0F 54-56 without 66 are SSE (andps/andnps/orps), not mmx forms, and went
+to Blink's handler (OpOrpsd: 3.5-5.9 M calls per native Claude start).
+They compile as v128 and/andnot/or, like pand/pandn/por.
+---
+ blink/wjit.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 0c95eeb..78164be 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -1028,6 +1028,9 @@ static int SseBinary(int op) {
+     case 0x1FB: return 0xd1;  // psubq
+     case 0x1DB: return 0x4e;  // pand   v128.and
+     case 0x1DF: return 0x4f;  // pandn  v128.andnot (operands swapped)
++    case 0x154: return 0x4e;  // andps/andpd: bitwise, like pand
++    case 0x155: return 0x4f;  // andnps/andnpd: like pandn
++    case 0x156: return 0x50;  // orps/orpd: like por
+     case 0x1EB: return 0x50;  // por
+     case 0x1EF: return 0x51;  // pxor
+     case 0x174: return 0x23;  // pcmpeqb i8x16.eq
+@@ -1065,7 +1068,9 @@ static bool FpInline(u64);
+ static bool SseInline(u64 rde, u64 imm) {
+   int op = Mopcode(rde), r = ModrmReg(rde);
+   u8 lanes[16];
+-  if (!Osz(rde) || Rep(rde)) return false;  // mmx forms, pshuflw/hw
++  if (Rep(rde)) return false;  // pshuflw/hw
++  // without 66, 0F 54-56 are andps/andnps/orps (SSE); the others are mmx forms
++  if (!Osz(rde) && !(op >= 0x154 && op <= 0x156)) return false;
+   if (SseBinary(op) || SseUnpack(op, lanes) || op == 0x170 || op == 0x200) return true;
+   if (op == 0x30F) return imm <= 16;  // palignr
+   if (op == 0x1D7) return IsModrmRegister(rde);  // pmovmskb
+@@ -1158,7 +1163,7 @@ static void TranslateSse(struct Cg *g, struct Ins *in) {
+     Resolve(g, in, 16, false);
+   }
+   Get(g, L_M);
+-  if (op == 0x1DF) {  // pandn: src & ~dst
++  if (op == 0x1DF || op == 0x155) {  // pandn, andnps/andnpd: src & ~dst
+     SseSrc(g, in);
+     Get(g, L_M);
+     Simd(g, V128_LOAD, XMM(d));
+-- 
+2.43.0
+

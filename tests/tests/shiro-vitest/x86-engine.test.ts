@@ -142,6 +142,8 @@ const spinhandoffBin = join(out, 'spinhandoff');
 const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
 const ntstoreBin = join(out, 'ntstore');
 const haveNtstore = tryBuild('gcc', ['-static', '-O2', '-o', ntstoreBin, 'ntstore.c']);
+const ssebitsBin = join(out, 'ssebits');
+const haveSsebits = tryBuild('gcc', ['-static', '-O2', '-o', ssebitsBin, 'ssebits.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1616,6 +1618,17 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
     expect(Date.now() - t0).toBeLessThan(15_000);
+  }, 60_000);
+
+  // andps/andnps/orps and the pd forms, compiled as v128 and/andnot/or (0141).
+  // (A misaligned memory operand faults natively; Blink's interpreter doesn't
+  // check that one, so only JIT on and off are compared there.)
+  it.skipIf(!haveSsebits)('andps, andnps, orps and their pd forms match native, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(ssebitsBin));
+    const on = (await run(shell, './prog')).output.replace(/\r\n/g, '\n');
+    const off = (await run(shell, 'BLINK_WJIT=0 ./prog')).output.replace(/\r\n/g, '\n');
+    expect(on.split('\n')[0]).toBe('ssebits bbebdb0582b4e9e3');
+    expect(on).toBe(off);
   }, 60_000);
 
   // non-temporal stores (glibc's large memcpy/memset), compiled inline as aligned

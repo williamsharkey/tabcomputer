@@ -1956,6 +1956,7 @@ export class Kernel {
   private syscallSyncImpl(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
     if (proc.state !== 'running' || proc.exiting) return undefined;
     proc.syscalls++; // (/proc CPU estimate: these take no time)
+    proc.cpuSince ||= Date.now();
     const hs = this.syscallTable.get(nr);
     if (hs) for (const h of hs) if (!h.passSync?.(proc, nr, args, data, this)) return undefined;
     switch (nr) {
@@ -2064,6 +2065,7 @@ export class Kernel {
     // CPU estimate); a quick call counts as CPU, as Linux's system time does
     const t0 = Date.now();
     proc.syscalls++;
+    proc.cpuSince ||= t0;
     // While in a syscall the process counts as sleeping (S in /proc/PID/stat)
     if (proc.inSyscall++ === 0) proc.syscallSince = t0;
     const call = { nr, args };

@@ -85,6 +85,8 @@ export class Process {
   /** Syscalls made through kernel.syscall, the time spent blocked in them, and how many are in progress (/proc CPU estimate). */
   syscalls = 0;
   kernelMs = 0;
+  /** When it made its first kernel call: its CPU time starts there (a fork child's setup, the copy of its parent's memory, is its parent's; an exec'd program's start is the engine's). */
+  cpuSince = 0;
   /** Since when the engine has reported itself sleeping (SYS_shiro_sleeping): that time isn't CPU either. */
   engineSleepSince = 0;
   /** CPU ms of the children (and theirs) it has reaped: times() tms_cutime, getrusage(RUSAGE_CHILDREN). */

@@ -869,6 +869,11 @@ c.unref(); c.stdin.write('x'); console.log('parent done')`)).toBe('parent done\n
     expect(r.out).toBe('null 3 "hi\\n"\n');
     r = await sh(shell, 'cd /home/user/m && printf \'{"a":1}\' | node -e "console.log(JSON.parse(require(\'fs\').readFileSync(0, \'utf8\')).a, require(\'fs\').readFileSync(\'/dev/stdin\').length)"');
     expect(r.out).toBe('1 0\n');
+    // /dev/tty is the terminal, not a file: a nonblocking read with nothing typed is
+    // EAGAIN (or 0), never a wait for a key; a write goes to the terminal. Ink drains it
+    // so when Claude Code exits; reading it as a file hung /exit.
+    r = await sh(shell, `cd /home/user/m && echo typed | node -e "const fs = require('fs'); const fd = fs.openSync('/dev/tty', fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); let n; try { n = fs.readSync(fd, Buffer.alloc(64), 0, 64, null) } catch (e) { n = e.code } fs.closeSync(fd); const w = fs.openSync('/dev/tty', 'w'); fs.writeSync(w, 'to-tty\\n'); fs.closeSync(w); console.log('read', n)"`);
+    expect(r.out).toMatch(/^to-tty\nread (EAGAIN|0|6)\n/);
   }, 60_000);
 
   it("process.chdir is the process's own: its fs follows it, the shell that ran it doesn't move", async () => {

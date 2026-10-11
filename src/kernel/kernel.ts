@@ -1866,7 +1866,8 @@ export class Kernel {
    */
   syscallSync(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
     const prof = this.profiler;
-    if (prof === null || !prof.wants(proc)) return this.syscallSyncImpl(proc, nr, args, data);
+    if (prof === null) return this.syscallSyncImpl(proc, nr, args, data);
+    if (!prof.wants(proc)) { prof.tid = 0; return this.syscallSyncImpl(proc, nr, args, data); }
     const d = prof.describe(proc, nr, args, data);
     const t0 = performance.now();
     const r = this.syscallSyncImpl(proc, nr, args, data);
@@ -1995,6 +1996,7 @@ export class Kernel {
     // The caller awaits the call itself: the bookkeeping adds no await hop to it
     const prof = this.profiler;
     if (prof === null || !prof.wants(proc)) {
+      if (prof !== null) prof.tid = 0;
       const p = this.syscallImpl(proc, nr, args, data);
       p.then(done, done);
       return p;

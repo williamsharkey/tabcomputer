@@ -404,6 +404,23 @@ onboarding done, a local stand-in for api.anthropic.com). Kernel profiler
   writes (~40 bytes to the pty, the rest 8-byte eventfd wakeups between Bun's threads),
   openat/newfstatat of `~/.claude.json` and `~/.claude/ide`.
 
+Per engine thread (the profiler's thread table; time between one call's
+result and the thread's next call is the guest computing, or sleeping in
+the engine):
+
+- The main thread computes: 46.2 s of the 47.5 s startup is outside the
+  kernel (its max gap 0.7 s, between two pread64s of the binary). While typing it is
+  outside the kernel for 7.3 s of 8 s, a median 236 ms per keystroke, which is
+  the whole read → first write.
+- Threads 262144 and 262146 wake about once a second (write → openat:
+  the ~/.claude.json watchFile poll and ~/.claude/ide discovery). They do
+  little between calls, but their sleeps aren't reported: Blink's
+  shiro_sleeping (patch 0036) covers only the main thread.
+- ~/.claude.json is not touched per keystroke: newfstatat every ~1.0–1.4 s,
+  ~/.claude/ide openat in pairs every ~1.2 s, both also while idle. For
+  ~4.5 s after the input box appears, Claude saves ~/.claude.json about 6
+  times (lock mkdir/rmdir, backups, rewrite; 588 syscalls).
+
 The hooks cost nothing measurable while no profiler is attached: `node bench/ab.mjs
 a748c014 360b37b4 --suites kernel,x86 --rounds 6 --quick` gives all 32 metrics "same".
 

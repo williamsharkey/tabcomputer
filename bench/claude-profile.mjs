@@ -6,6 +6,7 @@
 // Needs bench/.cache/fixtures/claude-native and ld-musl-x86_64.so.1
 // (bench/README.md). Phases:
 //   startup: `claude` typed at the prompt → its input box on the screen
+//   idle:    --idle MS (default 5000) with no input
 //   keys:    N printable keystrokes, each typed once the last one is drawn
 // Prints each phase's report (formatReport) and the screen-side keystroke
 // latency (page keypress → the character on xterm's screen).
@@ -130,6 +131,16 @@ try {
   result.phases.startup = { ms: startupMs, report: rep.r };
   // let the startup's background work settle
   await page.waitForTimeout(Number(opt('--settle', 5000)));
+
+  // ── idle: what it does with no input (timers, file polling) ──
+  const idleMs = Number(opt('--idle', 5000));
+  if (idleMs > 0) {
+    await startProfile();
+    await page.waitForTimeout(idleMs);
+    rep = await report();
+    log(`\n=== idle ${(idleMs / 1000).toFixed(1)} s ===\n${rep.text}`);
+    result.phases.idle = { ms: idleMs, report: rep.r };
+  }
 
   // ── keystrokes ──
   await startProfile();

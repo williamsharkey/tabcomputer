@@ -77,7 +77,39 @@ export interface KeyStat {
   calls: number;
   /** their kernel wall time (ms) */
   kernelMs: number;
+  /** "pid:tid" → ms each thread spent outside the kernel in that window (gaps ending in it) */
+  outside: Record<string, number>;
   byName: Record<string, number>;
+  /** the path arguments of those calls */
+  paths: Record<string, number>;
+}
+
+export interface ThreadStat {
+  pid: number;
+  /** the engine's thread id (the pid for the main thread, or a caller that doesn't say) */
+  tid: number;
+  comm: string;
+  calls: number;
+  /** time in the kernel's calls (from entry to result) */
+  inKernelMs: number;
+  /**
+   * time between one call's result and the thread's next call: the guest
+   * computing (plus the channel's trip each way); a thread asleep in the
+   * engine (a futex, nanosleep) counts here too
+   */
+  outsideMs: number;
+  /**
+   * gaps after the engine said the thread sleeps (shiro_sleeping +1: futex
+   * waits after their first tick, nanosleep). Blink says so for a process's
+   * main thread only (patch 0036): its other threads' sleeps count as outside.
+   */
+  sleepMs: number;
+  /** the longest of those gaps, and the calls on either side of it */
+  maxGapMs: number;
+  maxGapAfter: string;
+  maxGapBefore: string;
+  /** gaps by length: <1 ms, <10 ms, <100 ms, <1 s, longer */
+  gaps: [number, number, number, number, number];
 }
 
 export interface ProfileReport {
@@ -87,10 +119,12 @@ export interface ProfileReport {
   /** "read:pty" → stat, for calls on a descriptor */
   byKind: Record<string, { calls: number; wallUs: number; cpuUs: number; bytes: number }>;
   /** path → calls and time (the top `pathLimit`) */
-  paths: { path: string; calls: number; errors: number; wallUs: number; nrs: string[] }[];
+  /** (times: ms from the start of each of the first calls) */
+  paths: { path: string; calls: number; errors: number; wallUs: number; nrs: string[]; times: number[] }[];
   pathCount: number;
   procs: { pid: number; ppid: number; comm: string; calls: number; cpuMs: number; wallMs: number; blockedMs: number }[];
   timeline: { t: number; calls: number; cpuMs: number; wallMs: number }[];
+  threads: ThreadStat[];
   bucketMs: number;
   keys: KeyStat[];
 }
@@ -145,15 +179,18 @@ function pathOf(nr: number, args: ArrayLike<number>, data: Uint8Array): string |
 }
 
 const now = (): number => performance.now();
+/** call times kept per path */
+const PATH_TIMES = 200;
 
 interface ProcStat { pid: number; ppid: number; comm: string; calls: number; cpuUs: number; wallUs: number; blockedUs: number }
 interface KindStat { calls: number; wallUs: number; cpuUs: number; bytes: number }
-interface PathStat { calls: number; errors: number; wallUs: number; nrs: Set<number> }
+interface PathStat { calls: number; errors: number; wallUs: number; nrs: Set<number>; times: number[] }
 interface Bucket { calls: number; cpuUs: number; wallUs: number }
-interface Key { t: number; bytes: number; readAt: number; firstWriteAt: number; lastWriteAt: number; writes: number; writeBytes: number; calls: number; wallUs: number; byName: Map<number, number> }
+interface Thread { pid: number; tid: number; comm: string; calls: number; inUs: number; outUs: number; maxGapUs: number; maxGapAfter: number; maxGapBefore: number; gaps: [number, number, number, number, number]; inCall: boolean; enteredAt: number; lastEnd: number; lastNr: number; sleepUs: number; asleep: boolean; nextAsleep: boolean }
+interface Key { outside: Map<string, number>; t: number; bytes: number; readAt: number; firstWriteAt: number; lastWriteAt: number; writes: number; writeBytes: number; calls: number; wallUs: number; byName: Map<number, number>; paths: Map<string, number> }
 
 /** What describe() reads off a call before it runs */
-export interface CallInfo { path?: string; kind?: string; args: ArrayLike<number> }
+export interface CallInfo { path?: string; kind?: string; args: ArrayLike<number>; th?: Thread; t?: number }
 /** An async call in progress (Kernel.syscall): begin() → end() */
 export interface ProfiledCall extends CallInfo { proc: Process; nr: number; t0: number; cpuUs: number; key: Key | null }
 
@@ -176,6 +213,13 @@ export class KernelProfiler {
   private curKey: Key | null = null;
   private stopped = false;
   private readonly keys: boolean;
+  private readonly threads = new Map<string, Thread>();
+  /**
+   * The engine thread the next call comes from: a channel sets it right
+   * before it enters the kernel (syscallSync, syscall), which reads and
+   * clears it. 0: the process's main thread.
+   */
+  tid = 0;
 
   constructor(opts: ProfileOptions = {}) {
     this.wantAll = !opts.pids?.length && !opts.filter;
@@ -225,11 +269,54 @@ export class KernelProfiler {
     return this.buckets[i];
   }
 
+  private thread(proc: Process): Thread {
+    const tid = this.tid || proc.pid;
+    this.tid = 0;
+    const k = `${proc.pid}:${tid}`;
+    let th = this.threads.get(k);
+    if (!th) {
+      th = { pid: proc.pid, tid, comm: '', calls: 0, inUs: 0, outUs: 0, maxGapUs: 0, maxGapAfter: -1, maxGapBefore: -1, gaps: [0, 0, 0, 0, 0], inCall: false, enteredAt: 0, lastEnd: 0, lastNr: -1, sleepUs: 0, asleep: false, nextAsleep: false };
+      this.threads.set(k, th);
+    }
+    th.comm = proc.comm;
+    return th;
+  }
+
+  /** A thread enters the kernel at `t`: the gap since its last call's result is time outside (computing) */
+  private enter(th: Thread, nr: number, t: number): void {
+    if (th.inCall) return; // (a retry of the same call: a sync miss, a readiness attempt)
+    th.inCall = true;
+    th.enteredAt = t;
+    if (!th.lastEnd) return;
+    const gap = (t - th.lastEnd) * 1000;
+    // after shiro_sleeping(+1): the engine slept (a futex wait, nanosleep), it didn't compute
+    if (th.asleep) { th.sleepUs += gap; return; }
+    th.outUs += gap;
+    th.gaps[gap < 1000 ? 0 : gap < 10_000 ? 1 : gap < 100_000 ? 2 : gap < 1_000_000 ? 3 : 4]++;
+    if (gap > th.maxGapUs) { th.maxGapUs = gap; th.maxGapAfter = th.lastNr; th.maxGapBefore = nr; }
+    const key = this.curKey;
+    if (key) { const k = `${th.pid}:${th.tid}`; key.outside.set(k, (key.outside.get(k) ?? 0) + gap); }
+  }
+
+  private leave(th: Thread, nr: number, t: number): void {
+    th.calls++;
+    th.inUs += (t - th.enteredAt) * 1000;
+    th.inCall = false;
+    th.lastEnd = t;
+    th.lastNr = nr;
+    th.asleep = th.nextAsleep;
+    th.nextAsleep = false;
+  }
+
   /** What a call is about, read before it runs (a stat writes its result over the path; close drops the fd) */
   describe(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): CallInfo {
     const path = this.withPaths ? pathOf(nr, args, data) : undefined;
     const kind = FD_CALLS.has(nr) ? (proc.fds.get(args[0])?.kind ?? 'badf') : undefined;
-    return { path, kind, args };
+    const th = this.thread(proc);
+    const t = now();
+    this.enter(th, nr, t);
+    if (nr === A.SYS_shiro_sleeping) th.nextAsleep = args[0] > 0;
+    return { path, kind, args, th, t };
   }
 
   private record(proc: Process, nr: number, r: number, cpuUs: number, wallUs: number, sync: boolean, d: CallInfo, key: Key | null, t: number): void {
@@ -258,8 +345,9 @@ export class KernelProfiler {
     }
     if (path !== undefined) {
       let pst = this.pathStats.get(path);
-      if (!pst) { pst = { calls: 0, errors: 0, wallUs: 0, nrs: new Set() }; this.pathStats.set(path, pst); }
+      if (!pst) { pst = { calls: 0, errors: 0, wallUs: 0, nrs: new Set(), times: [] }; this.pathStats.set(path, pst); }
       pst.calls++; pst.wallUs += wallUs; pst.nrs.add(nr);
+      if (pst.times.length < PATH_TIMES) pst.times.push(t - this.t0);
       if (r < 0) pst.errors++;
     }
     const b = this.bucket(t);
@@ -267,6 +355,7 @@ export class KernelProfiler {
     if (key) {
       key.calls++; key.wallUs += wallUs;
       key.byName.set(nr, (key.byName.get(nr) ?? 0) + 1);
+      if (path !== undefined) key.paths.set(path, (key.paths.get(path) ?? 0) + 1);
     }
   }
 
@@ -279,7 +368,9 @@ export class KernelProfiler {
       s.misses++; s.missUs += us;
       return;
     }
-    this.record(proc, nr, r, us, us, true, d, this.curKey, now());
+    const t = now();
+    if (d.th) this.leave(d.th, nr, t);
+    this.record(proc, nr, r, us, us, true, d, this.curKey, t);
   }
 
   begin(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): ProfiledCall {
@@ -290,6 +381,7 @@ export class KernelProfiler {
   end(c: ProfiledCall, r: number): void {
     if (this.stopped) return;
     const t = now();
+    if (c.th) this.leave(c.th, c.nr, t);
     this.record(c.proc, c.nr, r, c.cpuUs, (t - c.t0) * 1000, false, c, c.key, c.t0);
   }
 
@@ -307,7 +399,7 @@ export class KernelProfiler {
 
   input(_pty: Pty, n: number): void {
     if (!n) return;
-    this.keyList.push({ t: now(), bytes: n, readAt: 0, firstWriteAt: 0, lastWriteAt: 0, writes: 0, writeBytes: 0, calls: 0, wallUs: 0, byName: new Map() });
+    this.keyList.push({ t: now(), bytes: n, readAt: 0, firstWriteAt: 0, lastWriteAt: 0, writes: 0, writeBytes: 0, calls: 0, wallUs: 0, byName: new Map(), paths: new Map(), outside: new Map() });
   }
 
   read(_pty: Pty, n: number): void {
@@ -350,7 +442,7 @@ export class KernelProfiler {
     const sum = (f: (s: SyscallStat) => number) => syscalls.reduce((n, s) => n + f(s), 0);
     const r3 = (x: number) => Math.round(x * 1000) / 1000;
     const paths = [...this.pathStats.entries()].sort((a, b) => b[1].calls - a[1].calls || b[1].wallUs - a[1].wallUs).slice(0, pathLimit)
-      .map(([path, p]) => ({ path, calls: p.calls, errors: p.errors, wallUs: Math.round(p.wallUs), nrs: [...p.nrs].map(syscallName) }));
+      .map(([path, p]) => ({ path, calls: p.calls, errors: p.errors, wallUs: Math.round(p.wallUs), nrs: [...p.nrs].map(syscallName), times: p.times.map(r3) }));
     const keys: KeyStat[] = this.keyList.map((k) => {
       const names: Record<string, number> = {};
       for (const [nr, n] of [...k.byName.entries()].sort((a, b) => b[1] - a[1])) names[syscallName(nr)] = n;
@@ -359,7 +451,8 @@ export class KernelProfiler {
         readMs: k.readAt ? r3(k.readAt - k.t) : -1,
         firstWriteMs: k.firstWriteAt ? r3(k.firstWriteAt - k.readAt) : -1,
         lastWriteMs: k.lastWriteAt ? r3(k.lastWriteAt - k.readAt) : -1,
-        writes: k.writes, writeBytes: k.writeBytes, calls: k.calls, kernelMs: r3(k.wallUs / 1000), byName: names,
+        outside: Object.fromEntries([...k.outside.entries()].sort((a, b) => b[1] - a[1]).map(([t, us]) => [t, r3(us / 1000)])),
+        writes: k.writes, writeBytes: k.writeBytes, calls: k.calls, kernelMs: r3(k.wallUs / 1000), byName: names, paths: Object.fromEntries(k.paths),
       };
     });
     return {
@@ -375,6 +468,11 @@ export class KernelProfiler {
       paths,
       pathCount: this.pathStats.size,
       procs: [...this.procStats.values()].map((p) => ({ pid: p.pid, ppid: p.ppid, comm: p.comm, calls: p.calls, cpuMs: r3(p.cpuUs / 1000), wallMs: r3(p.wallUs / 1000), blockedMs: r3(p.blockedUs / 1000) })),
+      threads: [...this.threads.values()].sort((a, b) => b.outUs - a.outUs).map((th) => ({
+        pid: th.pid, tid: th.tid, comm: th.comm, calls: th.calls, inKernelMs: r3(th.inUs / 1000), outsideMs: r3(th.outUs / 1000), sleepMs: r3(th.sleepUs / 1000),
+        maxGapMs: r3(th.maxGapUs / 1000), maxGapAfter: th.maxGapAfter < 0 ? '' : syscallName(th.maxGapAfter),
+        maxGapBefore: th.maxGapBefore < 0 ? '' : syscallName(th.maxGapBefore), gaps: [...th.gaps] as ThreadStat['gaps'],
+      })),
       timeline: this.buckets.map((b, i) => ({ t: i * this.bucketMs, calls: b.calls, cpuMs: r3(b.cpuUs / 1000), wallMs: r3(b.wallUs / 1000) })),
       bucketMs: this.bucketMs,
       keys,
@@ -423,6 +521,12 @@ export function formatReport(r: ProfileReport, opts: { paths?: number; keys?: bo
   if (r.procs.length > 1) {
     out.push('', '  pid   ppid     calls   cpu-ms   wall-ms  blocked-ms comm');
     for (const p of [...r.procs].sort((a, b) => b.wallMs - a.wallMs).slice(0, 20)) out.push(`${pad(p.pid, 5)} ${pad(p.ppid, 6)} ${pad(p.calls, 9)} ${pad(p.cpuMs.toFixed(1), 8)} ${pad(p.wallMs.toFixed(1), 9)} ${pad(p.blockedMs.toFixed(1), 11)} ${p.comm}`);
+  }
+  if (r.threads.length) {
+    out.push('', '  pid    tid     calls  kernel-ms  outside-ms  asleep-ms  max-gap-ms (after → before)          gaps <1ms/<10/<100/<1s/more  comm');
+    for (const t of r.threads.slice(0, 15)) {
+      out.push(`${pad(t.pid, 5)} ${pad(t.tid, 6)} ${pad(t.calls, 9)} ${pad(t.inKernelMs.toFixed(1), 10)} ${pad(t.outsideMs.toFixed(1), 11)} ${pad(t.sleepMs.toFixed(1), 10)} ${pad(t.maxGapMs.toFixed(1), 11)} ${`(${t.maxGapAfter} → ${t.maxGapBefore})`.padEnd(26)} ${pad(t.gaps.join('/'), 27)}  ${t.comm}`);
+    }
   }
   const keys = r.keys.filter((k) => k.readMs >= 0);
   if ((opts.keys ?? true) && keys.length) {

@@ -10,7 +10,7 @@ All changes so far are additive; nothing below renames or removes an earlier nam
     and returns its report: per syscall calls, errors, sync-path share,
     kernel CPU and wall µs, the slowest call and its args, waits by timeout;
     per descriptor kind (`read:pty`), per path, per process, a timeline, and
-    per keystroke (through the ptys) input → the guest's read → its writes
+    per engine thread the time between calls (computing or asleep), per keystroke (through the ptys) input → the guest's read → its writes
     back. Off, each syscall entry pays one null check.
   - `strace -c [-f] PROG` / `strace -c -p PID [--duration=S]` print it
     (`--json` for the report itself); `strace -p PID` traces a running process.

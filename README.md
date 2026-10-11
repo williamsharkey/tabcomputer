@@ -55,8 +55,8 @@ against a local server (the "parallel" rows ran with three other tabs doing the 
 | `gui xeyes` | 2 s to install, about 1 s to the window ([docs/GUI.md](docs/GUI.md)) |
 
 The benchmark suite's numbers for the same paths are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
-("Real workloads"). 1846 of popcon's 2000 most-installed Debian packages install and pass a
-smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)). Some work but are too slow to enjoy:
+("Real workloads"). All 1900 of popcon's 2000 most-installed Debian packages that trixie has
+for amd64 install and pass a smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)). Some work but are too slow to enjoy:
 Debian's `nodejs` takes 26 s for `node -e`. Use tabcomputer's built-in `node` instead.
 
 ### Whole toolchains in seconds
@@ -137,8 +137,9 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
   (coreutils, grep/sed/awk, git, gh, node and npm, jq, rg, tmux, vi, nano). `help` lists the
   common ones, `help --all` all of them.
 - **Debian.** `debian install` streams in Debian 13 "trixie" amd64; then `sudo apt install` is
-  Debian's apt against a Debian mirror. 1846 of popcon's top 2000 packages install and pass a
-  smoke test ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md), [docs/DEBIAN.md](docs/DEBIAN.md)).
+  Debian's apt against a Debian mirror. All 1900 of popcon's top 2000 packages that trixie has
+  for amd64 install and pass a smoke test, the kernel and GNOME included
+  ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md), [docs/DEBIAN.md](docs/DEBIAN.md)).
   Heavier tools work too, slowly: `tesseract` (OCR; 4 min to install, 7.5 s for a line of text)
   and LibreOffice headless (`libreoffice-writer-nogui`: 10 min to install, then
   `soffice --headless --convert-to pdf note.txt` in 37 s; measured in headless Chromium with

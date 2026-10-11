@@ -13,7 +13,7 @@ const REPO = 'https://github.com/williamsharkey/tabcomputer/blob/main/docs';
  * with the docs: they are claims a visitor will check.
  */
 const STATUS = [
-  { label: 'Debian 13 top-2000 packages', value: '1846/2000', note: 'install with apt and run (popcon ranks 1–2000; 100 aren\'t in trixie, 51 not scored yet)', doc: 'DEBIAN_SCORE.md' },
+  { label: 'Debian 13 top-2000 packages', value: '1900/1900', note: 'install with apt and run (popcon ranks 1–2000; the 100 with no trixie amd64 package left out)', doc: 'DEBIAN_SCORE.md' },
   { label: 'LTP syscall tests, x86-64', value: '431/534', note: 'pass under the x86-64 engine (the scored set grew from 322; 285 of those pass)', doc: 'CONFORMANCE.md' },
   { label: 'Open POSIX Test Suite, x86-64', value: '1428/1448', note: 'pass under the x86-64 engine', doc: 'CONFORMANCE.md' },
   { label: 'Debian GUI apps', value: '37/38', note: 'open a desktop window and take keyboard input (GIMP, Inkscape, LibreOffice Writer, Firefox, ...)', doc: 'GUI_SCORE.md' },

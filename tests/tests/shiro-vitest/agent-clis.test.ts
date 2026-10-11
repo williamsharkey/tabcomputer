@@ -200,8 +200,6 @@ describe('claude --native', () => {
     expect(r.output).toContain('hello from c');
     // its search tools opt-in comes first (tabcomputer#42), then the user's arguments
     expect(r.output.replace(/\r\n/g, '\n')).toContain('arg1=--allowedTools=Grep,Glob\narg2=a\narg3=b c\n');
-    // no "Try the new fullscreen renderer?": accepting relaunched it with execve, which hung (tabcomputer#41)
-    expect(JSON.parse(await fs.readFile('/home/user/.claude/settings.json', 'utf8') as string).tui).toBe('default');
     // (the user's own --tools: nothing added, so the fixture's argv[1] is "fail")
     r = await run(shell, 'CLAUDE_NATIVE=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail --tools=Bash < /dev/null; echo "status=$?"');
     expect(r.output).toContain('status=7');

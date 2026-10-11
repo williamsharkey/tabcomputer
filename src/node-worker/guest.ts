@@ -12,7 +12,7 @@ import { SyscallFs } from './sys-fs';
 import { setShiroOrigin } from '../utils/shiro-origin';
 import { runChild, runChildSync } from './child';
 import { GuestNetStack, installGuestPorts } from './net';
-import { GuestTtyStdin } from './tty';
+import { GuestTtyStdin, ttyCaught } from './tty';
 import type { GuestIpc, NodeGuestHooks, ThreadEvents } from './hooks';
 import { WasiGuest, runSync, ProcExit } from '../wasi/wasi-guest';
 import { programFromStdin } from '../commands/jseval/node-args';
@@ -107,6 +107,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     const out1 = nodeThread?.stdout ? toWorker('stdout') : (b: Uint8Array | string) => { sys.write(1, b); };
     const out2 = nodeThread?.stderr ? toWorker('stderr') : (b: Uint8Array | string) => { sys.write(2, b); };
     const ttyOut = stdoutTTY && !nodeThread?.stdout;
+    // process.on('SIGTERM') and the like: the process's (a thread doesn't take its signals)
+    const signals = nodeThread ? undefined : guestSignals(sys);
     const hooks: NodeGuestHooks = {
       readText(path) {
         const b = fs.readRaw(path);
@@ -121,6 +123,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       busy: () => net.busy,
       ids: { pid: sys.getpid(), ppid: sys.getppid() },
       kill: (pid, sig) => sys.kill(pid, sig),
+      ...(signals ? { signals } : {}),
       wasi: {
         call: (req) => {
           if (req.data) sys.ch.data.set(req.data);
@@ -207,6 +210,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       ctx.stderr += `node: ${e?.stack ?? e}\n`;
       status = 1;
     }
+    signals?.stop();
     if (ctx.stdout) out1(ctx.stdout);
     if (nodeThread) {
       // A thread's uncaught error is its Worker's 'error' event; its exit ends only the thread
@@ -228,6 +232,62 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
 }
 
 const workerTimeout = globalThis.setTimeout.bind(globalThis);
+const workerClearTimeout = globalThis.clearTimeout.bind(globalThis);
+
+/**
+ * process.on('SIGTERM') and the like (hooks.ts signals), as node: a signal with listeners is
+ * caught (sigaction), so the kernel's default action no longer ends the process, and it comes
+ * to the script from a Worker timer. The kernel flags it in the channel's signal word, which
+ * the guest reads after a syscall's reply; a script idle in its event loop (a server) makes
+ * none, so while any signal is caught a timer looks at the word and makes one when it is set.
+ * SIGINT and SIGQUIT that the terminal reader caught (tty.ts) stay its: it gives them to node.
+ */
+function guestSignals(sys: GuestSys): NonNullable<NodeGuestHooks['signals']> & { stop(): void } {
+  const caught = new Set<number>();
+  let deliver: ((sig: number) => void) | null = null;
+  let installed = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const ttyHas = (sig: number) => (sig === A.SIGINT || sig === A.SIGQUIT) && ttyCaught.has(sys);
+  const poll = () => {
+    timer = null;
+    if (stopped || !caught.size) return;
+    try {
+      if (Atomics.load(sys.ch.i32, A.CH_SIGNAL)) sys.getpid(); // (its reply hands the signal over: onSignal)
+    } catch (e) {
+      if (e instanceof ChannelClosed) return; // the process is gone
+      throw e;
+    }
+    timer = workerTimeout(poll, 50);
+  };
+  return {
+    watch(sig, on) {
+      if (stopped || on === caught.has(sig)) return;
+      if (on) {
+        caught.add(sig);
+        if (!installed) {
+          installed = true;
+          const prev = sys.ch.onSignal;
+          sys.ch.onSignal = (s) => {
+            if (caught.has(s) && !ttyHas(s)) workerTimeout(() => { if (!stopped) deliver?.(s); }, 0);
+            else prev?.(s);
+          };
+        }
+        if (!ttyHas(sig)) sys.sigaction(sig, { handler: 2 }); // any number but SIG_DFL/SIG_IGN
+        timer ??= workerTimeout(poll, 50);
+      } else {
+        caught.delete(sig);
+        if (!ttyHas(sig)) sys.sigaction(sig, { handler: A.SIG_DFL });
+      }
+    },
+    onSignal(fn) { deliver = fn; },
+    stop() {
+      stopped = true;
+      if (timer) workerClearTimeout(timer);
+      timer = null;
+    },
+  };
+}
 
 /** NODE_CHANNEL_FD, when it names an open fd (a forked node's channel) */
 function ipcFd(sys: GuestSys, env: Record<string, string>): number {

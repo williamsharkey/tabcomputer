@@ -22,6 +22,9 @@ export interface TtyStdinEvents {
   signal: (sig: number) => void;
 }
 
+/** Guests whose terminal reader has caught SIGINT and SIGQUIT (they come to node by way of it) */
+export const ttyCaught = new WeakSet<GuestSys>();
+
 export class GuestTtyStdin {
   private polling = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -69,6 +72,7 @@ export class GuestTtyStdin {
   private catchSignals(): void {
     if (this.signalsCaught) return;
     this.signalsCaught = true;
+    ttyCaught.add(this.sys); // (guest.ts guestSignals leaves these two to us)
     const prev = this.sys.ch.onSignal;
     this.sys.ch.onSignal = (sig) => {
       if (sig === A.SIGINT || sig === A.SIGQUIT) baseSetTimeout(() => this.call(() => this.on.signal(sig)), 0);

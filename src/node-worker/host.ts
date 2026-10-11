@@ -302,13 +302,24 @@ export async function runNodeInWorker(ctx: CommandContext): Promise<number> {
   };
   const proc = kernel.spawn({ path: 'node', argv, env, cwd: ctx.cwd, fds, pgid: 0, run: nodeWorkerRunner() });
   const abort = (ctx.shell as any)?.abortController as AbortController | null | undefined;
-  const onAbort = () => { kernel.kill(-proc.pgid, A.SIGINT); };
+  // (the signal the abort names: `kill -TERM` of the job, timeout's; else SIGINT, ^C's)
+  const onAbort = () => {
+    const sig = (abort?.signal.reason as { signal?: unknown } | undefined)?.signal;
+    kernel.kill(-proc.pgid, typeof sig === 'number' ? sig : A.SIGINT);
+  };
   abort?.signal.addEventListener('abort', onAbort);
+  // This node as an in-page job's only command (`node server.js &`): `kill PID` goes to it,
+  // which takes what it listens for (process.on('SIGTERM')), and the job's status is how it
+  // ended (shell.ts signalInPageJob; #91)
+  const sh = ctx.shell as { execPid?: number; takeSignal?: (sig: number) => boolean } | undefined;
+  const takes = sh && sh.execPid !== undefined ? (sig: number) => kernel.kill(proc.pid, sig) === 0 : undefined;
+  if (takes) sh!.takeSignal = takes;
   try {
     const status = await proc.wait();
     await kernel.waitpid(proc.pid, A.WNOHANG);
     return A.shellExitCode(status);
   } finally {
     abort?.signal.removeEventListener('abort', onAbort);
+    if (takes && sh!.takeSignal === takes) delete sh!.takeSignal;
   }
 }

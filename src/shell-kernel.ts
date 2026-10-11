@@ -363,6 +363,12 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
   // An abort while the job was still being set up was dispatched before this
   // listener existed: act on it now, or the job runs on with nothing to stop it (#53)
   if (abort?.signal.aborted) onAbort();
+  // A program that is its in-page job's only command (`node server.js > log &`): `kill PID`
+  // goes to it, which takes what it catches (process.on('SIGTERM')), and the job's status is
+  // how it ended (shell.ts signalInPageJob; #91)
+  const takes = shell.execPid !== undefined && procs.length === 1 && !tty
+    ? (sig: number) => procs[0].alive && kernel.kill(procs[0].pid, sig) === 0 : undefined;
+  if (takes) shell.takeSignal = takes;
   let exitCode: number;
   try {
     if (tty) {
@@ -376,6 +382,7 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     abort?.signal.removeEventListener('abort', onAbort);
     abort?.signal.removeEventListener(TIMEOUT_EXPIRED_EVENT, onExpire);
     clearTimeout(killTimer);
+    if (takes && shell.takeSignal === takes) delete shell.takeSignal;
   }
   const stopped = exitCode > 128 && procs.some((p) => p.state === 'stopped');
   const statuses = procs.map((p) => (p.exitStatus !== undefined ? shellStatus(p.exitStatus) : exitCode));

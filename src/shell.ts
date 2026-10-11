@@ -313,6 +313,8 @@ const NON_TERMINATING = new Set([0, 17, 18, 19, 20, 21, 22, 23, 28]);
 export function signalInPageJob(job: BackgroundJob, sig: number, groupSignalled = false): void {
   if (NON_TERMINATING.has(sig) || job.status !== 'running') return;
   if (job.ignoresIntQuit && (sig === 2 || sig === 3)) return;
+  // (a catchable signal the job's program listens for is its: node's process.on('SIGTERM'), #91)
+  if (sig !== 9 && job.shell?.takeSignal?.(sig)) return;
   job.abortController?.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'),
     { signal: sig, groupSignalled: groupSignalled ? job.pid : undefined, processOnly: !groupSignalled }));
   job.status = 'failed';
@@ -950,6 +952,11 @@ export class Shell {
    * (its $PPID is the shell around the substitution). Taken once.
    */
   execPid?: number;
+  /**
+   * The program this shell runs as its job's only command takes a signal it listens for
+   * (node's process.on('SIGTERM')): true when it did, and the job doesn't end (#91)
+   */
+  takeSignal?: (sig: number) => boolean;
   execPpid?: number;
   /**
    * Variables created by assignment and never exported: a new shell process
@@ -1819,7 +1826,8 @@ export class Shell {
     // (in a pipeline $! is its last element: the earlier ones must not start a shell themselves)
     const parts = splitTopLevelPipes(command);
     // (one command: a quoted ; or & inside `bash -c '...'` doesn't count)
-    if (!/[;&]/.test(withoutQuoted(command)) && parts.slice(0, -1).every((p) => !/^(\S*\/)?(sh|bash)\b|^\$/.test(p.trim()))) {
+    // (`2>&1`, `>&2`, `&>f` are redirections, not lists)
+    if (!/[;&]/.test(withoutQuoted(command).replace(/\d*(?:[<>]&(?:\d+|-)|&>>?)/g, '')) && parts.slice(0, -1).every((p) => !/^(\S*\/)?(sh|bash)\b|^\$/.test(p.trim()))) {
       child.execPid = pid;
       child.execPpid = this.bashPid;
     }
@@ -9247,16 +9255,21 @@ export class Shell {
     let stdoutTo: { path: string; append: boolean } | undefined;
     let stderrTo: { path: string; append: boolean } | 'stdout' | undefined;
     let handled = false;
-    if (lastRedirects.length && lastRedirects.every(x =>
+    // (`< f` is the program's stdin, already read: it leaves the output redirects the kernel's,
+    // `node server.js > log < /dev/null &` had an empty log until the server ended)
+    if (lastRedirects.some(x => x.type !== '<') && lastRedirects.every(x => x.type === '<' ||
       x.type === '2>&1' || ((x.type === '>' || x.type === '>>' || x.type === '2>' || x.type === '2>>') && x.target && !x.target.startsWith('&') && (x.fd === undefined || x.fd === 1 || x.fd === 2)))) {
       handled = true;
       for (const x of lastRedirects) {
+        if (x.type === '<') continue;
         const file = { path: this.fs.resolvePath(x.target, this.cwd), append: x.type.endsWith('>>') };
         const toErr = x.type.startsWith('2') || x.fd === 2;
         // `2> /dev/stdout` after `> f` is `2>&1`; `> /dev/stderr` after `2> f` is that file
         // (before them, the job's own stdout/stderr: runKernelPipeline)
         const std = /^\/(?:dev\/(?:std(out|err)|fd\/([12]))|proc\/self\/fd\/([12]))$/.exec(file.path);
         const stdN = std ? (std[1] === 'out' || std[2] === '1' || std[3] === '1' ? 1 : 2) : 0;
+        // (with `< f` the job's own streams stay the in-page path's: `prog >&2 < /dev/null`)
+        if (stdN && lastRedirects.some((y) => y.type === '<')) { handled = false; break; }
         if (x.type === '2>&1' || (toErr && stdN === 1 && stdoutTo)) { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
         else if (!toErr && stdN === 2 && stderrTo && stderrTo !== 'stdout') stdoutTo = stderrTo; // (one open file for both)
         else if (toErr) stderrTo = file;
@@ -9264,7 +9277,7 @@ export class Shell {
       }
       if (!handled) { stdoutTo = undefined; stderrTo = undefined; }
     }
-    if (handled) lastRedirects = [];
+    if (handled) lastRedirects = lastRedirects.filter(x => x.type === '<');
     const crlf = (w: (s: string) => void) => (t: string) => w(t.replace(/\r?\n/g, '\r\n'));
     const captureStdout = last < pipeline.length - 1 || hasOutRedirect(lastRedirects) || (!stdoutTo && !!terminal?.captureStdout);
     const captureStderr = hasOutRedirect(lastRedirects) || !!terminal?.captureStderr;

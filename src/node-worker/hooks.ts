@@ -47,6 +47,13 @@ export interface NodeGuestHooks {
   ids?: { pid: number; ppid: number };
   /** kill(2) another process: 0 or -errno */
   kill?(pid: number, sig: number): number;
+  /**
+   * The signals the script listens for (process.on('SIGTERM')), as node: `watch(sig, true)`
+   * catches one, so the kernel's default action (ending the process) no longer applies,
+   * `false` gives it back; `onSignal` is where a caught one comes, from the Worker's timers
+   * (tabcomputer#91)
+   */
+  signals?: { watch(sig: number, on: boolean): void; onSignal(fn: (sig: number) => void): void };
   /** node:wasi's preview1 imports: blocking syscalls on this thread's channel (modules/wasi.ts) */
   wasi?: import('../node-compat/modules/wasi').WasiSys;
 }

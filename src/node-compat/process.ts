@@ -3,7 +3,7 @@ import { asyncContext } from './async-context';
 import type { CommandContext } from '../commands/index';
 import type { SharedState } from './types';
 import { ProcessExitError } from '../commands/jseval/utils';
-import { signalName } from './signals';
+import { signalName, SIGNALS } from './signals';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { CLAUDE_CODE_DEFAULT_MODEL } from '../claude-code-version';
 import { TtyStdin, ttySessionOf } from './tty-stdin';
@@ -116,9 +116,10 @@ export function createFakeProcess(
     stdin: createStdin(ctx, _st, processEvents, pendingPromises, FakeBuffer),
     on: (event: string, fn: Function) => {
       (processEvents[event] ??= []).push(fn);
+      syncSignals(event);
       return fp;
     },
-    off: (event: string, fn: Function) => { processEvents[event] = (processEvents[event] || []).filter(f => f !== fn); return fp; },
+    off: (event: string, fn: Function) => { processEvents[event] = (processEvents[event] || []).filter(f => f !== fn); syncSignals(event); return fp; },
     once: (event: string, fn: Function) => {
       const wrapper = (...args: any[]) => { fp.off(event, wrapper); fn(...args); };
       return fp.on(event, wrapper);
@@ -144,10 +145,14 @@ export function createFakeProcess(
     ),
     listeners: (event: string) => [...(processEvents[event] || [])],
     listenerCount: (event: string) => (processEvents[event] || []).length,
-    removeListener: (event: string, fn: Function) => { processEvents[event] = (processEvents[event] || []).filter((f: Function) => f !== fn); return fp; },
-    removeAllListeners: (event?: string) => { if (event) { delete processEvents[event]; } else { Object.keys(processEvents).forEach(k => delete processEvents[k]); } return fp; },
+    removeListener: (event: string, fn: Function) => { processEvents[event] = (processEvents[event] || []).filter((f: Function) => f !== fn); syncSignals(event); return fp; },
+    removeAllListeners: (event?: string) => {
+      const events = event ? [event] : Object.keys(processEvents);
+      for (const k of events) { delete processEvents[k]; syncSignals(k); }
+      return fp;
+    },
     addListener: (event: string, fn: Function) => fp.on(event, fn),
-    prependListener: (event: string, fn: Function) => { (processEvents[event] ??= []).unshift(fn); return fp; },
+    prependListener: (event: string, fn: Function) => { (processEvents[event] ??= []).unshift(fn); syncSignals(event); return fp; },
     // (Next.js wraps each of process's emitter methods and needs them all)
     prependOnceListener: (event: string, fn: Function) => {
       const w = (...a: any[]) => { fp.removeListener(event, w); return fn(...a); };
@@ -179,14 +184,12 @@ export function createFakeProcess(
       // (0 asks whether it exists: this one does. Claude Code asks it of the pid in a session
       // file, which after a reload can be this process's own)
       if (signal === 0 && Number(pid) === fp.pid) return true;
-      if (typeof signal === 'number') signal = Object.entries({ SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }).find(([, v]) => v === signal)?.[0];
+      if (typeof signal === 'number') signal = signalName(signal) ?? undefined;
       // If killing our own process, treat as exit
       if (Number(pid) === fp.pid) {
-        // For SIGINT: emit event and let handlers decide (like real Node.js)
-        if (signal === 'SIGINT' && processEvents['SIGINT']?.length) {
-          try { (processEvents['SIGINT'] || []).forEach(fn => fn('SIGINT')); } catch (_) {}
-          return true;
-        }
+        // A catchable signal with listeners: they take it, as node's (#91)
+        const own = typeof signal === 'string' ? SIGNALS[signal] : undefined;
+        if (own !== undefined && runSignalListeners(own)) return true;
         const code = 128 + (signal === 'SIGKILL' ? 9 : signal === 'SIGTERM' ? 15 : signal === 'SIGINT' ? 2 : 0);
         if (!_st.exitCalled) {
           _st.exitCode = code;
@@ -250,28 +253,63 @@ export function createFakeProcess(
     noDeprecation: false,
   };
 
-  // Add exitCode as a getter/setter (CLI reads and writes process.exitCode)
-  // A parent's child.kill() (this node is its child in the page): the signal's listeners
-  // take it, as node's do (not SIGKILL's or SIGSTOP's); else it ends the process (#89)
-  ctx.onKill?.((sig) => {
+  // Signals the script takes with process.on(name), as node's (#89, #91): with a listener for
+  // a catchable signal, its listeners run and the default action (ending the process) doesn't;
+  // with none, the default applies; SIGKILL and SIGSTOP can't be caught
+  const catchable = (sig: number) => sig !== 9 && sig !== 19 && signalName(sig) !== null;
+  /** Run the signal's listeners: false when it has none (the default action is the caller's) */
+  const runSignalListeners = (sig: number): boolean => {
     const name = signalName(sig);
-    const listeners = name && sig !== 9 && sig !== 19 ? processEvents[name] : undefined;
-    if (listeners?.length) {
-      try { for (const fn of [...listeners]) fn(name); } catch (e: any) {
-        // (a listener that throws: the child's uncaught error, which ends it with 1)
-        if (!(e instanceof ProcessExitError)) {
-          try { fp.stderr?.write?.(`${e?.stack ?? e}\n`); } catch { /* no stderr */ }
-          if (!_st.exitCalled) { _st.exitCode = 1; _st.exitCalled = true; }
-          _st.deferredExitResolve?.(_st.exitCode);
-        }
+    const listeners = name && catchable(sig) ? processEvents[name] : undefined;
+    if (!listeners?.length) return false;
+    try { for (const fn of [...listeners]) fn(name, sig); } catch (e: any) {
+      // (a listener that throws: the process's uncaught error, which ends it with 1)
+      if (!(e instanceof ProcessExitError)) {
+        try { fp.stderr?.write?.(`${e?.stack ?? e}\n`); } catch { /* no stderr */ }
+        if (!_st.exitCalled) { _st.exitCode = 1; _st.exitCalled = true; }
+        _st.deferredExitResolve?.(_st.exitCode);
       }
-      return true;
     }
+    return true;
+  };
+  // A kernel guest (worker mode): the signals with listeners are caught (node-worker/guest.ts)
+  // and come here; one whose listeners went in the meantime gets its default after all
+  const guestSignals = nodeGuestOf(ctx)?.signals;
+  const caughtSignals = new Set<number>();
+  function syncSignals(event: string): void {
+    if (!guestSignals || !event.startsWith('SIG')) return;
+    const sig = SIGNALS[event];
+    if (sig === undefined || !catchable(sig)) return;
+    const on = (processEvents[event]?.length ?? 0) > 0;
+    if (on === caughtSignals.has(sig)) return;
+    if (on) caughtSignals.add(sig); else caughtSignals.delete(sig);
+    guestSignals.watch(sig, on);
+  }
+  guestSignals?.onSignal((sig) => {
+    if (runSignalListeners(sig)) return;
+    caughtSignals.delete(sig);
+    guestSignals.watch(sig, false);
+    nodeGuestOf(ctx)?.kill?.(fp.pid, sig);
+  });
+  // An in-page background job that is this node (`node server.js &`): `kill PID` asks here
+  // first (shell.ts signalInPageJob), and the listeners take it instead of the job ending
+  if (ctx.shell && (ctx.shell as any).execPid !== undefined) {
+    (ctx.shell as any).takeSignal = (sig: number): boolean => {
+      if (_st.exitCalled || !catchable(sig) || !processEvents[signalName(sig)!]?.length) return false;
+      setTimeout(() => runSignalListeners(sig), 0);
+      return true;
+    };
+  }
+  // A parent's child.kill() (this node is its child in the page): the signal's listeners
+  // take it; else it ends the process (#89)
+  ctx.onKill?.((sig) => {
+    if (runSignalListeners(sig)) return true;
     if (!_st.exitCalled) { _st.exitCode = 128 + sig; _st.exitCalled = true; }
     _st.deferredExitResolve?.(_st.exitCode);
     return false;
   });
 
+  // Add exitCode as a getter/setter (CLI reads and writes process.exitCode)
   Object.defineProperty(fp, 'exitCode', {
     // What was set reads back (node's `if (process.exitCode == null) process.exitCode = 1` works)
     get: () => _st.exitCalled ? _st.exitCode : exitCodeSet,

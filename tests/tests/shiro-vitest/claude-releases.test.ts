@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -15,6 +15,11 @@ const PORT = 5396;
 let upstream: Server;
 let srv: ChildProcess;
 const hits: string[] = [];
+const CACHE = mkdtempSync(join(tmpdir(), 'claude-releases-test-'));
+// Upstream responses for these paths wait until release() (downloads in flight)
+const held = new Map<string, () => void>();
+const holds = new Map<string, Promise<void>>();
+const hold = (p: string) => holds.set(p, new Promise<void>((r) => held.set(p, r)));
 
 // The real modules (the test config polyfills node:http and node:crypto for the browser code)
 const { createHash } = (process as any).getBuiltinModule('crypto');
@@ -36,8 +41,14 @@ beforeAll(async () => {
     // a release without the musl build
     '/rel/1.0.2/manifest.json': manifest({ 'darwin-arm64': { checksum: sha256(GOOD), size: GOOD.length } }),
   };
-  upstream = createServer((req: any, res: any) => {
+  // more good releases, for the download cap and the pruning
+  for (const v of ['2.0.0', '2.0.1', '2.0.2', '2.0.3']) {
+    files[`/rel/${v}/manifest.json`] = manifest({ 'linux-x64-musl': { checksum: sha256(GOOD), size: GOOD.length } });
+    files[`/rel/${v}/linux-x64-musl/claude`] = GOOD;
+  }
+  upstream = createServer(async (req: any, res: any) => {
     hits.push(req.url);
+    await holds.get(req.url);
     const body = files[req.url];
     if (body === undefined) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'content-length': Buffer.byteLength(body) });
@@ -49,7 +60,7 @@ beforeAll(async () => {
     env: {
       ...process.env, PORT: String(PORT), STATIC_DIR: resolve(ROOT, 'public'),
       TABCOMPUTER_CLAUDE_RELEASES_UPSTREAM: `http://127.0.0.1:${(upstream.address() as any).port}/rel`,
-      TABCOMPUTER_CLAUDE_CACHE: mkdtempSync(join(tmpdir(), 'claude-releases-test-')),
+      TABCOMPUTER_CLAUDE_CACHE: CACHE,
     },
   });
   for (let i = 0; i < 100; i++) {
@@ -148,6 +159,33 @@ describe('/claude-releases/', () => {
   it('404s a release without the platform, and an unknown version', async () => {
     expect((await get('/claude-releases/1.0.2/linux-x64-musl/claude')).status).toBe(404);
     expect((await get('/claude-releases/9.9.9/manifest.json')).status).toBe(404);
+  });
+
+  it('downloads at most 2 binaries at once (503 beyond, so the client uses the relay) and keeps the newest 3 versions', async () => {
+    for (const v of ['2.0.0', '2.0.1', '2.0.2']) hold(`/rel/${v}/linux-x64-musl/claude`);
+    // the manifests first, so the binary requests are what's pending
+    for (const v of ['2.0.0', '2.0.1', '2.0.2']) expect((await get(`/claude-releases/${v}/manifest.json`)).status).toBe(200);
+    const a = get('/claude-releases/2.0.0/linux-x64-musl/claude');
+    const b = get('/claude-releases/2.0.1/linux-x64-musl/claude');
+    for (let i = 0; i < 100 && hitsFor('2.0.1/linux-x64-musl/claude') + hitsFor('2.0.0/linux-x64-musl/claude') < 2; i++) await new Promise((r) => setTimeout(r, 20));
+    const c = await get('/claude-releases/2.0.2/linux-x64-musl/claude');
+    expect(c.status).toBe(503);
+    expect(hitsFor('2.0.2/linux-x64-musl/claude')).toBe(0);
+    // a second request for one in flight joins it instead
+    const a2 = get('/claude-releases/2.0.0/linux-x64-musl/claude');
+    for (const r of held.values()) r();
+    for (const r of await Promise.all([a, b, a2])) {
+      expect(r.status).toBe(200);
+      expect((await r.arrayBuffer()).byteLength).toBe(GOOD.length);
+    }
+    expect(hitsFor('2.0.0/linux-x64-musl/claude')).toBe(1);
+    // with nothing in flight it downloads again
+    expect((await get('/claude-releases/2.0.2/linux-x64-musl/claude')).status).toBe(200);
+    expect((await get('/claude-releases/2.0.3/linux-x64-musl/claude')).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 300)); // pruning runs after the response
+    const versions = readdirSync(CACHE).filter((n) => /^\d/.test(n));
+    expect(versions.length).toBe(3);
+    expect(versions).toContain('2.0.3');
   });
 
   it('is not an open proxy', async () => {

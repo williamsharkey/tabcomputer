@@ -585,7 +585,9 @@ async function handleDebianMirror(req, res, rest) {
 // TABCOMPUTER_CLAUDE_PLATFORMS (default linux-x64-musl, the build Blink runs)
 // are served; anything else is a 404, and so is everything with
 // TABCOMPUTER_CLAUDE_RELEASES=0 (the client then downloads through the relay as before).
-// The newest TABCOMPUTER_CLAUDE_KEEP (3) versions stay in TABCOMPUTER_CLAUDE_CACHE.
+// The newest TABCOMPUTER_CLAUDE_KEEP (3) versions stay in TABCOMPUTER_CLAUDE_CACHE, and at
+// most TABCOMPUTER_CLAUDE_DOWNLOADS (2) binaries download at once (others get a 503 and
+// the relay), so the disk holds at most KEEP + DOWNLOADS binaries (~250 MB each).
 export const CLAUDE_KNOWN_PLATFORMS = ['linux-x64', 'linux-x64-musl', 'linux-arm64', 'linux-arm64-musl', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
 const CLAUDE_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z]{1,32}(?:\.[0-9A-Za-z]{1,32}){0,4})?$/;
 const CLAUDE_MAX_BYTES = 1024 * 1024 * 1024;
@@ -599,6 +601,7 @@ export function claudeReleasesConfig(env = process.env) {
     platforms,
     latestTtl: Number(env.TABCOMPUTER_CLAUDE_LATEST_TTL || 600) * 1000,
     keep: Math.max(1, Number(env.TABCOMPUTER_CLAUDE_KEEP || 3)),
+    downloads: Math.max(1, Number(env.TABCOMPUTER_CLAUDE_DOWNLOADS || 2)),
   };
 }
 
@@ -661,6 +664,8 @@ async function claudeBinary(version, platform) {
   const key = `${version}/${platform}`;
   let p = claudeInflight.get(key);
   if (!p) {
+    // Requests for many versions at once would each write a temp file of ~250 MB
+    if (claudeInflight.size >= cfg.downloads) return { status: 503, text: 'busy: other releases are downloading; try again later\n' };
     p = (async () => {
       await mkdir(file.slice(0, file.lastIndexOf('/')), { recursive: true });
       const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}`;

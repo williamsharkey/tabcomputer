@@ -3,7 +3,7 @@
 // latency and renderer memory, for the native build (Blink) and the npm build.
 //   node bench/claude-tui.mjs [--build native|npm] [--runs N] [--keys N]
 //        [--env 'K=V K2=V2'] [--args '...'] [--tui fullscreen|default]
-//        [--settle S] [--out file.json] [--shot file.png]
+//        [--settle S] [--binary FILE] [--out file.json] [--shot file.png]
 // Each run is a fresh profile booted at /?ui=terminal. ~/.claude.json is
 // preset (onboarding done, the home directory trusted) so the session goes
 // straight to its prompt; there is no sign-in, so nothing reaches the API.
@@ -24,7 +24,7 @@ import { prepareFixtures } from './lib/fixtures.mjs';
 import { summarize, round } from './lib/stats.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -36,13 +36,15 @@ const extraEnv = opt('--env', '');
 const extraArgs = opt('--args', '');
 const out = opt('--out');
 const shot = opt('--shot');
+const binary = opt('--binary'); // another linux-x64-musl build, e.g. bench/.cache/fixtures/claude-native-2.1.112
 const tui = opt('--tui'); // fullscreen | default: Claude's renderer (settings.json `tui`)
 const promptRe = new RegExp(opt('--prompt', '^\\s*(❯|│ >|> )'), 'm');
 const TIMEOUT = Number(opt('--timeout', 300)) * 1000;
 const log = (...a) => console.log(...a);
 
 const fx = prepareFixtures({ cacheDir: join(ROOT, 'bench/.cache'), publishDir: join(ROOT, 'dist/__bench'), log });
-if (build === 'native' && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
+if (binary) copyFileSync(binary, join(ROOT, 'dist/__bench/claude-native-alt'));
+if (build === 'native' && !binary && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
 const server = await startShiroServer({ staticDir: join(ROOT, 'dist'), isolated: true, tcpPorts: [], allowCidrs: [hostAddress() + '/32'], log: process.env.BENCH_SERVER_LOG ? (l) => log('[server]', l) : null });
 const results = [];
 const h = new Harness({ mode: 'isolated', origin: server.origin, netcache: new NetCache(join(ROOT, 'bench/.cache/net'), { log: process.env.BENCH_VERBOSE ? log : () => {} }), runs, log, results });
@@ -92,9 +94,9 @@ try {
     // npm: boot's background preinstall puts the build in place (not timed, and not run)
     await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm' });
     const home = '/home/user';
-    await h.eval(async ({ build, json, home, tui }) => {
+    await h.eval(async ({ build, json, home, tui, binary }) => {
       if (build === 'native') {
-        await window.__bench.fetchInto('/__bench/claude-native', home + '/.local/bin/claude');
+        await window.__bench.fetchInto(binary ? '/__bench/claude-native-alt' : '/__bench/claude-native', home + '/.local/bin/claude');
         await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
       }
       await window.__tabcomputer.fs.writeFile(home + '/.claude.json', json);
@@ -102,7 +104,7 @@ try {
         await window.__tabcomputer.fs.mkdir(home + '/.claude', { recursive: true }).catch(() => {});
         await window.__tabcomputer.fs.writeFile(home + '/.claude/settings.json', JSON.stringify({ tui }));
       }
-    }, { build, json: CLAUDE_JSON(home), home, tui });
+    }, { build, json: CLAUDE_JSON(home), home, tui, binary: !!binary });
     await h.eval(SETUP);
     const cmd = `${extraEnv ? extraEnv + ' ' : ''}claude --${build}${extraArgs ? ' ' + extraArgs : ''}`;
     const rss0 = await h.rendererRss();
@@ -156,7 +158,7 @@ try {
   rec(`claude_tui.${build}.rss`, M.rss, 'MiB', 'renderer RSS at the prompt');
   log('\n| metric | median | p90 | n |\n|---|---:|---:|---:|');
   for (const r of results) log(`| ${r.name} | ${r.median} ${r.unit} | ${r.p90} | ${r.n} |`);
-  if (out) { mkdirSync(join(out, '..'), { recursive: true }); writeFileSync(out, JSON.stringify({ env: { build, extraEnv, extraArgs, date: new Date().toISOString() }, results }, null, 2) + '\n'); }
+  if (out) { mkdirSync(join(out, '..'), { recursive: true }); writeFileSync(out, JSON.stringify({ env: { build, binary, tui, extraEnv, extraArgs, date: new Date().toISOString() }, results }, null, 2) + '\n'); }
 } catch (e) {
   log('FAILED:', e.message);
   if (h.page) await h.page.screenshot({ path: shot || 'bench/.cache/claude-tui-fail.png' }).catch(() => {});

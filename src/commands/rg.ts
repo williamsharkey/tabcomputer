@@ -71,13 +71,91 @@ const POSIX_CLASS: Record<string, string> = {
   space: ' \\t\\n\\r\\f\\v', upper: 'A-Z', word: '\\w', xdigit: '0-9A-Fa-f',
 };
 
-/** Rust regex syntax → JavaScript: (?P<n>, [[:class:]], a leading (?flags) */
-function toJs(p: string): { src: string; flags: string } {
+/**
+ * Rust regex syntax → JavaScript: (?P<n>, [[:class:]] and flag groups. With
+ * `fold`, leading groups like (?i)(?s) become RegExp flags. Any other (?flags)
+ * becomes a modifier group (?i:…) that runs to the end of its enclosing group,
+ * reopened after each |, as Rust scopes it. x (ignore whitespace and # comments)
+ * and U (swap greedy and lazy) have no JavaScript flag, so they are applied here.
+ */
+export function toJs(p: string, fold = true): { src: string; flags: string } {
+  type Frame = { x: boolean; U: boolean; mods: string[] };
+  const frames: Frame[] = [{ x: false, U: false, mods: [] }];
+  const top = () => frames[frames.length - 1];
   let flags = '';
-  const lead = /^\(\?([imsxU]+)\)/.exec(p);
-  if (lead) { p = p.slice(lead[0].length); flags = lead[1].replace(/[^ims]/g, ''); }
-  p = p.replace(/\(\?P</g, '(?<').replace(/\[:(\w+):\]/g, (m, c) => POSIX_CLASS[c] ?? m);
-  return { src: p, flags };
+  let i = 0;
+  let lead: RegExpExecArray | null;
+  while (fold && (lead = /^\(\?([imsxUuR]+)\)/.exec(p.slice(i)))) {
+    for (const c of lead[1]) if ('ims'.includes(c) && !flags.includes(c)) flags += c;
+    if (lead[1].includes('x')) top().x = true;
+    if (lead[1].includes('U')) top().U = true;
+    i += lead[0].length;
+  }
+  let out = '';
+  while (i < p.length) {
+    const ch = p[i];
+    const f = top();
+    if (ch === '\\') {
+      const next = p[i + 1] ?? '';
+      out += f.x && (next === ' ' || next === '#') ? next : ch + next;
+      i += 2;
+    } else if (ch === '[') {
+      let j = i + 1;
+      if (p[j] === '^') j++;
+      if (p[j] === ']') j++;
+      let cls = p.slice(i, j);
+      while (j < p.length && p[j] !== ']') {
+        const posix = /^\[:(\w+):\]/.exec(p.slice(j));
+        if (posix) { cls += POSIX_CLASS[posix[1]] ?? posix[0]; j += posix[0].length; }
+        else if (p[j] === '\\') { cls += p.slice(j, j + 2); j += 2; }
+        else cls += p[j++];
+      }
+      out += cls + (p[j] ?? '');
+      i = j + 1;
+    } else if (f.x && /\s/.test(ch)) {
+      i++;
+    } else if (f.x && ch === '#') {
+      while (i < p.length && p[i] !== '\n') i++;
+    } else if (ch === '(') {
+      const fg = /^\(\?([imsxUuR]*)(?:-([imsxUuR]*))?([:)])/.exec(p.slice(i));
+      if (fg && (fg[1] || fg[2] !== undefined)) {
+        const on = fg[1], off = fg[2] ?? '';
+        const x = (f.x && !off.includes('x')) || on.includes('x');
+        const U = (f.U && !off.includes('U')) || on.includes('U');
+        const jsOn = on.replace(/[^ims]/g, ''), jsOff = off.replace(/[^ims]/g, '');
+        const open = jsOn || jsOff ? `(?${jsOn}${jsOff ? '-' + jsOff : ''}:` : '(?:';
+        if (fg[3] === ':') { out += open; frames.push({ x, U, mods: [] }); }
+        else {
+          f.x = x; f.U = U;
+          if (jsOn || jsOff) { out += open; f.mods.push(open); }
+        }
+        i += fg[0].length;
+      } else {
+        // (?P<name> is (?<name>; other (? groups pass through whole, so their ? isn't a quantifier
+        const g = /^\((?:\?(?:P?<(?![=!])[^>]*>|<[=!]|[:=!])?)?/.exec(p.slice(i))![0];
+        out += g.replace('(?P<', '(?<');
+        frames.push({ x: f.x, U: f.U, mods: [] });
+        i += g.length;
+      }
+    } else if (ch === ')') {
+      out += ')'.repeat(f.mods.length) + ')';
+      if (frames.length > 1) frames.pop();
+      i++;
+    } else if (ch === '|') {
+      out += ')'.repeat(f.mods.length) + '|' + f.mods.join('');
+      i++;
+    } else {
+      const q = /^(?:[*+?]|\{\d+(?:,\d*)?\})/.exec(p.slice(i));
+      if (!q) { out += ch; i++; continue; }
+      i += q[0].length;
+      let lazy = p[i] === '?';
+      if (lazy) i++;
+      if (f.U) lazy = !lazy;
+      out += q[0] + (lazy ? '?' : '');
+    }
+  }
+  while (frames.length) out += ')'.repeat(frames.pop()!.mods.length);
+  return { src: out, flags };
 }
 
 /** A glob (*, **, ?, [..], {a,b}) as a regex over a path */
@@ -368,7 +446,8 @@ export const rgCmd: Command = {
     let extraFlags = '';
     const parts = patterns.map((p) => {
       if (fixedStrings) return p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-      const t = toJs(p);
+      // Several patterns: one's (?i) mustn't become a flag for all of them
+      const t = toJs(p, patterns.length === 1);
       extraFlags += t.flags;
       return t.src;
     });

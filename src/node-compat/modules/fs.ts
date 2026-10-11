@@ -89,14 +89,15 @@ export function writeOptions(opts: any, defFlag: string): { encoding?: string; f
 }
 
 /**
- * A path's mtime as stat reports it. Paths the shim hasn't seen written
- * (directories, files from shell commands) get the time of their first stat,
- * kept, so stat agrees with itself: proper-lockfile (Gemini CLI) compares a
- * lock directory's mtime across stats and took a changing one as a
- * compromised lock.
+ * A path's mtime as stat reports it: this script's own write, else the
+ * filesystem's (`fsMtime`: files from shell commands, git or other scripts, so
+ * Claude Code's Edit doesn't see a change between its Read and its Edit). A
+ * path known to neither gets the time of its first stat, kept, so stat agrees
+ * with itself: proper-lockfile (Gemini CLI) compares a lock directory's mtime
+ * across stats and took a changing one as a compromised lock.
  */
-export function stableMtime(fileMtimes: Map<string, number>, path: string): number {
-  let t = fileMtimes.get(path);
+export function stableMtime(fileMtimes: Map<string, number>, path: string, fsMtime?: number): number {
+  let t = fileMtimes.get(path) || fsMtime;
   if (!t) { t = Date.now(); fileMtimes.set(path, t); }
   return t;
 }
@@ -467,7 +468,7 @@ export function createFsModule(deps: FsDeps): any {
     }
     const node = ctx.fs.lookupCached?.(r)?.node;
     const mode = pendingModes.get(r) ?? node?.mode ?? (isDir ? 0o755 : 0o644);
-    return makeStats({ type: isDir ? 'dir' : 'file', size: isFile ? (currentBytes(r)?.length ?? 0) : 0, mtimeMs: stableMtime(fileMtimes, r), mode, ino: inodeOf(r), fifo: node?.special === 'fifo' });
+    return makeStats({ type: isDir ? 'dir' : 'file', size: isFile ? (currentBytes(r)?.length ?? 0) : 0, mtimeMs: stableMtime(fileMtimes, r, node?.mtime), mode, ino: inodeOf(r), fifo: node?.special === 'fifo' });
   };
   /** lstat from memory (a symlink itself, else the file): null / undefined as statNow */
   const lstatNow = (p: any): any => {

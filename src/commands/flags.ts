@@ -121,6 +121,8 @@ export interface StatEntry {
   /** st_ino and st_nlink (a hard-linked file has nlink > 1) */
   ino?: number;
   nlink?: number;
+  /** A named pipe (type 'file'): reading it waits for a writer, so walkers skip it */
+  fifo?: boolean;
 }
 
 /**
@@ -152,7 +154,12 @@ export async function readdirEntries(fs: FileSystem, path: string): Promise<DirE
  * Get file stat as a plain object (type, size, mode, mtime).
  * Uses lstat to detect symlinks.
  */
-export async function statEntry(fs: FileSystem, path: string): Promise<StatEntry> {
+export async function statEntry(fs: FileSystem, path: string, follow = false): Promise<StatEntry> {
+  // follow: through symlinks one at a time (readlink also answers /proc/self/fd/N, whose stat() doesn't follow)
+  for (let hops = 0; follow && hops < 40 && (await fs.lstat(path)).isSymbolicLink(); hops++) {
+    const t = await fs.readlink(path);
+    path = t.startsWith('/') ? t : fs.resolvePath(t, path.slice(0, path.lastIndexOf('/')) || '/');
+  }
   const s = await fs.lstat(path);
   const result: StatEntry = {
     type: s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file',
@@ -161,6 +168,7 @@ export async function statEntry(fs: FileSystem, path: string): Promise<StatEntry
     mtime: s.mtime.getTime(),
     ino: (s as { ino?: number }).ino,
     nlink: (s as { nlink?: number }).nlink,
+    ...(s.isFIFO?.() ? { fifo: true } : {}),
   };
   if (s.isSymbolicLink()) {
     try { result.target = await fs.readlink(path); } catch {}

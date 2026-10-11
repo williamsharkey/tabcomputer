@@ -106,8 +106,10 @@ export interface NetConfig {
   portHost?: PortHost | null;
   /** Bytes queued for sending before write() blocks / POLLOUT clears. */
   sndbuf: number;
-  /** Ack consumed bytes to the relay every this many bytes (its window is 512 KiB). */
+  /** Ack consumed bytes to the relay every this many bytes (its window is relayWindow). */
   ackEvery: number;
+  /** The relay's send window (server.mjs TABCOMPUTER_TCP_WINDOW): it pauses with this many bytes unacked. */
+  relayWindow: number;
   /** Timeout for one bridged HTTP request to a guest listener. */
   httpBridgeTimeoutMs: number;
   /** Send loopback connects with no kernel listener to the relay (tests, dev relays that allow 127.0.0.1). */
@@ -129,6 +131,7 @@ function defaultConfig(): NetConfig {
     dohUrl: 'https://cloudflare-dns.com/dns-query',
     sndbuf: 256 * 1024,
     ackEvery: 64 * 1024,
+    relayWindow: 512 * 1024,
     httpBridgeTimeoutMs: 30_000,
     relayLoopback: false,
     credentials: true,
@@ -303,6 +306,8 @@ interface StreamPeer {
   consumed(n: number): void;
   /** Bytes accepted by send() and not yet handed to the network / peer reader. */
   buffered(): number;
+  /** State for diagnostics (the remote `diag` request) */
+  debugInfo?(): Record<string, unknown>;
 }
 
 class LoopbackPeer implements StreamPeer {
@@ -335,6 +340,12 @@ interface RelayConnected { remoteAddress: string; remotePort: number; family: nu
 
 class RelayPeer implements StreamPeer {
   private unacked = 0;
+  /** Bytes received and not yet acked: the relay's in-flight count as the page sees it */
+  private inflight = 0;
+  /** The window-full line was logged; again only once in-flight fell to half the window */
+  private stalled = false;
+  /** The relay has a window's worth unacked: it has stopped sending until the program reads (diag) */
+  get windowFull(): boolean { return this.inflight >= this.stack.config.relayWindow; }
   private drainTimer: ReturnType<typeof setInterval> | null = null;
   constructor(private ws: WebSocket, private sock: KSocket, private stack: NetStack) {}
 
@@ -361,7 +372,16 @@ class RelayPeer implements StreamPeer {
         else if (msg.op === 'error') this.sock._error(ERRNO_BY_NAME[msg.code] ?? EIO);
         return;
       }
-      this.sock._deliver(new Uint8Array(ev.data as ArrayBuffer));
+      const data = new Uint8Array(ev.data as ArrayBuffer);
+      this.inflight += data.length;
+      this.sock._deliver(data);
+      if (!this.stalled && this.inflight >= this.stack.config.relayWindow) {
+        // The relay stops reading the server until the program reads (a reader that hangs shows here)
+        this.stalled = true;
+        const r = this.sock.remote;
+        klog.logRatelimited(LOG_WARNING, `[tcp] socket:[${this.sock.ino}] ${r ? `${r.address}:${r.port}` : '?'}: relay window full ` +
+          `(${this.inflight} bytes in flight, ${this.sock.netInfo().rxQueue} unread by pid ${this.sock.ownerPid}); the server's data waits`);
+      }
     };
     ws.onclose = () => { this.stopDrain(); this.sock._eof(); this.sock._peerGone(); };
     ws.onerror = () => { this.sock._error(ECONNRESET); };
@@ -380,10 +400,21 @@ class RelayPeer implements StreamPeer {
     this.unacked += n;
     if (this.unacked >= this.stack.config.ackEvery && this.ws.readyState === 1) {
       this.ws.send(JSON.stringify({ op: 'ack', n: this.unacked }));
+      this.inflight = Math.max(0, this.inflight - this.unacked);
       this.unacked = 0;
+      if (this.stalled && this.inflight < this.stack.config.relayWindow / 2) this.stalled = false;
     }
   }
   buffered() { return this.ws.bufferedAmount; }
+  debugInfo() {
+    // The relay URL may carry a sign-in token: keep only origin and path
+    let url = '';
+    try { const u = new URL(this.ws.url); url = u.origin + u.pathname; } catch { /* not a URL */ }
+    // inflight/stalled/windowFull: the relay window's state, where the kernel tracks it (perf-kernel, #19)
+    const self = this as any;
+    return { kind: 'relay', readyState: this.ws.readyState, bufferedAmount: this.ws.bufferedAmount, unacked: this.unacked, ackEvery: this.stack.config.ackEvery, draining: !!this.drainTimer, url,
+      inflight: self.inflight, stalled: self.stalled, windowFull: self.windowFull };
+  }
   // WebSocket has no drain event: watch bufferedAmount while data is queued so
   // writers blocked on SNDBUF and POLLOUT waiters wake up.
   private startDrain() {
@@ -453,6 +484,15 @@ export class KSocket implements OpenFile {
   private get nonblock() { return (this.flags & O_NONBLOCK) !== 0; }
   private get messages() { return this.type !== SOCK_STREAM; }
 
+  /** What /proc/net/tcp shows: state, addresses, queues (a listener's rx queue is its accept backlog) */
+  netInfo(): { state: StreamState; local: SockAddr | null; remote: SockAddr | null; rxQueue: number; txQueue: number } {
+    return {
+      state: this.state, local: this.local, remote: this.remote,
+      rxQueue: this.state === 'listening' ? this.backlog.length : this.rxLen,
+      txQueue: this.peer?.buffered() ?? 0,
+    };
+  }
+
   // ── events from the peer ──
   /** @internal */ _deliver(data: Uint8Array, fds?: OpenFile[], from?: SockAddr | null) {
     if (this.rdShut || this.state === 'closed' || !data.length) { for (const f of fds ?? []) void release(f); return; }
@@ -465,6 +505,17 @@ export class KSocket implements OpenFile {
   /** @internal */ _error(errno: number) { this.soError = errno; this.q.notify(); }
   /** @internal */ _peerGone() { this.wrShut = true; this.q.notify(); }
   /** @internal */ _wake() { this.q.notify(); }
+  /** State for diagnostics (the remote `diag` request): why a reader or poller isn't woken */
+  debugInfo(): Record<string, unknown> {
+    const addr = (a: SockAddr | null) => (a ? JSON.stringify(a) : null);
+    return {
+      type: this.type, state: this.state, local: addr(this.local), remote: addr(this.remote),
+      rxLen: this.rxLen, rxChunks: this.rx.length, rxEof: this.rxEof, rdShut: this.rdShut, wrShut: this.wrShut,
+      soError: this.soError, everConnected: this.everConnected, backlog: this.backlog.length,
+      peer: this.peer ? (this.peer.debugInfo?.() ?? { kind: this.peer.constructor.name }) : null,
+      buffered: this.peer?.buffered() ?? 0,
+    };
+  }
   /** @internal */ _rxBytes() { return this.rxLen + (this.messages ? this.rx.length * MSG_OVERHEAD : 0); }
   /** @internal */ _attach(peer: StreamPeer, local: SockAddr, remote: SockAddr) {
     this.peer = peer; this.local = local; this.remote = remote;

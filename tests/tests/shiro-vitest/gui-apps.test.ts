@@ -77,7 +77,7 @@ describe.skipIf(!debs)('GUI apps from .deb packages', () => {
       suite: 'test', arch: 'amd64', mirror: '', snapshot: '',
       packages: Object.fromEntries(Object.entries(debs!).map(([n, b]) => [n, { version: '1.0', filename: `pool/main/x/${n}/${n}_1.0_amd64.deb`, sha256: sha(b), size: b.length }])),
       apps: {
-        xdemo: { description: 'demo', toolkit: 'x11', bin: '/usr/bin/xdemo', packages: ['libdemo1', 'xdemo'], size: 0, closureSize: 0, dropped: [] },
+        xdemo: { description: 'demo', toolkit: 'x11', bin: '/usr/bin/xdemo', packages: ['libdemo1', 'xdemo'], size: 0, closureSize: 0, dropped: [], args: ['--demo'], home: { '.config/xdemo/rc': 'mine\n' } },
         schemas: { description: 'demo', toolkit: 'gtk3', bin: '/usr/bin/glib-compile-schemas', packages: ['schemademo'], size: 0, closureSize: 0, dropped: [] },
         pixbuf: { description: 'demo', toolkit: 'gtk3', bin: '/usr/bin/true', packages: ['libgdk-pixbuf-2.0-0'], size: 0, closureSize: 0, dropped: [] },
         loader: { description: 'demo', toolkit: 'gtk3', bin: '/usr/bin/true', packages: ['libgdk-pixbuf-2.0-0', 'loaderdemo'], size: 0, closureSize: 0, dropped: [] },
@@ -121,7 +121,10 @@ describe.skipIf(!debs)('GUI apps from .deb packages', () => {
     const sess = await getXSession(0);
     const mapped: any[] = [];
     sess.server.hooks = { topMapped: (w) => mapped.push(w) };
-    const app = await launchApp(kernel, 'xdemo');
+    const app = await launchApp(kernel, 'xdemo', ['file.txt']);
+    // the manifest's args come before the caller's; its home files are written first
+    expect(kernel.procs.get(app.pid)?.argv).toEqual(['xdemo', '--demo', 'file.txt']);
+    expect(await fs.readFile('/home/user/.config/xdemo/rc', 'utf8')).toBe('mine\n');
     const t0 = Date.now();
     while (!app.output().includes('drawn') && Date.now() - t0 < 30_000) await new Promise((res) => setTimeout(res, 20));
     expect(mapped.length).toBe(1);

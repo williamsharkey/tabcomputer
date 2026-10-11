@@ -264,6 +264,8 @@ export const grepCmd: Command = {
         }
         return;
       }
+      // Devices and named pipes met while recursing are skipped (GNU grep's -D read applies to operands only)
+      if (!top && st.isFIFO?.()) return;
       const base = display.split('/').pop() || display;
       if (!top && !fileWanted(base)) return;
       if (top && recursive && includeRes.length && !fileWanted(base)) return;

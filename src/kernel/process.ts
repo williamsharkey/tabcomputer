@@ -18,6 +18,20 @@ export type ProcessState = 'running' | 'stopped' | 'zombie';
  */
 export type SignalHook = (proc: Process, sig: number) => boolean;
 
+
+/** One thread's state as its syscall channel sees it */
+export interface ThreadInfo {
+  tid: number;
+  /** The syscall in progress (-1: none: running its own code, or idle in the engine) */
+  nr: number;
+  /** Its arguments (the channel's own array: read while nr >= 0) */
+  args: ArrayLike<number>;
+  /** When it started (Date.now()) */
+  since: number;
+  /** Calls made so far */
+  syscalls: number;
+}
+
 export class Process {
   readonly pid: number;
   ppid: number;
@@ -128,6 +142,17 @@ export class Process {
   signalHook?: SignalHook;
   /** Thread ids of extra threads (worker-host attachThread); the main thread's tid is the pid. */
   tids = new Set<number>();
+  /**
+   * What each thread is doing, by tid (the main thread's is the pid): its
+   * syscall channel updates its record (/proc/PID/task/TID, kernel.threadStates).
+   */
+  threads = new Map<number, ThreadInfo>();
+  /** The record for thread `tid`, made on first use */
+  thread(tid: number): ThreadInfo {
+    let t = this.threads.get(tid);
+    if (!t) { t = { tid, nr: -1, args: [], since: 0, syscalls: 0 }; this.threads.set(tid, t); }
+    return t;
+  }
   /**
    * Free-form per-runtime state (worker handle, WASI instance, ...).
    * `data.onSignal(sig)` fans out to every `addSignalListener` listener; keep
@@ -291,7 +316,17 @@ let sharedAbortReason: unknown;
  * a builtin's spawn-to-exit.
  */
 export function abortReason(): unknown {
-  return sharedAbortReason ??= (typeof DOMException === 'function'
-    ? new DOMException('The operation was aborted.', 'AbortError')
-    : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+  if (sharedAbortReason) return sharedAbortReason;
+  // No stack: V8's would hold the receivers of the frames it was made in
+  // (a Process) for the page's lifetime
+  const E = Error as { stackTraceLimit?: number };
+  const limit = E.stackTraceLimit;
+  E.stackTraceLimit = 0;
+  try {
+    return sharedAbortReason = typeof DOMException === 'function'
+      ? new DOMException('The operation was aborted.', 'AbortError')
+      : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+  } finally {
+    E.stackTraceLimit = limit;
+  }
 }

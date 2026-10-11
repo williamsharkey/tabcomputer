@@ -23,6 +23,7 @@ import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
 import { redirectWordSpans } from './shell-redirect-words';
+import { commandStarted, commandEnded, watchdogCheckpoint } from './watchdog';
 
 // Lazy-load the WASI runtime (~960 lines) only when WASM execution is needed
 let _wasiRuntime: typeof import('./wasi-runtime') | null = null;
@@ -563,6 +564,10 @@ function isControlSignal(e: unknown): boolean {
   return e instanceof ExitSignal || e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal;
 }
 
+/** Expansions that change shell state: `${x=v}`, `${x:=v}`, `$((…))` (an assignment or ++ in it) */
+const SIDE_EFFECT_EXPANSION_RE = /\$\{[^}]*?:?=|\$\(\(/;
+/** Kernel fd kinds a command reads as data when given no file (ripgrep's is_readable_stdin) */
+const READABLE_STDIN_KINDS = new Set(['file', 'pipe', 'socket']);
 /** A redirection with its file word (`>f`, `2>> "a b"`, `<&3`), then a blank */
 const PREFIX_REDIR_RE = /^\s*(\d*(?:&>>?|>>|>\||<>|>&|<&|>|<)\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s'"|;&<>()\\])+)(?=\s)/;
 /** A command word as it stands after expansion */
@@ -708,20 +713,66 @@ function withoutTty<T extends object>(term: T): T {
 
 /** Runaway-loop guard for while/until/for((;;)); high enough for `while read` over big files */
 const LOOP_ITERATION_LIMIT = 10_000_000;
-/** Let the page paint and handle input during long shell loops */
-const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-/** When the shell last let the page run (timers, input, rendering) */
-let lastYield = 0;
 /**
- * Yield to the event loop if the shell has held it for a while: function
- * calls and `source` (deep recursion, a ~/.profile and ~/.bashrc sourcing
- * each other) otherwise never give the page a turn. Cheap when not due.
+ * Let the page paint and handle input during long shell work: one turn of the
+ * event loop. A message task, not setTimeout(0), which browsers clamp to 4 ms
+ * when nested (+28% on a 1000-iteration loop, bench/ab.mjs). (Not
+ * setImmediate: node-compat defines the page's as setTimeout(0).) Under Node
+ * the ports are unref'd so they don't keep the process alive.
+ */
+const yieldResolvers: (() => void)[] = [];
+let yieldPort: MessagePort | null = null;
+const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => {
+  if (typeof MessageChannel !== 'function') { setTimeout(resolve, 0); return; }
+  if (!yieldPort) {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => yieldResolvers.shift()?.();
+    (ch.port1 as any).unref?.();
+    (ch.port2 as any).unref?.();
+    yieldPort = ch.port2;
+  }
+  yieldResolvers.push(resolve);
+  yieldPort.postMessage(null);
+});
+/**
+ * Since when the shell has held the event loop without the page getting a
+ * turn. A marker timer says a turn happened (and that timers ran). Measuring
+ * from the last yield instead made the first command after any idle moment
+ * wait a timer turn (+50% on `true`, bench/ab.mjs).
+ */
+let busySince = 0;
+let hadTurn = true;
+let markerPending = false;
+let lastTimerTurn = 0;
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+function markTurn(): void {
+  if (markerPending) return;
+  markerPending = true;
+  setTimeout(() => { markerPending = false; hadTurn = true; lastTimerTurn = clockMs(); }, 0);
+}
+/** Timers must run at least this often while the shell is busy (`timeout`, the watchdog's heartbeat) */
+const TIMER_TURN_MS = 50;
+/**
+ * Yield to the event loop if the shell has held it for 30 ms: function calls,
+ * `source`, loop iterations and pipeline segments otherwise never give the
+ * page a turn. Cheap when not due (no await of a timer). The yield is a
+ * message task (paint, input), or a timer turn when timers haven't run for
+ * TIMER_TURN_MS (message tasks can starve them).
  */
 async function maybeYield(): Promise<void> {
-  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  if (now - lastYield < 30) return;
-  await yieldToEventLoop();
-  lastYield = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  watchdogCheckpoint(); // the watchdog's kill switch (an outside agent, or `watchdog abort-after`)
+  if (hadTurn) {
+    hadTurn = false;
+    busySince = clockMs();
+    markTurn();
+    return;
+  }
+  const t = clockMs();
+  if (t - busySince < 30) return;
+  if (t - lastTimerTurn >= TIMER_TURN_MS) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  else await yieldToEventLoop();
+  busySince = clockMs();
+  markTurn();
 }
 
 /**
@@ -1799,13 +1850,21 @@ export class Shell {
     const outerInCommand = this.inCommand;
     this.activeTerminal = terminalOverride;
     this.inCommand = 0;
+    // In flight for the watchdog: a freeze report names the innermost line
+    const watch = commandStarted(line, this.watchDepth++, this);
+    let status: number | undefined;
     try {
-      return await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
+      return status = await this.executeOn(line, writeStdout, writeStderr, remote, terminalOverride, skipHistory);
     } finally {
+      this.watchDepth--;
+      commandEnded(watch, status);
       this.activeTerminal = outerTerminal;
       this.inCommand = outerInCommand;
     }
   }
+
+  /** execute() calls in progress on this shell, for the watchdog (0: a top-level line) */
+  private watchDepth = 0;
 
   /** `exec -a NAME prog`: argv[0] for the next kernel program named `name` */
   execArgv0?: { name: string; argv0: string };
@@ -2436,10 +2495,10 @@ export class Shell {
       return lastExit;
     }
 
-    // Handle heredocs before anything else
-    const heredoc = this.parseHeredoc(trimmed);
-    const effectiveLine = heredoc ? heredoc.command : trimmed;
-    const heredocStdin = heredoc ? heredoc.body : (injectedStdin ?? '');
+    // (here-documents are `< MARKER` redirections by now: extractHeredocs above;
+    // a `<<` still here is quoted, as in `eval 'cat <<E …'`, and stays as written)
+    const effectiveLine = trimmed;
+    const heredocStdin = injectedStdin ?? '';
 
     // Strip control characters from history entries (ink UI can leak ANSI/DEL chars)
     // Only record user-typed commands (not programmatic calls from child_process, spawn, etc.)
@@ -2676,15 +2735,27 @@ export class Shell {
         // checking that first keeps a tokenizer pass and an await off every other command
         const ordered = rawSegments.length === 1 && ORDERED_PREFIX_RE.test(cmdText) && /[$`]/.test(cmdText)
           ? await this.expandPrefixAssignments(cmdText, stderrWriter) : null;
-        pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        if (rawSegments.length > 1 && !ordered && SIDE_EFFECT_EXPANSION_RE.test(cmdText)) {
+          // Each element of a pipeline is a subshell: what its words assign (`${x=v}`,
+          // `$((i++))`) stays there (the last one's here with shopt -s lastpipe)
+          pipeline = [];
+          for (const [k, seg] of rawSegments.entries()) {
+            const here = k === rawSegments.length - 1 && this.shoptopts.has('lastpipe');
+            pipeline.push(await (here ? this : this.fork()).expandWords(quoteAssignmentValues(seg), stderrWriter));
+          }
+        } else {
+          pipeline = this.parsePipeline(ordered ?? await this.expandWords(quoteAssignmentValues(cmdText), stderrWriter));
+        }
       }
 
       // Check for ! negation prefix
       let negateExit = false;
-      if (pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
+      // (a `!` that came from an expansion, `v='!'; $v cmd`, is a command word, not negation)
+      const rawBang = /^\s*!(\s|$)/.test(cmdText);
+      if (rawBang && pipeline.length > 0 && pipeline[0].trim().startsWith('! ')) {
         negateExit = true;
         pipeline[0] = pipeline[0].trim().slice(2);
-      } else if (pipeline.length > 0 && pipeline[0].trim() === '!') {
+      } else if (rawBang && pipeline.length > 0 && pipeline[0].trim() === '!') {
         // Bare ! with pipeline after
         negateExit = true;
         pipeline.shift();
@@ -2726,6 +2797,7 @@ export class Shell {
         segCount = i + 1;
         // A builtin that captured its output `continue`d here: pipe/redirect it now
         await flushCapture();
+        if (i > 0) await maybeYield(); // a long line of builtins lets the page run (and the watchdog's abort in)
 
         // Check for SIGINT (abort)
         if (this.abortController?.signal.aborted) {
@@ -2806,6 +2878,12 @@ export class Shell {
               // ...as plain assignments: a new or unexported variable stays unexported
               for (const [k, v] of prefixEnvSaved) if (v === undefined || prefixWasLocal.has(k)) this.localVars.add(k);
             }
+            this.lastExitCode = exitCode;
+            this.env['?'] = String(exitCode);
+          } else {
+            // Words that expanded to nothing (`$(false)`, `` `false` ``, `$empty`): the status
+            // is the last command substitution's, else 0
+            exitCode = this.substStatus ?? 0;
             this.lastExitCode = exitCode;
             this.env['?'] = String(exitCode);
           }
@@ -4726,6 +4804,10 @@ export class Shell {
           terminal: terminalOverride || this.terminal,
           // (a live stdin is the kernel process's fd 0: a tty when it is the pty)
           stdinIsTTY: !hasShellStdin && (live ? this.kernelStdio!.file(0)?.kind === 'pty' : !!(terminalOverride || this.terminal)),
+          stdinReadable: live ? READABLE_STDIN_KINDS.has(this.kernelStdio!.file(0)?.kind ?? '')
+            // (an empty enclosing "pipe" is a script run with no stdin: bash's setInjectedStdin(''))
+            : (hasShellStdin && !(fromEnclosingPipe && !this.env['__PIPE_STDIN'])) &&
+              !redirects.some(r => r.type === '<' && /^\/dev\/(null|zero|tty)$/.test(r.target)),
           // (not when the caller collects stdout: $(...), a builtin's own sink)
           stdoutIsTTY: i === pipeline.length - 1 && !redirects.some(r => r.type === '>' || r.type === '>>') &&
             !(terminalOverride || this.terminal)?.captureStdout,
@@ -6310,56 +6392,6 @@ export class Shell {
     return alts;
   }
 
-  private parseHeredoc(input: string): { command: string; body: string } | null {
-    // Match <<DELIM, <<'DELIM', <<"DELIM", or <<-DELIM patterns
-    const lines = input.split(/\r?\n/);
-    if (lines.length < 2) return null;
-
-    // Find <<DELIM on the first line (could be anywhere in the command)
-    const heredocMatch = lines[0].match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))/);
-    if (!heredocMatch) return null;
-
-    const delimiter = heredocMatch[1] || heredocMatch[2] || heredocMatch[3];
-    const quoted = !!(heredocMatch[1] || heredocMatch[2]);
-    const stripTabs = lines[0].match(/<<-/) !== null;
-
-    // Remove the <<DELIM token from the command line
-    const command = lines[0].replace(/<<-?\s*(?:'[^']+'|"[^"]+"|(\S+))/, '').trim();
-
-    // Collect body lines until we find the delimiter on its own line
-    const bodyLines: string[] = [];
-    let found = false;
-    let delimiterIndex = -1;
-    for (let i = 1; i < lines.length; i++) {
-      const line = stripTabs ? lines[i].replace(/^\t+/, '') : lines[i];
-      if (line.trim() === delimiter) {
-        found = true;
-        delimiterIndex = i;
-        break;
-      }
-      bodyLines.push(line);
-    }
-
-    if (!found) return null;
-
-    // Capture any commands after the closing delimiter line
-    let finalCommand = command;
-    const remaining = lines.slice(delimiterIndex + 1).map(l => l.trim()).filter(Boolean);
-    if (remaining.length > 0) {
-      finalCommand = finalCommand + ' && ' + remaining.join(' && ');
-    }
-
-    let body = bodyLines.join('\n');
-    // If delimiter was not quoted, expand variables
-    if (!quoted) {
-      body = restoreExpansion(this.expandVars(body));
-    }
-    // Add trailing newline (standard heredoc behavior)
-    body += '\n';
-
-    return { command: finalCommand, body };
-  }
-
   private parseCompound(line: string): { operator: '' | '&&' | '||' | ';'; command: string }[] {
     const result: { operator: '' | '&&' | '||' | ';'; command: string }[] = [];
     let current = '';
@@ -7446,6 +7478,8 @@ export class Shell {
   private compoundsBalanced(src: string): boolean {
     const close: Record<string, string> = { for: 'done', while: 'done', until: 'done', select: 'done', if: 'fi', case: 'esac' };
     const stack: string[] = [];
+    // (here-document bodies are data: `if`, `case`, `{` there aren't keywords)
+    if (hasHeredoc(src)) src = extractHeredocs(src, new HeredocStore());
     for (const { word } of this.shellTokenScan(src)) {
       if (close[word]) stack.push(close[word]);
       else if (word === 'done' || word === 'fi' || word === 'esac') { if (stack.pop() !== word) return false; }
@@ -7486,6 +7520,10 @@ export class Shell {
 
   private async inSubshell(fn: (sub: Shell) => Promise<number>): Promise<number> {
     const child = this.fork();
+    // (what fn runs is nested: an `exit` or set -e failure in a loop body unwinds to
+    // here, ending the subshell, instead of being taken as the end of a script
+    // by the body's own execute() and the loop going on)
+    child.executeDepth = 1;
     try {
       return await fn(child);
     } catch (e) {
@@ -7570,7 +7608,7 @@ export class Shell {
    */
   private async expandRedirectTarget(raw: string, writeStderr: (s: string) => void): Promise<string | null> {
     if (/^[<>]\(/.test(raw) || /^&(\d+|-)$/.test(raw)) return raw;
-    if (!/[$`'"\\{]/.test(raw)) return raw;
+    if (!/[$`'"\\{]/.test(raw) && !raw.startsWith('~')) return raw;
     const words = this.parseSegment(await this.expandWords(raw, writeStderr)).args;
     if (words.length !== 1) { writeStderr(`tabcomputer: ${raw}: ambiguous redirect\r\n`); return null; }
     return words[0];
@@ -7858,7 +7896,7 @@ export class Shell {
         case '-e': case '-r': case '-w': case '-x':
           try { await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return 0; } catch { return 1; }
         case '-f':
-          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'file' ? 0 : 1; } catch { return 1; }
+          try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.isFile() ? 0 : 1; } catch { return 1; }
         case '-d':
           try { const s = await this.fs.stat(this.fs.resolvePath(expanded, this.cwd)); return s.type === 'dir' ? 0 : 1; } catch { return 1; }
         case '-s':
@@ -8113,6 +8151,11 @@ export class Shell {
     return results;
   }
 
+  /** Ctrl-C (or the watchdog's abort) reached the command this loop belongs to */
+  private loopAborted(): boolean {
+    return !!(this.abortController ?? this.inheritedAbort)?.signal.aborted;
+  }
+
   private async execWhile(
     input: string, writeStdout: (s: string) => void, writeStderr: (s: string) => void,
     pipeStdin?: string,
@@ -8147,7 +8190,9 @@ export class Shell {
     let status = 0;
     let iter = 0;
     while (iter++ < LOOP_ITERATION_LIMIT) {
-      if (iter % 1000 === 0) await yieldToEventLoop(); // keep the page responsive in long loops
+      // Give the page a turn every 30 ms, whatever an iteration costs; Ctrl-C ends the loop
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       try {
         // Expand vars in condition each iteration (loop vars like $X change)
         const expandedCond = await this.conditionText(parsed.condition, writeStderr);
@@ -8190,7 +8235,8 @@ export class Shell {
       let status = 0;
       let iter = 0;
       while (iter++ < LOOP_ITERATION_LIMIT) {
-        if (iter % 1000 === 0) await yieldToEventLoop();
+        await maybeYield();
+        if (this.loopAborted()) return 130;
         // Evaluate test — 0 means false (stop)
         if (test && this.evalArithmetic(test) === 0) break;
         // Execute body
@@ -8218,6 +8264,8 @@ export class Shell {
       : this.getPositionalArgs();
     let status = 0;
     for (const item of items) {
+      await maybeYield();
+      if (this.loopAborted()) return 130;
       const err = this.setVar(varName, item);
       if (err) {
         writeStderr(`tabcomputer: ${err}\r\n`);
@@ -8797,6 +8845,11 @@ export class Shell {
       else if (r.type === '2>' || r.type === '2>>') err2 = path(r.target);
       else if (r.type === '2>&1') err2 = out1;
     }
+    // A new `> file` is made by the command's one write at its end; a command looking
+    // at its fds (stat -L /proc/self/fd/1) sees it exist already, as on Linux
+    for (const p of new Set([out1, err2])) {
+      if (p.startsWith('/') && !p.startsWith('/dev/') && this.fs.lookupCached?.(p) === null) void this.fs.writeNow(p, new Uint8Array(0)).catch(() => {});
+    }
     return [[0, in0], [1, out1], [2, err2]];
   }
 
@@ -8870,8 +8923,14 @@ export class Shell {
       handled = true;
       for (const x of lastRedirects) {
         const file = { path: this.fs.resolvePath(x.target, this.cwd), append: x.type.endsWith('>>') };
-        if (x.type === '2>&1') { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
-        else if (x.type.startsWith('2') || x.fd === 2) stderrTo = file;
+        const toErr = x.type.startsWith('2') || x.fd === 2;
+        // `2> /dev/stdout` after `> f` is `2>&1`; `> /dev/stderr` after `2> f` is that file
+        // (before them, the job's own stdout/stderr: runKernelPipeline)
+        const std = /^\/(?:dev\/(?:std(out|err)|fd\/([12]))|proc\/self\/fd\/([12]))$/.exec(file.path);
+        const stdN = std ? (std[1] === 'out' || std[2] === '1' || std[3] === '1' ? 1 : 2) : 0;
+        if (x.type === '2>&1' || (toErr && stdN === 1 && stdoutTo)) { if (stdoutTo) stderrTo = 'stdout'; else handled = false; }
+        else if (!toErr && stdN === 2 && stderrTo && stderrTo !== 'stdout') stdoutTo = stderrTo; // (one open file for both)
+        else if (toErr) stderrTo = file;
         else stdoutTo = file;
       }
       if (!handled) { stdoutTo = undefined; stderrTo = undefined; }

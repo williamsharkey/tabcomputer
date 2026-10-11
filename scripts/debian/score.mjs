@@ -232,7 +232,12 @@ async function smoke(m, pkg) {
     .sort((a, b) => a.split('/').length - b.split('/').length || (/\.so\.\d/.test(b) ? 1 : 0) - (/\.so\.\d/.test(a) ? 1 : 0));
   if (libs.length) {
     const dir = libs[0].slice(0, libs[0].lastIndexOf('/'));
-    const r = await m.run(`/lib64/ld-linux-x86-64.so.2 --library-path ${dir} --list ${libs[0]} 2>&1`, 180);
+    // By its real path: $ORIGIN is the directory it was opened from, and a symlink into
+    // a private directory (libuno_cppuhelpergcc3.so.3 → ../libreoffice/program/) finds
+    // its siblings (libreglo.so) only from there; LibreOffice's programs load it from
+    // there too. Through the symlink, glibc's own ld.so fails on Debian as well
+    const real = (await m.run(`readlink -f '${libs[0]}'`)).out.trim() || libs[0];
+    const r = await m.run(`/lib64/ld-linux-x86-64.so.2 --library-path ${dir} --list ${real} 2>&1`, 180);
     // A -dev package's lib.so can be a GNU ld script (libc6-dev's libc.so), not an ELF
     if (r.code !== 0 && /invalid ELF header/.test(r.out) && /GNU ld script|^\s*(INPUT|GROUP)\s*\(/m.test((await m.run(`head -c 256 '${libs[0]}'`)).out)) {
       return { ok: true, how: `installed; ${libs[0]} is a linker script`, ms: r.ms };

@@ -6,16 +6,22 @@
  * clipboard addon that hangs under the x86 emulator, so xclip and xsel
  * answer everything they're asked: text only, and a read that can't be
  * done (no permission, an image target) prints nothing instead of failing
- * into that fallback.
+ * into that fallback. A write the browser refuses (the tab isn't focused)
+ * exits 1 with a message; the text is kept, so pbpaste and `xclip -o` give
+ * it back, and it reaches the browser when the window next gets focus
+ * (utils/clipboard.ts).
  *
  *   echo hi | pbcopy        xclip -selection clipboard -o        xsel -b -i
  */
 
 import { Command, CommandContext } from './index';
-import { copyText } from '../utils/osc52';
+import { readClipboard, writeClipboard } from '../utils/clipboard';
 
-async function readClipboard(): Promise<string> {
-  try { return (await navigator.clipboard?.readText?.()) ?? ''; } catch { return ''; }
+/** Write the clipboard; on a refusal say so (the text is kept and retried on focus): exit 1 */
+async function copy(ctx: CommandContext, name: string, text: string): Promise<number> {
+  if (await writeClipboard(text)) return 0;
+  ctx.stderr += `${name}: could not write the browser clipboard (is the tab focused?); kept here: it is written when the tab gets focus, and ${name === 'xclip' ? 'xclip -o' : name === 'xsel' ? 'xsel -o' : 'pbpaste'} prints it\n`;
+  return 1;
 }
 
 async function copyStdin(ctx: CommandContext, name: string): Promise<number> {
@@ -23,8 +29,7 @@ async function copyStdin(ctx: CommandContext, name: string): Promise<number> {
     ctx.stdout += await readClipboard();
     return 0;
   }
-  copyText(ctx.stdin || '');
-  return 0;
+  return copy(ctx, name, ctx.stdin || '');
 }
 
 const make = (name: string): Command => ({
@@ -82,8 +87,7 @@ export const xclipCmd: Command = {
         return 1;
       }
     }
-    copyText(text);
-    return 0;
+    return copy(ctx, 'xclip', text);
   },
 };
 
@@ -105,7 +109,6 @@ export const xselCmd: Command = {
     }
     if (mode === null) mode = ctx.stdin ? 'in' : 'out';
     if (mode === 'out') { ctx.stdout += await readClipboard(); return 0; }
-    copyText(mode === 'clear' ? '' : ctx.stdin);
-    return 0;
+    return copy(ctx, 'xsel', mode === 'clear' ? '' : ctx.stdin);
   },
 };

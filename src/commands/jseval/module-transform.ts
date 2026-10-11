@@ -999,8 +999,11 @@ export function transformBundledESM(src: string, pass?: MaskedPass): string {
       'setInterval=function(fn,ms,...args){return _wrapTimer(_origSetInterval(fn,ms,...args))};',
       'clearTimeout=function(t){_origClearTimeout(t&&t._id!==void 0?t._id:t)};',
       'clearInterval=function(t){_origClearInterval(t&&t._id!==void 0?t._id:t)};',
-      // Suppress unhandled rejections from ProcessExitError and CLI's "unreachable" throws
-      'if(typeof globalThis.addEventListener==="function"){var _rejHandler=function(e){if(e&&e.reason&&(e.reason._isProcessExit||e.reason==="unreachable"||e.reason.message==="unreachable"))e.preventDefault()};globalThis.addEventListener("unhandledrejection",_rejHandler)}',
+      // Suppress unhandled rejections from ProcessExitError and CLI's "unreachable" throws.
+      // One handler for the global, made outside the bundle's scope and added once: a
+      // closure made here held the run's whole module graph from the global's listeners
+      // (a pooled node worker kept ~30 MiB per `claude` run)
+      'if(typeof globalThis.addEventListener==="function")globalThis.addEventListener("unhandledrejection",globalThis.__tabcomputerRejHandler||(globalThis.__tabcomputerRejHandler=Function("e",\'if(e&&e.reason&&(e.reason._isProcessExit||e.reason==="unreachable"||e.reason.message==="unreachable"))e.preventDefault()\')))',
     ].join('\n') + '\n');
   }
 

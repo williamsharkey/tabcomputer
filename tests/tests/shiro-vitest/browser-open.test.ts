@@ -11,6 +11,7 @@ import type { FileSystem } from '@shiro/filesystem';
 import { manualSignInUrl, openUrl, CLAUDE_MANUAL_REDIRECT } from '@shiro/open-url';
 import { openCmd } from '@shiro/commands/shiro-cmds';
 import { xclipCmd, xselCmd, pbpasteCmd } from '@shiro/commands/pbcopy';
+import { resetClipboard } from '@shiro/utils/clipboard';
 import { installAlwaysShims, ALWAYS_SHIMS } from '@shiro/path-shims';
 import { loginArgs } from '@shiro/commands/claude';
 
@@ -80,6 +81,7 @@ describe('the clipboard tools', () => {
     ({ shell, fs } = await createTestShell());
     for (const c of [xclipCmd, xselCmd, pbpasteCmd]) shell.commands.register(c);
     clip = 'from the browser';
+    resetClipboard();
     Object.defineProperty(nav, 'clipboard', { configurable: true, value: { readText: async () => clip, writeText: async (t: string) => { clip = t; } } });
   });
   afterEach(() => { Object.defineProperty(nav, 'clipboard', { configurable: true, value: realClipboard }); });

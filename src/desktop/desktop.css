@@ -561,6 +561,12 @@ body.sd-active #shiro-layout { display: none; }
 }
 .sd-desktop[data-theme='light'] .sd-welcome { background-color: #fbfaf5; border: 1px solid rgba(46,48,54,.18); --sd-welcome-grid: rgba(46,48,54,.045); --sd-welcome-ink: #2e3036; }
 .sd-desktop[data-theme='dark'] .sd-welcome { background-color: #262c31; border: 1px solid rgba(236,240,238,.12); --sd-welcome-grid: rgba(236,240,238,.04); --sd-welcome-ink: #ecf0ee; }
+.sd-welcome { cursor: grab; }
+.sd-welcome h2 { touch-action: none; }
+.sd-welcome.sd-dragging { cursor: grabbing; user-select: none; }
+.sd-welcome.sd-moved:not(.sd-leaving) { animation: none; }
+.sd-welcome button { cursor: default; }
+.sd-compact .sd-welcome { cursor: auto; }
 .sd-welcome.sd-leaving { animation: sd-sheet-out .2s var(--sd-ease) forwards; }
 .sd-welcome h2 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; color: var(--sd-welcome-ink); margin: 0 30px 4px 0; }
 .sd-welcome-lede { font-size: 13px; color: var(--sd-text-2); line-height: 1.45; margin-bottom: 12px; }

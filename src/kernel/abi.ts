@@ -131,6 +131,11 @@ export const SYS_setfsuid = 122;
 export const SYS_setfsgid = 123;
 export const SYS_eventfd = 284;
 export const SYS_eventfd2 = 290;
+export const SYS_pidfd_send_signal = 424;
+export const SYS_pidfd_open = 434;
+export const SYS_pidfd_getfd = 438;
+/** pidfd_open flags: PIDFD_NONBLOCK is O_NONBLOCK, PIDFD_THREAD is O_EXCL */
+export const PIDFD_THREAD = 0o200;
 export const SYS_inotify_init = 253;
 export const SYS_inotify_add_watch = 254;
 export const SYS_inotify_rm_watch = 255;

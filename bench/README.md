@@ -77,8 +77,10 @@ Isolated only, each from a fresh profile, time and RSS peak:
   `tests/browser/vite-react.mjs`): `npm create vite`, `npm i`, `npm run dev`
   until ready, `serve open 5173` until the preview renders, and HMR latency
   of an edit to `src/App.jsx` (checked to be a hot update, not a reload).
-  npm and the template come from the net cache.
-- `go run hello.go`, first and warm, after `debian install` + `toolchain
+  npm and the template come from the net cache. Also `npm run build` (vite
+  build) after `npm i`.
+- `go run hello.go`, first and warm, then (full runs only: ~20 min in Blink) `go build -a hello.go` (the
+  runtime, fmt and their dependencies recompiled), after `debian install` + `toolchain
   install go`. The layer is served from `TABCOMPUTER_DEBIAN_LAYERS` (default
   `.toolchain-build/layers`); `sudo bash scripts/debian/build-layers.sh go`
   builds it locally in about a minute (112 MB). Without it the metric is
@@ -87,8 +89,51 @@ Isolated only, each from a fresh profile, time and RSS peak:
   its own, from server.mjs's mirror disk cache (warm after the machine's
   first run).
 
+The builds (`workflow.vite.build`, `workflow.go.run_first`/`run_warm`,
+`workflow.go.build_a`, `workflow.apt.update`/`install_hello`) also record
+`.user` and `.sys`: host CPU seconds of the whole Chromium tree (browser,
+renderer with its Workers, GPU, utility processes) from `/proc/<pid>/stat`
+while the step ran. A process that exits during the step takes its CPU
+with it, so these are lower bounds. After the rounds, `workflow.native.*`
+times the same builds natively on this machine with bash's `time` (wall,
+user, sys, children included): `go build` with an empty cache, `go build
+-a` (the host's Go), and `vite build` of the same template (the app made
+natively, registry over the network). `apt-get install` has no native row
+(it would change this machine).
+
 Node REPL first prompt and node-worker startup/`fs_200` are in the `node`
 suite (quick included).
+
+## tabcomputer vs native (`x86.blink.*` / `x86.native.*`)
+
+`tests/tests/shiro-vitest/fixtures/x86/pbench.c` is a static glibc program
+with perf-bench-style microbenchmarks; the x86 suite runs it in Blink and
+then the same binary natively on this machine, `--runs` times each:
+
+| metric | pbench mode | perf bench equivalent |
+|---|---|---|
+| `syscall_rt` (ns) | `syscall`: getppid() loop | `perf bench syscall basic` |
+| `pipe_pingpong` (µs per round trip) | `pipe`: one byte each way, two processes, two pipes | `perf bench sched pipe` |
+| `messaging` (µs per message) | `messaging 1 10 50`: 10 senders × 10 receivers, 100-byte messages | `perf bench sched messaging -p -g 1 -l 50` |
+| `memcpy_bw` (MB/s) | `memcpy 32 8`: glibc memcpy of 32 MiB, 8 times | `perf bench mem memcpy -s 32MB` |
+| `fork_exec` (ms) | `forkexec`: fork + execv(self, nop) + waitpid | — |
+
+In `--quick`: all but `messaging`. Counts are picked by pbench so a run
+takes about `PBENCH_MS` (500) ms, guest clock. Full runs add
+`x86.blink_direct.*` (Blink's direct kernel channels,
+`TABCOMPUTER_BLINK_DIRECT=1`) and `x86.native.pipe_pingpong_1cpu` (pinned
+with `taskset -c 0`). WASI equivalents: `kernel.syscall_rtt.sab` (fstat
+round trip), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
+`kernel.spawn_wait.wasm` (no fork in WASI).
+
+Native numbers on a VM depend on what else runs: an idle vCPU woken by a
+pipe write costs this container ~35 µs, so `pipe_pingpong` is ~39 µs idle
+and ~3 µs while another job keeps the CPUs busy (or pinned). Compare rows
+from the same run.
+
+`node bench/native.mjs [--runs N] [--label wsl2] [--out f.json]` prints the
+native rows on any Linux (WSL included) without a browser or a build: gcc
+and Node only.
 
 ## Comparing runs (`bench/compare.mjs`)
 
@@ -202,10 +247,11 @@ node bench/ab.mjs origin/unix/integration --quick          # integration vs your
 
 - `fixtures/kbench.c` → `kbench.wasm` (committed; `sh fixtures/build.sh`):
   freestanding WASI program for syscall loops, pipe and file throughput and a
-  CPU loop. It times itself with `clock_time_get`, which the guest answers
-  without a syscall.
+  CPU loop, and `memcpy` (memory.copy). It times itself with
+  `clock_time_get`, which the guest answers without a syscall.
 - x86: Go hello / net/http from `tests/.../fixtures/x86`, the Go cpuloop from
-  `vendor/blink/bench`, a static glibc hello, and GitHub CLI 2.62.0, built or
+  `vendor/blink/bench`, a static glibc hello and pbench (rebuilt when
+  pbench.c is newer), and GitHub CLI 2.62.0, built or
   downloaded into `bench/.cache/fixtures` when go/gcc/network are there;
   missing ones are recorded as skipped.
 

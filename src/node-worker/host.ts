@@ -17,6 +17,7 @@ import { getShiroOrigin } from '../utils/shiro-origin';
 /** (guest.ts writes it; the value only, so the page doesn't load the guest's code) */
 const EXITING_MARK = 0x45584954;
 import type { Process } from '../kernel/process';
+import { writeClipboard } from '../utils/clipboard';
 
 export { setNodeWorkerFactory, nodeWorkerMode } from './boot';
 
@@ -55,7 +56,7 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
         return;
       case 'node-guest-clipboard':
         // (pbcopy, xclip, wl-copy from the guest: the page's clipboard)
-        if (typeof m.text === 'string' && typeof navigator !== 'undefined') navigator.clipboard?.writeText(m.text).catch(() => {});
+        if (typeof m.text === 'string') void writeClipboard(m.text); // (kept and retried on focus when refused)
         return;
       case 'node-guest-watch': {
         // fs.watch in the guest: the filesystem's changes (every process's writes) go to it
@@ -240,7 +241,9 @@ export function installNodeLoader(kernel: Kernel): void {
 /** `node ARGS` from the shell as a kernel process: a foreground job on the terminal's pty, or on the shell's stdio */
 export async function runNodeInWorker(ctx: CommandContext): Promise<number> {
   const argv = ['node', ...ctx.args];
+  // (not the shell's own __PIPE_STDIN: process.ts)
   const env = { ...ctx.env };
+  delete env.__PIPE_STDIN;
   const { kernelForContext } = await import('../wasi/run-command');
   installNodeLoader(kernelForContext(ctx)); // node that this node starts runs as a guest too
   const term = ctx.terminal;

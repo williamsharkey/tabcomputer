@@ -44,6 +44,12 @@ export async function run(h) {
       { notes: `fd_fdstat_get → fstat from a WASM process, ${calls} calls (${chan === 'sab' ? 'Worker, SAB channel' : 'main thread, JSPI'})` });
   });
 
+  // the WASI side of x86.blink.memcpy_bw / x86.native.memcpy_bw: same size, same count
+  await h.try('kernel.memcpy_bw.wasm', 'MB/s', async () => {
+    const r = await kb(h, [[KB, 'memcpy', '32', '8']], n);
+    h.sample('kernel.memcpy_bw.wasm', r.map((x) => x.bytes / 2 ** 20 / (x.ns / 1e9)), 'MB/s', { notes: 'kbench memcpy 32 8: memory.copy (bulk memory) of a 32 MiB buffer, 8 copies after a warm-up copy, in a WASM process' });
+  });
+
   await h.try('kernel.syscall_inpage', 'µs', async () => {
     const r = await h.eval(async (n) => {
       const B = window.__bench, out = [];

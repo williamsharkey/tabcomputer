@@ -746,8 +746,9 @@ async function run(msg) {
     // a thread in a kernel call has a signal to take (Blink patches 0065,
     // 0507): the page interrupts the process's blocking calls
     kick() { post({ type: 'blink-kick' }); },
-    // a compiled-code module (wjit.c) for the page's cache (src/x86-engine/blink.ts)
-    keepWasm(d) { post({ type: 'blink-wjmod', module: d.shiroWjModule, key: d.key, size: d.size }); },
+    // compiled-code modules (wjit.c, a batch from a thread) for the page's cache (src/x86-engine/blink.ts);
+    // one the page keeps already comes without its module
+    keepWasm(list) { post({ type: 'blink-wjmod', modules: list.map((d) => ({ module: d.shiroWjModule, key: d.key, size: d.size })) }); },
     get data() { return data; },
     poll: (kfd, events, timeoutMs = 0) => pollFd(kfd, events, timeoutMs),
     watch(kfd, node) { watched.set(kfd, node); post({ type: 'blink-watch', fd: kfd }); },
@@ -809,6 +810,13 @@ async function run(msg) {
         // execve from a fork child, got PATH=/)
         for (const k of ['USER', 'LOGNAME', 'PATH', 'PWD', 'HOME', 'LANG', '_']) if (!(k in M.ENV)) M.ENV[k] = undefined;
         try { FS.chdir(msg.cwd || '/'); } catch { /* cwd missing: stay at / */ }
+        // the compiled modules the page keeps already: threads don't post them again (wjit.c)
+        if (M._shiro_wj_kept) {
+          for (const k of msg.wjKept || []) {
+            const dot = k.indexOf('.');
+            if (dot > 0) M._shiro_wj_kept(parseInt(k.slice(0, dot), 36) >>> 0, Number(k.slice(dot + 1)) >>> 0);
+          }
+        }
       }],
     });
     blinkModule = M;

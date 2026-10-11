@@ -13,12 +13,13 @@ import { ProcessExitError } from '../commands/jseval/utils';
 import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
 import type { SharedState } from './types';
 import { createFakeBuffer } from './buffer';
-import { asyncContext, carryAsyncContext } from './async-context';
+import { asyncContext, carryAsyncContext, carriesAsyncContext } from './async-context';
 import { createFakeConsole, formatLog } from './console';
 import { createFakeProcess } from './process';
 import { createFileCache } from './file-cache';
 import { claudeBootstrap, preloadEnvironment } from './preload';
-import { isClaudeCodeScript, patchClaudeCodeSource } from '../claude-code-version';
+import { isClaudeCodeScript } from '../claude-code-version';
+import { transformClaudeSource } from '../claude-transform-cache';
 import { createAutoStubFactory } from './auto-stub';
 import { createRequireFunction, compileAsyncModule, esmNamespace } from './require';
 import { createExpressFactory } from './shims/express';
@@ -84,6 +85,8 @@ export async function executeNodeScript(
   scriptPath: string,
   fileArgs: string[],
   printResult: boolean,
+  /** `code` is already what runs (Claude Code's cached transform: claude-transform-cache.ts) */
+  opts: { pretransformed?: boolean; onTransformed?: (text: string) => void } = {},
 ): Promise<number> {
   // Suppress unhandled rejections from CLI force-exit patterns
   let _nodeStderrBuf: string[] | null = null;
@@ -452,22 +455,27 @@ export async function executeNodeScript(
     }
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
     // Transform TypeScript/JSX/ESM syntax for execution
-    let transformedCode = isClaudeCodeScript(scriptPath) ? patchClaudeCodeSource(code) : patchPackageSource(scriptPath, code);
-    if (scriptPath && (scriptPath.endsWith('.ts') || scriptPath.endsWith('.tsx'))) {
-      transformedCode = transformTS(transformedCode);
-    }
-    if (scriptPath && (scriptPath.endsWith('.tsx') || scriptPath.endsWith('.jsx'))) {
-      transformedCode = transformJSX(transformedCode);
-    }
-    // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts):
-    // with the transform's code mask, unless awaits are added after it
-    const carry = asyncContext.active || code.includes('AsyncLocalStorage');
-    const syncAwaits = !isClaudeCodeScript(scriptPath);
-    transformedCode = transformESModules(transformedCode, carry && !syncAwaits ? carryAsyncContext : undefined);
-    // spawnSync/execSync results are read right away: await them where the script can
-    if (syncAwaits) {
+    let transformedCode: string;
+    if (opts.pretransformed) {
+      transformedCode = code;
+    } else if (isClaudeCodeScript(scriptPath)) {
+      // (the same passes as the cached text: claude-transform-cache.ts)
+      transformedCode = await transformClaudeSource(code);
+      opts.onTransformed?.(transformedCode);
+    } else {
+      transformedCode = patchPackageSource(scriptPath, code);
+      if (scriptPath && (scriptPath.endsWith('.ts') || scriptPath.endsWith('.tsx'))) {
+        transformedCode = transformTS(transformedCode);
+      }
+      if (scriptPath && (scriptPath.endsWith('.tsx') || scriptPath.endsWith('.jsx'))) {
+        transformedCode = transformJSX(transformedCode);
+      }
+      transformedCode = transformESModules(transformedCode);
+      // spawnSync/execSync results are read right away: await them where the script can
+      // (added after the transform, so the AsyncLocalStorage rewrite can't use its code mask)
       transformedCode = awaitSyncCalls(transformedCode);
-      if (carry) transformedCode = carryAsyncContext(transformedCode);
+      // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
+      if (carriesAsyncContext(code)) transformedCode = carryAsyncContext(transformedCode);
     }
 
     // Stash real browser console on globalThis so injected code can use it

@@ -3,6 +3,7 @@ import { stdinPipe } from '../live-stdin';
 import type { CommandContext } from '../../commands/index';
 import { parseShellArgs } from '../../shell-args';
 import { activeProfile } from '../../profile';
+import { writeClipboard } from '../../utils/clipboard';
 
 /** Marks the wait a running child (ref()'d) puts on its parent: process.exit() doesn't wait for it */
 export const CHILD_HOLD = Symbol('child hold');
@@ -26,7 +27,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   /** pbcopy & co.: the browser's clipboard (a kernel guest has none of its own: the page writes it) */
   const toClipboard = (text: string) => {
     if (deps.guest?.page) { deps.guest.page.clipboard(text); return; }
-    navigator.clipboard?.writeText(text).catch(() => {});
+    void writeClipboard(text); // (kept and retried on focus when refused)
   };
   const inherits = (stdio: any, i: number): boolean => {
     if (stdio === 'inherit') return true;

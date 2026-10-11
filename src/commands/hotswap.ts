@@ -24,6 +24,7 @@ const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's sou
 FILEs are paths in a checkout of tabcomputer's source (default root: the
 nearest directory above the cwd with src/shell.ts). Classes exported by a
 swapped file replace the methods of the live classes of the same name.
+Registry commands they export (src/commands/*) are patched in place.
 A swap reverts by itself when its TTL (default 90s) runs out unconfirmed.
 `;
 
@@ -61,6 +62,7 @@ function describe(report: ModuleReport[]): string {
       out += `  ${m.module}: ${c.name}: ${parts.join('; ')}\n`;
       for (const e of c.errors) out += `    error: ${e}\n`;
     }
+    for (const c of m.commands) out += `  ${m.module}: command ${c.command}: ${c.changed.length ? `replaced ${c.changed.join(', ')}` : 'unchanged'}\n`;
     if (m.state.length) out += `  ${m.module}: shares the page's module state: ${m.state.join(', ')}\n`;
     if (m.hook) out += `  ${m.module}: ran __hotswap\n`;
     if (m.fixed.length) out += `  ${m.module}: not swapped (other modules keep the old ones): ${m.fixed.join(', ')}\n`;
@@ -314,7 +316,7 @@ async function diff(ctx: CommandContext, args: string[]): Promise<number> {
 async function push(ctx: CommandContext, args: string[]): Promise<number> {
   const root = await checkoutRoot(ctx, args);
   if (!root) return 1;
-  let message = '', repo = 'williamsharkey/shiro', branch = '';
+  let message = '', repo = 'williamsharkey/tabcomputer', branch = '';
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-m' || a === '--message') message = args[++i] ?? '';
@@ -336,7 +338,7 @@ async function push(ctx: CommandContext, args: string[]): Promise<number> {
   try {
     const r = await pushSource(ctx.fs as any, root, (method, path, body) => ghApi(token, method, path, body), { repo, branch, message, author });
     ctx.stdout += `${r.created ? 'created' : 'updated'} ${repo} branch ${r.branch}: ${r.commit.slice(0, 12)} (${r.files} file(s))\n${r.url}\n`;
-    ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base unix/integration\n`;
+    ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base main\n`;
     return 0;
   } catch (e: any) {
     ctx.stderr += `hotswap push: ${e?.message ?? e}\n`;

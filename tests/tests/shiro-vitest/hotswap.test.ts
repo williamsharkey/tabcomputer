@@ -138,6 +138,35 @@ describe('hotswap: swapping classes', () => {
     expect(mgr.stack).toHaveLength(0);
   });
 
+  it('patches a registry command in place: the registry, a lazy command and revert (#47)', async () => {
+    const { CommandRegistry } = await import('@shiro/commands/index');
+    const { lazyCommand } = await import('@shiro/utils/lazy-command');
+    const run = async (cmd: any, args: string[] = []) => { const ctx: any = { args, stdout: '', stderr: '', env: {} }; const code = await cmd.exec(ctx); return { code, out: ctx.stdout }; };
+    const hsCmd = { name: 'hs', description: 'v1', async exec(ctx: any) { ctx.stdout += 'v1\n'; return 0; } };
+    registerLive('src/commands/hs-cmd.ts', { hsCmd });
+    const reg = new CommandRegistry();
+    reg.register(hsCmd as any);
+    const lazy = lazyCommand('hs-lazy', 'lazy', async () => hsCmd as any);
+    try {
+      expect((await run(reg.get('hs'))).out).toBe('v1\n');
+      const next = { name: 'hs', description: 'v2', async exec(ctx: any) { ctx.stdout += 'v2\n'; return 0; } };
+      const rec = mgr.apply({ 'src/commands/hs-cmd.ts': { hsCmd: next } });
+      expect(rec.report[0].commands).toEqual([{ name: 'hsCmd', command: 'hs', changed: ['description', 'exec'] }]);
+      expect(rec.report[0].fixed).toEqual([]);
+      expect((await run(reg.get('hs'))).out).toBe('v2\n');
+      expect((await run(lazy)).out).toBe('v2\n');
+      expect(hsCmd.description).toBe('v2');
+      // --help still answered by the wrapper around the patched command
+      expect((await run(reg.get('hs'), ['--help'])).code).toBe(0);
+      mgr.revert();
+      expect((await run(reg.get('hs'))).out).toBe('v1\n');
+      expect((await run(lazy)).out).toBe('v1\n');
+      expect(hsCmd.description).toBe('v1');
+    } finally {
+      liveModules().delete('src/commands/hs-cmd.ts');
+    }
+  });
+
   it('skips modules that are not live', () => {
     const undo: (() => void)[] = [];
     const rep = swapModules({ 'src/nowhere.ts': makeNext() }, undo);
@@ -294,6 +323,21 @@ describe('hotswap: building a swap bundle', () => {
       mgr.revert();
     } finally {
       g.__tabcomputerLiveState.delete('src/hs-fixture/c.ts');
+    }
+  });
+
+  it('loads a lazy swapped module before the swap, so there is a live one to patch', async () => {
+    const files: Record<string, string> = { '/co/src/commands/hs-lazy.ts': `export const lazyCmd = { name: 'hl', async exec() { return 7; } };\n` };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    liveLoaders().set('src/commands/hs-lazy.ts', async () => { const ns = { lazyCmd: { name: 'hl', async exec() { return 1; } } }; registerLive('src/commands/hs-lazy.ts', ns); return ns; });
+    try {
+      expect(liveModules().has('src/commands/hs-lazy.ts')).toBe(false);
+      const out = await buildSwap(fs, { root: '/co', files: ['src/commands/hs-lazy.ts'], build: esbuild.build as any });
+      expect(out.needs).toEqual(['src/commands/hs-lazy.ts']);
+      expect(liveModules().has('src/commands/hs-lazy.ts')).toBe(true);
+    } finally {
+      liveLoaders().delete('src/commands/hs-lazy.ts');
+      liveModules().delete('src/commands/hs-lazy.ts');
     }
   });
 

@@ -1,4 +1,5 @@
 import { Command, CommandContext } from './index';
+import { decodeBytes } from '../utils/byte-text';
 
 /**
  * rg: ripgrep-compatible search command
@@ -335,7 +336,12 @@ export const rgCmd: Command = {
       if (text === undefined && await binaryHead(filePath)) return;
       let content: string;
       try {
-        content = text ?? await ctx.fs.readFile(filePath, 'utf8') as string;
+        if (text !== undefined) content = text;
+        else {
+          const bytes = await ctx.fs.readFile(filePath) as Uint8Array;
+          if (bytes.indexOf(0) >= 0) return; // binary: skipped, before decoding it (~0.3 s for 30 MB, #19)
+          content = decodeBytes(bytes);
+        }
       } catch { return; }
       // Skip binary files (a NUL near the start)
       if (content.slice(0, 65536).includes('\0')) return;

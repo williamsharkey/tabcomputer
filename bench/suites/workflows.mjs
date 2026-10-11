@@ -13,11 +13,11 @@
 //   the first run on a machine.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MB } from '../lib/harness.mjs';
+import { FAKE_KEY, startMockModel } from '../lib/mockmodel.mjs';
 
 export const name = 'workflows';
 export const ownPages = true;
@@ -79,68 +79,10 @@ const side = (h, cmd) => h.eval(async (c) => {
 }, cmd);
 
 // ── an interactive `claude --npm` session, page responsiveness while it runs ──
-// The model is mocked (mockModel: a local Messages API with streamed replies),
+// The model is mocked (lib/mockmodel.mjs: a local Messages API with streamed replies),
 // so the session needs no credentials and no network.
 const CLAUDE = ['workflow.claude_session_lag', 'workflow.claude_session_lag.p50', 'workflow.claude_session_lag.p99', 'workflow.claude_session_lag.max', 'workflow.claude_session_lag.longtasks_per_min', 'workflow.claude_session_lag.longtask_ms_per_min', 'workflow.claude_session_lag.stalls', 'workflow.claude_session.start', 'workflow.claude_session.turn'];
-const FAKE_KEY = 'sk-ant-api03-bench-not-a-real-key-000000000000000000000000';
 const TURNS = 3;
-
-function sse(events) { return events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`).join(''); }
-/** A Messages API reply: `text` streamed in small deltas (or one JSON body when not streaming). */
-function mockMessage(body, text) {
-  const model = body.model || 'claude-sonnet-4-5';
-  const usage = { input_tokens: 12, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-  const id = `msg_bench_${Math.random().toString(36).slice(2, 10)}`;
-  if (!body.stream) return { contentType: 'application/json', body: JSON.stringify({ id, type: 'message', role: 'assistant', model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage }) };
-  const words = text.match(/\S+\s*/g) || [text];
-  return {
-    contentType: 'text/event-stream',
-    body: sse([
-      ['message_start', { message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1 } } }],
-      ['content_block_start', { index: 0, content_block: { type: 'text', text: '' } }],
-      ...words.map((w) => ['content_block_delta', { index: 0, delta: { type: 'text_delta', text: w } }]),
-      ['content_block_stop', { index: 0 }],
-      ['message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 40 } }],
-      ['message_stop', {}],
-    ]),
-  };
-}
-
-/**
- * A local Messages API: ANTHROPIC_BASE_URL points here (node-compat/process.ts sets
- * its own only when unset). Claude's fetch runs in a Worker, out of Playwright's
- * routes, so this is a real server on this machine, with CORS for the page's origin.
- */
-async function mockModel(host) {
-  let n = 0;
-  const server = createServer((req, res) => {
-    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*', 'access-control-expose-headers': '*' };
-    if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
-    let raw = '';
-    req.on('data', (c) => { raw += c; });
-    req.on('end', () => {
-      let body = {};
-      try { body = JSON.parse(raw || '{}'); } catch {}
-      const path = new URL(req.url, 'http://x').pathname;
-      if (/\/v1\/messages\/count_tokens/.test(path)) { res.writeHead(200, { ...cors, 'content-type': 'application/json' }); res.end('{"input_tokens":12}'); return; }
-      if (/\/v1\/messages/.test(path)) {
-        // the reply to a user's turn names it; side calls (titles, topic checks) get a short text
-        const last = JSON.stringify(body.messages?.slice(-1) ?? '');
-        const turn = /bench turn (\d+)/.exec(last)?.[1];
-        const text = turn ? `BENCH-REPLY-${turn} ` + 'Here is a mocked answer with a few sentences of text so the terminal renders a streamed reply. '.repeat(4) : 'ok';
-        n++;
-        const m = mockMessage(body, text);
-        res.writeHead(200, { ...cors, 'content-type': m.contentType, 'request-id': `req_bench_${n}` });
-        res.end(m.body);
-        return;
-      }
-      res.writeHead(200, { ...cors, 'content-type': 'application/json' }); res.end('{}');
-    });
-  });
-  // this machine's address, not localhost: a guest's fetch of localhost goes to its own in-tab servers
-  await new Promise((r) => server.listen(0, host, r));
-  return { url: `http://${host}:${server.address().port}`, calls: () => n, close: () => new Promise((r) => server.close(r)) };
-}
 
 /** Tick lateness of a 500 ms heartbeat (the watchdog's own measure), sampled in the page. */
 const startLagSampler = (h) => h.eval(() => {
@@ -157,7 +99,7 @@ async function claudeSession(h, add) {
   await h.page?.context().close().catch(() => {});
   await h.boot({ path: '/?ui=terminal' });
   if (!h.hostAddr) throw new Error('no non-loopback address on this machine for the mock model server');
-  const mock = await mockModel(h.hostAddr);
+  const mock = await startMockModel(h.hostAddr);
   try {
   // past the net cache's route, which fails every non-GET request off this origin
   await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());

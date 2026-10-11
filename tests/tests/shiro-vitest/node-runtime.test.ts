@@ -484,7 +484,8 @@ describe('Node Runtime (jseval.ts)', () => {
       const ctx = createCtx(os.shell, os.fs, ['-e', [
         'process.stdin.setRawMode(true);',
         'process.stdin.on("data", (d) => {',
-        '  if (d === "\\x03") {',
+        // (a Buffer without setEncoding, as in node)
+        '  if (String(d) === "\\x03") {',
         '    process.exit(130);',
         '  }',
         '});',

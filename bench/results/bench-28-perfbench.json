@@ -1,0 +1,107 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-11T06:52:16.389Z",
+  "git": {
+   "sha": "3293a976009ee4ba4d8d73542095324a9da63d7b",
+   "short": "3293a97",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": false,
+  "runs": 5,
+  "machine": {
+   "id": "c7438dc4bb1e",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.10GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 456,
+  "netcache": {
+   "hits": 1,
+   "misses": 0,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "perf.blink.syscall_basic",
+   "suite": "perfbench",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 116.8,
+   "p90": 123.8,
+   "min": 102.9,
+   "max": 123.8,
+   "n": 5,
+   "samples": [
+    102.9,
+    115.4,
+    123.8,
+    116.8,
+    117
+   ],
+   "notes": "`perf bench syscall basic -l 2000` (perf version 6.12.111) in Blink: getppid() round trip"
+  },
+  {
+   "name": "perf.blink.sched_pipe",
+   "suite": "perfbench",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "µs",
+   "median": 774.7,
+   "p90": 873.8,
+   "min": 768.1,
+   "max": 873.8,
+   "n": 5,
+   "samples": [
+    774.7,
+    772.5,
+    840.8,
+    873.8,
+    768.1
+   ],
+   "notes": "`perf bench sched pipe -l 300` (perf version 6.12.111) in Blink: two processes ping-ponging over two pipes, per round trip"
+  },
+  {
+   "name": "perf.blink.mem_memcpy",
+   "suite": "perfbench",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "GB/s",
+   "median": null,
+   "p90": null,
+   "n": 0,
+   "samples": [],
+   "notes": "failed: exit 0:      561.132787 MB/sec",
+   "error": true
+  },
+  {
+   "name": "perf.blink.sched_messaging",
+   "suite": "perfbench",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 7.567,
+   "p90": 7.884,
+   "min": 7.429,
+   "max": 7.884,
+   "n": 5,
+   "samples": [
+    7.787,
+    7.469,
+    7.884,
+    7.567,
+    7.429
+   ],
+   "notes": "`perf bench sched messaging -p -g 1 -l 20` (perf version 6.12.111) in Blink: hackbench: 1 group of 20 senders × 20 receivers (processes, pipes), 20 loops; total"
+  }
+ ]
+}

@@ -11,6 +11,9 @@ export default {
   test: {
     ...base.test,
     setupFiles: [...(base.test?.setupFiles as string[]), './tests/shiro-vitest/worker-mode-setup.ts'],
+    // Every node here starts a real Worker: a file's first test pays its cold start
+    // (the guest bundle), which on a loaded machine can pass vitest's default 5 s
+    testTimeout: 20_000,
     include: [
       'tests/shiro-vitest/node-*.test.ts',
       'tests/shiro-vitest/npm-*.test.ts',

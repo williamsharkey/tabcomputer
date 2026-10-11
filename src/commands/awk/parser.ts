@@ -52,6 +52,9 @@ export interface Func { name: string; params: string[]; body: Stmt[]; line: numb
 export interface Program {
   begin: Stmt[][];
   end: Stmt[][];
+  /** gawk's BEGINFILE / ENDFILE: before each input file's first record, after its last */
+  beginfile: Stmt[][];
+  endfile: Stmt[][];
   rules: Rule[];
   funcs: Map<string, Func>;
 }
@@ -100,7 +103,7 @@ export class Parser {
   }
 
   parseProgram(): Program {
-    const prog: Program = { begin: [], end: [], rules: [], funcs: new Map() };
+    const prog: Program = { begin: [], end: [], beginfile: [], endfile: [], rules: [], funcs: new Map() };
     this.skipTerms();
     while (!this.is('EOF')) {
       this.item(prog);
@@ -146,10 +149,10 @@ export class Parser {
       return;
     }
     if (t.t === 'BEGINFILE' || t.t === 'ENDFILE') {
-      // accepted, but run never (no per-file hooks)
       this.next();
       this.optNewlines();
-      this.blockBody();
+      if (!this.is('{')) this.err();
+      (t.t === 'BEGINFILE' ? prog.beginfile : prog.endfile).push(this.blockBody());
       return;
     }
     if (t.t === '{') {

@@ -121,6 +121,32 @@ describe('ping and strace', () => {
     r = await sh('strace echo hi');
     expect(r.err).toContain('made no system calls: it is a tabcomputer builtin');
   }, 60_000);
+  it('strace -c summarizes an x86 program\'s calls; --json; -p attaches to a running process', async () => {
+    let r = await sh('strace -c hello');
+    expect(r.out).toBe('Hello, world!\n');
+    expect(r.err).toMatch(/^\d+ calls in [\d.]+ s: kernel CPU/);
+    expect(r.err).toMatch(/% time +seconds +usecs\/call +cpu-us\/call +calls +errors +sync% +max-ms syscall\n/);
+    expect(r.err).toMatch(/ 1 +[\d.]+ +[\d.]+ write\n/);
+    expect(r.err).toMatch(/write:pty|write:pipe|write:dev|write:file/);
+    expect(r.err).toMatch(/ total\n/);
+    r = await sh('strace --json -o /tmp/prof.json hello');
+    const rep = JSON.parse(await fs.readFile('/tmp/prof.json', 'utf8') as string);
+    expect(rep.syscalls.find((s: any) => s.name === 'write')).toMatchObject({ calls: 1 });
+    expect(rep.procs).toHaveLength(1);
+    r = await sh('strace -c -p 999999');
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('No such process');
+    // attach to a process that is sleeping in a read; --duration ends it
+    const kernel = kernelForContext({ fs, shell } as unknown as CommandContext);
+    const { createPipe } = await import('@shiro/kernel/pipe');
+    const [pr] = createPipe();
+    const p = kernel.spawn({ path: 'reader', fds: { 0: pr }, run: async (proc, k) => k.syscall(proc, 0 /* read */, [0, 8, 0, 0, 0, 0], new Uint8Array(8)) });
+    await new Promise((res) => setTimeout(res, 20));
+    r = await sh(`strace -c -p ${p.pid} --duration=0.2`);
+    expect(r.code).toBe(0);
+    expect(r.err).toMatch(/^0 calls in 0\.[12]\d+ s/);
+    kernel.kill(p.pid, 9);
+  }, 60_000);
 });
 
 describe('pkg, tmux, alternatives', () => {

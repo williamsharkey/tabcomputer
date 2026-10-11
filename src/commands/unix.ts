@@ -110,6 +110,7 @@ import { ddCmd } from './dd';
 import { xxdCmd } from './xxd';
 import { dcCmd } from './dc';
 import { splitCmd } from './split';
+import { truncateCmd } from './truncate';
 import { factorCmd } from './factor';
 import { cksumCmd } from './cksum';
 import { sumCmd } from './sum';
@@ -140,7 +141,7 @@ export const unixCommands: Command[] = [
   seq, set, sha256sum, sha1sumCmd, sha384sumCmd, sha512sumCmd, shift, shrine, sleep, sort, stat, strings, tail, tar, tee,
   test, time, timeout, touch, mkfifo, tr, trap, trueCmd, colon, tsort, type, ulimit, umask,
   unalias, unexpand, uniq, uptime, watch, wc, which, whoami, xargs, yes,
-  revCmd, tacCmd, shufCmd, cmpCmd, ddCmd, xxdCmd, dcCmd, splitCmd,
+  revCmd, tacCmd, shufCmd, cmpCmd, ddCmd, xxdCmd, dcCmd, splitCmd, truncateCmd,
   factorCmd, cksumCmd, sumCmd, base32Cmd, numfmtCmd, csplitCmd,
   niceCmd, wCmd, whoCmd, usersCmd, lsofCmd, dos2unixCmd, unix2dosCmd,
   ttyCmd, setsidCmd, scriptCmd,

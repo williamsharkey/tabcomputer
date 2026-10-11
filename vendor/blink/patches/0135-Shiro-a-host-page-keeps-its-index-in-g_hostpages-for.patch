@@ -1,0 +1,111 @@
+From 8de3be5dc213782c27c1a0d840a3650181a7634e Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 08:12:42 +0000
+Subject: [PATCH] Shiro: a host page keeps its index in g_hostpages (forks of a
+ process with many mapped pages aborted)
+
+TrackHostPage appended a slot to g_hostpages for every page allocation,
+recycled pages included, and AllocateAnonymousPage kept the entry
+(index << 12) in a 32-bit size_t. A same-instance fork child's pages
+(the copies of the parent's file pages) are allocated anew for every
+fork, so a process with thousands of mapped file pages that forked
+often passed 2^20 slots: entries lost their address bits, page table
+entries pointed nowhere, and Blink aborted ("pt & PAGE_V",
+"impossible memory") or a child hung. Debian's dracut-install,
+ldconfig and maintainer scripts hit it (mappings x forks ~ 1M pages).
+
+Each host page now keeps the index it got first (a page -> index hash,
+under its own lock), and the entry is 64-bit.
+---
+ blink/memorymalloc.c | 56 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index fc59f82..2cecd52 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -222,11 +222,60 @@ static void FreeHostPage(struct HostPage *hp) {
+   free(hp);
+ }
+ 
++// Each host page keeps the index it got first (g_hostindex: page -> index),
++// so a page that is freed and allocated again, as every same-instance fork
++// child's pages are, takes no new slot in g_hostpages. Before, each
++// allocation appended one, and once a process with thousands of mapped pages
++// had forked enough times (about 2^20 slots), an entry's address bits were
++// cut off (AllocateAnonymousPage kept them in a 32-bit size_t), its page
++// table entry pointed nowhere, and Blink aborted on "pt & PAGE_V" or
++// "impossible memory".
++static struct {
++  uintptr_t *key;  // host page address, 0: empty
++  u64 *idx;
++  size_t n, c;
++} g_hostindex;
++
++static pthread_mutex_t_ g_hostindex_lock = PTHREAD_MUTEX_INITIALIZER_;
++
++static size_t HostIndexSlot(uintptr_t k) {
++  return (size_t)(((u64)k >> 12) * 0x9E3779B97F4A7C15ull >> 32) & (g_hostindex.c - 1);
++}
++
++static void HostIndexGrow(void) {
++  size_t i, j, c = g_hostindex.c;
++  uintptr_t *key = g_hostindex.key;
++  u64 *idx = g_hostindex.idx;
++  g_hostindex.c = c ? c * 2 : 4096;
++  unassert((g_hostindex.key = (uintptr_t *)calloc(g_hostindex.c, sizeof(*key))));
++  unassert((g_hostindex.idx = (u64 *)calloc(g_hostindex.c, sizeof(*idx))));
++  for (i = 0; i < c; ++i) {
++    if (!key[i]) continue;
++    for (j = HostIndexSlot(key[i]); g_hostindex.key[j]; j = (j + 1) & (g_hostindex.c - 1)) {
++    }
++    g_hostindex.key[j] = key[i];
++    g_hostindex.idx[j] = idx[i];
++  }
++  free(key);
++  free(idx);
++}
++
+ static u64 TrackHostPage(u8 *ptr) {
+   u64 entry;
++  size_t i;
++  uintptr_t k = (uintptr_t)ptr;
+   if (HasLinearMapping()) {
+     return (uintptr_t)ptr;
+   } else {
++    LOCK(&g_hostindex_lock);
++    if ((g_hostindex.n + 1) * 2 > g_hostindex.c) HostIndexGrow();
++    for (i = HostIndexSlot(k); g_hostindex.key[i]; i = (i + 1) & (g_hostindex.c - 1)) {
++      if (g_hostindex.key[i] == k) {
++        entry = g_hostindex.idx[i];
++        UNLOCK(&g_hostindex_lock);
++        return entry << 12;
++      }
++    }
+     if (g_hostpages.n == g_hostpages.c) {
+       g_hostpages.c += 1;
+       g_hostpages.c += g_hostpages.c >> 1;
+@@ -235,6 +284,10 @@ static u64 TrackHostPage(u8 *ptr) {
+     }
+     entry = g_hostpages.n++;
+     g_hostpages.p[entry] = ptr;
++    g_hostindex.key[i] = k;
++    g_hostindex.idx[i] = entry;
++    ++g_hostindex.n;
++    UNLOCK(&g_hostindex_lock);
+     return entry << 12;
+   }
+ }
+@@ -644,7 +697,8 @@ void FreeMachine(struct Machine *m) {
+ 
+ u64 AllocateAnonymousPage(struct System *s) {
+   u8 *page;
+-  size_t i, n;
++  size_t n;
++  u64 i;
+   struct HostPage *h;
+   LOCK(&g_allocator.lock);
+   if ((h = g_allocator.pages)) {
+-- 
+2.43.0
+

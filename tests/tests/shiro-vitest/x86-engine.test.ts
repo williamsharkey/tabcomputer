@@ -136,6 +136,8 @@ const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
+const forkmapsBin = join(out, 'forkmaps');
+const haveForkmaps = tryBuild('gcc', ['-static', '-O1', '-o', forkmapsBin, 'forkmaps.c']);
 const callsBin = join(out, 'calls');
 const haveCalls = tryBuild('gcc', ['-static', '-O2', '-o', callsBin, 'calls.c']);
 const futexckptBin = join(out, 'futexckpt');
@@ -1446,6 +1448,17 @@ describe('Blink engine: CPU and syscall fixes', () => {
       expect(r.output.replace(/\r\n/g, '\n')).toBe('calls b30fec670ff9ba2e\nmemory b328a7deb029a1df\nregs b730b7fef0aa8521\n');
     }
   }, 120_000);
+
+  // debian: dracut-install and ldconfig aborted ("pt & PAGE_V", "impossible
+  // memory") or hung once a process with many file pages mapped had forked
+  // enough times: every fork took new g_hostpages slots, and past 2^20 a page
+  // table entry lost its address bits. 250 files of 96 KiB and 180 forks is
+  // ~1.08 M page allocations (patch 0135).
+  it.skipIf(!haveForkmaps)('a process with many file pages mapped forks and execs 180 times', async () => {
+    const { shell } = await setup(readFileSync(forkmapsBin));
+    const r = await run(shell, './prog 250 96 180');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('250 files mapped\n180 forks done 747000\n');
+  }, 600_000);
 
   // LTP waitpid08/10: one of 8 forked children never woke from its checkpoint
   it.skipIf(!haveFutexckpt)('every wake a waker counts reaches a waiter (futex in shared memory, 8 children)', async () => {

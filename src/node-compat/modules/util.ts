@@ -3,7 +3,8 @@ import { inspect, inspectCustom, styles, colors, formatWithOptions } from '../in
 
 let deepStrict: ((a: any, b: any) => boolean) | undefined;
 
-export function createUtilModule(): any {
+/** `getProcess`: the script's process (parseArgs reads its argv) */
+export function createUtilModule(getProcess?: () => { argv: string[]; execArgv?: string[] } | undefined): any {
   const _inspect: any = (obj: any, opts?: any, depth?: number, colors?: boolean): string => inspect(obj, opts, depth, colors);
   _inspect.custom = inspectCustom;
   _inspect.styles = styles;
@@ -101,120 +102,118 @@ export function createUtilModule(): any {
     styleText: (_style: string, text: string) => text,
     TextEncoder,
     TextDecoder,
-    parseArgs: (config: any = {}) => {
-      const { args = [], options = {}, strict = true, allowPositionals = false, allowNegative = false } = config;
-      const values: Record<string, any> = {};
-      const positionals: string[] = [];
-      const tokens: any[] = [];
-
-      // Initialize defaults
-      for (const [key, opt] of Object.entries(options) as [string, any][]) {
-        if (opt.default !== undefined) values[key] = opt.default;
-        else if (opt.type === 'boolean') values[key] = false;
-        else if (opt.multiple) values[key] = [];
-      }
-
-      // Build short-to-long alias map
-      const shortToLong: Record<string, string> = {};
-      for (const [key, opt] of Object.entries(options) as [string, any][]) {
-        if (opt.short) shortToLong[opt.short] = key;
-      }
-
-      function setOption(name: string, value: any) {
-        const opt = (options as Record<string, any>)[name];
-        if (opt?.multiple) {
-          if (!Array.isArray(values[name])) values[name] = [];
-          values[name].push(value);
-        } else {
-          values[name] = value;
-        }
-      }
-
-      function findOption(name: string): { key: string; opt: any } | null {
-        if ((options as Record<string, any>)[name]) return { key: name, opt: (options as Record<string, any>)[name] };
-        if (shortToLong[name]) return { key: shortToLong[name], opt: (options as Record<string, any>)[shortToLong[name]] };
-        return null;
-      }
-
-      for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-          positionals.push(...args.slice(i + 1));
-          break;
-        }
-        if (arg.startsWith('--')) {
-          // Handle --no-X boolean negation
-          const eqIdx = arg.indexOf('=');
-          let name: string, val: string | undefined;
-          if (eqIdx !== -1) {
-            name = arg.slice(2, eqIdx);
-            val = arg.slice(eqIdx + 1);
-          } else {
-            name = arg.slice(2);
-          }
-
-          // Check --no-X negation
-          let negated = false;
-          let found = findOption(name);
-          if (!found && name.startsWith('no-') && allowNegative) {
-            const posName = name.slice(3);
-            found = findOption(posName);
-            if (found && found.opt.type === 'boolean') {
-              negated = true;
-              name = posName;
-            } else {
-              found = null;
-            }
-          }
-
-          if (!found) {
-            if (strict) {
-              const err = new TypeError(`Unknown option '${arg}'`);
-              (err as any).code = 'ERR_PARSE_ARGS_UNKNOWN_OPTION';
-              throw err;
-            }
-            // Non-strict: skip unknown
-            continue;
-          }
-
-          if (found.opt.type === 'boolean') {
-            setOption(found.key, !negated);
-          } else {
-            // String type
-            if (val !== undefined) {
-              setOption(found.key, val);
-            } else if (i + 1 < args.length) {
-              setOption(found.key, args[++i]);
-            }
-          }
-        } else if (arg.startsWith('-') && arg.length === 2) {
-          const ch = arg[1];
-          const found = findOption(ch);
-          if (!found) {
-            if (strict) {
-              const err = new TypeError(`Unknown option '${arg}'`);
-              (err as any).code = 'ERR_PARSE_ARGS_UNKNOWN_OPTION';
-              throw err;
-            }
-            continue;
-          }
-          if (found.opt.type === 'boolean') {
-            setOption(found.key, true);
-          } else {
-            if (i + 1 < args.length) {
-              setOption(found.key, args[++i]);
-            }
-          }
-        } else {
-          if (strict && !allowPositionals) {
-            const err = new TypeError(`Unexpected argument '${arg}'`);
-            (err as any).code = 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL';
-            throw err;
-          }
-          positionals.push(arg);
-        }
-      }
-      return { values, positionals, tokens };
-    },
+    parseArgs: (config: any = {}) => parseArgs(config, getProcess?.()),
   };
+}
+
+const parseArgsError = (code: string, message: string) => Object.assign(new TypeError(message), { code });
+
+/**
+ * util.parseArgs as node's (lib/internal/util/parse_args): args from process.argv by
+ * default, short groups (-abc) and attached values (-n3, --top=3), defaults applied after,
+ * absent booleans left out, tokens only when asked for, node's errors in strict mode.
+ */
+function parseArgs(config: any, proc?: { argv: string[]; execArgv?: string[] }): any {
+  const execArgv = proc?.execArgv ?? [];
+  const evalMode = ['-e', '--eval', '-p', '--print'].some((f) => execArgv.includes(f));
+  const args: string[] = config.args ?? (proc ? proc.argv.slice(evalMode ? 1 : 2) : []);
+  const options: Record<string, any> = config.options ?? {};
+  const strict = config.strict ?? true;
+  const allowPositionals = config.allowPositionals ?? !strict;
+  const allowNegative = config.allowNegative ?? false;
+  const own = (name: string) => (Object.prototype.hasOwnProperty.call(options, name) ? options[name] : undefined);
+  const longFor = (short: string) => Object.keys(options).find((k) => options[k]?.short === short) ?? short;
+  const values: Record<string, any> = Object.create(null);
+  const positionals: string[] = [];
+  const tokens: any[] = [];
+
+  const label = (name: string) => { const sh = own(name)?.short; return sh ? `-${sh}, --${name}` : `--${name}`; };
+  const store = (name: string, value: any) => {
+    if (name === '__proto__') return;
+    const v = value ?? true;
+    if (own(name)?.multiple) (values[name] ??= []).push(v);
+    else values[name] = v;
+  };
+
+  // The tokens, as node makes them (its index bookkeeping included: a short group's
+  // options share the group's index, a value taken from the next arg advances it)
+  const rest = [...args];
+  let index = -1;
+  let groupCount = 0;
+  while (rest.length) {
+    const arg = rest.shift()!;
+    const next = rest[0];
+    if (groupCount > 0) groupCount--; else index++;
+    if (arg === '--') {
+      tokens.push({ kind: 'option-terminator', index });
+      for (const p of rest) tokens.push({ kind: 'positional', index: ++index, value: p });
+      break;
+    }
+    const short = arg.length >= 2 && arg[0] === '-' && arg[1] !== '-';
+    if (short && arg.length === 2) {
+      const name = longFor(arg[1]);
+      let value: string | undefined, inlineValue: boolean | undefined;
+      if (own(name)?.type === 'string' && next !== undefined) { value = rest.shift(); inlineValue = false; }
+      tokens.push({ kind: 'option', name, rawName: arg, index, value, inlineValue });
+      if (value !== undefined) index++;
+      continue;
+    }
+    // -abc is -a -b -c; a string option in the middle takes the rest (-abfFILE: -a -b -fFILE)
+    if (short && own(longFor(arg[1]))?.type !== 'string') {
+      const expanded: string[] = [];
+      for (let k = 1; k < arg.length; k++) {
+        if (own(longFor(arg[k]))?.type !== 'string' || k === arg.length - 1) expanded.push(`-${arg[k]}`);
+        else { expanded.push(`-${arg.slice(k)}`); break; }
+      }
+      rest.unshift(...expanded);
+      groupCount = expanded.length;
+      continue;
+    }
+    // -fVALUE (f a string option)
+    if (short) {
+      tokens.push({ kind: 'option', name: longFor(arg[1]), rawName: arg.slice(0, 2), index, value: arg.slice(2), inlineValue: true });
+      continue;
+    }
+    if (arg.startsWith('--') && arg.length > 2) {
+      const eq = arg.indexOf('=');
+      if (eq > 0) {
+        tokens.push({ kind: 'option', name: arg.slice(2, eq), rawName: arg.slice(0, eq), index, value: arg.slice(eq + 1), inlineValue: true });
+        continue;
+      }
+      const name = arg.slice(2);
+      let value: string | undefined, inlineValue: boolean | undefined;
+      if (own(name)?.type === 'string' && next !== undefined) { value = rest.shift(); inlineValue = false; }
+      tokens.push({ kind: 'option', name, rawName: arg, index, value, inlineValue });
+      if (value !== undefined) index++;
+      continue;
+    }
+    tokens.push({ kind: 'positional', index, value: arg });
+  }
+
+  for (const t of tokens) {
+    if (t.kind === 'option') {
+      let name = t.name;
+      let negated = false;
+      if (allowNegative && name.startsWith('no-') && own(name.slice(3))?.type === 'boolean' && !own(name)) { name = name.slice(3); negated = true; }
+      if (strict) {
+        const opt = own(name);
+        if (!opt) throw parseArgsError('ERR_PARSE_ARGS_UNKNOWN_OPTION', `Unknown option '${t.rawName}'` + (allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(t.rawName)}` : ''));
+        // (a value taken from the next argument that looks like an option)
+        if (opt.type === 'string' && t.inlineValue === false && typeof t.value === 'string' && t.value.startsWith('-')) {
+          const example = opt.short ? `'--${name}=-XYZ' or '-${opt.short}-XYZ'` : `'--${name}=-XYZ'`;
+          throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${t.rawName}' argument is ambiguous.\nDid you forget to specify the option argument for '${t.rawName}'?\nTo specify an option argument starting with a dash use ${example}.`);
+        }
+        if (opt.type === 'string' && typeof t.value !== 'string') throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${label(name)} <value>' argument missing`);
+        if (opt.type === 'boolean' && t.value !== undefined) throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${label(name)}' does not take an argument`);
+      }
+      store(name, negated ? false : own(name)?.type === 'boolean' && t.value === undefined ? true : t.value);
+    } else if (t.kind === 'positional') {
+      if (!allowPositionals) throw parseArgsError('ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL', `Unexpected argument '${t.value}'. This command does not take positional arguments`);
+      positionals.push(t.value);
+    }
+  }
+  for (const [name, opt] of Object.entries(options)) {
+    if (opt?.default !== undefined && values[name] === undefined) values[name] = opt.default;
+  }
+  return config.tokens ? { values, positionals, tokens } : { values, positionals };
 }

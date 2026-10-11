@@ -244,12 +244,13 @@ async function vite(h, add) {
   const opened = await side(h, 'serve open 5173');
   if (opened.code !== 0) throw new Error(`serve open 5173: ${opened.out.slice(0, 200)}`);
   let frame = await preview(h);
-  await frame.waitForFunction(() => /Count is \d/.test(document.body?.innerText ?? ''), null, { timeout: 300000 });
+  await frame.waitForFunction(() => /count is \d/i.test(document.body?.innerText ?? ''), null, { timeout: 300000 });
   frame = await preview(h);
   add('preview', Date.now() - t0);
   await frame.evaluate(() => { window.__notReloaded = true; });
   t0 = Date.now();
-  await side(h, "sed -i 's|Get started|Edited by HMR|' ~/app/src/App.jsx");
+  // ("count is" in create-vite 7.1's template, "Count is" in later ones)
+  await side(h, "sed -i -E 's/([Cc]ount is)/Edited by HMR \\1/' ~/app/src/App.jsx");
   await frame.waitForFunction(() => /Edited by HMR/.test(document.body?.innerText ?? ''), null, { timeout: 60000 });
   add('hmr', Date.now() - t0);
   if (!await frame.evaluate(() => window.__notReloaded === true)) throw new Error('the preview reloaded instead of hot-updating');

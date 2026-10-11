@@ -264,14 +264,25 @@ describe('named pipes opened with exec', () => {
 describe('scripts that do nothing do not wait on stdin', () => {
   // dpkg-preconfigure runs ucf's empty config script with stdin on a pipe it keeps open
   it('a pipeline whose head writes nothing gives the next stage EOF, not the live stdin (tabcomputer#48)', async () => {
-    for (const script of ['{ true; } 2>&1 | tail -3; echo done', 'time { true; } 2>&1 | tail -3; echo done', 'for i in 1; do :; done | cat; echo done', '( : ) | wc -l; echo done']) {
+    const run = async (script: string) => {
       const [r] = createPipe(); // the write end is never closed, as an agent tool's stdin
       let out = '';
       const p = await spawn(['sh', '-c', script], { 0: r, 1: new SinkFile((t) => { out += t; }), 2: new SinkFile(() => {}) });
-      expect(await withTimeout(p.wait(), 5_000)).toBe(0);
-      expect(out.trim().split('\n').pop()).toBe('done');
+      expect(await withTimeout(p.wait(), 5_000), script).toBe(0);
+      return out;
+    };
+    for (const script of [
+      '{ true; } 2>&1 | tail -3; echo done', 'time { true; } 2>&1 | tail -3; echo done', 'for i in 1; do :; done | cat; echo done', '( : ) | wc -l; echo done',
+      // the rest of the pipeline after an empty head: a plain stage, a ( … ) stage, a { … } stage, an && list
+      '{ true; } | cat | wc -l; echo done', '{ true; } | (cat) | wc -l; echo done', '{ true; } | { cat; } | wc -l; echo done', '{ true; } | tail -3 && echo done',
+    ]) {
+      expect((await run(script)).trim().split('\n').pop(), script).toBe('done');
     }
-  }, 40_000);
+    // and the data still flows: a ( … ) or { … } stage there reads the pipe, not the live stdin
+    expect((await run('{ true; } | (cat) | wc -l')).trim()).toBe('0');
+    expect((await run('{ echo x; echo y; } | (cat) | wc -l')).trim()).toBe('2');
+    expect((await run('{ echo x; } | { cat; } | wc -l')).trim()).toBe('1');
+  }, 80_000);
 
   it('an empty file without #!, `sh FILE` and `sh -c ""` exit without reading a live stdin', async () => {
     await fs.writeFile('/tmp/empty.cfg', '');

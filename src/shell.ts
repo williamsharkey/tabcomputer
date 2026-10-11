@@ -2636,7 +2636,8 @@ export class Shell {
       if (this.isControlStructure(trimmedCmd) || trimmedCmd.startsWith('(')) {
         const parts = splitTopLevelPipes(trimmedCmd);
         if (parts.length > 1) {
-          exitCode = await this.runHeadedPipeline(parts, heredocStdin, writeStdout, stderrWriter, terminalOverride);
+          // (null: the head reads the shell's own stdin; '' from a pipe is EOF, tabcomputer#48)
+          exitCode = await this.runHeadedPipeline(parts, pipeIn || heredocStdin ? heredocStdin : null, writeStdout, stderrWriter, terminalOverride);
           this.lastExitCode = exitCode;
           this.env['?'] = String(exitCode);
           continue;
@@ -7501,21 +7502,35 @@ export class Shell {
   }
 
   private async runHeadedPipeline(
-    parts: string[], stdin: string,
+    parts: string[], stdin: string | null,
     writeStdout: (s: string) => void, writeStderr: (s: string) => void, terminalOverride?: any,
   ): Promise<number> {
+    // `stdin`: what a pipe or here-document feeds the head, even when empty (EOF);
+    // null when the head reads the shell's own stdin
     const head = parts[0].trim();
     let captured = '';
     const capture = (s: string) => { captured += s; };
     let code: number;
-    if (head.startsWith('(') && head.endsWith(')')) {
+    if (head.startsWith('(') && head.endsWith(')') && stdin !== null) {
+      // A piped subshell head (`{ true; } | (cat) | wc -l`): the pipe is its stdin,
+      // never the live one an agent tool's sh -c holds open (tabcomputer#48)
+      // (as executeWithStdin, on the capturing terminal exec() gives the head: a kernel
+      // program's stdout comes back here, not to the screen)
+      const sub = this.fork();
+      sub.injectedStdin = stdin;
+      sub.injectedPipe = true;
+      sub.env['__PIPE_STDIN'] = stdin;
+      sub.kernelStdinLive = false;
+      code = await sub.execute(head.slice(1, -1).trim(), capture, writeStderr, false, this.terminal ? capturingStdout(this.terminal) : undefined, true);
+      code = await sub.finishSubshell(code, capture, writeStderr);
+    } else if (head.startsWith('(') && head.endsWith(')')) {
       const result = await this.fork().exec(head.slice(1, -1).trim());
       captured = result.stdout;
       if (result.stderr) writeStderr(result.stderr.replace(/\n/g, '\r\n'));
       code = result.exitCode;
     } else {
       // Every element of a pipeline is a subshell: exit, cd and variables stay in it
-      code = await this.inSubshell((sub) => stdin
+      code = await this.inSubshell((sub) => stdin !== null
         ? sub.execControlStructurePiped(head, stdin, capture, writeStderr)
         : sub.execControlStructure(head, capture, writeStderr));
     }

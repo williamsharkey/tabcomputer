@@ -152,10 +152,54 @@ Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-
   Bun` checks are unaffected), then loads `cli.js`. `bun:ffi` and `bun:jsc`
   are node-compat builtins (stand-ins), and `ws` a client over the page's
   WebSocket.
+- **The compiled bundle** (`src/claude-vm/code-cache.ts`, `sw-host.ts`,
+  `public/vm-sw.js`): node-compat compiles a module with `new Function`,
+  which V8 never caches, so every start parsed bundle.js (~40 MB) again
+  (~1.35 s) after reading it through the kernel (~0.9 s). V8 does keep the
+  code for a script a service worker serves from CacheStorage, from its third
+  load on and on a new page too (not for `importScripts` in a dedicated
+  worker, nor for a Response the worker makes up). So:
+  - the first `claude --vm` registers `/vm-sw.js` at scope `/` and waits
+    for it to take the page (`clients.claim()` takes running workers too);
+    pages that never run `claude --vm` get no service worker;
+  - the launcher puts bundle.js into the `tabcomputer-vm` cache once, as an
+    ES module whose default export takes node-compat's module parameters
+    (the same list as `require.ts`; a test parses it), at
+    `/__vm/<claude sha256>/nc-<tabcomputer build>/bundle.mjs`, removing any
+    other layout's, and imports it from there;
+  - `vm-sw.js` answers `/__vm/probe.mjs` and `/__vm/*` from that cache and
+    nothing else: a static route (`addRoutes`) sends every other request
+    straight to the network where the browser has them, and its fetch
+    handler returns without answering anything outside `/__vm/` where not;
+  - the launcher requires bundle.js as before when the worker isn't there
+    or doesn't control its node worker yet (the probe, a new URL each time,
+    fails), when registration fails or times out (5 s), when the import
+    fails (the entry gone), or with `TABCOMPUTER_VM_CODECACHE=0`.
+
+  **Off switch**: deploy `public/vm-sw.js` with `const ENABLED = false;` (or
+  delete it). Each `claude --vm` reads `/vm-sw.js` first; switched off or
+  gone, the page unregisters the worker and deletes the cache, and that
+  launch requires bundle.js. A browser that updates the worker gets one
+  that unregisters itself and empties the cache when it activates. Until a
+  page reloads, the worker it had keeps answering `/__vm/` for it, but
+  nothing new is stored and launches don't use it.
+
+  Tests: `claude-vm-codecache.test.ts` (the worker's routing with and
+  without static routes, the off switch, every fallback),
+  `tests/browser/claude-vm-codecache.mjs` (the real app with a synthetic
+  Bun executable: first launch, reload, the off switch, a worker that takes
+  the page mid-launch), and `tests/browser/with-vm-sw.mjs`, which runs any
+  browser test with the worker in every page.
 - **`Bun.ant.CellSegmenter`** (`bun/cell-segmenter.ts`) is written from the
   renderer that calls it: segment styled text into graphemes, widths, SGR
   style runs (with their close codes) and OSC 8 links, and paint them into
   the screen's `[char id, word]` cells.
+
+- **Network traffic**: `--vm` starts with the same `DISABLE_ERROR_REPORTING=1`
+  and `DISABLE_TELEMETRY=1` defaults as native (its Remote Control cost and how
+  to turn telemetry back on: docs/COMPAT.md, "Network traffic"). node-compat's
+  fetch already drops the Datadog, Sentry and event-logging hosts; the switch
+  also stops the feature-flag fetches and the API probes it doesn't.
 
 ## Results
 
@@ -167,6 +211,10 @@ extraction):
 | `--vm` 2.1.296 | 3.1 s | 27 ms (30) |
 | native 2.1.296 in Blink | 45 s | 200 ms (457) |
 | npm 2.1.112 | 2.2 s | 22 ms (24) |
+
+The next session's start (a reload, then `claude --vm`), local Chromium, 2
+runs: 4.0 s and 509 MiB renderer RSS at the prompt requiring bundle.js;
+2.3 s and 430 MiB with the compiled bundle from the cache.
 
 Extraction: ~40 s once per version (both stages); a new tabcomputer build
 redoes only the second. `tests/browser/claude-restore.mjs` with

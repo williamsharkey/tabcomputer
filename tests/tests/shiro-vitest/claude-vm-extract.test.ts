@@ -8,7 +8,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { transform } from 'esbuild';
 import { adaptModule, toCommonJS, launcherSource, bundleHeader, bundleEntry, ensureClaudeVm } from '@shiro/claude-vm/extract';
 import { BunLoader } from '@shiro/claude-vm/bun-graph';
-import { fakeBunElf } from './fake-bun-elf';
+import { fakeBunElf } from './fake-bun-elf.mjs';
+import { MODULE_PARAMS, moduleSource, bundleUrl } from '@shiro/claude-vm/code-cache';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { PRETRANSFORMED } from '@shiro/node-compat/require';
 import { createTestShell, run } from './helpers';
 
@@ -98,5 +101,49 @@ describe('claude --vm: the extracted modules', () => {
     lines.length = 0;
     const again = await ensureClaudeVm(fs as any, '/home/t/.local/bin/claude', '/home/t', (s) => lines.push(s));
     expect([again.extracted, again.dir, lines]).toEqual([false, first.dir, []]);
+  });
+
+  it("the code-cache module takes node-compat's module parameters, in require.ts's order", () => {
+    const req = readFileSync(resolve(__dirname, '../../../src/node-compat/require.ts'), 'utf8');
+    const inline = req.slice(req.indexOf('const fnParams = ['), req.indexOf('...(deps.scriptTimers'));
+    const names = [...inline.matchAll(/'([\w$]+)'/g)].map((m) => m[1]);
+    expect(MODULE_PARAMS.slice(0, names.length)).toEqual(names);
+    expect(MODULE_PARAMS.slice(names.length)).toEqual(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate', 'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope']);
+    const fn = new Function(moduleSource('return [module.id, this.x, typeof require];').replace('export default function', 'return function'))();
+    expect(fn.length).toBe(MODULE_PARAMS.length);
+    expect(fn.call({ x: 1 }, { id: 'm' }, {}, () => 0)).toEqual(['m', 1, 'function']);
+    expect(bundleUrl('/home/u/.cache/tabcomputer/claude-vm/abc/nc-123')).toBe('/__vm/abc/nc-123/bundle.mjs');
+  });
+
+  const runLauncher = async (compiled: ((...a: unknown[]) => unknown) | null, load = async () => compiled) => {
+    const required: string[] = [];
+    const require = (id: string): any => {
+      required.push(id);
+      if (id === 'tabcomputer:claude-vm') return { load: async () => ({ createBun: () => ({}) }), codeCache: async () => ({ loadCompiled: load }) };
+      if (id === 'fs') return { readFileSync: () => '{}' };
+      return {};
+    };
+    const globals = { console: { tag: 'console' }, process: { env: {}, tag: 'process' }, global: { tag: 'global' }, Buffer: { tag: 'Buffer' } };
+    const AsyncFn = Object.getPrototypeOf(async () => {}).constructor;
+    await new AsyncFn('require', '__dirname', 'console', 'process', 'global', 'Buffer', '__dynamic_import', 'self', launcherSource())(
+      require, '/vm', globals.console, globals.process, globals.global, Object.assign({}, globals.Buffer), 'dyn', undefined);
+    return required;
+  };
+
+  it('the launcher runs the compiled bundle with the bundle\'s own module and the process\'s globals', async () => {
+    let args: unknown[] = [];
+    const required = await runLauncher(function (this: unknown, ...a: unknown[]) { args = a; });
+    const at = (n: string) => args[MODULE_PARAMS.indexOf(n as any)];
+    expect(args.length).toBe(MODULE_PARAMS.length);
+    expect((at('module') as any).id).toBe('/vm/bundle.js');
+    expect(at('__shiro_module')).toBe(at('module'));
+    expect([at('__filename'), at('__dirname'), (at('console') as any).tag, (at('process') as any).tag, at('__dynamic_import'), at('self')]).toEqual(['/vm/bundle.js', '/vm', 'console', 'process', 'dyn', undefined]);
+    expect((at('__import_meta') as any).url).toBe('file:///vm/bundle.js');
+    expect(required).not.toContain('./bundle.js');
+  });
+
+  it('without the service worker, or when the import fails, the launcher requires bundle.js as before', async () => {
+    expect(await runLauncher(null)).toContain('./bundle.js');
+    expect(await runLauncher(null, async () => { throw new TypeError('Failed to fetch dynamically imported module'); })).toContain('./bundle.js');
   });
 });

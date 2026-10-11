@@ -1,15 +1,22 @@
 /**
- * A synthetic Bun standalone executable (docs/CLAUDE_VM.md) for the claude --vm tests.
+ * A synthetic Bun standalone executable (docs/CLAUDE_VM.md) for the claude --vm
+ * tests: vitest's and tests/browser/claude-vm-codecache.mjs (plain node, so
+ * bun-graph.ts's trailer is spelled out here; the graph tests parse what this makes).
  */
-import { BUN_TRAILER } from '@shiro/claude-vm/bun-graph';
+const BUN_TRAILER = '\n---- Bun! ----\n';
 
 const enc = new TextEncoder();
 
-/** A minimal ELF64 with a .bun section holding `files` (record size 52), entry `entry` */
-export function fakeBunElf(files: { name: string; contents: string; loader: number }[], entry: number, recordSize = 52): Uint8Array {
+/**
+ * A minimal ELF64 with a .bun section holding `files` (record size 52), entry `entry`
+ * @param {{ name: string; contents: string; loader: number }[]} files
+ * @param {number} entry
+ * @returns {Uint8Array}
+ */
+export function fakeBunElf(files, entry, recordSize = 52) {
   // payload: strings, module table, Offsets, trailer
-  const data: number[] = [];
-  const put = (b: Uint8Array) => { const o = data.length; data.push(...b); return [o, b.length] as const; };
+  const data = [];
+  const put = (b) => { const o = data.length; data.push(...b); return [o, b.length]; };
   const ptrs = files.map((f) => ({ name: put(enc.encode(f.name)), contents: put(enc.encode(f.contents)), loader: f.loader }));
   const modOff = data.length;
   for (const p of ptrs) {

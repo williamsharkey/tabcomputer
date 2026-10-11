@@ -171,6 +171,9 @@ export function createFakeProcess(
         }
         return true;
       }
+      // (0 asks whether it exists: this one does. Claude Code asks it of the pid in a session
+      // file, which after a reload can be this process's own)
+      if (signal === 0 && Number(pid) === fp.pid) return true;
       if (typeof signal === 'number') signal = Object.entries({ SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }).find(([, v]) => v === signal)?.[0];
       // If killing our own process, treat as exit
       if (Number(pid) === fp.pid) {

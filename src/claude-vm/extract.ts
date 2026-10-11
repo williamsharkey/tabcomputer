@@ -57,13 +57,29 @@ export async function toCommonJS(esbuild: { transform(code: string, opts: object
 }
 
 /** The launcher: the process's Bun, then Claude Code's entry. */
+// (MODULE_PARAMS from console on: the launcher's own, or undefined where it has none)
+const LAUNCHER_PASSES = [
+  ...['console', 'process', 'global', 'Buffer'].map((n) => `typeof ${n} === 'undefined' ? undefined : ${n}`),
+  "{ url: 'file://' + __dirname + '/bundle.js', dirname: __dirname, filename: __dirname + '/bundle.js' }", 'm', 'require',
+  ...['__dynamic_import', '__shiro_require_ready', 'globalThis', 'Function', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+    'setImmediate', 'clearImmediate', 'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'].map((n) => `typeof ${n} === 'undefined' ? undefined : ${n}`),
+].join(', ');
+
 export function launcherSource(): string {
   return [
     '// tabcomputer: claude --vm (src/claude-vm/extract.ts)',
     "const { createBun } = await require('tabcomputer:claude-vm').load();",
     "const assets = JSON.parse(require('fs').readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
     "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), net: require('net'), http: require('http'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js' });",
-    "require('./bundle.js');",
+    // bundle.js through V8's code cache when a service worker serves /__vm/ (code-cache.ts):
+    // the parameters node-compat gives a module, the bundle's own module first
+    "const { loadCompiled } = await require('tabcomputer:claude-vm').codeCache();",
+    "const bundle = process.env.TABCOMPUTER_VM_CODECACHE === '0' ? null : await loadCompiled(__dirname, () => require('fs').readFileSync(__dirname + '/bundle.js', 'utf8')).catch(() => null);",
+    'if (bundle) {',
+    "  const file = __dirname + '/bundle.js';",
+    '  const m = { exports: {}, id: file, filename: file, loaded: false, children: [] };',
+    `  bundle.apply(m.exports, [m, m.exports, require, file, __dirname, ${LAUNCHER_PASSES}]);`,
+    "} else require('./bundle.js');",
     '',
   ].join('\n');
 }

@@ -379,8 +379,8 @@
   },
   {
    "name": "python3",
-   "version": "3.13.7-1",
-   "broken": ["3.13.7"],
+   "version": "3.13.7-2",
+   "broken": ["3.13.7", "3.13.7-1"],
    "description": "CPython 3.13 interpreter built for WASI (stdlib, zlib, sqlite3, OpenSSL 3.5: ssl/hashlib); pip and venv are provided by Shiro",
    "license": "PSF-2.0",
    "source": "https://www.python.org/ftp/python/3.13.7/Python-3.13.7.tar.xz",
@@ -392,33 +392,33 @@
    "files": [
     {
      "path": "bin/python3.wasm",
-     "url": "/pkg/python3/3.13.7-1/python3.wasm",
-     "sha256": "e5301cd3379330cd16c2d9d685b7100e3d43b9b503110c23b6e5468a07fe62b0",
-     "size": 11101761
+     "url": "/pkg/python3/3.13.7-2/python3.wasm",
+     "sha256": "eecaf64a5db9ee105784b45a4fa156837f30e38b1545a9f02ecec2cfd6eb1fff",
+     "size": 11102133
     },
     {
      "path": "lib/python3.13/lib-dynload/.keep",
-     "url": "/pkg/python3/3.13.7-1/.keep",
+     "url": "/pkg/python3/3.13.7-2/.keep",
      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
      "size": 0
     },
     {
      "path": "lib/python3.13/os.py",
-     "url": "/pkg/python3/3.13.7-1/os.py",
+     "url": "/pkg/python3/3.13.7-2/os.py",
      "sha256": "5e640713e89023372f493054ccedb7512ee27eb3ea6461677bc8c27c640d0605",
      "size": 41627
     },
     {
      "path": "lib/python3.13/site-packages/README.txt",
-     "url": "/pkg/python3/3.13.7-1/README.txt",
+     "url": "/pkg/python3/3.13.7-2/README.txt",
      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
      "size": 0
     },
     {
      "path": "lib/python313.zip",
-     "url": "/pkg/python3/3.13.7-1/python313.zip",
-     "sha256": "6421349b4cb9f3fe3d710311d67b3d17a6bd79a7457ebf421d4b1b79a511a20a",
-     "size": 4323612
+     "url": "/pkg/python3/3.13.7-2/python313.zip",
+     "sha256": "07a9e594db5119b461a797212f60eea44e905add03cb045829d65fc787612a67",
+     "size": 4323847
     }
    ],
    "bin": {

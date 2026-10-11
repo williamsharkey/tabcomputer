@@ -14,4 +14,12 @@ describe('carryAsyncContext', () => {
     // (rollup 4's dist/shared/rollup.js has `get await()`: the rewrite was a syntax error, and astro build failed)
     expect(() => new Function(out)).not.toThrow();
   });
+
+  it('leaves `await using` declarations alone; `await using(…)` is still an await', () => {
+    // (native Claude Code's bundle: `async function oA(e,n){await using r=…`; the rewrite
+    // made it `__shiroAls.r(__shiroAls.c(), await using) r=…`, a syntax error)
+    const src = 'async function f(e) { await using r = open(e); for (await using x of xs) {} await using(e); await using.y; await using\n  in o; }';
+    expect(carryAsyncContext(src)).toBe('async function f(e) { await using r = open(e); for (await using x of xs) {} '
+      + '__shiroAls.r(__shiroAls.c(), await using(e)); __shiroAls.r(__shiroAls.c(), await using.y); __shiroAls.r(__shiroAls.c(), await using)\n  in o; }');
+  });
 });

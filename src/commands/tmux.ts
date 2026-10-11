@@ -12,6 +12,10 @@ import {
   ScreenBuffer,
 } from '../tmux-layout';
 import { Shell } from '../shell';
+import { openpty, attachKernelTty, type Pty } from '../kernel/pty';
+import type { Kernel } from '../kernel/kernel';
+import type { Process } from '../kernel/process';
+import { SIGHUP } from '../kernel/abi';
 
 // ── Session store (in-memory, persists within browser session) ───────
 
@@ -439,19 +443,22 @@ async function executeInPane(pane: TmuxPane, command: string, ctx: CommandContex
 
 // ── Scripted use, no terminal needed ────────────────────────────────
 // What agents and scripts run: `tmux new -d -s NAME 'cmd'`, send-keys,
-// capture-pane -p, has-session, kill-session. A detached pane is a shell of
-// its own; its command runs in the background and the session ends when the
-// command does, as in tmux.
+// capture-pane -p, has-session, kill-session. A detached pane is a kernel pty
+// (/dev/pts/N, sized by -x/-y) with a shell on it as a session leader: `sh -i`,
+// or `sh -c CMD` for a pane's command. send-keys types into the pty, so its
+// line discipline echoes and edits, Ctrl-C is SIGINT to the foreground job,
+// and isatty, `tty`, `stty size`, REPLs and TUIs work; what the pane prints
+// goes to its screen buffer, which capture-pane reads. The session ends when
+// its process does, as in tmux (tabcomputer#14, #69).
 
 const SCRIPTED = new Set([
   'new-session', 'new', 'send-keys', 'send', 'capture-pane', 'capturep',
   'has-session', 'has', 'kill-session', 'list-panes', 'lsp', 'display-message', 'display',
 ]);
 
-/** Pane state for scripted use: what the pane's shell is running, queued lines */
-interface PaneRun { busy: Promise<void>; line: string; pid: number }
+/** A detached pane's terminal and the process on it */
+interface PaneRun { pid: number; pty: Pty; proc: Process; kernel: Kernel }
 const paneRuns = new Map<number, PaneRun>();
-let nextPanePid = 60000;
 
 /** Parse `-x VALUE` style options; flags in `bool` take no value */
 function parseOpts(args: string[], bool: string): { opts: Record<string, string | true>; rest: string[] } {
@@ -500,31 +507,52 @@ function resolveTarget(target: string | true | undefined): { session: TmuxSessio
   return { session, pane };
 }
 
-/** Stop everything a session's panes run */
+/** Stop everything a session's panes run: SIGHUP to the pane's session, as closing a terminal does */
 function endSession(session: TmuxSession): void {
   for (const win of session.windows) {
     for (const pane of win.panes) {
       pane.running = false;
       pane.shell.abortController?.abort();
+      const run = paneRuns.get(pane.id);
       paneRuns.delete(pane.id);
+      if (run) {
+        run.kernel.kill(-run.proc.pid, SIGHUP);
+        run.kernel.kill(run.proc.pid, SIGHUP);
+        void run.pty.master.close();
+      }
     }
   }
 }
 
-/** Run one line in a pane's shell, after whatever it is running now */
-function runInPane(pane: TmuxPane, line: string, ctx: CommandContext): Promise<void> {
-  const run = paneRuns.get(pane.id)!;
-  run.busy = run.busy.then(() => executeInPane(pane, line, ctx)).then(() => {
-    if (pane.running) pane.writeOutput(pane.getPrompt());
-  });
-  return run.busy;
-}
-
 /** send-keys key names → the characters they type */
 const KEY_NAMES: Record<string, string> = {
-  'Enter': '\r', 'C-m': '\r', 'KPEnter': '\r', 'C-j': '\r', 'Tab': '\t', 'C-i': '\t', 'Space': ' ',
-  'Escape': '\x1b', 'BSpace': '\x7f', 'C-c': '\x03', 'C-d': '\x04', 'C-l': '\x0c', 'C-u': '\x15',
+  'Enter': '\r', 'KPEnter': '\r', 'Tab': '\t', 'BTab': '\x1b[Z', 'Space': ' ', 'Escape': '\x1b', 'BSpace': '\x7f',
+  'Up': '\x1b[A', 'Down': '\x1b[B', 'Right': '\x1b[C', 'Left': '\x1b[D', 'Home': '\x1b[H', 'End': '\x1b[F',
+  'IC': '\x1b[2~', 'Insert': '\x1b[2~', 'DC': '\x1b[3~', 'Delete': '\x1b[3~',
+  'PPage': '\x1b[5~', 'PageUp': '\x1b[5~', 'PgUp': '\x1b[5~', 'NPage': '\x1b[6~', 'PageDown': '\x1b[6~', 'PgDn': '\x1b[6~',
+  'F1': '\x1bOP', 'F2': '\x1bOQ', 'F3': '\x1bOR', 'F4': '\x1bOS', 'F5': '\x1b[15~', 'F6': '\x1b[17~',
+  'F7': '\x1b[18~', 'F8': '\x1b[19~', 'F9': '\x1b[20~', 'F10': '\x1b[21~', 'F11': '\x1b[23~', 'F12': '\x1b[24~',
 };
+
+/** A send-keys word: a key name (C-x, M-x, Enter, Up ...) or text */
+function keyText(word: string, literal: boolean): string {
+  if (literal) return word;
+  if (word in KEY_NAMES) return KEY_NAMES[word];
+  const m = /^((?:[CM]-)+)(.+)$/.exec(word);
+  if (m) {
+    const base = m[2].length === 1 ? m[2] : KEY_NAMES[m[2]];
+    if (base !== undefined) {
+      let t = base;
+      if (m[1].includes('C-') && t.length === 1) {
+        const c = t.toLowerCase().charCodeAt(0);
+        t = c >= 0x61 && c <= 0x7a ? String.fromCharCode(c - 0x60) : t === ' ' || t === '@' ? '\0' : t === '?' ? '\x7f' : String.fromCharCode(c & 0x1f);
+      }
+      if (m[1].includes('M-')) t = '\x1b' + t;
+      return t;
+    }
+  }
+  return word;
+}
 
 async function runScripted(ctx: CommandContext): Promise<number | null> {
   const [cmd, ...args] = ctx.args;
@@ -549,28 +577,43 @@ async function runScripted(ctx: CommandContext): Promise<number | null> {
       const session = new TmuxSession(name);
       const win = new TmuxWindow(typeof opts.n === 'string' ? opts.n : (rest[0]?.split(/\s+/)[0] || 'bash'));
       const paneShell = ctx.shell.fork();
-      // The pane outlives the command that made it: its own abort, not the caller's
       paneShell.inheritedAbort = null;
-      if (typeof opts.c === 'string') paneShell.cwd = ctx.fs.resolvePath(opts.c, ctx.cwd);
+      const cwd = typeof opts.c === 'string' ? ctx.fs.resolvePath(opts.c, ctx.cwd) : ctx.cwd;
+      paneShell.cwd = cwd;
       const pane = new TmuxPane(paneShell, 0, 0, cols, rows);
-      const pid = nextPanePid++;
-      paneShell.env['TMUX'] = `/tmp/tmux-1000/default,${pid},0`;
+      // The pane's terminal: a kernel pty of its size, its output on the pane's screen
+      const { kernelForContext } = await import('../wasi/run-command');
+      const kernel = kernelForContext(ctx);
+      attachKernelTty(kernel);
+      const { pty, slave } = openpty({ winsize: { rows, cols } });
+      const decoder = new TextDecoder();
+      pty.onOutput((b) => pane.writeOutput(decoder.decode(b, { stream: true })));
+      // TMUX: socket, server pid, session (the built-in server is the page: pid 1)
+      const env: Record<string, string> = { ...ctx.env, TERM: ctx.env.TERM || 'xterm-256color', TMUX: `/tmp/tmux-1000/default,1,${sessions.size}`, TMUX_PANE: `%${pane.id}` };
+      const command = rest.join(' ').trim();
+      // A session leader with the pty as its controlling terminal (the pane's shell, or its command)
+      const proc = kernel.spawn({
+        path: '/bin/sh', argv: command ? ['sh', '-c', command] : ['sh', '-i'], env, cwd,
+        fds: { 0: slave, 1: slave, 2: slave }, setsid: true,
+      });
+      proc.ctty = slave;
+      const leader = pty.jc.get(proc.pid);
+      if (leader) pty.acquire(leader);
+      paneShell.env['TMUX'] = env.TMUX;
       paneShell.env['TMUX_PANE'] = `%${pane.id}`;
       win.addPane(pane);
       session.addWindow(win);
       sessions.set(name, session);
-      paneRuns.set(pane.id, { busy: Promise.resolve(), line: '', pid });
-      const command = rest.join(' ').trim();
-      if (command) {
-        // The command is the pane: when it ends, so does the session (tmux without remain-on-exit)
-        void executeInPane(pane, command, ctx).then(() => {
-          pane.running = false;
+      paneRuns.set(pane.id, { pid: proc.pid, pty, proc, kernel });
+      // The pane's process is the pane: when it ends, so does the session (tmux without remain-on-exit)
+      void proc.wait().then(() => {
+        pane.running = false;
+        if (paneRuns.get(pane.id)?.proc === proc) {
           paneRuns.delete(pane.id);
-          if (sessions.get(name) === session) sessions.delete(name);
-        });
-      } else {
-        pane.writeOutput(pane.getPrompt());
-      }
+          void pty.master.close();
+        }
+        if (sessions.get(name) === session) sessions.delete(name);
+      });
       if (opts.P) ctx.stdout += typeof opts.F === 'string' ? formatPane(opts.F, session, pane) + '\n' : `${name}:\n`;
       return 0;
     }
@@ -582,29 +625,8 @@ async function runScripted(ctx: CommandContext): Promise<number | null> {
       const { pane } = found;
       const run = paneRuns.get(pane.id);
       if (!run || !pane.running) return fail(`pane %${pane.id} is not running`);
-      for (const word of rest) {
-        const text = !opts.l && word in KEY_NAMES ? KEY_NAMES[word] : word;
-        for (const ch of text) {
-          if (ch === '\r' || ch === '\n') {
-            const line = run.line;
-            run.line = '';
-            pane.writeOutput('\r\n');
-            if (line.trim() === 'exit') { pane.running = false; continue; }
-            if (line.trim()) void runInPane(pane, line, ctx);
-          } else if (ch === '\x03') {
-            run.line = '';
-            pane.writeOutput('^C\r\n');
-            pane.shell.abortController?.abort();
-          } else if (ch === '\x7f') {
-            run.line = run.line.slice(0, -1);
-          } else if (ch === '\x15') {
-            run.line = '';
-          } else if (ch >= ' ' || ch === '\t') {
-            run.line += ch;
-            pane.writeOutput(ch);
-          }
-        }
-      }
+      // typed into the pane's terminal: its line discipline echoes, edits, and sends Ctrl-C as SIGINT
+      for (const word of rest) run.pty.input(keyText(word, !!opts.l));
       return 0;
     }
 
@@ -672,12 +694,17 @@ let captureBuffer = '';
 
 /** `#{session_name}`, `#{pane_id}`, `#{pane_pid}` … in a -F format */
 function formatPane(fmt: string, session: TmuxSession, pane: TmuxPane): string {
+  const run = paneRuns.get(pane.id);
+  // what runs in the pane now: its terminal's foreground job (else the pane's process)
+  const fg = run ? run.kernel.procs.get(run.pty.fgPgrp) ?? run.proc : undefined;
   const vars: Record<string, string> = {
     session_name: session.name,
     pane_id: `%${pane.id}`,
-    pane_pid: String(paneRuns.get(pane.id)?.pid ?? ''),
+    pane_pid: String(run?.pid ?? ''),
+    pane_tty: run?.pty.name ?? '',
+    pane_current_command: fg?.comm ?? '',
     pane_dead: pane.running ? '0' : '1',
-    pane_current_path: pane.shell.cwd,
+    pane_current_path: fg?.cwd ?? pane.shell.cwd,
     pane_width: String(pane.width),
     pane_height: String(pane.height),
     window_name: session.getActiveWindow()?.name ?? '',

@@ -102,6 +102,7 @@ perf-kernel use the same definitions.
 | `claude_native.start.cold.first_screen` | Enter on `claude` (first launch in the profile) → Claude's first output |
 | `claude_native.start.cold.prompt` | Enter → the idle prompt (`❯` and the shortcuts hint) |
 | `claude_native.start.warm.*` | the same for the second launch in the same page |
+| `claude_native.start.next.*`, `rss_at_prompt.next`, `exit.next` | the next session: the page reloaded on the same storage (installed, extracted, nothing in memory), then a launch: what users get from their second session on |
 | `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
 | `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
 | `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |
@@ -110,6 +111,7 @@ perf-kernel use the same definitions.
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
 | `claude_native.exit.{cold,warm}` | `/exit` Enter → the shell's prompt line back (then a marker the shell prints confirms it reads input); `exit_hung.*` counts launches still running after 120 s, which the suite kills from a side shell to go on |
 | `claude_npm.*` | the same for `claude --npm` (installed before the round) |
+| `claude_vm.*` | the same for `claude --vm` (the native build's JavaScript on the page's engine); `claude_vm.extract` is the first `claude --vm --version` of the profile, the one-time extraction from the binary, kept out of the start times |
 
 `claude_native.native.*` runs the same binary on this machine's Linux in a
 pty (`lib/native-pty.py`; needs musl's loader at `/lib/ld-musl-x86_64.so.1`,

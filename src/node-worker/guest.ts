@@ -89,6 +89,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     fs.requestChanges = () => post({ type: 'node-guest-watch' });
     fsEvents = (m) => fs.changed(m.event, m.path, m.newPath, m.detail);
     const stdinTTY = isatty(sys, 0);
+    /** fd 0 when it is not the terminal: one reader for process.stdin and the sync reads (pipeStdin) */
+    let stdin: ReturnType<typeof pipeStdin> | undefined;
     const stdoutTTY = isatty(sys, 1);
     // Networking over socket syscalls; servers listen on kernel ports (the page previews them)
     const net = new GuestNetStack(sys);
@@ -136,7 +138,9 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         clipboard: (text) => post({ type: 'node-guest-clipboard', text }),
         preview: (port) => { if (stdoutTTY) post({ type: 'node-guest-listen', port }); },
       },
-      ...(stdinTTY ? { ttyStdin: (on: ConstructorParameters<typeof GuestTtyStdin>[1]) => new GuestTtyStdin(sys, on) } : {}),
+      ...(stdinTTY ? { ttyStdin: (on: ConstructorParameters<typeof GuestTtyStdin>[1]) => new GuestTtyStdin(sys, on) } : {
+        readStdinSync: (buf: Uint8Array) => (stdin ??= pipeStdin(sys)).readSync(buf),
+      }),
       // worker_threads: a thread of this process, a guest of its own; messages go by way of the page
       startThread(file, opts, events) {
         const id = ++lastThread;
@@ -192,7 +196,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       // `node --help` answer without reading it)
       if (programFromStdin(start.argv.slice(1))) ctx.stdin = await ctx.readStdin();
       // else bytes as they arrive (a parent that talks to this node while it runs: esbuild's service)
-      else ctx.stdinStream = pipeStdin(sys);
+      else ctx.stdinStream = stdin ??= pipeStdin(sys);
     }
     const { runNode } = await import('../commands/jseval/node-run');
     let status: number;
@@ -269,23 +273,55 @@ function guestIpc(sys: GuestSys, fd: number): GuestIpc {
 }
 
 /** fd 0 (a pipe or a file) as node-compat's live stdin: read when poll says so, from timers */
-function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null> } {
-  const buf = new Uint8Array(65536);
+/**
+ * fd 0 as it arrives, for process.stdin and fs.read(0) (a LiveStdin reads it through
+ * `read`), and fs.readFileSync(0)/readSync(0) (`readSync`, which blocks). What the pump
+ * has read waits in `arrived` until one of them takes it, so a sync read never misses
+ * bytes the pump read but hasn't delivered yet.
+ */
+function pipeStdin(sys: GuestSys): { read(): Promise<Uint8Array | null>; readSync(buf: Uint8Array): number } {
+  const arrived: Uint8Array[] = [];
+  let eof = false;
+  const take = (buf: Uint8Array): number => {
+    let n = 0;
+    while (n < buf.length && arrived.length) {
+      const c = arrived[0];
+      const k = Math.min(buf.length - n, c.length);
+      buf.set(c.subarray(0, k), n);
+      n += k;
+      if (k === c.length) arrived.shift(); else arrived[0] = c.subarray(k);
+    }
+    return n;
+  };
   return {
-    read: () => new Promise((resolve) => {
+    read: () => new Promise<void>((resolve) => {
+      if (arrived.length || eof) { resolve(); return; }
       let idle = 0;
       const tick = () => {
         const { ready } = sys.poll([{ fd: 0, events: A.POLLIN }], 0);
         if (ready > 0) {
+          const buf = new Uint8Array(65536);
           const n = sys.read(0, buf);
-          if (n !== -A.EAGAIN && n !== -A.EINTR) { resolve(n > 0 ? buf.slice(0, n) : null); return; }
+          if (n !== -A.EAGAIN && n !== -A.EINTR) { if (n > 0) arrived.push(buf.slice(0, n)); else eof = true; resolve(); return; }
         }
         // nothing yet: back off (0, 1, 2 ... 20 ms; the Worker's timer, not the program's)
         idle = Math.min(20, idle + 1);
         workerTimeout(tick, idle);
       };
       tick();
-    }),
+    // (an empty chunk when a sync read took what had come: the reader asks again)
+    }).then(() => (arrived.length ? arrived.shift()! : eof ? null : new Uint8Array(0))),
+    readSync: (buf) => {
+      if (arrived.length) return take(buf);
+      if (eof) return 0;
+      for (;;) {
+        const n = sys.read(0, buf);
+        if (n === -A.EAGAIN) { sys.poll([{ fd: 0, events: A.POLLIN }], -1); continue; }
+        if (n === -A.EINTR) continue;
+        if (n === 0) eof = true;
+        return n;
+      }
+    },
   };
 }
 

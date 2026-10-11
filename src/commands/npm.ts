@@ -98,7 +98,26 @@ export const npmCmd: Command = {
   },
 };
 
+/** `-s`/`--silent`/`--loglevel silent` anywhere: no "> name script" lines (npm run -s) */
+const silentRuns = new WeakSet<CommandContext>();
+
 async function npmMain(ctx: CommandContext): Promise<number> {
+    // npm's loglevel options go anywhere on its command line (`npm run -s test`); before a
+    // script's own `--`, they're npm's
+    const dash = ctx.args.indexOf('--');
+    const own = dash < 0 ? ctx.args : ctx.args.slice(0, dash);
+    const silent = own.some((a, i) => a === '-s' || a === '--silent' || a === '--loglevel=silent' || (a === '--loglevel' && own[i + 1] === 'silent'));
+    if (silent) {
+      silentRuns.add(ctx);
+      const kept: string[] = [];
+      for (let i = 0; i < own.length; i++) {
+        const a = own[i];
+        if (a === '-s' || a === '--silent' || a === '-q' || a === '--quiet' || a.startsWith('--loglevel=')) continue;
+        if (a === '--loglevel') { i++; continue; }
+        kept.push(a);
+      }
+      ctx.args = dash < 0 ? kept : [...kept, ...ctx.args.slice(dash)];
+    }
     const subcommand = ctx.args[0];
 
     if (!subcommand || subcommand === '--help' || subcommand === '-h') {
@@ -116,6 +135,11 @@ async function npmMain(ctx: CommandContext): Promise<number> {
       ctx.stdout += '  test, t           Run the test script\n';
       ctx.stdout += '  stop              Run the stop script\n';
       ctx.stdout += '  uninstall [pkg]   Remove a package\n';
+      ctx.stdout += '  ci                Remove node_modules and install (needs package-lock.json)\n';
+      ctx.stdout += '  pkg get|set|delete  Read or edit package.json fields (scripts.test=...)\n';
+      ctx.stdout += '  version [major|minor|patch|<v>]  Show versions, or bump package.json\'s\n';
+      ctx.stdout += '  view <pkg> [field]  Show a package\'s registry data\n';
+      ctx.stdout += '  root              Print the node_modules directory\n';
       ctx.stdout += '  cache clean       Clear the metadata cache\n';
       ctx.stdout += '  cache status      Show cache statistics\n';
       ctx.stdout += '  --version         Show npm version\n';
@@ -185,6 +209,26 @@ async function npmMain(ctx: CommandContext): Promise<number> {
       case 'audit':
         ctx.stdout += 'found 0 vulnerabilities\n';
         return 0;
+      case 'pkg':
+        return await npmPkg(ctx);
+      case 'ci':
+      case 'clean-install':
+      case 'install-clean':
+        return await npmCi(ctx);
+      case 'version':
+      case 'verison':
+        return await npmVersion(ctx);
+      case 'view':
+      case 'info':
+      case 'show':
+      case 'v':
+        return await npmView(ctx);
+      case 'root':
+        ctx.stdout += (ctx.args.includes('-g') || ctx.args.includes('--global') ? '/usr/local/lib/node_modules' : ctx.fs.resolvePath('node_modules', ctx.cwd)) + '\n';
+        return 0;
+      case 'help':
+        ctx.args = ['--help'];
+        return npmMain(ctx);
       default:
         ctx.stderr += `npm: unknown command '${subcommand}'\n`;
         ctx.stderr += "Run 'npm --help' for usage.\n";
@@ -232,20 +276,23 @@ async function npmInit(ctx: CommandContext): Promise<number> {
   // Extract directory name for package name
   const dirName = ctx.cwd.split('/').filter(Boolean).pop() || 'my-project';
 
-  const pkg: PackageJson = {
-    name: dirName,
+  // (npm 10's fields, in its order)
+  const pkg = {
+    name: dirName.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-'),
     version: '1.0.0',
-    description: '',
     main: 'index.js',
-    type: 'module',
     scripts: {
       test: 'echo "Error: no test specified" && exit 1',
     },
-    dependencies: {},
+    keywords: [] as string[],
+    author: '',
+    license: 'ISC',
+    description: '',
   };
 
-  await ctx.fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-  ctx.stdout += 'Created package.json\n';
+  const text = JSON.stringify(pkg, null, 2) + '\n';
+  await ctx.fs.writeFile(pkgPath, text);
+  ctx.stdout += `Wrote to ${pkgPath}:\n\n${text}\n\n`;
   return 0;
 }
 
@@ -690,11 +737,13 @@ async function npmRun(ctx: CommandContext): Promise<number> {
     return 1;
   }
 
-  scriptHeader(ctx, `> ${scriptId(pkg)}${scriptName}\n> ${script}\n\n`);
+  // (what follows the script's name, a `--` dropped, goes to it, as npm 7+ passes it)
+  const extra = withScriptArgs(script, ctx.args.slice(2));
+  scriptHeader(ctx, `> ${scriptId(pkg)}${scriptName}\n> ${extra}\n\n`);
 
   // Execute the script via the shell; on npm's terminal when that is where npm's output
   // goes, as npx does (a dev server's output comes as it runs, not when it ends)
-  return ctx.shell.execute(script, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
+  return ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
 }
 
 /**
@@ -727,9 +776,16 @@ async function npmRunScript(ctx: CommandContext, scriptName: string, defaultScri
     return 1;
   }
 
-  scriptHeader(ctx, `> ${scriptId(pkg)}${scriptName}\n> ${script}\n\n`);
+  const extra = withScriptArgs(script, ctx.args.slice(1));
+  scriptHeader(ctx, `> ${scriptId(pkg)}${scriptName}\n> ${extra}\n\n`);
 
-  return await ctx.shell.execute(script, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
+  return await ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
+}
+
+/** A script with the arguments npm passes on (a leading `--` dropped), each quoted for the shell */
+function withScriptArgs(script: string, args: string[]): string {
+  const rest = args[0] === '--' ? args.slice(1) : args;
+  return rest.length ? `${script} ${quoteArgsForShell(rest)}` : script;
 }
 
 // Output of a nested execute() is terminal-style (\r\n); npm's is a plain stream
@@ -743,6 +799,7 @@ const scriptId = (pkg: PackageJson) => pkg.name ? `${pkg.name}${pkg.version ? '@
 
 /** npm's "> name@version script" lines: before the script's output, which may go to the terminal as it runs */
 function scriptHeader(ctx: CommandContext, text: string): void {
+  if (silentRuns.has(ctx)) return;
   const term = scriptTerminal(ctx) as { writeOutput?: (s: string) => void } | undefined;
   if (term?.writeOutput) term.writeOutput(text.replace(/\n/g, '\r\n'));
   else if (ctx.streamStdout) ctx.streamStdout(text);
@@ -907,4 +964,201 @@ async function npmConfig(ctx: CommandContext): Promise<number> {
       ctx.stderr += `npm config: unknown command '${action}'\n`;
       return 1;
   }
+}
+
+
+// ── npm pkg, ci, version, view ───────────────────────────────────────────────
+
+/** package.json's text and value (null when there is none) */
+async function readPackage(ctx: CommandContext): Promise<{ path: string; pkg: any } | null> {
+  const path = ctx.fs.resolvePath('package.json', ctx.cwd);
+  try { return { path, pkg: JSON.parse(await ctx.fs.readFile(path, 'utf8') as string) }; } catch { return null; }
+}
+
+/** `scripts.test`, `files[0]`, `a.b[2].c` as keys */
+const keyPath = (key: string) => key.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+
+/** npm pkg get [key...] | set key=value... [--json] | delete key... */
+async function npmPkg(ctx: CommandContext): Promise<number> {
+  const [, action, ...rest] = ctx.args;
+  const json = rest.includes('--json');
+  const keys = rest.filter((a) => a !== '--json' && a !== '-w' && !a.startsWith('--workspace'));
+  const file = await readPackage(ctx);
+  if (!file) { ctx.stderr += `npm error code ENOENT\nnpm error Could not read package.json at ${ctx.fs.resolvePath('package.json', ctx.cwd)}\n`; return 1; }
+  const get = (key: string) => keyPath(key).reduce((o: any, k) => (o == null ? undefined : o[k]), file.pkg);
+  if (action === 'get' || action === undefined) {
+    const out = !keys.length ? file.pkg : keys.length === 1 ? get(keys[0]) : Object.fromEntries(keys.map((k) => [k, get(k)]).filter(([, v]) => v !== undefined));
+    if (out !== undefined && !(keys.length > 1 && !Object.keys(out).length)) ctx.stdout += JSON.stringify(out, null, 2) + '\n';
+    return 0;
+  }
+  if (action === 'set') {
+    for (const kv of keys) {
+      const eq = kv.indexOf('=');
+      if (eq <= 0) { ctx.stderr += `npm error npm pkg set expects a key=value pair of args.\n`; return 1; }
+      const path = keyPath(kv.slice(0, eq));
+      let value: any = kv.slice(eq + 1);
+      if (json) { try { value = JSON.parse(value); } catch (e: any) { ctx.stderr += `npm error ${e.message}\n`; return 1; } }
+      let o = file.pkg;
+      for (let i = 0; i < path.length - 1; i++) {
+        if (o[path[i]] == null || typeof o[path[i]] !== 'object') o[path[i]] = /^\d+$/.test(path[i + 1]) ? [] : {};
+        o = o[path[i]];
+      }
+      o[path[path.length - 1]] = value;
+    }
+  } else if (action === 'delete') {
+    for (const key of keys) {
+      const path = keyPath(key);
+      let o = file.pkg;
+      for (let i = 0; i < path.length - 1 && o; i++) o = o[path[i]];
+      if (o && typeof o === 'object') { if (Array.isArray(o)) o.splice(Number(path[path.length - 1]), 1); else delete o[path[path.length - 1]]; }
+    }
+  } else {
+    ctx.stderr += `npm error Unknown pkg command: ${action}\nnpm error Usage: npm pkg get|set|delete [<key>...]\n`;
+    return 1;
+  }
+  await ctx.fs.writeFile(file.path, JSON.stringify(file.pkg, null, 2) + '\n');
+  return 0;
+}
+
+/**
+ * npm ci: node_modules removed, then installed from package.json. As npm, it needs a
+ * lockfile; the versions installed are package.json's ranges resolved now (this npm doesn't
+ * read package-lock.json's pins).
+ */
+async function npmCi(ctx: CommandContext): Promise<number> {
+  const has = async (f: string) => ctx.fs.exists(ctx.fs.resolvePath(f, ctx.cwd));
+  if (!(await has('package-lock.json')) && !(await has('npm-shrinkwrap.json'))) {
+    ctx.stderr += 'npm error code EUSAGE\nnpm error\nnpm error The `npm ci` command can only install with an existing package-lock.json or\nnpm error npm-shrinkwrap.json with lockfileVersion >= 1. Run an install with npm@5 or\nnpm error later to generate a package-lock.json file, then try again.\n';
+    return 1;
+  }
+  try { await ctx.fs.rm(ctx.fs.resolvePath('node_modules', ctx.cwd), { recursive: true }); } catch { /* none */ }
+  ctx.args = ['install', ...ctx.args.slice(1).filter((a) => a.startsWith('-'))];
+  return npmInstall(ctx);
+}
+
+const BUMPS = ['major', 'minor', 'patch', 'premajor', 'preminor', 'prepatch', 'prerelease'];
+
+/** A version bumped as npm (semver.inc) does */
+function bumpVersion(v: string, kind: string, preid?: string): string | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(v);
+  if (!m) return null;
+  let [maj, min, pat] = [+m[1], +m[2], +m[3]];
+  const pre = m[4];
+  const preStart = preid ? `${preid}.0` : '0';
+  switch (kind) {
+    case 'major': return pre && min === 0 && pat === 0 ? `${maj}.0.0` : `${maj + 1}.0.0`;
+    case 'minor': return pre && pat === 0 ? `${maj}.${min}.0` : `${maj}.${min + 1}.0`;
+    case 'patch': return pre ? `${maj}.${min}.${pat}` : `${maj}.${min}.${pat + 1}`;
+    case 'premajor': return `${maj + 1}.0.0-${preStart}`;
+    case 'preminor': return `${maj}.${min + 1}.0-${preStart}`;
+    case 'prepatch': return `${maj}.${min}.${pat + 1}-${preStart}`;
+    case 'prerelease': {
+      if (!pre) return `${maj}.${min}.${pat + 1}-${preStart}`;
+      const parts = pre.split('.');
+      const last = parts.length - 1;
+      if (/^\d+$/.test(parts[last])) parts[last] = String(+parts[last] + 1); else parts.push('0');
+      return `${maj}.${min}.${pat}-${parts.join('.')}`;
+    }
+  }
+  return null;
+}
+
+/** npm version: the versions (package, npm, node) with no argument; else package.json's bumped */
+async function npmVersion(ctx: CommandContext): Promise<number> {
+  const args = ctx.args.slice(1).filter((a) => !a.startsWith('-'));
+  const preid = (() => { const i = ctx.args.indexOf('--preid'); return i >= 0 ? ctx.args[i + 1] : ctx.args.find((a) => a.startsWith('--preid='))?.slice(8); })();
+  const json = ctx.args.includes('--json');
+  const file = await readPackage(ctx);
+  if (!args.length || (preid && args[0] === preid)) {
+    const versions: Record<string, string> = {};
+    if (file?.pkg?.name && file.pkg.version) versions[file.pkg.name] = file.pkg.version;
+    Object.assign(versions, { npm: NPM_VERSION, node: '22.12.0', acorn: '8.14.0', ada: '2.9.2', brotli: '1.1.0', uv: '1.49.1', v8: '12.4.254.21-node.21', zlib: '1.3.0.1-motley-82a5fec' });
+    ctx.stdout += json ? JSON.stringify(versions, null, 2) + '\n' : `{\n${Object.entries(versions).map(([k, v]) => `  ${/^[A-Za-z_$][\w$]*$/.test(k) ? k : `'${k}'`}: '${v}'`).join(',\n')}\n}\n`;
+    return 0;
+  }
+  if (!file) { ctx.stderr += 'npm error code ENOENT\nnpm error Could not read package.json\n'; return 1; }
+  const want = args[0].replace(/^v/, '');
+  const next = BUMPS.includes(args[0]) ? bumpVersion(String(file.pkg.version ?? '0.0.0'), args[0], preid) : /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(want) ? want : null;
+  if (!next) { ctx.stderr += `npm error Invalid version: ${args[0]}\n`; return 1; }
+  if (next === file.pkg.version && !ctx.args.includes('--allow-same-version')) { ctx.stderr += 'npm error Version not changed, might want --allow-same-version\n'; return 1; }
+  file.pkg.version = next;
+  await ctx.fs.writeFile(file.path, JSON.stringify(file.pkg, null, 2) + '\n');
+  // (the lockfile's own version, when there is one)
+  const lockPath = ctx.fs.resolvePath('package-lock.json', ctx.cwd);
+  try {
+    const lock = JSON.parse(await ctx.fs.readFile(lockPath, 'utf8') as string);
+    lock.version = next;
+    if (lock.packages?.['']) lock.packages[''].version = next;
+    await ctx.fs.writeFile(lockPath, JSON.stringify(lock, null, 2) + '\n');
+  } catch { /* none */ }
+  ctx.stdout += `v${next}\n`;
+  return 0;
+}
+
+/** npm view <pkg>[@version] [field...] [--json]: the registry's data about a package */
+async function npmView(ctx: CommandContext): Promise<number> {
+  const json = ctx.args.includes('--json');
+  const [spec, ...fields] = ctx.args.slice(1).filter((a) => !a.startsWith('-'));
+  let name = spec, range = 'latest';
+  if (!spec || spec === '.') {
+    const file = await readPackage(ctx);
+    if (!file?.pkg?.name) { ctx.stderr += 'npm error code EUSAGE\nnpm error Usage: npm view [<package-spec>] [<field>[.subfield]...]\n'; return 1; }
+    name = file.pkg.name;
+  } else {
+    const at = spec.lastIndexOf('@');
+    if (at > 0) { name = spec.slice(0, at); range = spec.slice(at + 1); }
+  }
+  let doc: any;
+  try {
+    const url = `https://registry.npmjs.org/${name.replace('/', '%2F')}`;
+    const res = await fetch(url);
+    if (res.status === 404) { ctx.stderr += `npm error code E404\nnpm error 404 Not Found - GET ${url} - Not found\n`; return 1; }
+    doc = await res.json();
+  } catch (e: any) {
+    ctx.stderr += `npm error ${e?.message ?? e}\n`;
+    return 1;
+  }
+  const version = doc['dist-tags']?.[range] ?? (doc.versions?.[range] ? range : undefined)
+    ?? Object.keys(doc.versions ?? {}).filter((v) => satisfiesLoose(v, range)).pop();
+  const data = version ? { ...doc, ...doc.versions[version], versions: Object.keys(doc.versions ?? {}), 'dist-tags': doc['dist-tags'], time: doc.time } : null;
+  if (!data) { ctx.stderr += `npm error code E404\nnpm error No match found for version ${range}\n`; return 1; }
+  if (fields.length) {
+    const pick = (f: string) => keyPath(f).reduce((o: any, k) => (o == null ? undefined : o[k]), data);
+    if (fields.length === 1) {
+      const v = pick(fields[0]);
+      if (v === undefined) return 0;
+      ctx.stdout += json ? JSON.stringify(v, null, 2) + '\n' : typeof v === 'string' ? v + '\n' : JSON.stringify(v, null, 2).replace(/"([A-Za-z_$][\w$]*)":/g, '$1:').replace(/"/g, "'") + '\n';
+      return 0;
+    }
+    const out = Object.fromEntries(fields.map((f) => [f, pick(f)]));
+    ctx.stdout += json ? JSON.stringify(out, null, 2) + '\n' : Object.entries(out).map(([k, v]) => `${k} = ${typeof v === 'string' ? `'${v}'` : JSON.stringify(v)}`).join('\n') + '\n';
+    return 0;
+  }
+  if (json) { const { versions, time, ...rest } = data; ctx.stdout += JSON.stringify({ ...rest, versions }, null, 2) + '\n'; return 0; }
+  const deps = Object.keys(data.dependencies ?? {});
+  ctx.stdout += `\n${data.name}@${data.version} | ${data.license ?? 'Proprietary'} | deps: ${deps.length || 'none'} | versions: ${data.versions.length}\n`;
+  if (data.description) ctx.stdout += `${data.description}\n`;
+  if (data.homepage) ctx.stdout += `${data.homepage}\n`;
+  if (data.bin) ctx.stdout += `\nbin: ${Object.keys(typeof data.bin === 'string' ? { [data.name]: 1 } : data.bin).join(', ')}\n`;
+  ctx.stdout += `\ndist\n.tarball: ${data.dist?.tarball}\n.shasum: ${data.dist?.shasum}\n`;
+  if (data.dist?.integrity) ctx.stdout += `.integrity: ${data.dist.integrity}\n`;
+  if (deps.length) ctx.stdout += `\ndependencies:\n${deps.map((d) => `${d}: ${data.dependencies[d]}`).join('\n')}\n`;
+  ctx.stdout += `\ndist-tags:\n${Object.entries(data['dist-tags'] ?? {}).map(([k, v]) => `${k}: ${v}`).join('\n')}\n`;
+  if (data.time?.[data.version]) ctx.stdout += `\npublished ${data.time[data.version]}\n`;
+  return 0;
+}
+
+/** x, x.y, ^x.y.z, ~x.y.z, x.y.z: enough of semver for `npm view pkg@range` (the highest match is last) */
+function satisfiesLoose(v: string, range: string): boolean {
+  if (/-/.test(v)) return false;
+  const [a, b, c] = v.split('.').map(Number);
+  const m = /^([~^]?)(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?$/.exec(range.trim());
+  if (!m) return false;
+  const [, op, M, mi, pa] = m;
+  if (a !== +M) return false;
+  if (op === '^') return mi === undefined || mi === 'x' || mi === '*' ? true : +M > 0 ? (b > +mi || (b === +mi && c >= +(pa ?? 0))) : (b === +mi && c >= +(pa ?? 0));
+  if (mi === undefined || mi === 'x' || mi === '*') return true;
+  if (b !== +mi) return false;
+  if (op === '~') return c >= +(pa ?? 0);
+  return pa === undefined || pa === 'x' || pa === '*' ? true : c === +pa;
 }

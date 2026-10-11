@@ -855,7 +855,14 @@ export class KernelChannel {
   get serving(): boolean { return this.busy; }
 
   /** A request is waiting and nothing is serving it yet. */
-  get ready(): boolean { return !this.busy && !this.stopped && this.pending; }
+  get ready(): boolean { return !this.busy && !this.stopped && !this.abandoned && this.pending; }
+  /**
+   * The request posted now got no reply (its process is exiting, or the call
+   * failed): it stays posted, and serving it again would only repeat it (an
+   * exit_group served back to back kept the page from its other work for
+   * seconds). The guest posts its next request only after a reply.
+   */
+  private abandoned = false;
 
   /** A call is in progress on the async path (it needs microtasks to finish; readiness waits don't). */
   get inCall(): boolean { return this.asyncCall; }
@@ -934,7 +941,13 @@ export class KernelChannel {
   private finish(result: number | undefined): void {
     this.busy = false;
     if (this.callThread) { this.callThread.nr = -1; this.callThread = null; }
-    if (result !== undefined && !this.stopped && !this.cur.exiting) this.reply(result);
+    // An exiting process's calls get no reply: its threads end with it. A
+    // hosted fork child's do (procOf): the engine instance that runs it goes
+    // on, and the child's thread waits for its exit_group's reply to end
+    // itself (it posted it again and again, and its siblings' signals and
+    // registrations waited behind it: LTP pause01)
+    if (result !== undefined && !this.stopped && (!this.cur.exiting || this.cur !== this.proc)) this.reply(result);
+    else this.abandoned = true;
     this.repliedAt = now();
     if (this.hot && watching.has(this)) pumpHot();
   }

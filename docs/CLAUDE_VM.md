@@ -128,23 +128,52 @@ a module, tested against what Bun 1.4.2 returns for the same calls
 
 Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-clis'.
 
-## First results
+## How `claude --vm` runs it
 
-- On the host, Node 22 with a near-empty `Bun` object (`version`, `main`,
-  `isStandaloneExecutable`), `import.meta.require`/`.dir` rewritten, and
-  `/$bunfs/root/` mapped to the extracted directory: `cli --version` prints
-  `2.1.296 (Claude Code)`. An interactive start then needs `using` lowered
-  (host only) and `ws`.
+- **Extraction** (`src/claude-vm/extract.ts`), on the user's machine from the
+  binary `claude install` put in place, under
+  `~/.cache/tabcomputer/claude-vm/<sha256>/`:
+  - `cjs/`, once per Claude Code version: every file of the graph
+    (`bun-graph.ts`). ES modules get Bun's paths and `import.meta` made
+    node's (`adaptModule`), then become CommonJS with the page's esbuild
+    (`toCommonJS`), so imports read their module's current exports where
+    they are used: Bun's chunks assign exports inside lazy initializers and
+    import each other in cycles, which node-compat's own ES module transform
+    (a copy of each import, made once) left `undefined`. zstd assets are
+    stored decompressed.
+  - `nc-<build>/`, once per tabcomputer build: what runs, with node-compat's
+    transforms done ahead and marked `PRETRANSFORMED` (they cost ~4 s a start
+    on 64 MB of code otherwise).
+- **The launcher** (`vm-main.mjs`) gives the process its `Bun`
+  (`src/claude-vm/bun/`, through the `tabcomputer:claude-vm` builtin;
+  `process-global.ts` keeps `Bun` process-local, so other programs' `typeof
+  Bun` checks are unaffected), then loads `cli.js`. `bun:ffi` and `bun:jsc`
+  are node-compat builtins (stand-ins), and `ws` a client over the page's
+  WebSocket.
+- **`Bun.ant.CellSegmenter`** (`bun/cell-segmenter.ts`) is written from the
+  renderer that calls it: segment styled text into graphemes, widths, SGR
+  style runs (with their close codes) and OSC 8 links, and paint them into
+  the screen's `[char id, word]` cells.
 
-## Plan
+## Results
 
-1. Extract at `claude --vm` time (in the page): find `.bun` by name, parse the
-   graph, write the modules to `~/.cache/tabcomputer/claude-vm/<sha256>/`
-   with `/$bunfs/root/` mapped to that directory, assets decompressed. Keyed
-   by the binary's sha256; done once per version.
-2. Load it with node-compat's ESM loader (as `--npm`), with `Bun`, `bun:*`,
-   `ws` and `import.meta.require/dir` provided.
-3. Shim pieces, by priority: CellSegmenter and the text helpers (nothing
-   renders without them), then spawn/stdin/which, zstd, then the servers.
-4. Measure with bench's claude suite against native-in-Blink and npm 2.1.112.
-5. Anything `--vm` can't run yet falls back to native-in-Blink.
+Local Chromium, `bench/claude-tui.mjs` (2 runs × 30 keys; `--vm` warm, after
+extraction):
+
+| | prompt | key echo median (p90) |
+|---|---:|---:|
+| `--vm` 2.1.296 | 3.1 s | 27 ms (30) |
+| native 2.1.296 in Blink | 45 s | 200 ms (457) |
+| npm 2.1.112 | 2.2 s | 22 ms (24) |
+
+Extraction: ~40 s once per version (both stages); a new tabcomputer build
+redoes only the second. `tests/browser/claude-restore.mjs` with
+`CLAUDE_BUILD=vm TOOL=1`: a model turn (a local stand-in for the Messages
+API), a Bash tool call, and the session resumed after a reload.
+
+## Not done yet
+
+- The page's memory: ~1.2 GB renderer RSS at the prompt.
+- Sign-in against claude.ai, `Bun.serve`/`listen`/`connect` (the OAuth
+  callback server, previews), background tasks (`Bun.Terminal`), the
+  voice and clipboard addons (they fail to load, as Claude Code allows).

@@ -9,7 +9,7 @@
 #include <time.h>
 
 static timer_t timer;
-static volatile int called, overrun, info_overrun;
+static volatile int called, overrun, info_overrun, after;
 
 static void handler(int sig, siginfo_t *si, void *uc) {
   struct itimerspec off;
@@ -18,6 +18,9 @@ static void handler(int sig, siginfo_t *si, void *uc) {
   info_overrun = si->si_overrun;
   memset(&off, 0, sizeof(off));
   timer_settime(timer, 0, &off, 0);
+  // (here, while SIGUSR1 is blocked: an expiry already on its way when the
+  // timer was disarmed may still be delivered after the handler)
+  after = timer_getoverrun(timer);
   called = 1;
 }
 
@@ -40,7 +43,6 @@ int main(void) {
   timer_settime(timer, TIMER_ABSTIME, &its, 0);
   while (!called) {
   }
-  printf("overrun max %d si_overrun max %d after settime %d\n", overrun == INT_MAX, info_overrun == INT_MAX,
-         timer_getoverrun(timer));
+  printf("overrun max %d si_overrun max %d after settime %d\n", overrun == INT_MAX, info_overrun == INT_MAX, after);
   return 0;
 }

@@ -30,6 +30,10 @@ const steps = [
   ['rm -rf node_modules', 'cd ~/proj && rm -rf node_modules'],
   ['npm i again', 'cd ~/proj && npm i >/tmp/npm.out 2>&1'],
 ];
+// FS_STALL_CLONE=URL: a shallow git clone of a big repository (tabcomputer#28: 16 s in one task)
+if (process.env.FS_STALL_CLONE) steps.push([`git clone --depth 1 ${process.env.FS_STALL_CLONE}`, `cd ~ && git clone --depth 1 ${process.env.FS_STALL_CLONE} clone 2>&1 | tail -2`]);
+// FS_STALL_ONLY=re: only the steps whose label matches
+if (process.env.FS_STALL_ONLY) { const re = new RegExp(process.env.FS_STALL_ONLY); for (let i = steps.length - 1; i >= 0; i--) if (!re.test(steps[i][0])) steps.splice(i, 1); }
 // FS_STALL_BIG=N: a big store too (N files in 100 directories), then what scans every key
 const BIG = Number(process.env.FS_STALL_BIG || 0);
 if (BIG) steps.push(
@@ -112,7 +116,8 @@ try {
     const total = s.reduce((a, b) => a + b.ms, 0);
     console.log(`\n== ${label}: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}; ${s.length} stalls >= ${STALL_MS} ms (${total.toFixed(0)} ms), longest ${s[0]?.ms.toFixed(0) ?? 0} ms`);
     for (const x of s.slice(0, 5)) {
-      console.log(`  ${x.ms.toFixed(0)} ms  self: ${top(x.self, GENERIC)}`);
+      const sum = (re) => [...x.self].filter(([k]) => re.test(k)).reduce((a, [, v]) => a + v, 0);
+      console.log(`  ${x.ms.toFixed(0)} ms  (gc ${sum(/^\(garbage collector\)/).toFixed(0)}, program ${sum(/^\(program\)/).toFixed(0)}, idle ${sum(/^\(idle\)/).toFixed(0)})  self: ${top(x.self, GENERIC)}`);
       console.log(`         incl: ${top(x.incl, /^\((root|program|garbage collector)\)/)}`);
     }
   }

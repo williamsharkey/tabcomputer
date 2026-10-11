@@ -58,7 +58,7 @@ any Linux, WSL included.
 |---|---:|---:|---:|---:|---:|---:|---:|
 | syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
 | pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
-| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | crashes (below) | 14.5 / 13.0 s (20 groups) |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 8.1 s total, `-p -g 1 -l 20` (after Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
@@ -85,8 +85,15 @@ What each row measures:
   and channel contention across 20 Worker-backed processes passing 100-byte
   messages through pipes. ~580 µs per message, so per-message cost is the
   same wake-up path as ping-pong, with no batching. Debian's `perf bench sched
-  messaging -p -g 1 -l 20` crashes the page in Blink ("WebAssembly.Table.get():
-  Argument 0 must be convertible to a valid number"; reported to perf-blink).
+  messaging -p -g 1 -l 20` crashed the page in Blink ("WebAssembly.Table.get():
+  Argument 0 must be convertible to a valid number"): its 40 processes in one
+  Blink instance push wasm memory past 2 GiB, and pointers above that arrived
+  negative in Blink's JS glue. Blink patch 0129 (unix/perf-blink 191817f4)
+  fixes it; the run then takes 8.1 s (perf-blink's Chromium run, not this
+  table's machine). `-g 2` (80 processes) still fails with fork(): ENOMEM,
+  because same-instance children fill the 4 GiB wasm memory. That is a
+  structural limit, and the reason the WSL figure (20 groups) has no
+  tabcomputer counterpart.
 - **memcpy.** How Blink runs glibc's memcpy, which picks its copy routine by
   CPUID: ~0.55 GB/s against 8.9 GB/s natively. perf's own unrolled copy
   reaches 1.25 GB/s in Blink. The same copy as wasm `memory.copy` in a WASI

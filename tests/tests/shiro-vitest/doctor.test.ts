@@ -62,7 +62,7 @@ describe('doctor', () => {
       throw new Error('offline');
     });
     expect(out).toMatch(/^WARN\s+build\s+.*\/deployed\.txt unreachable/m);
-    expect(out).toMatch(/^FAIL\s+github\s+gh: token rejected \(HTTP 401\)/m);
+    expect(out).toMatch(/^FAIL\s+github\s+gh: token rejected \(HTTP 401\): sign in again with the globe icon in the menu bar, or gh auth login/m);
     expect(out).toMatch(/^FAIL\s+relay token\s+request failed: offline/m);
     expect(code).toBe(1);
     expect(out).not.toContain(SECRET);

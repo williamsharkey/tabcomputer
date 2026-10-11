@@ -44,7 +44,7 @@ describe('execve from a multithreaded program', () => {
   // blocked in read() never saw it was killed, and the exec freed memory under
   // it (Blink patch 0128)
   it.skipIf(!built)('ends the other threads; the new image runs with one', async () => {
-    // (/proc/self/task lists only the main thread before perf-kernel's per-thread /proc)
-    expect(await runProg(bin)).toMatch(/^before exec tasks=[14]\nafter exec tasks=1\nrc 0\n$/);
+    // (/proc/self/task before the exec: 1 without per-thread /proc, up to 4 with it, depending on which threads have made a kernel call yet)
+    expect(await runProg(bin)).toMatch(/^before exec tasks=[1-4]\nafter exec tasks=1\nrc 0\n$/);
   }, 90_000);
 });

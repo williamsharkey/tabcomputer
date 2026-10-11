@@ -4,6 +4,7 @@
  * Extracted from node-cmd.ts exec() body.
  */
 
+import type { NodeArgs } from '../commands/jseval/node-args';
 import { attachProcessIpc } from './ipc';
 import { createActivity } from './activity';
 import type { CommandContext } from '../commands/index';
@@ -86,7 +87,11 @@ export async function executeNodeScript(
   fileArgs: string[],
   printResult: boolean,
   /** `code` is already what runs (Claude Code's cached transform: claude-transform-cache.ts) */
-  opts: { pretransformed?: boolean; onTransformed?: (text: string) => void } = {},
+  opts: {
+    pretransformed?: boolean; onTransformed?: (text: string) => void;
+    /** node's command line (node-args.ts): execArgv, warning switches, -r/--import preloads */
+    node?: NodeArgs;
+  } = {},
 ): Promise<number> {
   // Suppress unhandled rejections from CLI force-exit patterns
   let _nodeStderrBuf: string[] | null = null;
@@ -203,6 +208,13 @@ export async function executeNodeScript(
     // Console and process
     const fakeConsole = createFakeConsole(ctx, stdoutBuf, stderrBuf, _st);
     const fakeProcess = createFakeProcess(ctx, fileArgs, scriptPath, stdoutBuf, stderrBuf, _st, processEvents, pendingPromises);
+    if (opts.node) {
+      fakeProcess.execArgv = [...opts.node.execArgv];
+      if (opts.node.noDeprecation) (fakeProcess as any).noDeprecation = true;
+      if (opts.node.noWarnings || opts.node.disableWarnings.length) {
+        (fakeProcess as any).warningFilter = { all: opts.node.noWarnings, disabled: opts.node.disableWarnings };
+      }
+    }
     _st.fakeProcess = fakeProcess;
 
     // File cache, module cache, and sync watchdog
@@ -882,6 +894,12 @@ export async function executeNodeScript(
     });
 
     try {
+      // -r / --import: loaded first, in order, from the working directory (as node)
+      for (const p of opts.node?.preload ?? []) {
+        const spec = p.spec.startsWith('.') ? ctx.fs.resolvePath(p.spec, ctx.cwd) : p.spec;
+        if (p.kind === 'require') (requireModule as any).makeRequire(ctx.cwd, fakeModule)(spec);
+        else await requireModule.ready(spec, ctx.cwd, `${ctx.cwd}/[preload]`);
+      }
       result = await Promise.race([
         fn(fakeConsole, fakeProcess, entryRequire, FakeBuffer, entryFilename, entryDirname, {
           fs: ctx.fs,

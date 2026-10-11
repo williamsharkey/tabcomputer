@@ -5,6 +5,45 @@ import { parseShellArgs } from '../../shell-args';
 import { activeProfile } from '../../profile';
 import { writeClipboard } from '../../utils/clipboard';
 
+/**
+ * pipe/unpipe/pause/resume for a child's stdout or stderr stand-in, on its own
+ * on/off: `pipe(dest)` writes each chunk to dest and ends it at the end (not
+ * with `{ end: false }`, nor this process's stdout/stderr, as node), `unpipe`
+ * stops that; while paused, piped chunks wait for resume().
+ */
+function pipeable(self: () => any, on: (ev: string, fn: Function) => void, off: (ev: string, fn: Function) => void, stdio: () => any[]) {
+  const piped = new Map<any, { data: Function; end: Function }>();
+  let paused = false;
+  const held: [any, any][] = [];
+  return {
+    pipe: (dest: any, opts?: { end?: boolean }) => {
+      const data = (chunk: any) => { if (paused) held.push([dest, chunk]); else dest.write(chunk); };
+      const end = () => { piped.delete(dest); if (opts?.end !== false && !stdio().includes(dest)) dest.end?.(); };
+      on('data', data);
+      on('end', end);
+      piped.set(dest, { data, end });
+      dest.emit?.('pipe', self());
+      return dest;
+    },
+    unpipe: (dest?: any) => {
+      for (const [d, h] of [...piped]) {
+        if (dest !== undefined && d !== dest) continue;
+        off('data', h.data); off('end', h.end); piped.delete(d);
+        d.emit?.('unpipe', self());
+      }
+      return self();
+    },
+    pause: () => { paused = true; return self(); },
+    resume: () => {
+      paused = false;
+      for (const [d, chunk] of held.splice(0)) if (piped.has(d)) d.write(chunk);
+      return self();
+    },
+    isPaused: () => paused,
+    readable: true,
+  };
+}
+
 /** Marks the wait a running child (ref()'d) puts on its parent: process.exit() doesn't wait for it */
 export const CHILD_HOLD = Symbol('child hold');
 const childWait = <T>(p: Promise<T>): Promise<T> => Object.assign(p, { [CHILD_HOLD]: true });
@@ -527,6 +566,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     }));
     return child;
   };
+  /** This process's stdout and stderr: a pipe into them doesn't end them */
+  const stdio = () => { const p = deps.getProcess?.(); return [p?.stdout, p?.stderr]; };
+  /** pipeable() on an exec child's `stdout_`/`stderr_` events */
+  const execPipe = (self: () => any, events: Record<string, Function[]>, prefix: string) =>
+    pipeable(self, (ev, fn) => { (events[prefix + ev] ??= []).push(fn); }, (ev, fn) => { events[prefix + ev] = (events[prefix + ev] || []).filter((f) => f !== fn); }, stdio);
   /** stdio 'inherit' (all three: the child gets the terminal, as spawn's does) */
   const inheritOf = (opts: any): [boolean, boolean, boolean] => [0, 1, 2].map((i) => inherits(opts?.stdio, i)) as [boolean, boolean, boolean];
   /** An inherited stream's output is this process's (on its stdout/stderr), not the result's */
@@ -689,8 +733,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const childEvents: Record<string, Function[]> = {};
       const child: any = {
         pid: Math.floor(Math.random() * 10000) + 1000,
-        stdout: { on: (ev: string, fn: Function) => { (childEvents['stdout_' + ev] ??= []).push(fn); return child.stdout; }, pipe: (d: any) => d },
-        stderr: { on: (ev: string, fn: Function) => { (childEvents['stderr_' + ev] ??= []).push(fn); return child.stderr; }, pipe: (d: any) => d },
+        stdout: { on: (ev: string, fn: Function) => { (childEvents['stdout_' + ev] ??= []).push(fn); return child.stdout; }, ...execPipe(() => child.stdout, childEvents, 'stdout_') },
+        stderr: { on: (ev: string, fn: Function) => { (childEvents['stderr_' + ev] ??= []).push(fn); return child.stderr; }, ...execPipe(() => child.stderr, childEvents, 'stderr_') },
         stdin: { write: () => true, end: () => {}, on: () => child.stdin },
         on: (ev: string, fn: Function) => { (childEvents[ev] ??= []).push(fn); return child; },
         once: (ev: string, fn: Function) => child.on(ev, fn),
@@ -720,8 +764,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const childEvents: Record<string, Function[]> = {};
       const child: any = {
         pid: Math.floor(Math.random() * 10000) + 1000,
-        stdout: { on: (ev: string, fn: Function) => { (childEvents['stdout_' + ev] ??= []).push(fn); return child.stdout; }, pipe: (d: any) => d },
-        stderr: { on: (ev: string, fn: Function) => { (childEvents['stderr_' + ev] ??= []).push(fn); return child.stderr; }, pipe: (d: any) => d },
+        stdout: { on: (ev: string, fn: Function) => { (childEvents['stdout_' + ev] ??= []).push(fn); return child.stdout; }, ...execPipe(() => child.stdout, childEvents, 'stdout_') },
+        stderr: { on: (ev: string, fn: Function) => { (childEvents['stderr_' + ev] ??= []).push(fn); return child.stderr; }, ...execPipe(() => child.stderr, childEvents, 'stderr_') },
         stdin: {
           write: (data: any) => { if (isClipCmd) clipBuf += (typeof data === 'string' ? data : String(data)); return true; },
           end: () => { if (isClipCmd) toClipboard(clipBuf); },
@@ -830,7 +874,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           off: (ev: string, fn: Function) => { stdoutEvents[ev] = (stdoutEvents[ev] || []).filter(f => f !== fn); return child.stdout; },
           removeListener: (ev: string, fn: Function) => child.stdout.off(ev, fn),
           removeAllListeners: (ev?: string) => { if (ev) delete stdoutEvents[ev]; else Object.keys(stdoutEvents).forEach(k => delete stdoutEvents[k]); return child.stdout; },
-          pipe: (dest: any) => dest,
+          ...pipeable(() => child.stdout, (ev, fn) => { (stdoutEvents[ev] ??= []).push(fn); }, (ev, fn) => { stdoutEvents[ev] = (stdoutEvents[ev] || []).filter((f) => f !== fn); }, stdio),
           setEncoding: () => child.stdout,
           destroy: () => child.stdout,
           [Symbol.asyncIterator]: makeStreamIterator(stdoutEvents),
@@ -841,7 +885,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           off: (ev: string, fn: Function) => { stderrEvents[ev] = (stderrEvents[ev] || []).filter(f => f !== fn); return child.stderr; },
           removeListener: (ev: string, fn: Function) => child.stderr.off(ev, fn),
           removeAllListeners: (ev?: string) => { if (ev) delete stderrEvents[ev]; else Object.keys(stderrEvents).forEach(k => delete stderrEvents[k]); return child.stderr; },
-          pipe: (dest: any) => dest,
+          ...pipeable(() => child.stderr, (ev, fn) => { (stderrEvents[ev] ??= []).push(fn); }, (ev, fn) => { stderrEvents[ev] = (stderrEvents[ev] || []).filter((f) => f !== fn); }, stdio),
           setEncoding: () => child.stderr,
           destroy: () => child.stderr,
           [Symbol.asyncIterator]: makeStreamIterator(stderrEvents),
@@ -979,8 +1023,10 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         if (!stdio.includes('ipc')) stdio.push('ipc');
         return cpModule.spawn('node', [...(o.execArgv ?? []).map(String), modulePath, ...(args || []).map(String)], { ...o, stdio });
       }
-      const nodeArgs = [modulePath, ...(args || [])];
-      return cpModule.spawn('node', nodeArgs, { ...options, stdio: 'pipe' });
+      // (in the page: no IPC channel; its options and output as node's, stdout/stderr this process's unless silent)
+      const o = options ?? {};
+      const nodeArgs = [...(o.execArgv ?? []).map(String), modulePath, ...(args || []).map(String)];
+      return cpModule.spawn('node', nodeArgs, { ...o, stdio: o.stdio ?? (o.silent ? 'pipe' : ['pipe', 'inherit', 'inherit']) });
     },
   };
   // Add util.promisify.custom for exec/execFile to return { stdout, stderr }

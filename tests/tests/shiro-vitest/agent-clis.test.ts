@@ -228,7 +228,7 @@ describe('claude --native', () => {
 
   // tabcomputer#40: like the npm build, no self-install copy of the 250 MB binary,
   // updater or official-marketplace clone at start, unless the user exported one
-  it('launches with the updater, install checks and marketplace auto-install off', async () => {
+  it('launches with the updater, install checks, marketplace auto-install and error reporting off', async () => {
     const { fs, shell } = await createTestShell();
     shell.commands.register(claudeCmd);
     await fs.mkdir('/opt/n', { recursive: true });
@@ -244,9 +244,11 @@ describe('claude --native', () => {
       await run(shell, 'export DISABLE_AUTOUPDATER=0; CLAUDE_NATIVE_PATH=/opt/n/claude claude --native -p hi; unset DISABLE_AUTOUPDATER');
     } finally { spy.mockRestore(); }
     expect(lines).toHaveLength(2);
-    for (const k of ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']) {
+    for (const k of ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING']) {
       expect(lines[0]).toContain(`${k}=1 `);
     }
+    // (the rest of the traffic switches are left alone: the version check and Remote Control need them)
+    for (const k of ['DISABLE_TELEMETRY', 'DISABLE_GROWTHBOOK', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']) expect(lines[0]).not.toContain(k);
     expect(lines[1]).not.toContain('DISABLE_AUTOUPDATER=1');
     expect(lines[1]).toContain('DISABLE_INSTALLATION_CHECKS=1 ');
   });

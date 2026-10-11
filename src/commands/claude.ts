@@ -106,8 +106,10 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // official-marketplace clone at start. Without them its first launch copied its
   // own 250 MB into ~/.local/share/claude/versions through staging/ (~1000
   // eventfd wakes/s for 24-70 s) and git-cloned the plugin marketplace (#40).
+  // DISABLE_ERROR_REPORTING: no error reports from the emulator's sockets (the npm build's
+  // and --vm's fetch already drops them, node-compat/execution.ts); it gates nothing else.
   // Export any of them to change it.
-  const quiet = ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']
+  const quiet = ['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL', 'DISABLE_ERROR_REPORTING']
     .filter((k) => ctx.env[k] === undefined).map((k) => `${k}=1 `).join('');
   const line = jit + links + quiet + build + search.env + [path, ...search.args].map(quote).join(' ');
   return ctx.shell.execute(line, (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);

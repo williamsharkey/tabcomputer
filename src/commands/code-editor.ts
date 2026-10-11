@@ -7,7 +7,7 @@
  */
 
 import { Command, CommandContext } from './index';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 
 const CM_CDN = 'https://esm.sh';
 
@@ -429,7 +429,8 @@ export const codeEditorCmd: Command = {
         appId: 'code', title, width: 960, height: 620, minWidth: 360, minHeight: 220,
         content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint) },
       });
-      // where File ▸ Open… starts
+      // session restore opens it again; File ▸ Open… starts in its folder
+      (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };
       (dwin as { codeDir?: string }).codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
       // Saves from this window's editor only (another Code window has its own files)
       const onSave = async (e: MessageEvent) => {

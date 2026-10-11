@@ -58,6 +58,8 @@ export async function openPreview(ctx: AppContext, port: number, path = '/', tit
 
   const load = async (p: string) => {
     current = p;
+    // session restore opens it again (its server comes back with the terminal that ran it)
+    (win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: `serve open ${port} '${p.replace(/'/g, `'\\''`)}'`, cwd: '/home/user' };
     addr.textContent = label(p);
     win.setTitle(name ? `${name} — ${label(p)}` : label(p));
     body.querySelector('.sd-preview-stopped')?.remove();

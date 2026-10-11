@@ -25,6 +25,13 @@ export interface ServerWindowOptions {
    */
   appId?: string;
   appName?: string;
+  /** On the desktop: the command line that opens this window again after a reload (session restore), and where */
+  restore?: { cmd: string; cwd: string };
+}
+
+/** A command line that runs `name args` again (session restore): each argument shell-quoted */
+export function commandLine(name: string, args: string[]): string {
+  return [name, ...args].map((a) => (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(a) && !a.startsWith('~') ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
 }
 
 /** The part of the desktop's window manager (src/desktop/wm.ts) a server window uses */
@@ -74,6 +81,7 @@ function desktopServerWindow(wm: DesktopWM, options: ServerWindowOptions, titleT
     content: { kind: 'dom', element: body },
   });
   win.element.setAttribute('data-server-window', port != null ? String(port) : (options.title || 'terminal'));
+  if (options.restore) (win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = options.restore;
   let closed = false;
   win.on('close', () => { if (closed) return; closed = true; onClose?.(); });
   // findServerWindow / closeAllServerWindows close it through the window manager

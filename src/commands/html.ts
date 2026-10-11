@@ -8,7 +8,7 @@
  */
 
 import { Command } from './index';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 
 export const htmlCmd: Command = {
   name: 'html',
@@ -44,6 +44,7 @@ export const htmlCmd: Command = {
       mode: 'iframe',
       title: ctx.args[0] || 'html',
       appId: 'html', appName: 'HTML Viewer',
+      ...(ctx.args[0] ? { restore: { cmd: commandLine('html', ctx.args), cwd: ctx.cwd } } : {}),
       width: '32em',
       height: '22em',
     });
@@ -101,6 +102,7 @@ export const imgCmd: Command = {
       mode: 'iframe',
       title: name,
       appId: 'img', appName: 'Image Viewer',
+      restore: { cmd: commandLine('img', ctx.args), cwd: ctx.cwd },
       width: '32em',
       height: '22em',
     });

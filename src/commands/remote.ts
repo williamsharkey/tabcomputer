@@ -680,7 +680,7 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
  * session talks over the server's HTTPS mailbox instead (src/remote-relay.ts).
  * The data channel is dropped quietly (its onclose would re-register the code).
  */
-function switchToRelay(session: RemoteSession) {
+function switchToRelay(session: RemoteSession, v: 1 | 2 = 1) {
   const old = session.dc;
   if (old) { old.onopen = old.onclose = old.onmessage = null; old.close(); }
   session.pc.close();
@@ -688,7 +688,7 @@ function switchToRelay(session: RemoteSession) {
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
   session.transport = 'relay';
   // In the watchdog worker when it runs: `diag` then answers while this page is frozen
-  const opts = { base: SIGNALING_URL, info: session.relay!, code: session.code };
+  const opts = { base: SIGNALING_URL, info: { ...session.relay!, v: Math.min(v, session.relay!.v) as 1 | 2 }, code: session.code };
   const relay = workerRelay(opts) ?? new RelayChannel({ ...opts, as: 'tab', log: (m) => console.warn(`[remote] ${m}`) });
   wireSession(session, relay);
 }
@@ -734,7 +734,8 @@ async function pollForAnswer(session: RemoteSession) {
           // No answer yet, continue polling
         } else if (data.answer?.type === 'relay') {
           if (session.relay) {
-            switchToRelay(session);
+            // The envelope version both sides speak (an older peer answers v1)
+            switchToRelay(session, data.answer.v === 2 ? 2 : 1);
             return;
           }
           // A peer asked for the relay this session didn't offer: keep waiting

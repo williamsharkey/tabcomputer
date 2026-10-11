@@ -1,6 +1,8 @@
-// node ff-env.mjs URL 'ENV=1 ENV2=1' [extra firefox args]: Firefox ESR started from the shell with that environment,
-// a page typed into its address bar once the window is up; then dmesg, the log, and a screenshot
+// node ff-url.mjs URL 'ENV=1 ENV2=1' 'firefox args' ['prep shell cmd']: Firefox ESR started from the shell with that
+// environment and arguments; notes when it exits before a window, then dmesg, the log, and a screenshot.
+// AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 const require = createRequire('/opt/node-tools/node_modules/');
 const { chromium } = require('/opt/node-tools/node_modules/playwright');
 const [url, envs = '', extra = '', prep = ''] = process.argv.slice(2);
@@ -17,14 +19,18 @@ const t0 = Date.now();
 const log = (m) => console.log(`[${Math.round((Date.now() - t0) / 1000)} s] ${m}`);
 log(`install ${(await sh('gui install firefox-esr')).code}`);
 await sh(`printf '<html><body style="font: 40px serif"><h1>Hello tabcomputer</h1><p>The quick brown fox.</p></body></html>' > /home/user/t.html`);
+if (process.env.AUTOCONFIG) {
+  const b64 = (f) => readFileSync(new URL(`autoconfig/${f}`, import.meta.url)).toString('base64');
+  log('autoconfig ' + (await sh(`echo ${b64('autoconfig.js')} | base64 -d > /usr/lib/firefox-esr/defaults/pref/autoconfig.js && echo ${b64('probe.cfg')} | base64 -d > /usr/lib/firefox-esr/probe.cfg`)).code);
+}
 if (prep) log('prep ' + (await sh(prep)).code);
 // the session bus the launcher would start: launch xeyes through it first
 await sh('gui install xeyes >/dev/null; gui xeyes');
 await page.waitForTimeout(5000);
 const bus = 'unix:path=/tmp/runtime-user/bus';
-log('launch ' + (await sh(`cd /home/user && (DISPLAY=:0 HOME=/home/user XDG_RUNTIME_DIR=/tmp/runtime-user DBUS_SESSION_BUS_ADDRESS=${bus} NO_AT_BRIDGE=1 ${envs} /usr/lib/firefox-esr/firefox-esr ${extra} > /tmp/ff.log 2>&1 &); echo started`)).out.trim());
+log('launch ' + (await sh(`cd /home/user && (DISPLAY=:0 HOME=/home/user XDG_RUNTIME_DIR=/tmp/runtime-user DBUS_SESSION_BUS_ADDRESS=${bus} NO_AT_BRIDGE=1 ${envs} /usr/lib/firefox-esr/firefox-esr ${extra} > /tmp/ff.log 2>&1; echo "firefox exit status $?" >> /tmp/ff.log) & echo started`)).out.trim());
 const isFx = () => page.evaluate(() => window.__tabcomputer.desktop.windows().some((w) => w.surface && /Firefox/.test(w.title)));
-const alive = async () => /firefox-esr/.test((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out) && !/^0/.test((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out.trim());
+const alive = async () => Number((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
 for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await page.waitForTimeout(5000); }
 log(`window: ${await isFx()}`);
 if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
@@ -36,6 +42,6 @@ if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
 }
 console.log('--- dmesg ---\n' + (await sh('dmesg 2>&1 | tail -25')).out);
 console.log('--- ps ---\n' + (await sh('ps -eo pid,ppid,stat,args 2>&1 | grep -i firefox | grep -v grep')).out);
-console.log('--- log ---\n' + (await sh('tail -60 /tmp/ff.log | cat -v | cut -c1-300')).out);
+console.log('--- log ---\n' + (await sh('tail -300 /tmp/ff.log | cat -v | cut -c1-300')).out);
 await page.screenshot({ path: process.env.SHOT });
 await browser.close();

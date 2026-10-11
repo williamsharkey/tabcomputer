@@ -11,7 +11,12 @@ Each installs firefox-esr in a fresh browser profile; Firefox's window takes ~4.
   exec'd: the "husk" the parent SIGKILLs) gets its /proc status, wchan and tasks dumped 8 s after it appears.
 - `ff-noshm.mjs [--keep-overlay] [--app thunderbird]` (env `FFARGS`, `TYPEURL`): through `gui firefox-esr`, with or
   without the old font-list overlay.
-- `ff-url.mjs URL 'ENV' 'args URL'` (env `SHOT`): a URL on the command line; notes when Firefox exits before a window.
+- `ff-url.mjs URL 'ENV' 'args URL' ['prep']` (env `SHOT`, `AUTOCONFIG=1`): a URL on the command line; notes when
+  Firefox exits before a window and appends `firefox exit status N` to /tmp/ff.log. `AUTOCONFIG=1` installs
+  `autoconfig/` (Firefox's enterprise autoconfig: `defaults/pref/autoconfig.js` loads `probe.cfg` as chrome JS), which
+  logs the command line at `command-line-startup` and wraps BrowserContentHandler's `handle` methods so every
+  `nsICommandLine` call is a `PROBE` line in the log. Add `user_pref("devtools.console.stdout.chrome", true)` to the
+  profile's user.js (with `-profile DIR` and a prep command) to see the chrome console too.
 - `pagesh.mjs 'cmd' …`: shell commands in a fresh page, output printed.
 - `runprobe.mjs BINARY`: copies a static x86-64 binary into the page and runs it.
 - `forkexec.c`, `forkexec2.c` (`gcc -static [-pthread]`): fork/vfork/clone/posix_spawn then exec, from the main

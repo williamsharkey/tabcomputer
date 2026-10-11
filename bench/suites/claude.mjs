@@ -44,11 +44,11 @@ const EXIT_LIMIT_MS = 120000;
 const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
-/** Claude's config: onboarding done, the key approved, ~/w trusted and its CLAUDE.md imports allowed (no dialogs at start). */
+/** Claude's config: onboarding done, the key approved, ~/w trusted (no dialogs at start; a new one fails the round). */
 const claudeJson = (home, cwd) => JSON.stringify({
   hasCompletedOnboarding: true, theme: 'dark', lastOnboardingVersion: '9.9.9',
   customApiKeyResponses: { approved: [FAKE_KEY.slice(-20)], rejected: [] },
-  projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, hasClaudeMdExternalIncludesApproved: true, hasClaudeMdExternalIncludesWarningShown: true, allowedTools: [] } },
+  projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, allowedTools: [] } },
 });
 
 // In-page helpers, installed once per page: window.__cn
@@ -223,14 +223,15 @@ async function exitClaude(h) {
   return { hung: true, recovered: (await shellBack(30000)) != null };
 }
 
-async function round(h, add, mock, { cold, build }) {
+async function round(h, add, mock, { cold, build, tag: tagAs }) {
   const cmd = `cd ~/w && ${ENV(mock.url)} claude --${build}`;
-  const tag = cold ? 'cold' : 'warm';
+  const tag = tagAs ?? (cold ? 'cold' : 'warm');
   const s = await startClaude(h, cmd, 600000);
   if (!s.prompt) h.log(`    ${tag} start screen:\n${s.screen.trimEnd()}`);
   if (!s.prompt) throw new Error(`${tag} start: no prompt in 600 s (mock saw ${mock.calls()} calls: ${mock.paths.slice(-5).join(', ')}): ${s.screen.trimEnd().split('\n').slice(-12).join(' | ').slice(-1200)}`);
   if (s.firstScreen) add(`start.${tag}.first_screen`, s.firstScreen.parsed);
   add(`start.${tag}.prompt`, s.prompt.parsed); add(`start.${tag}.prompt.frame`, s.prompt.frame);
+  if (tag === 'next') add('rss_at_prompt.next', (await h.rendererRss()) / 2 ** 20);
   if (cold) {
     add('rss_at_prompt', (await h.rendererRss()) / 2 ** 20);
     await h.page.waitForTimeout(1500);
@@ -353,6 +354,11 @@ async function measureBuild(h, build, mock, rounds) {
       await install(h);
       await round(h, add, mock, { cold: true, build });
       await round(h, add, mock, { cold: false, build });
+      // the user's next session: the page reloaded on the same storage (installed, extracted, caches
+      // on disk; nothing in memory), what every launch after the first one gets
+      await h.boot({ context: h.page.context(), page: h.page, path: '/?ui=terminal' });
+      await install(h);
+      await round(h, add, mock, { cold: false, build, tag: 'next' });
     }, { force: true });
   }
   const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`${pre}.${key}`, R[key], unit, { notes }); };
@@ -364,6 +370,10 @@ async function measureBuild(h, build, mock, rounds) {
   S('start.warm.first_screen', 'ms', 'second launch in the same page: Enter → first output');
   S('start.warm.prompt', 'ms', 'second launch: Enter → idle prompt');
   S('start.warm.prompt.frame', 'ms', 'same, painted');
+  S('start.next.first_screen', 'ms', 'next session: the page reloaded on the same storage, then Enter → first output');
+  S('start.next.prompt', 'ms', 'next session: Enter → idle prompt (what a user gets from the second session on)');
+  S('start.next.prompt.frame', 'ms', 'same, painted');
+  S('rss_at_prompt.next', 'MiB', 'renderer RSS at the next-session prompt');
   S('rss_at_prompt', 'MiB', 'renderer RSS (workers included) at the cold prompt');
   S('echo.first', 'ms', 'first key typed at the prompt (1.5 s after it shows) → its echo on the input line');
   S('echo.first.frame', 'ms', 'same, painted');
@@ -380,7 +390,8 @@ async function measureBuild(h, build, mock, rounds) {
   S('turn', 'ms', 'Enter on a prompt → the mocked reply in the buffer');
   S('exit.cold', 'ms', '`/exit` Enter → the shell runs the next command (after the turn)');
   S('exit.warm', 'ms', 'same, second launch (no turn)');
-  for (const t of ['cold', 'warm']) {
+  S('exit.next', 'ms', 'same, next session');
+  for (const t of ['cold', 'warm', 'next']) {
     if (R[`exit_hung.${t}`]) h.sample(`${pre}.exit_hung.${t}`, R[`exit_hung.${t}`], 'count', { notes: `rounds where claude was still running ${EXIT_LIMIT_MS / 1000} s after /exit (killed to go on)` });
   }
 }

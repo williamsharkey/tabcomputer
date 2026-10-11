@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { transformBundledESM, codeMask } from '@shiro/commands/jseval/module-transform';
+import { transformBundledESM, transformESModules, codeMask } from '@shiro/commands/jseval/module-transform';
 
 // Issue 74: typescript's lib/_tsc.js failed to load ("Unexpected token ')'") because
 // the large-bundle ESM transform rewrote `import`/`export` inside its message strings.
@@ -77,5 +77,22 @@ describe('bundle prelude rejection handler', () => {
     handler({ reason: { _isProcessExit: true }, preventDefault: () => { prevented++; } });
     handler({ reason: new Error('other'), preventDefault: () => { prevented++; } });
     expect(prevented).toBe(1);
+  });
+
+  it('a regex right after a template\'s ${ is a regex, so a quote in it does not turn the rest of the file into a string', () => {
+    // (native Claude Code's bundle: `${/^http:/i.test(y)?" over plain http":""}`, then imports
+    // after it were left untransformed: "Cannot use import statement outside a module")
+    const src = 'let P=`${a}${/"x/i.test(y)?" over":""}`;import{q}from"z";';
+    const mask = codeMask(src);
+    const vis = [...src].map((c, i) => (mask[i] ? c : '_')).join('');
+    expect(vis).toBe('let P=___a________.test(y)?_______:____;import{q}from___;');
+    expect(transformESModules(src)).toContain('__shiro_require("z")');
+  });
+
+  it('a regex after a spread (`...`) is a regex too', () => {
+    // (native Claude Code: `E=D([y,b,.../^[\\/]{2}/.test(x)?…])`; read as a division, the
+    // bundle's last `export{…}` ended up inside a string and stayed untransformed)
+    const src = 'E=[y,.../^["]{2}/.test(x)?a:[]];export{E};';
+    expect(transformESModules(src)).not.toContain('export{');
   });
 });

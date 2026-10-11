@@ -1,0 +1,53 @@
+From 838b8d0cc2f70a17756feb14e73b103512a20061 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 11:00:28 +0000
+Subject: [PATCH 537/538] Shiro: system time counts each kernel call as a quick
+ call's time, without a clock read on each side of it (they cost every call
+ ~250 ns: 976's startup)
+
+---
+ blink/shiro.inc | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 805c41a..13aacf8 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -292,6 +292,10 @@ static int ShiroKsys(int nr, int args[12], int as, void *data, int inlen, int ou
+   return r;
+ }
+ 
++// a quick kernel call's time in ns, about a getppid round trip
++#define SHIRO_CALL_NS 2000
++EMSCRIPTEN_KEEPALIVE int blink_shiro_syscount(void) { return 1; }
++
+ static i64 ShiroCallIn(struct Machine *, int, const int[12], void *, int, int, bool, bool);
+ 
+ // An interruptible call counts in m->shiro_incall while it's in the kernel,
+@@ -323,7 +327,6 @@ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+                        int inlen, int outcap, bool restart, bool intr) {
+   int args[12], r, as;
+   bool held;
+-  double t0;
+   i64 res;
+   if (m && nr != 14) ShiroSyncMask(m);
+   // The mask just sent can release a signal the kernel held (ppoll and
+@@ -339,12 +342,10 @@ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+     memcpy(args, a, sizeof(args));
+     held = GilHeld();
+     if (held) GilRelease();
+-    t0 = emscripten_get_now();
+     r = ShiroKsys(nr, args, as, data, inlen, outcap);
+-    t0 = emscripten_get_now() - t0;
+-    // a quick call is system time; a longer one blocked (the kernel doesn't
+-    // count it as CPU time at all)
+-    if (m && t0 < 2) __atomic_fetch_add(&m->system->shiro_sysns, (i64)(t0 * 1e6), __ATOMIC_RELAXED);
++    // system time: every call counts as a quick call's time (a clock read
++    // on each side of every call cost more than the estimate is off by)
++    if (m) __atomic_fetch_add(&m->system->shiro_sysns, SHIRO_CALL_NS, __ATOMIC_RELAXED);
+     if (held) GilAcquire();
+     res = (i64)(u64)(u32)r | (i64)args[0] << 32;
+     // (a same-instance fork child calls as itself and takes its own
+-- 
+2.43.0
+

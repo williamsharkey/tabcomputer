@@ -3,7 +3,7 @@
 // latency and renderer memory, for the native build (Blink) and the npm build.
 //   node bench/claude-tui.mjs [--build native|npm] [--runs N] [--keys N]
 //        [--env 'K=V K2=V2'] [--args '...'] [--tui fullscreen|default]
-//        [--settle S] [--binary FILE] [--out file.json] [--shot file.png]
+//        [--settle S] [--binary FILE] [--prewarm CMD [--reload]] [--out file.json] [--shot file.png]
 // Each run is a fresh profile booted at /?ui=terminal. ~/.claude.json is
 // preset (onboarding done, the home directory trusted) so the session goes
 // straight to its prompt; there is no sign-in, so nothing reaches the API.
@@ -37,14 +37,15 @@ const extraArgs = opt('--args', '');
 const out = opt('--out');
 const shot = opt('--shot');
 const binary = opt('--binary'); // another linux-x64-musl build, e.g. bench/.cache/fixtures/claude-native-2.1.112
-const tui = opt('--tui'); // fullscreen | default: Claude's renderer (settings.json `tui`)
+const tui = opt('--tui');
+const prewarm = opt('--prewarm'); // a command run untimed first (e.g. `claude --vm --version`: the extraction) // fullscreen | default: Claude's renderer (settings.json `tui`)
 const promptRe = new RegExp(opt('--prompt', '^\\s*(❯|│ >|> )'), 'm');
 const TIMEOUT = Number(opt('--timeout', 300)) * 1000;
 const log = (...a) => console.log(...a);
 
 const fx = prepareFixtures({ cacheDir: join(ROOT, 'bench/.cache'), publishDir: join(ROOT, 'dist/__bench'), log });
 if (binary) copyFileSync(binary, join(ROOT, 'dist/__bench/claude-native-alt'));
-if (build === 'native' && !binary && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
+if (build !== 'npm' && !binary && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
 const server = await startShiroServer({ staticDir: join(ROOT, 'dist'), isolated: true, tcpPorts: [], allowCidrs: [hostAddress() + '/32'], log: process.env.BENCH_SERVER_LOG ? (l) => log('[server]', l) : null });
 const results = [];
 const h = new Harness({ mode: 'isolated', origin: server.origin, netcache: new NetCache(join(ROOT, 'bench/.cache/net'), { log: process.env.BENCH_VERBOSE ? log : () => {} }), runs, log, results });
@@ -95,7 +96,7 @@ try {
     await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm' });
     const home = '/home/user';
     await h.eval(async ({ build, json, home, tui, binary }) => {
-      if (build === 'native') {
+      if (build === 'native' || build === 'vm') {
         await window.__bench.fetchInto(binary ? '/__bench/claude-native-alt' : '/__bench/claude-native', home + '/.local/bin/claude');
         await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
       }
@@ -105,6 +106,9 @@ try {
         await window.__tabcomputer.fs.writeFile(home + '/.claude/settings.json', JSON.stringify({ tui }));
       }
     }, { build, json: CLAUDE_JSON(home), home, tui, binary: !!binary });
+    if (prewarm) { const t0 = Date.now(); const r = await h.sh(prewarm); log(`  prewarm \`${prewarm}\`: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}`); }
+    // --reload: a new page on the same storage, as the user's next session (the prewarm's caches gone)
+    if (prewarm && argv.includes('--reload')) await h.boot({ context: h.context, page: h.page, path: '/?ui=terminal' });
     await h.eval(SETUP);
     const cmd = `${extraEnv ? extraEnv + ' ' : ''}claude --${build}${extraArgs ? ' ' + extraArgs : ''}`;
     const rss0 = await h.rendererRss();

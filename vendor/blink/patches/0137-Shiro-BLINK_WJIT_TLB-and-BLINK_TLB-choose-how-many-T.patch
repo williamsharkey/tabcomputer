@@ -1,0 +1,114 @@
+From e40099b754988fcc4bc22e2905cba416eb6da676 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 11:07:09 +0000
+Subject: [PATCH] Shiro: BLINK_WJIT_TLB and BLINK_TLB choose how many TLB
+ entries are used (A/B of 0134's sizes)
+
+0134 grew the JIT's translation caches from 256 to 4096 entries and
+FindPageTableEntry's TLB from 32 to 1024. They help on x86 (Node and
+Chromium) and are suspected on Apple Silicon Chrome, where startup got
+slower. BLINK_WJIT_TLB=n (1-4096) and BLINK_TLB=n (1-1024), powers of
+two, use the first n; a reset clears only those.
+---
+ blink/memory.c |  4 +++-
+ blink/wjit.c   | 23 +++++++++++++++++------
+ 2 files changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/blink/memory.c b/blink/memory.c
+index 7cf1d7f..bd499d4 100644
+--- a/blink/memory.c
++++ b/blink/memory.c
+@@ -179,6 +179,8 @@ void CollectPageLocks(struct Machine *m) {
+ // @raise EFAULT if a valid 4096 page didn't exist at address
+ // @raise ENOMEM if memory couldn't be allocated internally
+ // @raise EAGAIN if too many locks are held on a page
++unsigned g_tlb_mask = 1023;  // BLINK_TLB (wjit.c reads it): entries of m->tlb in use
++
+ u64 FindPageTableEntry(struct Machine *m, u64 page) {
+   u8 *pslot;
+   i64 table;
+@@ -198,7 +200,7 @@ u64 FindPageTableEntry(struct Machine *m, u64 page) {
+     m->tlbsys = false;
+     ResetMachineTlb(m);
+   }
+-  tlbkey = (page >> 12) & (ARRAYLEN(m->tlb) - 1);
++  tlbkey = (page >> 12) & g_tlb_mask;
+   if (LIKELY(m->tlb[tlbkey].page == (i64)(page | m->tlbgen) &&
+              ((entry = m->tlb[tlbkey].entry) & PAGE_V))) {
+     STATISTIC(++tlb_hits);
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 99efc94..75210f6 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -81,6 +81,11 @@ static int g_wj_debug;
+ static int g_wj_off;    // BLINK_WJIT_OFF: bitmask of categories to not inline
+ static long g_wj_max;   // BLINK_WJIT_MAX: stop compiling after this many
+ static i64 g_wj_dump = -1;
++// BLINK_WJIT_TLB=n (a power of two, 1-4096): entries the translation caches
++// use (A/B of their size; 0134 made them 4096), and BLINK_TLB=n (1-1024):
++// FindPageTableEntry's (memory.c)
++unsigned g_wj_tlb_mask = WJ_TLB_SIZE - 1;
++extern unsigned g_tlb_mask;
+ static int g_wj_maxblk = 64;  // BLINK_WJIT_BLOCKS (at most kMaxBlocks)
+ // Instructions that cross into the next code page are compiled (patch 0041)
+ // when that page can't change either; BLINK_WJIT_STRADDLE=0 sends them to
+@@ -548,12 +553,12 @@ static void WjFill(struct Machine *m, i64 v, bool write) {
+   if (!(host = GetPageAddress(m->system, entry, false))) return;
+   if (IsRomAddress(m, host)) return;
+   t = write ? m->wjw : m->wjr;
+-  t += (v >> 12) & (WJ_TLB_SIZE - 1);
++  t += (v >> 12) & g_wj_tlb_mask;
+   t->tag = v & -4096;
+   t->host = (u32)(uintptr_t)host - (u32)(v & -4096);
+   if (!write && (entry & PAGE_RW)) {
+     // a readable+writable page can go in both caches
+-    t = m->wjw + ((v >> 12) & (WJ_TLB_SIZE - 1));
++    t = m->wjw + ((v >> 12) & g_wj_tlb_mask);
+     t->tag = v & -4096;
+     t->host = (u32)(uintptr_t)host - (u32)(v & -4096);
+   }
+@@ -591,7 +596,7 @@ static u32 WjXlat(struct Machine *m, i64 v, int n, int write) {
+   struct WjTlb *t;
+   if ((v & 4095) + n > 4096) return 0;
+   WjFill(m, v, write);
+-  t = (write ? m->wjw : m->wjr) + ((v >> 12) & (WJ_TLB_SIZE - 1));
++  t = (write ? m->wjw : m->wjr) + ((v >> 12) & g_wj_tlb_mask);
+   if (t->tag != (v & -4096)) return 0;
+   return t->host + (u32)v;
+ }
+@@ -652,8 +657,8 @@ static void WjCommitStash(struct Machine *m) {
+ }
+ 
+ void WjResetTlb(struct Machine *m) {
+-  memset(m->wjr, -1, sizeof(m->wjr));
+-  memset(m->wjw, -1, sizeof(m->wjw));
++  memset(m->wjr, -1, (g_wj_tlb_mask + 1) * sizeof(m->wjr[0]));
++  memset(m->wjw, -1, (g_wj_tlb_mask + 1) * sizeof(m->wjw[0]));
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -877,7 +882,7 @@ static void TlbCheck(struct Cg *g, int w, u32 table) {
+   I64(g, 12);
+   Op(g, W_I64_SHR_U);
+   Op(g, W_I32_WRAP_I64);
+-  I32(g, WJ_TLB_SIZE - 1);
++  I32(g, g_wj_tlb_mask);
+   Op(g, W_I32_AND);
+   I32(g, 4);
+   Op(g, W_I32_SHL);
+@@ -4351,6 +4356,12 @@ void WjInit(void) {
+     if (g_wj_maxblk > kMaxBlocks) g_wj_maxblk = kMaxBlocks;
+   }
+   g_wj_straddle = !((s = getenv("BLINK_WJIT_STRADDLE")) && *s == '0');
++  if ((s = getenv("BLINK_WJIT_TLB")) && atoi(s) > 0 && atoi(s) <= WJ_TLB_SIZE && !(atoi(s) & (atoi(s) - 1))) {
++    g_wj_tlb_mask = atoi(s) - 1;
++  }
++  if ((s = getenv("BLINK_TLB")) && atoi(s) > 0 && atoi(s) <= 1024 && !(atoi(s) & (atoi(s) - 1))) {
++    g_tlb_mask = atoi(s) - 1;
++  }
+   if ((s = getenv("BLINK_WJIT_BISECT"))) {
+     g_wj_lo = strtoll(s, 0, 0);
+     g_wj_hi = strchr(s, 58) ? strtoll(strchr(s, 58) + 1, 0, 0) : -1;
+-- 
+2.43.0
+

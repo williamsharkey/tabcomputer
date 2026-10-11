@@ -136,6 +136,10 @@ const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
 const zombiekillBin = join(out, 'zombiekill');
 const haveZombiekill = tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiekillBin, 'zombiekill.c']);
+const flagfuseBin = join(out, 'flagfuse');
+const haveFlagfuse = tryBuild('gcc', ['-static', '-O1', '-o', flagfuseBin, 'flagfuse.c']);
+const spinhandoffBin = join(out, 'spinhandoff');
+const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -403,6 +407,9 @@ const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const smapsBin = join(out, 'smaps');
 const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
+// read of a pipe's write end and write of its read end are EBADF, not a wait
+const pipeebadfBin = join(out, 'pipeebadf');
+const havePipeebadf = tryBuild('gcc', ['-static', '-O1', '-w', '-o', pipeebadfBin, 'pipeebadf.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -596,8 +603,13 @@ describe.skipIf(!haveFork || !haveForkShared || !haveShfutex || !haveOrphan || !
       'killed spinning child: signaled=1 sig=9\nSIGTERM to pausing child: signaled=1 sig=15\n');
     await run(shell, 'rm -f /tmp/orphan.out');
     await run(shell, `${sif} x`);
-    await run(shell, 'sleep 1');
-    expect((await run(shell, 'cat /tmp/orphan.out')).output).toContain('child outlived parent');
+    // (the child writes 300 ms on; under load, give it longer than that)
+    let got = '';
+    for (let i = 0; i < 20 && !got.includes('child outlived parent'); i++) {
+      await run(shell, 'sleep 0.5');
+      got = (await run(shell, 'cat /tmp/orphan.out')).output;
+    }
+    expect(got).toContain('child outlived parent');
   }, 60_000);
 
   it.skipIf(!haveMtchild)("ends a child's other threads with it", async () => {
@@ -1234,6 +1246,12 @@ it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps
     'msync locked -1 16\nmunlocked locked 0 msync 0\n');
 }, 60_000);
 
+it.skipIf(!havePipeebadf)('read of a pipe\'s write end and write of its read end fail EBADF at once (LTP pipe03 hung)', async () => {
+  const { shell } = await setup(readFileSync(pipeebadfBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('write read end -1 9 read write end -1 9\n');
+}, 60_000);
+
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));
   const r = await run(shell, './prog');
@@ -1598,6 +1616,27 @@ describe('Blink engine: CPU and syscall fixes', () => {
     expect(Date.now() - t0).toBeLessThan(15_000);
   }, 60_000);
 
+  // a fused cmp+setcc across an instruction that writes no flags: movd/movq and
+  // scalar SSE arithmetic used the producer's locals as scratch (Firefox's
+  // parser took ++i for a pre-decrement: gui's bisect; patch 0139)
+  it.skipIf(!haveFlagfuse)('flags fused across movd, movq and scalar SSE arithmetic are the producer\'s, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(flagfuseBin));
+    const r = await run(shell, './prog 2000; BLINK_WJIT=0 ./prog 200');
+    const lines = r.output.replace(/\r\n/g, '\n').trim().split('\n');
+    expect(lines).toHaveLength(20);
+    for (const l of lines) expect(l).toMatch(/ 0 of \d+ wrong$/);
+  }, 60_000);
+
+  // two threads that hand a flag back and forth by spinning: compiled code
+  // held the GIL for up to seconds per handoff (Blender's startup; patch 0138)
+  it.skipIf(!haveSpinhandoff)('threads that spin on each other hand the GIL over promptly in compiled code', async () => {
+    const { shell } = await setup(readFileSync(spinhandoffBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog 300 2>/dev/null');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('300 rounds\n');
+    expect(Date.now() - t0).toBeLessThan(20_000);
+  }, 60_000);
+
   // small callees compiled into their caller's region, their rets going back
   // inside it (BLINK_WJIT_OFF bit 21 turns that off); the outputs are native's
   it.skipIf(!haveCallret || !haveCalls)('calls and returns match native, callees in the caller\'s region or not, and interpreted', async () => {
@@ -1686,12 +1725,25 @@ describe('Blink engine: CPU and syscall fixes', () => {
   // serves the next process running the same code
   it.skipIf(!haveRounding)('compiled code\'s modules reach the page\'s cache, and the same program compiles to the same keys', async () => {
     const { keptCompiledModules } = await import('@shiro/x86-engine/blink');
+    // the modules come in batches the guest's threads post, which can still be
+    // on their way when the process has exited (a loaded machine): wait until
+    // the count holds still
+    const settled = async () => {
+      let n = keptCompiledModules().count, still = 0;
+      for (let i = 0; i < 100 && still < 5; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        const m = keptCompiledModules().count;
+        still = m === n ? still + 1 : 0;
+        n = m;
+      }
+      return n;
+    };
     const { shell } = await setup(readFileSync(roundingBin));
     await run(shell, './prog > /dev/null');
-    const once = keptCompiledModules();
-    expect(once.count).toBeGreaterThan(0);
+    const once = await settled();
+    expect(once).toBeGreaterThan(0);
     await run(shell, './prog > /dev/null');
-    expect(keptCompiledModules().count).toBe(once.count); // (same bytes: the same keys)
+    expect(await settled()).toBe(once); // (same bytes: the same keys)
   }, 120_000);
 
   // a signal that comes while the guest is between kernel calls wakes the

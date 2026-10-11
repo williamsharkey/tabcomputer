@@ -39,9 +39,11 @@ if (typeof window !== 'undefined') pageOwn();
  * in `globalThis.fs` (and wasm_exec_node.js sets `globalThis.require`), and two
  * esbuild services in one tab wrote each other's stdout through the shared one
  * ("Invalid packet"). Read through globalThis, as Go's runtime does; the bare
- * `fs` in esbuild's loader reads it so too (source-patches.ts).
+ * `fs` in esbuild's loader reads it so too (source-patches.ts). `claude --vm`
+ * puts its Bun shim there (src/claude-vm/extract.ts): other programs check
+ * `typeof Bun` and must not see it.
  */
-const PROCESS_LOCAL = new Set<PropertyKey>(['fs', 'require']);
+const PROCESS_LOCAL = new Set<PropertyKey>(['fs', 'require', 'Bun']);
 
 /**
  * In a Worker (node as a kernel guest), globals a script sets that are written

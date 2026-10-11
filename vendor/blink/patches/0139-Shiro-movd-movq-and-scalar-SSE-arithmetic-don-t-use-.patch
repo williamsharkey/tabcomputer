@@ -1,0 +1,111 @@
+From f3bdbf10b5b14723013397ee508e7ccfea172534 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 11:30:30 +0000
+Subject: [PATCH] Shiro: movd/movq and scalar SSE arithmetic don't use the
+ fused flag producer's locals (cmp; movd; setne read the wrong flags)
+
+A flag consumer fused with its producer (cmp + setcc/jcc/cmov) recomputes
+the condition from the producer's operands in L_CX/L_CY/L_CZ, and an
+instruction that writes no flags in between keeps the fusion. movd/movq
+(TranslateMovq) and scalar SSE add/sub/mul/div/min/max/sqrt used L_CX/L_CY
+as scratch, so the consumer compared the wrong values: Firefox's parser
+took `++i` for a pre-decrement (GeneralParser::unaryExpr: cmpb; mov; movd;
+setne; gui's bisect). They use L_X/L_Y now, which no instruction keeps
+across instructions.
+---
+ blink/wjit.c | 33 ++++++++++++++++++---------------
+ 1 file changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 16fb631..1bbcb94 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -2568,9 +2568,10 @@ static void TranslateFp(struct Cg *g, struct Ins *in) {
+     Resolve(g, in, n, false);  // (the interpreter doesn't fault misaligned packed operands either)
+   }
+   if (scalar) {
++    // (no flags: L_X/L_Y, not L_CX/L_CY, which may hold a fused producer's)
+     Get(g, L_M);
+     Mem(g, dbl ? W_I64_LOAD : W_I64_LOAD32_U, dbl ? 3 : 2, XMM(d));
+-    Set(g, L_CX);
++    Set(g, L_X);
+     if (IsModrmRegister(rde)) {
+       Get(g, L_M);
+       Mem(g, dbl ? W_I64_LOAD : W_I64_LOAD32_U, dbl ? 3 : 2, XMM(x));
+@@ -2578,21 +2579,21 @@ static void TranslateFp(struct Cg *g, struct Ins *in) {
+       Get(g, L_HR);
+       Mem(g, dbl ? W_I64_LOAD : W_I64_LOAD32_U, 0, 0);
+     }
+-    Set(g, L_CY);
++    Set(g, L_Y);
+     Get(g, L_M);
+     if (k == 6) {
+-      FpGet(g, L_CY, dbl);
++      FpGet(g, L_Y, dbl);
+       Op(g, dbl ? W_F64_SQRT : W_F32_SQRT);
+     } else if (k == 3 || k == 5) {  // min: x < y ? x : y; max: y < x ? x : y
+-      FpGet(g, L_CX, dbl);
+-      FpGet(g, L_CY, dbl);
+-      FpGet(g, k == 3 ? L_CX : L_CY, dbl);
+-      FpGet(g, k == 3 ? L_CY : L_CX, dbl);
++      FpGet(g, L_X, dbl);
++      FpGet(g, L_Y, dbl);
++      FpGet(g, k == 3 ? L_X : L_Y, dbl);
++      FpGet(g, k == 3 ? L_Y : L_X, dbl);
+       Op(g, dbl ? W_F64_LT : W_F32_LT);
+       Op(g, W_SELECT);
+     } else {
+-      FpGet(g, L_CX, dbl);
+-      FpGet(g, L_CY, dbl);
++      FpGet(g, L_X, dbl);
++      FpGet(g, L_Y, dbl);
+       base = dbl ? W_F64_ADD : W_F32_ADD;  // add, sub, mul, div follow in order
+       Op(g, base + (k == 0 ? 0 : k == 2 ? 1 : k == 1 ? 2 : 3));
+     }
+@@ -2626,15 +2627,17 @@ static void TranslateFp(struct Cg *g, struct Ins *in) {
+ 
+ // movd/movq between xmm and general registers or memory, F3 0F 7E and
+ // 66 0F D6 movq: the low 32 or 64 bits, the rest of an xmm destination zero
++// (no flags: L_X, not L_CX..L_CZ, which may hold a fused producer's
++// operands for a flag consumer after this, as in `cmp; movd; setne`)
+ static void TranslateMovq(struct Cg *g, struct Ins *in) {
+   u64 rde = in->rde;
+   int op = Mopcode(rde), d = RexrReg(rde), x = RexbRm(rde);
+   int w = Rexw(rde) ? 8 : 4;
+   if (op == 0x16E) {  // movd/movq xmm, r/m
+     GetRm(g, in, w);
+-    Set(g, L_CX);
++    Set(g, L_X);
+     Get(g, L_M);
+-    Get(g, L_CX);
++    Get(g, L_X);
+     Mem(g, W_I64_STORE, 3, XMM(d));
+     Get(g, L_M);
+     I64(g, 0);
+@@ -2651,9 +2654,9 @@ static void TranslateMovq(struct Cg *g, struct Ins *in) {
+     if (IsModrmRegister(rde)) {
+       Get(g, L_M);
+       Mem(g, W_I64_LOAD, 3, XMM(x));
+-      Set(g, L_CX);
++      Set(g, L_X);
+       Get(g, L_M);
+-      Get(g, L_CX);
++      Get(g, L_X);
+       Mem(g, W_I64_STORE, 3, XMM(d));
+       Get(g, L_M);
+       I64(g, 0);
+@@ -2668,9 +2671,9 @@ static void TranslateMovq(struct Cg *g, struct Ins *in) {
+   if (IsModrmRegister(rde)) {
+     Get(g, L_M);
+     Mem(g, W_I64_LOAD, 3, XMM(d));
+-    Set(g, L_CX);
++    Set(g, L_X);
+     Get(g, L_M);
+-    Get(g, L_CX);
++    Get(g, L_X);
+     Mem(g, W_I64_STORE, 3, XMM(x));
+     Get(g, L_M);
+     I64(g, 0);
+-- 
+2.43.0
+

@@ -1,0 +1,89 @@
+From 726530ce11ede2d4315de0316b8f714c7e3ef55b Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 11:24:18 +0000
+Subject: [PATCH] Shiro: compiled code that spends a loop's budget gives the
+ GIL to a waiting thread at once
+
+Actor yields the GIL every kGilSlice (4096) of its iterations, and one
+compiled-code entry was one iteration, though it can chain 64 regions of
+1024 loop iterations each: a compiled spin-wait held the GIL for up to
+seconds per handoff while the thread it waited on couldn't run (Blender's
+startup hung with the JIT on, ran with it off). A loop that spends its
+budget now sets m->wjspin; the chain stops there, and Actor yields if a
+thread is waiting, as the interpreter would within 4096 instructions.
+fixtures/x86/spinhandoff.c: 38.6 -> 6.7 ms per handoff (interpreted 1.5).
+---
+ blink/machine.c | 12 ++++++++++--
+ blink/machine.h |  1 +
+ blink/wjit.c    |  6 +++++-
+ 3 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/blink/machine.c b/blink/machine.c
+index 0764fb1..60f9ae7 100644
+--- a/blink/machine.c
++++ b/blink/machine.c
+@@ -2363,8 +2363,16 @@ void Actor(struct Machine *mm) {
+         // the compiled code stopped at (it goes on from the next one)
+         m->wjhot = g_wj_enabled && (m->ip - ip != m->xedd->length || wj == 2);
+         if (UNLIKELY(g_shiro_prof)) ShiroProfStep(m, ip, false, wjhot);
+-      } else if (UNLIKELY(g_shiro_prof)) {
+-        ShiroProfStep(m, ip, true, true);
++      } else {
++        if (UNLIKELY(g_shiro_prof)) ShiroProfStep(m, ip, true, true);
++        // compiled code that spent a loop's budget (a spin-wait, maybe)
++        // gives the GIL to a waiting thread now, as the interpreter would
++        // within kGilSlice instructions: counted in Actor's iterations, a
++        // compiled spin held it for seconds per handoff (Blender's workers)
++        if (UNLIKELY(m->wjspin)) {
++          m->wjspin = false;
++          if (g_gil_enabled) GilYield();
++        }
+       }
+ #else
+       ExecuteInstruction(m);
+diff --git a/blink/machine.h b/blink/machine.h
+index 33c7ad8..b8e905d 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -506,6 +506,7 @@ struct Machine {               //
+   struct SmcQueue smcqueue;              //
+   struct OpCache opcache[1];             //
+   bool wjhot;                            // at a branch target (wasm jit)
++  bool wjspin;                           // compiled code spent its loop budget
+   struct WjTlb wjr[WJ_TLB_SIZE];         // wasm jit read translations
+   struct WjTlb wjw[WJ_TLB_SIZE];         // wasm jit write translations
+   struct ShiroRemoteSlot {               // remote pages this instruction or
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 75210f6..16fb631 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -3379,6 +3379,9 @@ static void Goto(struct Cg *g, i64 target) {
+     Mem(g, W_I32_ATOMIC_LOAD8_U, 0, OFF(attention));
+     Op(g, W_I32_OR);
+     If(g, T_VOID);
++    Get(g, L_M);  // m->wjspin = 1: a loop that ran this long may be waiting
++    I32(g, 1);    // for another thread, which needs the GIL (Actor)
++    Mem(g, W_I32_STORE8, 0, OFF(wjspin));
+     ExitTo(g, target);
+     End(g);
+     I32(g, k);
+@@ -4414,7 +4417,7 @@ int WjExecute(struct Machine *m) {
+     for (k = 0; k < 64; ++k) {
+       if (atomic_load_explicit(&m->attention, memory_order_acquire) ||
+           t_epoch != atomic_load_explicit(&g_wj_epoch, memory_order_relaxed) ||
+-          (g_gil_enabled && GilWanted()) || !(e = Find(m->ip)) || e->fn <= 0) {
++          (g_gil_enabled && GilWanted()) || m->wjspin || !(e = Find(m->ip)) || e->fn <= 0) {
+         break;
+       }
+       ((wj_f)(uintptr_t)e->fn)(m);
+@@ -4475,6 +4478,7 @@ static int WjCall(struct Machine *m, i64 ret) {
+     ++t_runs;
+     if (UNLIKELY(g_shiro_prof)) ++g_wj_ents[2];
+     ((wj_f)(uintptr_t)e->fn)(m);
++    if (m->wjspin) t_unwind = true;  // (a spin: back to Actor, which yields the GIL)
+     if (t_unwind || !m->wjhot) break;
+   }
+   --t_depth;
+-- 
+2.43.0
+

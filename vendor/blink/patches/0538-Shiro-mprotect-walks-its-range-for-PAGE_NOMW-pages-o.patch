@@ -1,0 +1,55 @@
+From b3b9555694aea8a1f0bef40be4ce5020ac00b954 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 11:00:28 +0000
+Subject: [PATCH 538/538] Shiro: mprotect walks its range for PAGE_NOMW pages
+ only once this instance has made one (every PROT_WRITE mprotect walked every
+ page of its range twice)
+
+---
+ blink/shiro.inc | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 13aacf8..264c62a 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3977,10 +3977,16 @@ int ShiroBusFault(struct Machine *m, i64 va) {
+ // marks the pages of a shared file mapping, made as private anonymous memory
+ // filled from the file: PAGE_SHRD for /proc/self/maps, PAGE_NOMW where the
+ // file can't be written through it
++// (set once this instance has made a PAGE_NOMW page: until then
++// ShiroMprotect has none to look for. Same-instance fork children share
++// it; a snapshot fork child's pages don't keep the mark)
++static bool g_shiro_nomw;
++
+ static void ShiroMarkShared(struct Machine *m, i64 addr, u64 size, u64 bits) {
+   u8 *slot;
+   u64 e;
+   i64 v;
++  if (bits & PAGE_NOMW) __atomic_store_n(&g_shiro_nomw, true, __ATOMIC_RELAXED);
+   LOCK(&m->system->mmap_lock);
+   for (v = addr; v < addr + (i64)ROUNDUP(size, 4096); v += 4096) {
+     if (!(slot = ShiroPteSlot(m->system, v))) continue;
+@@ -3993,6 +3999,7 @@ static void ShiroMarkShared(struct Machine *m, i64 addr, u64 size, u64 bits) {
+ // mprotect from the guest: PROT_WRITE on a shared mapping of a file it may
+ // not write is EACCES (LTP memfd_create01); Blink's own calls skip this
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_maywrite(void) { return 1; }
++EMSCRIPTEN_KEEPALIVE int blink_shiro_nomwlazy(void) { return 1; }
+ 
+ EMSCRIPTEN_KEEPALIVE int blink_shiro_fallocate(void) { return 1; }
+ 
+@@ -4001,7 +4008,10 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_sealbusy(void) { return 1; }
+ static int ShiroMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
+   bool nomw = false;
+   i64 v;
+-  if ((prot & 2) && !(addr & 4095) && IsValidAddrSize(addr, size)) {
++  // (a walk of every page of the range: JIT runtimes mprotect big ranges
++  // writable often)
++  if ((prot & 2) && __atomic_load_n(&g_shiro_nomw, __ATOMIC_RELAXED) &&
++      !(addr & 4095) && IsValidAddrSize(addr, size)) {
+     LOCK(&m->system->mmap_lock);
+     if (IsFullyMapped(m->system, addr, size)) {
+       for (v = addr; v < addr + (i64)ROUNDUP(size, 4096) && !nomw; v += 4096) {
+-- 
+2.43.0
+

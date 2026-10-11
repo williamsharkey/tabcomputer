@@ -10,7 +10,7 @@
 
 import {
   netStack, NetStack, KSocket, AF_INET, AF_INET6, SOCK_STREAM, SHUT_WR, IPPROTO_TCP, TCP_NODELAY,
-  SOL_SOCKET, SO_KEEPALIVE, errnoName, ipFamily,
+  SOL_SOCKET, SO_KEEPALIVE, errnoName, ipFamily, ipv6Groups,
 } from '../../kernel/net';
 
 export interface NetDeps {
@@ -447,12 +447,63 @@ export function createNetModule(deps: NetDeps = {}): any {
     createServer: (opts?: any, listener?: Listener) => new Server(opts, listener),
     createConnection: connect,
     connect,
+    BlockList,
     isIP: (input: string) => ipFamily(String(input)),
     isIPv4: (input: string) => ipFamily(String(input)) === 4,
     isIPv6: (input: string) => ipFamily(String(input)) === 6,
     getDefaultAutoSelectFamily: () => false,
     setDefaultAutoSelectFamily: () => {},
   };
+}
+
+type IpFamily = 'ipv4' | 'ipv6';
+const famOf = (f: unknown): IpFamily => {
+  const v = String(f ?? 'ipv4').toLowerCase();
+  if (v !== 'ipv4' && v !== 'ipv6') throw Object.assign(new TypeError(`The argument 'family' must be one of: 'ipv4', 'ipv6'. Received '${f}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+  return v;
+};
+/** An address as a number (IPv4: 32 bits, IPv6: 128), or throws as node does */
+function ipValue(address: unknown, family: IpFamily): bigint {
+  const a = String((address as any)?.address ?? address);
+  if (family === 'ipv4') {
+    if (ipFamily(a) !== 4) throw Object.assign(new TypeError(`Invalid IPv4 address: ${a}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    return a.split('.').reduce((n, p) => (n << 8n) | BigInt(Number(p)), 0n);
+  }
+  if (ipFamily(a) !== 6) throw Object.assign(new TypeError(`Invalid IPv6 address: ${a}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  return ipv6Groups(a).reduce((n, g) => (n << 16n) | BigInt(g), 0n);
+}
+const MAPPED = 0xffffn << 32n; // ::ffff:0:0/96
+
+/** net.BlockList: rules for addresses, ranges and subnets, checked in either family (IPv4-mapped IPv6 matches IPv4 rules). */
+export class BlockList {
+  private list: { family: IpFamily; lo: bigint; hi: bigint; text: string }[] = [];
+  static isBlockList(v: unknown): boolean { return v instanceof BlockList; }
+  addAddress(address: unknown, family?: string): void {
+    const f = famOf((address as any)?.family ?? family), v = ipValue(address, f);
+    this.list.push({ family: f, lo: v, hi: v, text: `Address: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(address as any)?.address ?? address}` });
+  }
+  addRange(start: unknown, end: unknown, family?: string): void {
+    const f = famOf((start as any)?.family ?? family), lo = ipValue(start, f), hi = ipValue(end, f);
+    if (lo > hi) throw Object.assign(new RangeError('The value of "start" is out of range. It must be <= "end".'), { code: 'ERR_INVALID_ARG_VALUE' });
+    this.list.push({ family: f, lo, hi, text: `Range: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(start as any)?.address ?? start}-${(end as any)?.address ?? end}` });
+  }
+  addSubnet(net: unknown, prefix: number, family?: string): void {
+    const f = famOf((net as any)?.family ?? family), bits = f === 'ipv4' ? 32 : 128;
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > bits) throw Object.assign(new RangeError(`The value of "prefix" is out of range. It must be >= 0 && <= ${bits}. Received ${prefix}`), { code: 'ERR_OUT_OF_RANGE' });
+    const host = (1n << BigInt(bits - prefix)) - 1n;
+    const lo = ipValue(net, f) & ~host;
+    this.list.push({ family: f, lo, hi: lo | host, text: `Subnet: ${f === 'ipv4' ? 'IPv4' : 'IPv6'} ${(net as any)?.address ?? net}/${prefix}` });
+  }
+  check(address: unknown, family?: string): boolean {
+    const f = famOf((address as any)?.family ?? family);
+    let v: bigint;
+    try { v = ipValue(address, f); } catch { return false; }
+    // the same address in the other family: a.b.c.d is ::ffff:a.b.c.d
+    const v4 = f === 'ipv4' ? v : (v >> 32n) === 0xffffn ? v & 0xffffffffn : null;
+    const v6 = f === 'ipv6' ? v : MAPPED | v;
+    return this.list.some((r) => r.family === 'ipv4' ? v4 !== null && v4 >= r.lo && v4 <= r.hi : v6 >= r.lo && v6 <= r.hi);
+  }
+  get rules(): string[] { return this.list.map((r) => r.text).reverse(); }
 }
 
 /** The pre-relay inert socket, kept for tls (no TLS implementation in the Node shim). */
@@ -523,6 +574,10 @@ export function createTlsModule(deps: TlsDeps): any {
     getCiphers: () => ['TLS_AES_256_GCM_SHA384'],
     DEFAULT_MIN_VERSION: 'TLSv1.2',
     DEFAULT_MAX_VERSION: 'TLSv1.3',
+    // The page's fetch verifies TLS with the browser's own roots, so node code gets no
+    // bundle of its own (an empty list, as an array: Claude Code spreads it)
+    rootCertificates: Object.freeze([] as string[]),
+    getCACertificates: (_type?: string) => [] as string[],
     connect,
   };
 }

@@ -190,6 +190,11 @@ export function carryAsyncContext(src: string, codeMaskOfSrc?: Uint8Array): stri
     const a = skipWs(p + 5);
     if (a >= n || /[=,;)\]}:?]/.test(src[a]) && !(src[a] === '?' && src[a + 1] === '.')) continue;
     if (definesName(p, a)) continue;
+    // `await using x = …` (and `for (await using x of …)`): a declaration, not an await of `using`
+    if (src.startsWith('using', a) && !ID.test(src[a + 5] ?? '')) {
+      const d = skipWs(a + 5);
+      if (d > a + 5 && /[A-Za-z_$\u0080-\uffff]/.test(src[d] ?? '') && !/^(?:in|of|instanceof)(?![\w$])/.test(src.slice(d, d + 11))) continue;
+    }
     const e = unary(p + 5);
     if (e < 0) continue;
     inserts.push([p, '__shiroAls.r(__shiroAls.c(), '], [e, ')']);

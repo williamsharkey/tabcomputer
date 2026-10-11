@@ -13,11 +13,37 @@ import { zstdDecompressSync, zstdDecompress } from './zstd';
 import { which } from './which';
 import { sleepSync } from './sleep';
 import { spawn, BunFile, stdinOf, type SpawnEnv, type SpawnOptions } from './spawn';
+import { CellSegmenter } from './cell-segmenter';
 
 export interface BunEnv extends SpawnEnv {
   /** Bun.version, Bun.main */
   version?: string;
   main?: string;
+  /** The extracted bundle's embedded assets by path: Bun's loader number (bun-graph.ts BunLoader) */
+  assets?: Record<string, number>;
+}
+
+/**
+ * What the extracted bundle's `import.meta.require` became (extract.ts): a
+ * module's require as Bun's, where an embedded text asset is its text, a file
+ * asset its path, and a native addon can't load.
+ */
+function bunRequire(env: BunEnv) {
+  const made = new WeakMap<object, (id: string) => unknown>();
+  return (r: any) => {
+    let f = made.get(r);
+    if (!f) {
+      f = Object.assign((id: string) => {
+        const loader = env.assets?.[id];
+        if (loader === 13) return env.fs.readFileSync(id, 'utf8');
+        if (loader === 5) return id;
+        if (loader === 10) throw Object.assign(new Error(`Cannot load native addon ${id} in claude --vm`), { code: 'ERR_DLOPEN_FAILED' });
+        return r(id);
+      }, { resolve: r.resolve, cache: r.cache, main: r.main });
+      made.set(r, f);
+    }
+    return f;
+  };
 }
 
 export function createBun(env: BunEnv): Record<string, unknown> {
@@ -45,5 +71,8 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     unsafe: { setJITPolicy() {} },
     generateHeapSnapshot: () => ({}),
     env: env.process.env,
+    // Anthropic's Bun build: the renderer's cell segmenter; the rest are optional there
+    ant: { CellSegmenter, memoryPressureLevel: () => 0, setDumpable() {} },
+    __require: bunRequire(env),
   };
 }

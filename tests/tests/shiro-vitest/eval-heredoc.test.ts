@@ -47,3 +47,12 @@ describe('eval and here-document bodies', () => {
     expect((await sh(`echo 'a <<B\nb'`)).out).toBe('a <<B\nb\n');
   });
 });
+
+describe('eval and here-strings', () => {
+  // Claude Code's Bash tool evals each command: a multi-line one with <<< read
+  // the rest of its lines as a here-doc ("open '<': ENOENT")
+  it('a here-string in multi-line eval text is not a here-document', async () => {
+    expect((await sh(`eval 'echo a\nbase64 <<<"hi"\necho b'`)).out).toBe('a\naGkK\nb\n');
+    expect((await sh(`eval '{ cat <<<x; cat <<E\ny\nE\n}'`)).out).toBe('x\ny\n');
+  });
+});

@@ -243,10 +243,12 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
 
 - `glshiro` (`src/gl/server.ts`) accepts connections and reassembles each
   connection's batches for its executor (`src/gl/exec.ts`), which owns one
-  WebGL2 context. **Now** the executor runs on the main thread
-  (`src/gl/present.ts`). **Planned**: one Worker per connection
-  (`src/gl/worker.ts`) with the context on an OffscreenCanvas, batches
-  transferred as ArrayBuffers; the main thread stays the fallback.
+  WebGL2 context. With a desktop (X windows have GL surfaces) the executor
+  runs in one Worker per connection (`src/gl/worker.ts`) with the context
+  on an OffscreenCanvas; batches are transferred as ArrayBuffers, along
+  with the sizes of the windows they make current. Headless, without
+  Workers or with `localStorage.tabcomputer_gl_worker = '0'`, it runs on the
+  main thread (`src/gl/present.ts`) and presents by readback.
 - One WebGL2 context per connection holds every GL context of that
   process. Share groups are name maps; each GL context's state is shadowed
   and re-applied on a context switch. This makes `glXCreateContext` with
@@ -258,10 +260,13 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   no readback, no copy through Xshiro's pixmaps. Front-buffer drawing, and
   `glReadPixels` from either buffer, work because both are FBOs. The FBO
   follows the window's size at the next swap or MakeCurrent, as DRI does.
-  **Now** frames take the fallback below; the bitmap path waits for gui's
-  `glSurface`.
-- Fallback present (and `XGetImage` on a GL window): read the front FBO
-  back into the window's pixmap, so Xshiro composes it like any drawing.
+  The window's own pixmap keeps what X drew under it, so `XGetImage` and
+  the desktop's window previews don't show the GL frame (not needed so far).
+  A window made current before it can take a surface (not mapped yet) is
+  tried again with each batch and frame.
+- Fallback present: read the front FBO back into the window's pixmap, so
+  Xshiro composes it like any drawing; asynchronously (a pixel-pack buffer
+  and a fence), so the page doesn't wait for the GPU.
 - Pbuffers (glXCreatePbuffer, GLX_SGIX_pbuffer; Qt and Krita use them for
   offscreen GL): the vendor library takes an XID with XAllocID that the X
   server never sees, maps it to itself in glvnd, and sends tcCreatePbuffer
@@ -336,12 +341,12 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
    glvnd falls back to `libGLX_indirect`), and GetDrawableAttributes for a
    drawable's screen. Other GLX requests answer `BadRequest`; our vendor
    sends none.
-2. Done in `src/x11/gl-surface.ts`; present.ts doesn't use it yet. An in-page API for a GL window,
+2. Done in `src/x11/gl-surface.ts`, used by present.ts's Worker path. An in-page API for a GL window,
    `server.glSurface(xid) → { canvas, width, height, x, y, visible, clip, onChange(cb), onDestroy(cb), release() }`:
    a `bitmaprenderer` canvas at the window's position in its toplevel,
    clipped and stacked like the window (child windows included: KiCad's 3D
    canvas, wxGLCanvas), kept in place across moves, resizes, map and unmap.
-   Until present.ts uses it, frames take the readback fallback (asynchronous since 010193a1).
+   Without a DOM there is no canvas, and frames take the readback fallback.
 3. The vendor library: `src/gl/setup.ts` writes
    `public/gui/lib/libGLX_tabcomputer.so.0` (built by `scripts/gl/build.sh`)
    to `/usr/lib/x86_64-linux-gnu/` before Xshiro serves its first client
@@ -360,9 +365,11 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
   - `gl-webgl.test.ts`: real WebGL2 in headless Chromium (skipped without
     it): the shader corpus compiled and linked, every kind of
     fixed-function program, and the executor's pixels (clear, immediate
-    mode, display lists, textures, lighting, a legacy GLSL program).
+    mode, display lists, textures, lighting, a legacy GLSL program, client
+    arrays, async readback, pbuffers), and the Worker's messages.
   - `gl-server.test.ts`: the socket server (batches split anywhere, one
-    backend per connection, broken streams) and `setup.ts`.
+    backend per connection, broken streams), `setup.ts`, and which windows
+    a batch makes current.
   - `x11.test.ts` (gui's): the GLX requests glvnd sends.
   - `gl-guest.test.ts`: glxinfo, glxgears, glbench and the pbuffer probe
     (`scripts/gl/probes/`) in Blink against a recording glshiro, with no
@@ -387,9 +394,17 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | Bulk upload (glBufferSubData) | 210 MB/s |
 | Small calls (glVertex3f) | 0.43 M/s |
 | Frames rendered in 3 s without animation frames (a hidden tab) | 0 |
+| Neverball title screen in the page, 640×480: synchronous readback / async readback (3 runs each, alternating) | 6.4–7.2 / 7.9–8.5 frames/s (+20%) |
+| Neverball in the page, async readback: 320×240 / 640×480 | 17.3–17.7 / 8.3 frames/s |
+| glxgears in the page: readback / Worker with GL surfaces | 46–47 / 104 frames/s |
+| Neverball in the page, 640×480: async readback / Worker with GL surfaces (3 runs each) | 8.7–9.2 / 8.7–9.4 frames/s |
+| Neverball in Blink under Node, recording backend (guest and transport only) | 24 FPS |
+| OpenSCAD 2021.01 (Blink 0119) PNG export: OpenCSG preview / full CGAL render | 3.8 s, 1,724 draws / 10.3 s (6.4 s CGAL) |
 
 The page numbers are SwiftShader's (a CPU renderer); a GPU only makes the
-WebGL2 side cheaper.
+WebGL2 side cheaper. With async readback the page's main thread is about 80%
+idle while Neverball runs, and the frame rate follows the pixel count, so at
+640×480 SwiftShader's fill rate is the limit here, not glshiro.
 
 ### Stages (as agreed)
 

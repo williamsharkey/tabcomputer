@@ -4,6 +4,19 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/perf-kernel)** — additive: the kernel profiler (src/kernel/profiler.ts).
+  - `Kernel.startProfile({pids?, follow?, filter?, paths?, bucketMs?, keys?})`
+    attaches one (`kernel.profiler`), `Kernel.stopProfile()` detaches it
+    and returns its report: per syscall calls, errors, sync-path share,
+    kernel CPU and wall µs, the slowest call and its args, waits by timeout;
+    per descriptor kind (`read:pty`), per path, per process, a timeline, and
+    per keystroke (through the ptys) input → the guest's read → its writes
+    back. Off, each syscall entry pays one null check.
+  - `strace -c [-f] PROG` / `strace -c -p PID [--duration=S]` print it
+    (`--json` for the report itself); `strace -p PID` traces a running process.
+  - pread64/pwrite64 of a regular file whose pages are in memory take the
+    sync path (`OpenFile.tryPread`/`tryPwrite`).
+
 - **2026-10-10 (unix/perf-kernel)** — additive: shared objects (src/kernel/shmobj.ts).
   - `shiro_shmobj_map` 1020 `(fd | shmid, kind, lenLo, lenHi)` → id; data
     i32 = 1 when remote. kind 0: a /dev/shm or /run/shm file, or a memfd;

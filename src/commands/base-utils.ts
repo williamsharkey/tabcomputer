@@ -345,29 +345,83 @@ export const straceCmd: Command = {
   async exec(ctx) {
     let i = 0;
     let follow = false;
+    let summary = false;
+    let json = false;
     let outFile: string | undefined;
+    let duration = 0;
+    const attach: number[] = [];
     const a = ctx.args;
     for (; i < a.length && a[i].startsWith('-'); i++) {
       if (a[i] === '-f' || a[i] === '-ff') follow = true;
+      else if (a[i] === '-c' || a[i] === '-C' || a[i] === '--summary-only') summary = true;
+      else if (a[i] === '-w' || a[i] === '--summary-wall-clock') { /* the summary is wall clock already */ }
+      else if (a[i] === '--json') { json = true; summary = true; }
       else if (a[i] === '-o') outFile = a[++i];
+      else if (a[i] === '-p') attach.push(...(a[++i] ?? '').split(/[ ,]+/).filter(Boolean).map(Number));
+      else if (a[i].startsWith('--duration=')) duration = Number(a[i].slice(11));
       else if (a[i] === '--') { i++; break; }
     }
     const cmd = a.slice(i);
-    if (!cmd.length) {
-      ctx.stderr += "strace: must have PROG [ARGS]\nTraces the system calls of x86-64 (Blink) and WASM programs; Shiro's builtins run in the page and make none.\n";
+    if (!cmd.length && !attach.length) {
+      ctx.stderr += "strace: must have PROG [ARGS] or -p PID\nTraces the system calls of x86-64 (Blink) and WASM programs; Shiro's builtins run in the page and make none.\n"
+        + 'Options: -f follow children, -c a summary (calls, kernel CPU and wall time, per descriptor kind, paths, processes, keystrokes),\n'
+        + '  --json the summary as JSON, -p PID attach (until it exits, Ctrl-C or --duration=SECS), -o FILE.\n';
       return 1;
     }
+    if (attach.some((p) => !Number.isInteger(p) || p <= 0)) { ctx.stderr += `strace: bad -p ${attach.join(',')}\n`; return 1; }
     const { kernelForContext } = await import('../wasi/run-command');
+    const kernel = kernelForContext(ctx);
+    if (!kernel) { ctx.stderr += 'strace: no kernel\n'; return 1; }
+    for (const p of attach) if (!kernel.procs.has(p)) { ctx.stderr += `strace: attach: ptrace(PTRACE_SEIZE, ${p}): No such process\n`; return 1; }
+    const abort: AbortSignal | undefined = ((ctx.shell as any).abortController ?? (ctx.shell as any).inheritedAbort)?.signal;
+    const write = async (text: string) => {
+      if (outFile) await ctx.fs.writeFile(ctx.fs.resolvePath(outFile, ctx.cwd), text);
+      else ctx.stderr += text;
+    };
+    const run = () => ctx.shell.execute(cmd.map((w) => `'${w.replace(/'/g, `'\\''`)}'`).join(' '),
+      (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+    // -p: until the processes end, Ctrl-C or --duration
+    const attached = () => new Promise<void>((resolve) => {
+      const end = () => { clearInterval(iv); clearTimeout(to); abort?.removeEventListener('abort', end); resolve(); };
+      const iv = setInterval(() => { if (attach.every((p) => !kernel.procs.has(p) || kernel.procs.get(p)!.exiting)) end(); }, 100);
+      const to = duration > 0 ? setTimeout(end, duration * 1000) : undefined;
+      abort?.addEventListener('abort', end, { once: true });
+    });
+
+    if (summary) {
+      const { formatReport } = await import('../kernel/profiler');
+      const firstPid = ((kernel as any).lastPid ?? 0) + 1;
+      let first = 0;
+      const prof = kernel.startProfile(attach.length ? { pids: attach, follow } : {
+        follow,
+        // the command's first process (and with -f its descendants)
+        filter: (p) => {
+          if (p.pid < firstPid) return false;
+          if (!first) first = p.pid;
+          return p.pid === first;
+        },
+      });
+      let code = 0;
+      try {
+        if (attach.length) await attached();
+        else code = await run();
+      } finally {
+        kernel.stopProfile(prof);
+      }
+      const r = prof.report(100);
+      await write(json ? JSON.stringify(r) + '\n' : formatReport(r));
+      return code;
+    }
+
     const abi = await import('../kernel/abi');
     const { errnoName } = await import('../kernel/net');
-    const kernel = kernelForContext(ctx);
     const names = new Map<number, string>();
     for (const [k, v] of Object.entries(abi)) if (k.startsWith('SYS_') && typeof v === 'number' && !names.has(v)) names.set(v, k.slice(4));
     const firstPid = ((kernel as any).lastPid ?? 0) + 1;
-    const traced = new Set<number>();
+    const traced = new Set<number>(attach);
     const want = (p: { pid: number; ppid: number }) => {
       if (traced.has(p.pid)) return true;
-      if (p.pid >= firstPid && (traced.size === 0 || (follow && traced.has(p.ppid)))) { traced.add(p.pid); return true; }
+      if ((attach.length ? follow && traced.has(p.ppid) : p.pid >= firstPid && (traced.size === 0 || (follow && traced.has(p.ppid))))) { traced.add(p.pid); return true; }
       return false;
     };
     let trace = '';
@@ -375,7 +429,7 @@ export const straceCmd: Command = {
       const name = names.get(nr) ?? `syscall_${nr}`;
       const shown = Array.from(args).slice(0, 3).map((x) => (x < 0 || x > 0xffff ? '0x' + (x >>> 0).toString(16) : String(x))).join(', ');
       const res = r < 0 ? `-1 ${errnoName(-r)}` : String(r);
-      trace += `${follow ? `[pid ${p.pid}] ` : ''}${name}(${shown}) = ${res}\n`;
+      trace += `${follow || attach.length > 1 ? `[pid ${p.pid}] ` : ''}${name}(${shown}) = ${res}\n`;
     };
     const k = kernel as any;
     const sync0 = k.syscallSync.bind(k);
@@ -390,18 +444,20 @@ export const straceCmd: Command = {
       if (want(proc)) p.then((r) => fmt(proc, nr, args, r), () => {});
       return p;
     };
-    let code: number;
+    let code = 0;
     try {
-      code = await ctx.shell.execute(cmd.map((w) => `'${w.replace(/'/g, `'\\''`)}'`).join(' '),
-        (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
+      if (attach.length) await attached();
+      else code = await run();
     } finally {
       k.syscallSync = sync0;
       k.syscall = async0;
     }
-    if (!traced.size) trace += `strace: ${cmd[0]} made no system calls: it is a tabcomputer builtin (it runs in the page); strace sees x86-64 and WASM programs\n`;
-    trace += `+++ exited with ${code} +++\n`;
-    if (outFile) await ctx.fs.writeFile(ctx.fs.resolvePath(outFile, ctx.cwd), trace);
-    else ctx.stderr += trace;
+    if (attach.length) trace += attach.map((p) => `strace: Process ${p} detached\n`).join('');
+    else {
+      if (!traced.size) trace += `strace: ${cmd[0]} made no system calls: it is a tabcomputer builtin (it runs in the page); strace sees x86-64 and WASM programs\n`;
+      trace += `+++ exited with ${code} +++\n`;
+    }
+    await write(trace);
     return code;
   },
 };

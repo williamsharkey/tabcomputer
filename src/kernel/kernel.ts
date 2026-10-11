@@ -14,6 +14,7 @@ import type { Command, CommandContext } from '../commands/index';
 import { KernelStdio, execLazyStdin } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
 import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText, type ThreadState } from './procfs';
+import { KernelProfiler, type ProfileOptions, type ProfileReport } from './profiler';
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
@@ -203,6 +204,22 @@ export class Kernel {
   /** uname(2) nodename (the prompt's \h). */
   hostname = activeProfile().hostname;
   readonly procs = new Map<number, Process>();
+  /** The attached profiler (startProfile), or null: every syscall entry checks it */
+  profiler: KernelProfiler | null = null;
+
+  /** Attach a profiler (replacing any): `strace -c`, bench probes. stopProfile() detaches it and returns its report. */
+  startProfile(opts: ProfileOptions = {}): KernelProfiler {
+    this.profiler?.stop();
+    this.profiler = new KernelProfiler(opts);
+    return this.profiler;
+  }
+
+  stopProfile(prof: KernelProfiler | null = this.profiler): ProfileReport | null {
+    if (!prof) return null;
+    prof.stop();
+    if (this.profiler === prof) this.profiler = null;
+    return prof.report();
+  }
   readonly init: Process;
   private loaders: Loader[] = [];
   private devices = new Map<string, DeviceOpener>();
@@ -1848,6 +1865,16 @@ export class Kernel {
    * Registered handlers (registerSyscalls) always take the async path.
    */
   syscallSync(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
+    const prof = this.profiler;
+    if (prof === null || !prof.wants(proc)) return this.syscallSyncImpl(proc, nr, args, data);
+    const d = prof.describe(proc, nr, args, data);
+    const t0 = performance.now();
+    const r = this.syscallSyncImpl(proc, nr, args, data);
+    prof.sync(proc, nr, r, (performance.now() - t0) * 1000, d);
+    return r;
+  }
+
+  private syscallSyncImpl(proc: Process, nr: number, args: ArrayLike<number>, data: Uint8Array): number | undefined {
     if (proc.state !== 'running' || proc.exiting) return undefined;
     proc.syscalls++; // (/proc CPU estimate: these take no time)
     const hs = this.syscallTable.get(nr);
@@ -1892,6 +1919,15 @@ export class Kernel {
       case A.SYS_write: {
         const f = proc.fds.get(args[0]);
         return f?.tryWrite?.(data.subarray(0, Math.min(args[1] >>> 0, data.length)));
+      }
+      case A.SYS_pread64:
+      case A.SYS_pwrite64: {
+        const f = proc.fds.get(args[0]);
+        const fn = nr === A.SYS_pread64 ? f?.tryPread : f?.tryPwrite;
+        if (!f || !fn || f.flags & A.O_PATH) return undefined;
+        const off = (args[3] | 0) * 0x100000000 + (args[2] >>> 0);
+        if (off < 0) return -A.EINVAL;
+        return fn.call(f, data.subarray(0, Math.min(args[1] >>> 0, data.length)), off);
       }
       case A.SYS_fstat:
       case A.SYS_newfstatat: {
@@ -1957,8 +1993,16 @@ export class Kernel {
       if (i >= 0) proc.calls.splice(i, 1);
     };
     // The caller awaits the call itself: the bookkeeping adds no await hop to it
+    const prof = this.profiler;
+    if (prof === null || !prof.wants(proc)) {
+      const p = this.syscallImpl(proc, nr, args, data);
+      p.then(done, done);
+      return p;
+    }
+    const c = prof.begin(proc, nr, args, data);
     const p = this.syscallImpl(proc, nr, args, data);
-    p.then(done, done);
+    c.cpuUs = (performance.now() - c.t0) * 1000;
+    p.then((r) => { done(); prof.end(c, r); }, () => { done(); prof.end(c, -A.EFAULT); });
     return p;
   }
 

@@ -68,6 +68,14 @@ JS: handy for poking at something a benchmark flagged.
   `bench/.cache/fixtures/ld-musl-x86_64.so.1`; `claude install --native`
   inside tabcomputer fetches the same two files (src/commands/claude-native.ts).
   Without them the metric is recorded as skipped with that note.
+- `node bench/claude-profile.mjs [--keys N] [--out f.json] [--cpu-profile DIR]`
+  (same two fixtures; not part of `run.mjs`): the kernel profile
+  (`src/kernel/profiler.ts`, what `strace -c` prints) of native Claude Code
+  starting (`claude` → its input box, against a local stand-in for
+  api.anthropic.com over the relay) and echoing N keystrokes, with
+  keypress → drawn latency and, per key, pty input → the guest's read →
+  its writes back. `--cpu-profile` also saves the page's main-thread CPU
+  profile of each phase.
 
 ## User workflows (`workflows`, in quick and full runs)
 

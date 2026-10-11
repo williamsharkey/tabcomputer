@@ -939,7 +939,7 @@ export class KernelChannel {
       let off = () => {};
       // Blocked: the process is in a syscall for /proc (S, syscall, wchan) and its kernel
       // time, as kernel.syscall counts its calls (a fallback goes there and counts itself)
-      let t0 = 0;
+      let t0 = 0, pt0 = 0;
       const call = { nr, args };
       const leave = () => {
         if (!t0) return;
@@ -948,6 +948,7 @@ export class KernelChannel {
         if (ms >= 2) proc.kernelMs += ms;
         const i = proc.calls.indexOf(call);
         if (i >= 0) proc.calls.splice(i, 1);
+        this.kernel.profiler?.blocked(proc, nr, performance.now() - pt0);
         t0 = 0;
       };
       const end = (r: number | undefined, fallback = false) => {
@@ -989,6 +990,7 @@ export class KernelChannel {
       attempt();
       if (!done) {
         t0 = Date.now();
+        pt0 = performance.now();
         if (proc.inSyscall++ === 0) proc.syscallSince = t0;
         proc.calls.push(call);
       }

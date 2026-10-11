@@ -20,7 +20,7 @@ import { Kernel, getKernel, type Runner } from '../kernel/kernel';
 import { installNet } from '../kernel/net';
 import { workerRunner, webWorker, type GuestWorker } from '../kernel/worker-host';
 import { BufferFile, DevNull } from '../kernel/fd';
-import { type KStat, S_IFIFO, shellExitCode, SIGKILL, CH_DATA, CH_STATE, CH_SYSNO, CH_ARGS, CH_NARGS, CH_RESULT, CH_SIGNAL, STATE_REQUEST, STATE_REPLY, STATE_DEAD, ESRCH } from '../kernel/abi';
+import { type KStat, S_IFIFO, shellExitCode, SIGKILL, SIGABRT, SIGSEGV, CH_DATA, CH_STATE, CH_SYSNO, CH_ARGS, CH_NARGS, CH_RESULT, CH_SIGNAL, STATE_REQUEST, STATE_REPLY, STATE_DEAD, ESRCH } from '../kernel/abi';
 import { createChannelBuffer, KernelChannel, canWatch as canWatchChannels } from '../kernel/channel';
 import type { Process } from '../kernel/process';
 
@@ -143,6 +143,8 @@ async function workerFactory(): Promise<() => GuestWorker> {
         terminate: () => w.terminate(),
         onMessage: (cb: (m: unknown) => void) => w.on('message', cb),
         onError: (cb: (e: unknown) => void) => w.on('error', cb),
+        onExit: (cb: (code: number) => void) => w.on('exit', cb),
+        native: w,
       };
     };
   }
@@ -175,6 +177,19 @@ const poolBuffer = () => createChannelBuffer(POOL_DATA + POOL_AS_BYTES);
  * `restore`, the worker instead rebuilds a fork()ed process from its
  * parent's snapshot (Blink patch 0014); `path` is the parent's program.
  */
+/**
+ * The signal an engine crash kills its guest with: an abort (Blink's
+ * assertions, emscripten's abort(), out of memory) SIGABRT, anything else
+ * (a wasm trap: out-of-bounds memory access, unreachable; an engine error) SIGSEGV
+ */
+/** How long after an engine abort its guest has to report its exit before the kernel ends it */
+export const ABORT_GRACE_MS = 1000;
+
+export function blinkCrashSignal(err: unknown): number {
+  const text = String((err as Error)?.message ?? err);
+  return /abort/i.test(text) ? SIGABRT : SIGSEGV;
+}
+
 export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
   return async (proc: Process, kernel: Kernel) => {
     ensureNet(kernel);
@@ -194,6 +209,10 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
       // TABCOMPUTER_BLINK_DEBUG=1: the worker logs kernel syscalls and Blink's own messages to the console
       // poolWake 'atomics': the page watches the pool channels' state words, so
       // host.mjs posts no blink-sys and waits for no blink-done (as WASI guests)
+      // The engine crashed (a wasm trap, an abort): the guest dies of a signal,
+      // so its waiters see WIFSIGNALED; a worker gone without the guest's exit was killed
+      crashStatus: blinkCrashSignal,
+      vanishedStatus: SIGKILL,
       startData: {
         path, moduleUrl: defaultAssetBase() + 'blink.mjs', wasmUrl: wasm, wasmModule, mounts, pool, poolAsBytes: POOL_AS_BYTES, dch,
         // Opt-in (TABCOMPUTER_BLINK_POOL_WAKE=atomics): no measurable gain on
@@ -506,20 +525,25 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       if (c.data.embryo && c.data.forkParent === proc.pid && !c.exiting) void kernel.exit(c, SIGKILL);
     }
   }, 1000);
-  const terminate = () => { delete proc.data.engine; delete proc.data.engineDirect; stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
+  let ended = false;
+  const terminate = () => { ended = true; delete proc.data.engine; delete proc.data.engineDirect; stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
   // The engine crashed (an abort or a wasm trap ends the whole instance): the
   // children it hosted died with it.
+  // They die of the crash's signal, as the guest itself does.
   let crashed = false;
-  const crash = () => {
+  const crash = (sig: number) => {
     if (crashed) return;
     crashed = true;
     for (const pid of [...hosted]) {
       const c = kernel.procs.get(pid);
-      if (c && !c.exiting) void kernel.exit(c, SIGKILL);
+      if (c && !c.exiting) void kernel.exit(c, sig);
     }
     sweep();
   };
-  w.onError(() => crash());
+  w.onError((err) => crash(blinkCrashSignal(err)));
+  // The worker ended without the kernel ending it (killed from outside, or it
+  // died): the instance is gone, and the children it hosted with it
+  w.onExit?.(() => { if (!ended) crash(SIGKILL); });
   let ownGone = false;
   // The guest exited on its own (blink-exiting): its exit_group reaches the
   // kernel at once, while Blink's other threads are still on their way out.
@@ -671,7 +695,14 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       }
     } else if (m?.type === 'blink-abort') {
       kernel.reportFatal(proc, `blink ${String(m.text)}`);
-      crash();
+      crash(SIGABRT);
+      // The guest dies of SIGABRT, as on Linux: host.mjs prints the abort and
+      // calls exit_group, which then ends it with that signal. An engine that
+      // never gets there (an abort in another of its threads, or one that
+      // wedges) left the process running and its parent's wait4 hanging: a
+      // second later the kernel ends it itself.
+      proc.data.crashSignal = SIGABRT;
+      setTimeout(() => { if (!proc.exiting) void kernel.exit(proc, SIGABRT); }, ABORT_GRACE_MS);
     } else if (m?.type === 'blink-watch') watch(m.fd);
     else if (m?.type === 'blink-unwatch') { subs.get(m.fd)?.(); subs.delete(m.fd); }
   });

@@ -502,6 +502,11 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/stat': () => 'cpu  0 0 0 0 0 0 0 0 0 0\n',
     '/proc/filesystems': () => 'nodev\trootfs\n',
     '/proc/sys/kernel/pid_max': () => '4194304\n',
+    // socket buffer limits (src/kernel/abi.ts WMEM_MAX and the like; SO_SNDBUF doubles what it's given)
+    '/proc/sys/net/core/wmem_max': () => `${8 << 20}\n`,
+    '/proc/sys/net/core/rmem_max': () => `${8 << 20}\n`,
+    '/proc/sys/net/core/wmem_default': () => '212992\n',
+    '/proc/sys/net/core/rmem_default': () => '212992\n',
     '/proc/sys/fs/pipe-max-size': () => '1048576\n',
     '/proc/sys/fs/pipe-user-pages-soft': () => '16384\n',
     '/proc/sys/fs/pipe-user-pages-hard': () => '0\n',

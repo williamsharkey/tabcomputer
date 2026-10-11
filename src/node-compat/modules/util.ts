@@ -118,6 +118,15 @@ function parseArgs(config: any, proc?: { argv: string[]; execArgv?: string[] }):
   const evalMode = ['-e', '--eval', '-p', '--print'].some((f) => execArgv.includes(f));
   const args: string[] = config.args ?? (proc ? proc.argv.slice(evalMode ? 1 : 2) : []);
   const options: Record<string, any> = config.options ?? {};
+  // node validates the options first: a type of string or boolean, a one-character short
+  for (const [name, opt] of Object.entries(options)) {
+    if (opt?.type !== 'string' && opt?.type !== 'boolean') {
+      throw parseArgsError('ERR_INVALID_ARG_TYPE', `The "options.${name}.type" property must be one of: 'string', 'boolean'. Received ${JSON.stringify(opt?.type)}`);
+    }
+    if (opt.short !== undefined && (typeof opt.short !== 'string' || opt.short.length !== 1)) {
+      throw parseArgsError('ERR_INVALID_ARG_VALUE', `The property 'options.${name}.short' must be a single character. Received ${JSON.stringify(opt.short)}`);
+    }
+  }
   const strict = config.strict ?? true;
   const allowPositionals = config.allowPositionals ?? !strict;
   const allowNegative = config.allowNegative ?? false;
@@ -175,8 +184,8 @@ function parseArgs(config: any, proc?: { argv: string[]; execArgv?: string[] }):
       continue;
     }
     if (arg.startsWith('--') && arg.length > 2) {
-      const eq = arg.indexOf('=');
-      if (eq > 0) {
+      const eq = arg.indexOf('=', 3); // (as node: `--=x` is an option named `=x`)
+      if (eq >= 3) {
         tokens.push({ kind: 'option', name: arg.slice(2, eq), rawName: arg.slice(0, eq), index, value: arg.slice(eq + 1), inlineValue: true });
         continue;
       }
@@ -199,7 +208,8 @@ function parseArgs(config: any, proc?: { argv: string[]; execArgv?: string[] }):
         const opt = own(name);
         if (!opt) throw parseArgsError('ERR_PARSE_ARGS_UNKNOWN_OPTION', `Unknown option '${t.rawName}'` + (allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(t.rawName)}` : ''));
         // (a value taken from the next argument that looks like an option)
-        if (opt.type === 'string' && t.inlineValue === false && typeof t.value === 'string' && t.value.startsWith('-')) {
+        if (opt.type === 'string' && t.inlineValue === false && typeof t.value === 'string' && t.value.length > 1 && t.value.startsWith('-')) {
+          // (a lone `-` is a value: stdin, by convention)
           const example = opt.short ? `'--${name}=-XYZ' or '-${opt.short}-XYZ'` : `'--${name}=-XYZ'`;
           throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${t.rawName}' argument is ambiguous.\nDid you forget to specify the option argument for '${t.rawName}'?\nTo specify an option argument starting with a dash use ${example}.`);
         }

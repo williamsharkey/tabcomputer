@@ -327,6 +327,10 @@ const haveMapfile = readFileSync(resolve(__dirname, '../../../public/engines/bli
 const mmapargsBin = join(out, 'mmapargs');
 const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmapargs') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmapargsBin, 'mmapargs.c']);
+// Blink 0520: threads mapping files shared and unmapping them at once (tabcomputer#27)
+const mapthreadsBin = join(out, 'mapthreads');
+const haveMapthreads = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapsgil') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', mapthreadsBin, 'mapthreads.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1098,6 +1102,12 @@ it.skipIf(!haveMmapargs)('mmap checks in Linux\'s order: a bad fd, no length, ac
   const { shell } = await setup(readFileSync(mmapargsBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('bad fd no length 9\nno length 22\nread-only shared write 13\nhigh fixed 12\nvalidate 95\n32bit below 2G 1\n32bit 2G 12\n');
+}, 60_000);
+
+it.skipIf(!haveMapthreads)('threads mapping files shared and writable and unmapping them at once finish, every write in its file (an munmap\'s write-back and another thread\'s mmap deadlocked a threaded process: codex, tabcomputer#27)', async () => {
+  const { shell } = await setup(readFileSync(mapthreadsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('done 0\n');
 }, 60_000);
 
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {

@@ -21,6 +21,7 @@ import { ICONS, GLYPHS, appIcon } from './icons';
 import { TerminalView, takeParkedMain, hasParkedMain, applyTerminalTheme, useMonoFont, allTerminalViews, terminalTheme, TERMINAL_FONT } from './terminal-app';
 import { initNetwork } from './network';
 import { loadSession, place, restoreSession, trackSession } from './session';
+import { previousLoadWedge } from '../watchdog';
 import { BRAND } from '../brand';
 import { DEV_GROUPS, DEV_TOOLS, TOOL_PATH, launchScript, type DevTool } from './devtools';
 import { setClaudeSignInUI } from '../claude-signin-ui';
@@ -841,11 +842,24 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
           .then(() => fontsAtBoot ? undefined : useMonoFont(terms)));
       }
       let restoredFocus: DesktopWindow | null = null;
-      hold(restoreSession(wm, session, openTerminal).catch(() => null).then((focused) => {
+      // A fresh shell's environment: what a restored terminal's exported variables differ from
+      const baseEnv = { ...deps.shell.env };
+      const runCmd = (cmd: string, cwd: string) => {
+        const sh = deps.makeShell();
+        sh.cwd = cwd;
+        void sh.execute(cmd, () => {}, () => {});
+      };
+      // A load after one that froze doesn't restore (a session that freezes on restore can't loop)
+      const restore = !session.length ? Promise.resolve(null) : previousLoadWedge(400).then((wedge) => {
+        if (!wedge) return restoreSession(wm, session, { openTerminal, run: runCmd });
+        term.writeOutput('\x1b[2mThe last load of this tab froze: its windows were not reopened (safe-mode reset-layout forgets them).\x1b[0m\r\n');
+        return null;
+      });
+      hold(restore.catch(() => null).then((focused) => {
         // The window that had the focus gets it back (and the menu bar its app name); else the main terminal
         restoredFocus = focused;
         (focused ?? first.win).focus();
-        trackSession(wm);
+        trackSession(wm, baseEnv);
       }));
       const reveal = () => {
         if (revealed) return;

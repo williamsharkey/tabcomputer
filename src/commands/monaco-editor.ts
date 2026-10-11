@@ -7,7 +7,7 @@
  */
 
 import { Command, CommandContext } from './index';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 
 const MONACO_CDN = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min';
 
@@ -362,6 +362,7 @@ export const monacoEditorCmd: Command = {
       mode: 'iframe',
       title: target === '.' ? ctx.cwd.split('/').pop() || 'monaco' : target,
       appId: 'monaco', appName: 'Monaco',
+      restore: { cmd: commandLine('monaco', ctx.args), cwd: ctx.cwd },
       width: '56em',
       height: '34em',
     });

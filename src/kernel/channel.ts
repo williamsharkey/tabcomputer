@@ -732,7 +732,9 @@ export class KernelChannel {
   /** Thread id served by this channel (the pid for the main thread). */
   readonly tid: number;
   /** That thread's record (proc.threads): the call in progress, for /proc/PID/task/TID */
-  private readonly thread: ThreadInfo;
+  private thread: ThreadInfo;
+  /** The record the call in progress started on (it keeps it if recordTid changes meanwhile) */
+  private callThread: ThreadInfo | null = null;
   private unlisten: () => void;
 
   /**
@@ -741,20 +743,42 @@ export class KernelChannel {
    * that thread, and gettid returns their tid.
    */
   constructor(readonly sab: SharedArrayBuffer, readonly kernel: Kernel, readonly proc: Process,
-    private opts: { tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean } = {}) {
+    private opts: { tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean; recordTid?: number } = {}) {
     // A channel can also live inside a larger buffer (Blink's direct channels
     // are in its wasm memory): `offset` bytes in, with a `size`-byte data area
     const off = opts.offset ?? 0;
     this.i32 = new Int32Array(sab, off, A.CH_DATA / 4);
     this.data = opts.size !== undefined ? new Uint8Array(sab, off + A.CH_DATA, opts.size) : new Uint8Array(sab, off + A.CH_DATA);
     this.tid = opts.tid ?? proc.pid;
-    this.thread = proc.thread(this.tid);
+    // `recordTid`: the engine's own thread id (Blink numbers its threads and answers
+    // gettid and thread exit itself): this channel's calls show as that thread's
+    // in /proc/PID/task, without the kernel treating the channel as a thread's
+    this.thread = proc.thread(opts.recordTid || this.tid);
     // `listen: false`: signals ride only on replies (Blink's direct channels:
     // host.mjs delivers the others, and an idle channel must not hold one)
     this.unlisten = opts.listen === false ? () => {} : proc.addSignalListener(() => this.flagSignals());
   }
 
   get isThread(): boolean { return this.tid !== this.proc.pid; }
+
+  /**
+   * The engine thread this channel serves now, for /proc/PID/task/TID (0:
+   * none, a spare): an engine that hands channels to its threads as they
+   * start sets it then, and clears it when the thread ends.
+   */
+  get recordTid(): number { return this.thread.tid === this.tid ? 0 : this.thread.tid; }
+  set recordTid(tid: number) {
+    if (tid === this.recordTid && tid !== 0) return;
+    this.dropRecord();
+    // (unowned: a record of its own, not listed)
+    this.thread = tid ? this.proc.thread(tid) : tid === 0 && this.tid !== this.proc.pid ? this.proc.thread(this.tid) : { tid: 0, nr: -1, args: [], since: 0, syscalls: 0 };
+  }
+
+  /** Remove this channel's thread record from the process (an ended engine thread) */
+  private dropRecord(): void {
+    const t = this.thread;
+    if (t.tid !== this.proc.pid && t.tid !== 0 && this.proc.threads.get(t.tid) === t) this.proc.threads.delete(t.tid);
+  }
 
   /** Move the next deliverable guest signal (kernel.takeSignal) into this channel's signal word if it is free. */
   flagSignals(): void {
@@ -840,7 +864,7 @@ export class KernelChannel {
       this.opts.onThreadExit?.(args[0]);
       return;
     }
-    const th = this.thread;
+    const th = this.callThread = this.thread;
     th.nr = nr; th.args = args; th.since = Date.now(); th.syscalls++;
     const f = this.kernel.readinessFile(this.proc, nr, args);
     if (f) return this.waitReady(f, nr, args);
@@ -857,7 +881,7 @@ export class KernelChannel {
   /** End the call in progress: reply (unless the process is gone) and update the hot-guest bookkeeping. */
   private finish(result: number | undefined): void {
     this.busy = false;
-    this.thread.nr = -1;
+    if (this.callThread) { this.callThread.nr = -1; this.callThread = null; }
     if (result !== undefined && !this.stopped && !this.proc.exiting) this.reply(result);
     this.repliedAt = now();
     if (this.hot && watching.has(this)) pumpHot();
@@ -961,7 +985,7 @@ export class KernelChannel {
     this.stopped = true;
     this.unlisten();
     // (an ended thread is gone from /proc/PID/task)
-    if (this.isThread && this.proc.threads.get(this.tid) === this.thread) this.proc.threads.delete(this.tid);
+    this.dropRecord();
     Atomics.store(this.i32, A.CH_STATE, A.STATE_DEAD);
     Atomics.notify(this.i32, A.CH_STATE);
   }

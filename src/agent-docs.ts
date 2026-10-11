@@ -70,6 +70,21 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     issue: '`gh issue view --comments` is not implemented (an unknown-flag error).',
     workaround: 'Use `gh api repos/OWNER/REPO/issues/N/comments --jq ".[].body"`.',
   },
+  {
+    issue: "node can exit with status 0 while it is still reading a large `fetch` body (tabcomputer#50), so the rest of the script never runs.",
+    workaround: 'Hold the process open until the read ends: `const t = setInterval(() => {}, 1000);` before the fetch, `clearInterval(t)` after.',
+  },
+  {
+    issue: "A backgrounded `timeout N node server.mjs > log &` isn't stopped at N seconds, and the log stays empty until node exits (tabcomputer#53).",
+    workaround: 'Stop it with `kill PID`.',
+  },
+  {
+    issue: "node's ES module imports are copies, not live bindings, and an entry module in an import cycle runs twice (tabcomputer#35); vitest 4 can't run tests (tabcomputer#32).",
+  },
+  {
+    issue: 'Native Claude Code sometimes stops between a tool result and its next request, and ignores SIGTERM (tabcomputer#19).',
+    workaround: '`kill -9` it, or reload the page, then `claude --resume`.',
+  },
 ];
 
 function knownIssues(): string {

@@ -1,6 +1,6 @@
 // node ff-url.mjs URL 'ENV=1 ENV2=1' 'firefox args' ['prep shell cmd']: Firefox ESR started from the shell with that
 // environment and arguments; notes when it exits before a window, then dmesg, the log, and a screenshot.
-// AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
+// MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 const require = createRequire('/opt/node-tools/node_modules/');
@@ -29,6 +29,10 @@ await sh('gui install xeyes >/dev/null; gui xeyes');
 await page.waitForTimeout(5000);
 const bus = 'unix:path=/tmp/runtime-user/bus';
 log('launch ' + (await sh(`cd /home/user && (DISPLAY=:0 HOME=/home/user XDG_RUNTIME_DIR=/tmp/runtime-user DBUS_SESSION_BUS_ADDRESS=${bus} NO_AT_BRIDGE=1 ${envs} /usr/lib/firefox-esr/firefox-esr ${extra} > /tmp/ff.log 2>&1; echo "firefox exit status $?" >> /tmp/ff.log) & echo started`)).out.trim());
+if (process.env.MAPS) { // where libxul is mapped in the parent (for BLINK_WJIT_BISECT=lo:hi)
+  await page.waitForTimeout(20000);
+  log('maps\n' + (await sh("for p in $(pgrep -f 'firefox-esr/firefox-esr'); do echo pid $p; grep libxul /proc/$p/maps; done")).out);
+}
 const isFx = () => page.evaluate(() => window.__tabcomputer.desktop.windows().some((w) => w.surface && /Firefox/.test(w.title)));
 const alive = async () => Number((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
 for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await page.waitForTimeout(5000); }

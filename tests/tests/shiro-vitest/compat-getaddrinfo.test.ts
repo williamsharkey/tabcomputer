@@ -44,6 +44,10 @@ static int32_t __shiro_resolve(const char *host, uint32_t len, int32_t port, was
   *count = 2;
   return 0;
 }
+/* The shim's getaddrinfo calls freeaddrinfo before defining it (libc's prototype covers that
+ * there); renamed, it needs its own, or clang and GCC 14+ reject the implicit declaration */
+struct addrinfo;
+void shiro_freeaddrinfo(struct addrinfo *);
 #define getaddrinfo shiro_getaddrinfo
 #define freeaddrinfo shiro_freeaddrinfo
 ${part}
@@ -77,24 +81,37 @@ int main(void) {
 `;
 
 // Compiled at load, so skipIf knows whether a compiler was found (as agent-shell.test.ts)
+// Only a missing compiler skips: one that is there but can't build the harness fails the
+// first test with its stderr (a harness that stopped compiling skipped silently before)
 let out = '';
-let haveCc = false;
+let cc: string | undefined;
+let buildError = '';
 {
-  const dir = mkdtempSync(path.join(tmpdir(), 'shiro-gai-'));
-  const c = path.join(dir, 'gai.c'), exe = path.join(dir, 'gai');
-  writeFileSync(c, HARNESS(addrinfoPart()));
-  for (const cc of ['cc', 'gcc', 'clang']) {
+  cc = ['cc', 'gcc', 'clang'].find((name) => {
+    try { execFileSync(name, ['--version'], { stdio: 'pipe', timeout: 30_000 }); return true; } catch { return false; }
+  });
+  if (cc) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'shiro-gai-'));
+    const c = path.join(dir, 'gai.c'), exe = path.join(dir, 'gai');
     try {
+      writeFileSync(c, HARNESS(addrinfoPart()));
       execFileSync(cc, ['-O1', '-w', '-o', exe, c], { stdio: 'pipe', timeout: 120_000 });
-      haveCc = true;
-      break;
-    } catch { /* not this compiler */ }
+      out = execFileSync(exe, { encoding: 'utf8', timeout: 30_000 });
+    } catch (e) {
+      const err = e as { stderr?: Buffer | string; message?: string };
+      buildError = `${cc}: ${String(err.stderr ?? '').trim() || err.message || e}`;
+    }
   }
-  if (haveCc) out = execFileSync(exe, { encoding: 'utf8', timeout: 30_000 });
 }
 
 describe('compat getaddrinfo (wasi-sock.c, #64)', () => {
   const line = (label: string) => out.split('\n').find((l) => l.startsWith(label + ':'))?.slice(label.length + 1).trim();
+  const haveCc = !!cc;
+
+  it.skipIf(!haveCc)('the harness builds and runs with the C compiler found', () => {
+    expect(buildError).toBe('');
+    expect(out).toContain('passive:');
+  });
 
   it.skipIf(!haveCc)('a NULL node with no family: IPv4 first (passive 0.0.0.0, else 127.0.0.1)', () => {
     expect(line('passive')).toBe('0.0.0.0 ::');

@@ -741,14 +741,17 @@ export class KernelChannel {
    * that thread, and gettid returns their tid.
    */
   constructor(readonly sab: SharedArrayBuffer, readonly kernel: Kernel, readonly proc: Process,
-    private opts: { tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean } = {}) {
+    private opts: { tid?: number; onThreadExit?: (code: number) => void; offset?: number; size?: number; listen?: boolean; recordTid?: number } = {}) {
     // A channel can also live inside a larger buffer (Blink's direct channels
     // are in its wasm memory): `offset` bytes in, with a `size`-byte data area
     const off = opts.offset ?? 0;
     this.i32 = new Int32Array(sab, off, A.CH_DATA / 4);
     this.data = opts.size !== undefined ? new Uint8Array(sab, off + A.CH_DATA, opts.size) : new Uint8Array(sab, off + A.CH_DATA);
     this.tid = opts.tid ?? proc.pid;
-    this.thread = proc.thread(this.tid);
+    // `recordTid`: the engine's own thread id (Blink numbers its threads and answers
+    // gettid and thread exit itself): this channel's calls show as that thread's
+    // in /proc/PID/task, without the kernel treating the channel as a thread's
+    this.thread = proc.thread(opts.recordTid ?? this.tid);
     // `listen: false`: signals ride only on replies (Blink's direct channels:
     // host.mjs delivers the others, and an idle channel must not hold one)
     this.unlisten = opts.listen === false ? () => {} : proc.addSignalListener(() => this.flagSignals());
@@ -961,7 +964,7 @@ export class KernelChannel {
     this.stopped = true;
     this.unlisten();
     // (an ended thread is gone from /proc/PID/task)
-    if (this.isThread && this.proc.threads.get(this.tid) === this.thread) this.proc.threads.delete(this.tid);
+    if (this.thread.tid !== this.proc.pid && this.proc.threads.get(this.thread.tid) === this.thread) this.proc.threads.delete(this.thread.tid);
     Atomics.store(this.i32, A.CH_STATE, A.STATE_DEAD);
     Atomics.notify(this.i32, A.CH_STATE);
   }

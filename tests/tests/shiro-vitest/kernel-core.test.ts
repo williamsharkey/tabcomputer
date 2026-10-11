@@ -1363,6 +1363,19 @@ describe('worker guests over the SAB channel', () => {
     await p.wait();
   });
 
+  it("a channel with recordTid (an engine's own thread) shows as that thread in task/ until it stops", async () => {
+    const { KernelChannel, createChannelBuffer } = await import('@shiro/kernel/channel');
+    const p = kernel.spawn({ path: '/bin/blinkish', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
+    const ch = new KernelChannel(createChannelBuffer(4096), kernel, p, { recordTid: 70002, listen: false });
+    expect(ch.isThread).toBe(false); // (the kernel doesn't treat it as a thread's: gettid and exit stay the engine's)
+    expect((kernel.procfs.fsNode(`/proc/${p.pid}/task`) as { dir: string[] }).dir).toEqual([String(p.pid), '70002']);
+    expect(kernel.threadStates(p.pid)[1]).toMatchObject({ tid: 70002, nr: -1, waitKind: '' });
+    ch.stop();
+    expect((kernel.procfs.fsNode(`/proc/${p.pid}/task`) as { dir: string[] }).dir).toEqual([String(p.pid)]);
+    kernel.kill(p.pid, A.SIGKILL);
+    await p.wait();
+  });
+
   it("Blink's threads and calls (data.engineThreads, data.engineCalls) show in task/ and threadStates", async () => {
     const p = kernel.spawn({ path: '/bin/blinkish', cwd: '/tmp', fds: {}, run: () => new Promise<number>(() => {}) });
     const text = (path: string) => (kernel.procfs.fsNode(path) as { text: string }).text;

@@ -91,6 +91,16 @@ async function gitMain(ctx: CommandContext): Promise<number> {
       }
     }
 
+    // A linked worktree's .git (`git worktree add`) is a file, "gitdir: ...", which
+    // isomorphic-git can't follow: there the built-in read nothing and committed nowhere
+    if (subcommand !== 'init' && subcommand !== 'clone' && await dotGitIsFile(ctx, workDir)) {
+      const code = await realGit(ctx, argv, cwd0);
+      if (code !== null) return code;
+      ctx.stderr = 'fatal: the built-in git can\'t work in a linked worktree (its .git is a file)\n'
+        + '(`pkg install git` has the full git, which needs the x86 engine)\n';
+      return 128;
+    }
+
     const fs = ctx.fs.toIsomorphicGitFS();
     // The repository is the nearest directory up from here with a .git, as for git
     let dir = workDir;
@@ -974,6 +984,15 @@ async function gitMain(ctx: CommandContext): Promise<number> {
 }
 
 export { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig };
+
+/** Whether the nearest .git up from `from` is a file (a linked worktree's or a submodule's), not a directory */
+async function dotGitIsFile(ctx: CommandContext, from: string): Promise<boolean> {
+  for (let d: string | null = from; d; d = d === '/' ? null : d.slice(0, d.lastIndexOf('/')) || '/') {
+    const p = d === '/' ? '/.git' : `${d}/.git`;
+    if (await ctx.fs.exists(p)) return !(await ctx.fs.stat(p)).isDirectory();
+  }
+  return false;
+}
 
 async function readGlobalConfig(ctx: CommandContext): Promise<Record<string, string>> {
   try { return parseGitConfig(await ctx.fs.readFile(GLOBAL_GITCONFIG, 'utf8') as string); } catch { return {}; }

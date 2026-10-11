@@ -28,6 +28,11 @@ export const rgCmd: Command = {
     let sortBy = ''; // 'modified', 'path', etc.
     let maxDepth = 0; // 0 = unlimited
     let afterCtx = 0, beforeCtx = 0;
+    let nullSep = false; // --null / -0: a NUL after each path instead of : or a newline
+    let json = false; // --json: ripgrep's JSON lines (Claude Code's Grep content mode)
+    let multiline = false; // -U / --multiline: a match may span lines
+    let dotall = false; // --multiline-dotall: . matches \n too
+    let maxCount = 0; // -m N: at most N matching lines per file (0: no limit)
     let pattern = '';
     const paths: string[] = [];
     const typeFilters: string[] = [];
@@ -112,19 +117,27 @@ export const rgCmd: Command = {
       } else if (arg.startsWith('--max-columns=')) {
         // ignore
       } else if (arg === '-m' || arg === '--max-count') {
-        if (i + 1 < ctx.args.length) i++; // consume value, ignore
+        if (i + 1 < ctx.args.length) maxCount = parseInt(ctx.args[++i], 10) || 0;
       } else if (arg.startsWith('--max-count=')) {
-        // ignore
+        maxCount = parseInt(arg.slice(12), 10) || 0;
+      } else if (arg === '--null' || arg === '-0') {
+        nullSep = true;
+      } else if (arg === '--json') {
+        json = true;
+      } else if (arg === '--multiline' || arg === '-U') {
+        multiline = true;
+      } else if (arg === '--multiline-dotall') {
+        dotall = true;
       } else if (arg === '--color' || arg === '--colour' || arg === '--colors' || arg === '--colours') {
         if (i + 1 < ctx.args.length) i++; // consume value (never, always, auto)
       } else if (arg.startsWith('--color=') || arg.startsWith('--colour=')) {
         // ignore
       } else if (arg === '--no-config' || arg === '--no-messages'
-        || arg === '--pcre2' || arg === '--multiline' || arg === '--multiline-dotall'
+        || arg === '--pcre2'
         || arg === '--sort-files'
         || arg === '-S' || arg === '--smart-case'
         || arg === '--trim' || arg === '-j' || arg === '--threads'
-        || arg === '--json' || arg === '--vimgrep') {
+        || arg === '--vimgrep') {
         // flags without values — consume and ignore
         if (arg === '-j' || arg === '--threads') { if (i + 1 < ctx.args.length) i++; } // -j takes a value
       } else if (arg === '--help' || arg === '-h') {
@@ -143,9 +156,12 @@ export const rgCmd: Command = {
           else if (ch === 'o') onlyMatching = true;
           else if (ch === 'F') fixedStrings = true;
           else if (ch === 'H') forceFilename = true;
-          else if (ch === 'U') { /* multiline — consume */ }
+          else if (ch === 'U') multiline = true;
+          else if (ch === '0') nullSep = true;
           else if (ch === 'L') { followSymlinks = true; }
         }
+      } else if (arg.startsWith('--') && arg.length > 2) {
+        // Another long option: not the pattern (an unknown --flag took its place)
       } else if (!pattern) {
         pattern = arg;
       } else {
@@ -233,7 +249,7 @@ export const rgCmd: Command = {
         files.sort((a, b) => a.path.localeCompare(b.path)); // alphabetical
       }
 
-      ctx.stdout = files.map(f => f.path).join('\n') + (files.length ? '\n' : '');
+      ctx.stdout = files.map(f => f.path + (nullSep ? '\0' : '\n')).join('');
       return files.length > 0 ? 0 : 1;
     }
 
@@ -293,42 +309,137 @@ export const rgCmd: Command = {
     const multiFile = !fromStdin; // rg shows filenames, except for stdin
     const showFilename = !noFilename && (forceFilename || multiFile);
 
+    // --json: the run's totals for its summary line
+    const totals = { searches: 0, searchesWithMatch: 0, bytesSearched: 0, matchedLines: 0, matches: 0 };
+    const t0 = Date.now();
+    const jsonLine = (o: unknown) => { ctx.stdout += JSON.stringify(o) + '\n'; };
+    const elapsed = () => { const ms = Date.now() - t0; return { secs: Math.floor(ms / 1000), nanos: (ms % 1000) * 1e6, human: `${(ms / 1000).toFixed(6)}s` }; };
+    /** Path then : (or a NUL with --null) before a line or count */
+    const pathSep = nullSep ? '\0' : ':';
+    // A multiline search runs one regex over the whole text (^ $ at line ends)
+    const mlRegex = multiline ? new RegExp(patternStr, (ignoreCase ? 'gim' : 'gm') + (dotall ? 's' : '')) : null;
+
+    /**
+     * Binary: a NUL in the first 64 KiB (rg gives up on a binary file at its first
+     * NUL). A big file is checked from its first stored block, not read whole.
+     */
+    const binaryHead = async (filePath: string): Promise<boolean> => {
+      const fs = ctx.fs as unknown as { blobOf?: (p: string) => string | undefined; readBlock?: (id: string, i: number, keep?: boolean) => Promise<Uint8Array> };
+      const id = fs.blobOf?.(filePath);
+      if (!id || !fs.readBlock) return false;
+      try { return (await fs.readBlock(id, 0, false)).subarray(0, 65536).includes(0); } catch { return false; }
+    };
+
     const searchFile = async (filePath: string, displayPath: string, text?: string) => {
       if (text === undefined && !matchesFilters(displayPath)) return;
+      if (text === undefined && await binaryHead(filePath)) return;
       let content: string;
       try {
         content = text ?? await ctx.fs.readFile(filePath, 'utf8') as string;
       } catch { return; }
-      // Skip binary files (check for null bytes)
-      if (content.includes('\0')) return;
+      // Skip binary files (a NUL near the start)
+      if (content.slice(0, 65536).includes('\0')) return;
+      totals.searches++;
+      totals.bytesSearched += content.length;
 
       const lines = content.split('\n');
-      let matchCount = 0;
+      const lineStart: number[] = [];
+      for (let k = 0, off = 0; k < lines.length; k++) { lineStart.push(off); off += lines[k].length + 1; }
       const matchedLineNums = new Set<number>();
       const contextLineNums = new Set<number>();
+      /** Per matching line (its first line, for a multiline match): the matches, offsets in that line */
+      const subs = new Map<number, { text: string; start: number; end: number }[]>();
+      /** Multiline: the last line of the match block that starts at a line */
+      const blockEnd = new Map<number, number>();
+      let matchCount = 0;
+      const addContext = (first: number, last: number) => {
+        for (let b = Math.max(0, first - beforeCtx); b < first; b++) contextLineNums.add(b);
+        for (let a = last + 1; a <= Math.min(lines.length - 1, last + afterCtx); a++) contextLineNums.add(a);
+      };
 
-      // First pass: find matching lines
-      for (let ln = 0; ln < lines.length; ln++) {
-        regex.lastIndex = 0;
-        const match = regex.test(lines[ln]);
-        if (match !== invertMatch) {
-          matchedLineNums.add(ln);
-          matchCount++;
-          // Add context lines
-          for (let b = Math.max(0, ln - beforeCtx); b < ln; b++) contextLineNums.add(b);
-          for (let a = ln + 1; a <= Math.min(lines.length - 1, ln + afterCtx); a++) contextLineNums.add(a);
+      if (mlRegex) {
+        // -U: matches over the whole text; each covers the lines from its start to its end
+        mlRegex.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        const lineOf = (off: number) => { let lo = 0, hi = lineStart.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStart[mid] <= off) lo = mid; else hi = mid - 1; } return lo; };
+        while ((m = mlRegex.exec(content)) !== null) {
+          if (m[0] === '') { mlRegex.lastIndex++; continue; }
+          const first = lineOf(m.index), last = lineOf(m.index + m[0].length - 1);
+          if (!subs.has(first)) {
+            if (maxCount && matchCount >= maxCount) break;
+            matchCount++;
+          }
+          for (let k = first; k <= last; k++) matchedLineNums.add(k);
+          blockEnd.set(first, Math.max(blockEnd.get(first) ?? first, last));
+          const list = subs.get(first) ?? [];
+          list.push({ text: m[0], start: m.index - lineStart[first], end: m.index - lineStart[first] + m[0].length });
+          subs.set(first, list);
+          addContext(first, last);
+        }
+      } else {
+        for (let ln = 0; ln < lines.length; ln++) {
+          regex.lastIndex = 0;
+          const match = regex.test(lines[ln]);
+          if (match !== invertMatch) {
+            if (maxCount && matchCount >= maxCount) break;
+            matchedLineNums.add(ln);
+            matchCount++;
+            if (!invertMatch) {
+              const list: { text: string; start: number; end: number }[] = [];
+              regex.lastIndex = 0;
+              let m: RegExpExecArray | null;
+              while ((m = regex.exec(lines[ln])) !== null) {
+                if (m[0] === '') { regex.lastIndex++; continue; }
+                list.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+              }
+              subs.set(ln, list);
+            } else subs.set(ln, []);
+            addContext(ln, ln);
+          }
         }
       }
 
       if (matchCount === 0) return;
       found = true;
+      totals.searchesWithMatch++;
+      const nMatches = [...subs.values()].reduce((n, l) => n + l.length, 0);
+      totals.matchedLines += matchedLineNums.size;
+      totals.matches += nMatches;
 
       if (filesOnly) {
-        ctx.stdout += displayPath + '\n';
+        ctx.stdout += displayPath + (nullSep ? '\0' : '\n');
         return;
       }
       if (countOnly) {
-        ctx.stdout += (showFilename ? displayPath + ':' : '') + matchCount + '\n';
+        ctx.stdout += (showFilename ? displayPath + pathSep : '') + matchCount + '\n';
+        return;
+      }
+
+      if (json) {
+        // ripgrep's JSON lines: begin, a match (or context) per line, end
+        const path = { text: displayPath };
+        jsonLine({ type: 'begin', data: { path } });
+        const shown = [...new Set([...subs.keys(), ...contextLineNums])].filter((ln) => !(matchedLineNums.has(ln) && !subs.has(ln))).sort((a, b) => a - b);
+        for (const ln of shown) {
+          const isMatch = subs.has(ln);
+          const last = isMatch ? (blockEnd.get(ln) ?? ln) : ln;
+          const textLines = lines.slice(ln, last + 1).join('\n') + (last < lines.length - 1 || content.endsWith('\n') ? '\n' : '');
+          jsonLine({
+            type: isMatch ? 'match' : 'context',
+            data: {
+              path, lines: { text: textLines }, line_number: ln + 1,
+              absolute_offset: lineStart[ln],
+              submatches: isMatch ? subs.get(ln)!.map((m) => ({ match: { text: m.text }, start: m.start, end: m.end })) : [],
+            },
+          });
+        }
+        jsonLine({
+          type: 'end',
+          data: {
+            path, binary_offset: null,
+            stats: { elapsed: elapsed(), searches: 1, searches_with_match: 1, bytes_searched: content.length, bytes_printed: 0, matched_lines: matchedLineNums.size, matches: nMatches },
+          },
+        });
         return;
       }
 
@@ -338,16 +449,10 @@ export const rgCmd: Command = {
       let lastLn = -2;
       for (const ln of sorted) {
         if ((afterCtx || beforeCtx) && lastLn >= 0 && ln > lastLn + 1) ctx.stdout += '--\n'; // separator between context groups
-        const prefix = showFilename ? displayPath + ':' : '';
+        const prefix = showFilename ? displayPath + pathSep : '';
         const lineNum = lineNumbers ? (ln + 1) + ':' : '';
-        const sep = matchedLineNums.has(ln) ? '' : '';
         if (onlyMatching && matchedLineNums.has(ln)) {
-          regex.lastIndex = 0;
-          let m;
-          while ((m = regex.exec(lines[ln])) !== null) {
-            ctx.stdout += prefix + lineNum + m[0] + '\n';
-            if (!regex.global) break;
-          }
+          for (const m of subs.get(ln) ?? []) ctx.stdout += prefix + lineNum + m.text + '\n';
         } else {
           const ctxSep = matchedLineNums.has(ln) ? ':' : '-';
           const lineNumStr = lineNumbers ? (ln + 1) + ctxSep : '';
@@ -382,6 +487,7 @@ export const rgCmd: Command = {
       const text = ctx.liveStdin && ctx.shell?.kernelStdio ? await ctx.shell.kernelStdio.readAll()
         : ctx.readStdin ? await ctx.readStdin() : ctx.stdin;
       await searchFile('-', '<stdin>', text.replace(/\n$/, ''));
+      summary();
       return found ? 0 : 1;
     }
 
@@ -400,6 +506,18 @@ export const rgCmd: Command = {
       }
     }
 
+    summary();
     return found ? 0 : 1;
+
+    function summary() {
+      if (!json) return;
+      jsonLine({
+        data: {
+          bytes_printed: ctx.stdout.length, bytes_searched: totals.bytesSearched, elapsed_total: elapsed(),
+          matched_lines: totals.matchedLines, matches: totals.matches, searches: totals.searches, searches_with_match: totals.searchesWithMatch,
+        },
+        type: 'summary',
+      });
+    }
   },
 };

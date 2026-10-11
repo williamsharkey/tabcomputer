@@ -1793,7 +1793,14 @@ export class Shell {
     }
     const abort = new AbortController();
     const outer = this.abortController ?? this.inheritedAbort;
-    const onOuterAbort = () => abort.abort(outer!.signal.reason);
+    // Only a signal sent to the whole group (timeout's SIGTERM, say) reaches the
+    // job. The shell ending (its process's end, `exit`, `kill $$`) leaves it
+    // running, as bash leaves an async list, and so do SIGINT and SIGQUIT: the
+    // job ignores them without job control and has its own group with it (#53)
+    const onOuterAbort = () => {
+      const sig = (outer!.signal.reason as { signal?: unknown } | undefined)?.signal;
+      if (typeof sig === 'number' && sig !== 2 && sig !== 3) abort.abort(outer!.signal.reason);
+    };
     outer?.signal.addEventListener('abort', onOuterAbort, { once: true });
     child.inheritedAbort = abort;
     // A script or a kernel process's `sh -c` (an agent's) has no job control: the job's stdin
@@ -5002,6 +5009,13 @@ export class Shell {
           !redirects.some(r => r.type === '>' || r.type === '>>' || r.type === '2>' || r.type === '2>>');
         if (mergeErr && !ctx.streamStdout && !ctx.streamStderr) {
           ctx.streamStdout = ctx.streamStderr = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
+        }
+        // The last command, with its output going straight to the writers: what it
+        // writes as it goes (sh, timeout, node) gets there then, not when it ends
+        // (`timeout 90 sh run.sh > log &` left log empty until the end, #53)
+        if (cmd && !live && i === pipeline.length - 1 && !redirects.some(r => r.type !== '<') && !ctx.stdout && !ctx.stderr) {
+          ctx.streamStdout ??= (t) => writeStdout(t.replace(/\r?\n/g, '\r\n'));
+          ctx.streamStderr ??= (t) => stderrWriter(t.replace(/\r?\n/g, '\r\n'));
         }
         if (cmd) {
           try {

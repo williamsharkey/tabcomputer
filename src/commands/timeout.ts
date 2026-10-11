@@ -79,13 +79,13 @@ export const timeout: Command = {
     // Piped or redirected: programs keep the tty for input, their stdout comes back here
     if (ctx.terminal) child.setTerminal(terminalForCommand(ctx.terminal, ctx) as any);
     child.cwd = ctx.cwd;
-    let out = '';
-    let err = '';
     // A shell running as a kernel process (an agent's `sh -c`) gives COMMAND its
     // live fd 0: reading ctx.stdin would wait for that pipe to close first
     const live = !!ctx.liveStdin && !!ctx.shell.kernelStdio;
-    const sink = (s: string) => { out += s; };
-    const errSink = (s: string) => { err += s; };
+    // (into ctx as it comes: if the shell stops waiting for timeout (Ctrl-C), what
+    // COMMAND wrote before is still timeout's output)
+    const sink = (s: string) => { ctx.stdout += s.replace(/\r\n/g, '\n'); };
+    const errSink = (s: string) => { ctx.stderr += s.replace(/\r\n/g, '\n'); };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired: Promise<'timeout'> | null = null;
     const arm = () => {
@@ -109,15 +109,12 @@ export const timeout: Command = {
     }
     const run = live
       ? child.execute(quoteArgsForShell(command), ctx.streamStdout ?? sink, ctx.streamStderr ?? errSink, false, undefined, true)
-      : child.executeWithStdin(quoteArgsForShell(command), input ?? (ctx.stdin || ''), sink, errSink);
+      // (`> log`: COMMAND's output goes into the file as it's written, #53)
+      : child.executeWithStdin(quoteArgsForShell(command), input ?? (ctx.stdin || ''), ctx.streamStdout ?? sink, ctx.streamStderr ?? errSink);
     const limit = arm();
     const result = await (limit ? Promise.race([run, limit]) : run);
     (globalThis as any).clearTimeout(timer);
 
-    const flush = () => {
-      ctx.stdout += out.replace(/\r\n/g, '\n');
-      ctx.stderr += err.replace(/\r\n/g, '\n');
-    };
     if (result === 'timeout') {
       // The signal goes to COMMAND's programs (a TUI in raw mode ignores the
       // SIGINT a plain abort sends), and timeout waits for COMMAND to end, so
@@ -132,11 +129,9 @@ export const timeout: Command = {
       if (own.signal.aborted) own.signal.dispatchEvent(new CustomEvent(TIMEOUT_EXPIRED_EVENT, { detail: reason }));
       else own.abort(reason);
       const status = await run;
-      flush();
       if (preserveStatus) return status === 130 ? 128 + sig : status; // (130: an in-page command the abort stopped)
       return 124;
     }
-    flush();
     return result;
   },
 };

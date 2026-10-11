@@ -35,6 +35,7 @@ import { createUtilModule } from './modules/util';
 import { createFsModule, createFsPromisesModule } from './modules/fs';
 import { createChildProcessModule, CHILD_HOLD } from './modules/child-process';
 import { createWasiModule } from './modules/wasi';
+import { createTestModule } from './modules/test-runner';
 import { createStreamModule } from './modules/stream';
 import { createCryptoModule } from './modules/crypto';
 import { createProcessGlobal, WORKER_ONLY_GLOBALS, createProcessFunction } from './process-global';
@@ -315,12 +316,16 @@ export async function executeNodeScript(
         case 'node:fs/promises': return trackModule(createFsPromisesModule({ ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir, trackAsync, atExit }));
         case 'wasi':
         case 'node:wasi': return createWasiModule({ guest, exit: (code) => fakeProcess.exit(code) as never });
+        case 'node:test': return createTestModule({
+          getProcess: () => fakeProcess, trackAsync, inspect: (v, o) => getBuiltinModule('util').inspect(v, o),
+          assert: () => getBuiltinModule('assert'), childProcess: () => getBuiltinModule('child_process'),
+        });
         case 'child_process':
         case 'node:child_process': return createChildProcessModule({ ctx, fileCache, fileMtimes, pendingPromises, FakeBuffer, getProcess: () => fakeProcess, guest });
         case 'os':
         case 'node:os': return createOsModule(ctx);
         case 'util':
-        case 'node:util': return createUtilModule();
+        case 'node:util': return createUtilModule(() => fakeProcess);
         case 'events':
         case 'node:events': return createEventsModule();
         case 'url':
@@ -472,8 +477,9 @@ export async function executeNodeScript(
 
     // A script that reads piped stdin synchronously (fs.readFileSync(0), '/dev/stdin',
     // fs.readSync(0)) can't wait for a live stream: load it before the script runs
-    // (a guest's stdin is one too; a spawned child in the page leaves its live one be)
-    if ((!ctx.stdinStream || (ctx as any).nodeGuest) && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
+    // (a spawned child in the page leaves its live one be; a guest blocks in readFileSync(0)
+    // instead, so it starts at once: one that only mentioned it waited for stdin to close)
+    if ((!ctx.stdinStream || ((ctx as any).nodeGuest && !nodeGuestOf(ctx)?.readStdinSync)) && /readFileSync\(\s*(?:0\s*[,)]|['"]\/dev\/stdin['"])|readSync\(\s*0\s*,/.test(code)) {
       await fakeProcess.stdin?.__fd0?.fill();
     }
     const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;

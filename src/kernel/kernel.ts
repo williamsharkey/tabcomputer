@@ -195,6 +195,9 @@ function ownerDenies(proc: Process, mode: number | undefined, flags: number): bo
   return ((mode >> 6) & need) !== need;
 }
 
+/** The "handler" `sh -i` catches SIGINT with (interactiveShell): any number but SIG_DFL/SIG_IGN */
+const SHELL_SIGINT_HANDLER = 2;
+
 export class Kernel {
   fs?: FileSystem;
   /** Paths of AF_UNIX socket files (net.ts bind); they stat as sockets. */
@@ -1802,11 +1805,32 @@ export class Kernel {
       if (sig === A.SIGINT) p.interruptSyscalls(); // a fresh prompt
       return true;
     };
+    // The terminal's signals (the pty sends them through job control, which
+    // looks at dispositions, not the hook above): like bash, catch SIGINT (it
+    // stops the line being run, or gives a fresh prompt) and ignore the job
+    // control ones. Its jobs start with the default dispositions (no inheritSignals).
+    for (const sig of [A.SIGQUIT, A.SIGTSTP, A.SIGTTIN, A.SIGTTOU]) proc.dispositions.set(sig, 'ignore');
+    proc.dispositions.set(A.SIGINT, SHELL_SIGINT_HANDLER);
+    // Each line runs under an abort of its own (the shell's is the process's, which its end fires)
+    const procAbort = shell.inheritedAbort;
+    let lineAbort: AbortController | null = null;
+    proc.data.onSignal = (sig: number) => {
+      if (sig !== A.SIGINT) return;
+      proc.pendingSignals.delete(sig); // (taken here: nothing else would take it)
+      proc.siginfo.delete(sig);
+      lineAbort?.abort();
+    };
     shell.env.PS1 ??= '\\u@\\h:\\w\\$ ';
     let chain = Promise.resolve();
     const out = (fd: number) => (s: string) => {
       chain = chain.then(async () => { if (!proc.exiting) await this.writeAll(proc, fd, encodeText(s.replace(/\r\n/g, '\n'))); });
     };
+    // Commands run on this process's fds, as in `sh -c` (builtins see the
+    // terminal: isatty, tty, stty, node's REPL; and read it live)
+    const stdio = new KernelStdio(this, proc);
+    shell.kernelStdio = stdio;
+    stdio.adoptFds(shell);
+    shell.kernelStdinLive = true;
     // Jobs get process groups of their own and the terminal while they run (Ctrl-Z, fg, bg, jobs)
     const f0 = proc.fds.get(0);
     if (f0?.kind === 'pty') {
@@ -1841,8 +1865,20 @@ export class Kernel {
         pending += A.decodeText(buf.subarray(0, n));
       }
       if (!line.trim()) continue;
-      code = await shell.execute(line, out(1), out(2));
+      const abort = lineAbort = new AbortController();
+      const onProcAbort = () => abort.abort();
+      procAbort?.signal.addEventListener('abort', onProcAbort, { once: true });
+      shell.inheritedAbort = abort;
+      try {
+        code = await shell.execute(line, stdio.out, stdio.err, false, undefined, true);
+        await stdio.flush();
+      } finally {
+        lineAbort = null;
+        shell.inheritedAbort = procAbort;
+        procAbort?.signal.removeEventListener('abort', onProcAbort);
+      }
       await chain;
+      if (abort.signal.aborted && !proc.exiting) await this.writeAll(proc, 2, enc.encode('\n'));
       if (shell.exited) return code;
     }
   }

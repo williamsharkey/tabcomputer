@@ -296,36 +296,37 @@ def main():
     for app, (roots, bins, plugins, extra, desc, kind) in APPS.items():
         # GTK icon themes (Adwaita's symbolic icons, GIMP's theme) are SVG: their pixbuf loader comes too
         if kind in ('gtk2', 'gtk3') and 'librsvg2-common' not in extra: extra = extra + ['librsvg2-common']
-        names = closure(db, prov, roots + extra)
-        for lib, (pkgs, globs) in EMBEDS.items():
-            if lib in names and not set(pkgs) <= set(names):
-                extra, plugins = extra + pkgs, plugins + globs
-                names = closure(db, prov, roots + extra)
-        root = os.path.join(work, app)
-        shutil.rmtree(root, ignore_errors=True)
-        os.makedirs(root)
-        owner = {}
-        for n in names:
-            for f in unpack(fetch(db, n, cache), root):
-                owner.setdefault(f, n)
-        # ELF closure
-        import glob
-        links = {}
-        starts = [b.lstrip('/') for b in bins]
-        for g in plugins:
-            starts += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, g))]
-        need, seen_files, todo = set(), set(), list(starts)
-        while todo:
-            f = todo.pop()
-            if f in seen_files: continue
-            seen_files.add(f)
-            real = os.path.realpath(os.path.join(root, f))
-            rel = os.path.relpath(real, root)
-            for p in (f, rel):
-                if p in owner: need.add(owner[p])
-            for lib in needed(real):
-                hit = resolve(root, rel, lib, links)
-                if hit: todo.append(hit)
+        # (a second pass when a kept library embeds an interpreter: EMBEDS)
+        for _ in range(2):
+            names = closure(db, prov, roots + extra)
+            root = os.path.join(work, app)
+            shutil.rmtree(root, ignore_errors=True)
+            os.makedirs(root)
+            owner = {}
+            for n in names:
+                for f in unpack(fetch(db, n, cache), root):
+                    owner.setdefault(f, n)
+            # ELF closure
+            import glob
+            links = {}
+            starts = [b.lstrip('/') for b in bins]
+            for g in plugins:
+                starts += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, g))]
+            need, seen_files, todo = set(), set(), list(starts)
+            while todo:
+                f = todo.pop()
+                if f in seen_files: continue
+                seen_files.add(f)
+                real = os.path.realpath(os.path.join(root, f))
+                rel = os.path.relpath(real, root)
+                for p in (f, rel):
+                    if p in owner: need.add(owner[p])
+                for lib in needed(real):
+                    hit = resolve(root, rel, lib, links)
+                    if hit: todo.append(hit)
+            more = [(pkgs, globs) for lib, (pkgs, globs) in EMBEDS.items() if lib in need and not set(pkgs) <= set(extra)]
+            if not more: break
+            for pkgs, globs in more: extra, plugins = extra + pkgs, plugins + globs
         # Data packages (Architecture: all) only when a kept package depends on them
         core = {n for n in names if n in need or n in roots or n in extra or n in ALWAYS}
         def deps(n):

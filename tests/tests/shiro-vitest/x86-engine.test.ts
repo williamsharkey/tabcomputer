@@ -134,6 +134,8 @@ const sysvshmBin = join(out, 'sysvshm');
 const haveSysvshm = 'SYS_shmget' in Abi && tryBuild('gcc', ['-static', '-O1', '-o', sysvshmBin, 'sysvshm.c']);
 const sse2dBin = join(out, 'sse2d');
 const haveSse2d = tryBuild('gcc', ['-static', '-O1', '-o', sse2dBin, 'sse2d.c']);
+const zombiekillBin = join(out, 'zombiekill');
+const haveZombiekill = tryBuild('gcc', ['-static', '-O1', '-w', '-o', zombiekillBin, 'zombiekill.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -397,6 +399,10 @@ const haveForkmaps = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const tiddropBin = join(out, 'tiddrop');
 const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_tiddrop') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', tiddropBin, 'tiddrop.c', '-lrt']);
+// Blink 0536: mlock marks pages; /proc/self/smaps and smaps_rollup; msync of locked pages
+const smapsBin = join(out, 'smaps');
+const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1221,6 +1227,13 @@ it.skipIf(!haveTiddrop)('a SIGEV_THREAD_ID timer whose thread exited signals no 
   expect(r.output.replace(/\r\n/g, '\n')).toBe('alive\nrc 0\n');
 }, 60_000);
 
+it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps_rollup\'s sum; msync(MS_INVALIDATE) of locked pages is EBUSY (LTP mlock05, Open POSIX mlockall_3-6/3-7)', async () => {
+  const { shell } = await setup(readFileSync(smapsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('size 1024 rss 8 locked 0\nmsync 0\nmlocked rss 1024 locked 1024 rollup 1\n' +
+    'msync locked -1 16\nmunlocked locked 0 msync 0\n');
+}, 60_000);
+
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {
   const { shell } = await setup(readFileSync(clonevmBin));
   const r = await run(shell, './prog');
@@ -1571,6 +1584,18 @@ describe('Blink engine: CPU and syscall fixes', () => {
       const r = await run(shell, cmd);
       expect(r.output.replace(/\r\n/g, '\n')).toBe(NATIVE_SSE2D);
     }
+  }, 60_000);
+
+  // LTP pause01 (conformance's repro): a same-instance fork child's exit_group
+  // got no reply on its direct channel, so the page served it again and again,
+  // and the next children's registrations and signals waited seconds behind
+  // it: kill() missed children still in pause()
+  it.skipIf(!haveZombiekill)('kill() reaches each fork child while its earlier siblings are unreaped zombies', async () => {
+    const { shell } = await setup(readFileSync(zombiekillBin));
+    const t0 = Date.now();
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
+    expect(Date.now() - t0).toBeLessThan(15_000);
   }, 60_000);
 
   // small callees compiled into their caller's region, their rets going back

@@ -42,7 +42,7 @@ describe('grep and rg on binary files', () => {
   });
 
   it('rg skips binary files', async () => {
-    expect((await sh('cd /tmp/bin19 && rg needle')).out).toBe('b.txt:1:needle in text\n');
+    expect((await sh('cd /tmp/bin19 && rg needle')).out).toBe('b.txt:needle in text\n');
   });
 });
 

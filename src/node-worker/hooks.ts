@@ -28,6 +28,11 @@ export interface NodeGuestHooks {
   };
   /** What only the page can do: the clipboard, a server's preview pane */
   page?: { clipboard(text: string): void; preview(port: number): void };
+  /**
+   * fs.readFileSync(0): read piped stdin into buf, blocking until bytes come (as node's sync
+   * read of a pipe); 0 at EOF, -errno on an error. Not set when fd 0 is a terminal.
+   */
+  readStdinSync?(buf: Uint8Array): number;
   /** Whether open handles (sockets, servers) keep the program running */
   busy?(): boolean;
   /**

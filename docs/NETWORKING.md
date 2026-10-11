@@ -144,6 +144,9 @@ The egress policy is the security boundary; everything else limits abuse.
   burst `TABCOMPUTER_TCP_BYTE_BURST` 16 MiB; excess is throttled, not dropped),
   per-IP hourly bytes (`TABCOMPUTER_TCP_BYTES_PER_HOUR`, 4 GiB), per-connection
   bytes (`TABCOMPUTER_TCP_MAX_BYTES_PER_CONN`, 1 GiB), WebSocket frame size 256 KiB.
+  tabcomputer.com overrides three of these in `profiles/tabcomputer/server.env`
+  (tabcomputer#51): 16 MiB/s per IP, a 128 MiB burst, and a 2 MiB in-flight window
+  per connection (`TABCOMPUTER_TCP_WINDOW`, default 512 KiB).
 - **Timeouts:** request frame 10 s, TCP connect 15 s, idle 5 min
   (`TABCOMPUTER_TCP_IDLE_TIMEOUT_MS`), lifetime 4 h (`TABCOMPUTER_TCP_MAX_LIFETIME_MS`).
 - **Client IP.** `X-Forwarded-For` is trusted only from a loopback peer

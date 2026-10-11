@@ -131,7 +131,7 @@ function start(sys: GuestSys, cmd: string, opts: ChildOptions): Running | number
   return r;
 }
 
-/** One poll round: move what's ready. Returns true when both outputs are at EOF. */
+/** One poll round: move what's ready. Returns true when both outputs and the IPC channel are at EOF. */
 function pump(sys: GuestSys, r: Running, timeoutMs: number): boolean {
   const want: { fd: number; events: number }[] = [];
   // (live stdin with nothing to write: not until there is, or it ends)
@@ -140,7 +140,10 @@ function pump(sys: GuestSys, r: Running, timeoutMs: number): boolean {
   if (r.outR >= 0) want.push({ fd: r.outR, events: A.POLLIN });
   if (r.errR >= 0) want.push({ fd: r.errR, events: A.POLLIN });
   if (r.ipcFd >= 0) want.push({ fd: r.ipcFd, events: A.POLLIN | (r.ipcOut.length ? A.POLLOUT : 0) });
-  if (r.outR < 0 && r.errR < 0) return true; // (the IPC channel alone doesn't keep a round going)
+  // Done when the outputs have ended and the IPC channel has too: fork()'s default stdout and
+  // stderr are inherited (not ours), so with only those the parent closed the channel at once,
+  // and the child saw it disconnected before its first line (vitest's forks pool, tinypool)
+  if (r.outR < 0 && r.errR < 0 && r.ipcFd < 0) return true;
   const { ready, revents } = sys.poll(want, timeoutMs);
   if (ready <= 0) return false;
   const buf = new Uint8Array(65536);
@@ -166,7 +169,7 @@ function pump(sys: GuestSys, r: Running, timeoutMs: number): boolean {
       if (w.fd === r.outR) r.outR = -1; else r.errR = -1;
     }
   });
-  return r.outR < 0 && r.errR < 0;
+  return r.outR < 0 && r.errR < 0 && r.ipcFd < 0;
 }
 
 /** The IPC channel's part of a poll round: write what's queued, read what came */

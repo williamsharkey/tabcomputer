@@ -34,6 +34,15 @@ function pathArg(p: any): string {
 }
 
 /** Create a Node.js-style fs error with code, errno, syscall properties */
+/**
+ * statfs(2) for tabcomputer's filesystem: one ext4-like volume with room to spare
+ * (browser storage has no fixed size; Claude Code checks the temp directory isn't full).
+ */
+export function statfsResult(bigint?: boolean): Record<string, number | bigint> {
+  const v = { type: 0xef53, bsize: 4096, blocks: 1 << 24, bfree: 1 << 23, bavail: 1 << 23, files: 1 << 20, ffree: 1 << 19 };
+  return bigint ? Object.fromEntries(Object.entries(v).map(([k, n]) => [k, BigInt(n)])) : v;
+}
+
 function fsError(code: string, message: string, syscall?: string, path?: string): Error {
   const err: any = new Error(message);
   err.code = code;
@@ -1099,6 +1108,44 @@ export function createFsModule(deps: FsDeps): any {
     },
     fsyncSync: () => {},
     fdatasyncSync: () => {},
+    /** Cut (or zero-extend) an open file to `len` bytes (Claude Code's in-place write fallback) */
+    ftruncateSync: (fd: number, len?: number) => {
+      const fdInfo = (globalThis as any).__shiroFds?.[fd];
+      if (!fdInfo || fdInfo.tty) throw fsError(fdInfo ? 'EINVAL' : 'EBADF', `${fdInfo ? 'EINVAL: invalid argument' : 'EBADF: bad file descriptor'}, ftruncate`, 'ftruncate');
+      const n = Math.max(0, Math.floor(Number(len) || 0));
+      const bytes = currentBytes(fdInfo.path) ?? new Uint8Array(0);
+      const out = n <= bytes.length ? bytes.slice(0, n) : concatBytes(bytes, new Uint8Array(n - bytes.length));
+      const text = storeData(fdInfo.path, out, inflight);
+      if (text !== null) {
+        fileCache.set(fdInfo.path, text);
+        fileMtimes.set(fdInfo.path, Date.now());
+        queueWrite(fdInfo.path, () => ctx.fs.writeFile(fdInfo.path, text));
+      }
+    },
+    fchmodSync: (fd: number, mode: any) => {
+      const fdInfo = (globalThis as any).__shiroFds?.[fd];
+      if (!fdInfo) throw fsError('EBADF', 'EBADF: bad file descriptor, fchmod', 'fchmod');
+      if (!fdInfo.tty) fsShim.chmodSync(fdInfo.path, mode);
+    },
+    fchownSync: () => {},
+    /** A new directory named prefix + six random characters, as node's */
+    mkdtempSync: (prefix: string) => {
+      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      for (;;) {
+        let dir = String(prefix);
+        for (let i = 0; i < 6; i++) dir += chars[Math.floor(Math.random() * chars.length)];
+        if (fsShim.existsSync(dir)) continue;
+        fsShim.mkdirSync(dir, { recursive: true });
+        return dir;
+      }
+    },
+    statfsSync: (p: any, opts?: { bigint?: boolean }) => { fsShim.statSync(p); return statfsResult(opts?.bigint); },
+    statfs: (p: any, optsOrCb?: any, cb?: any) => {
+      const callback = typeof optsOrCb === 'function' ? optsOrCb : cb;
+      let r: any;
+      try { r = fsShim.statfsSync(p, typeof optsOrCb === 'object' ? optsOrCb : undefined); } catch (e) { callback?.(e); return; }
+      callback?.(null, r);
+    },
     utimesSync: (p: string, atime: any, mtime: any) => {
       const resolved = ctx.fs.resolvePath(pathArg(p), ctx.cwd);
       fileMtimes.set(resolved, timeMs(mtime));
@@ -1422,18 +1469,11 @@ export function createFsModule(deps: FsDeps): any {
     },
     fsync: (_fd: number, cb?: any) => { cb?.(null); },
     fdatasync: (_fd: number, cb?: any) => { cb?.(null); },
-    fchmod: (_fd: number, _m: any, cb?: any) => { cb?.(null); },
+    fchmod: (fd: number, m: any, cb?: any) => { try { fsShim.fchmodSync(fd, m); } catch (e) { cb?.(e); return; } cb?.(null); },
     fchown: (_fd: number, _u: any, _g: any, cb?: any) => { cb?.(null); },
     ftruncate: (fd: number, lenOrCb?: any, cb?: any) => {
       const callback = typeof lenOrCb === 'function' ? lenOrCb : cb;
-      const fdInfo = (globalThis as any).__shiroFds?.[fd];
-      if (fdInfo) {
-        const len = typeof lenOrCb === 'number' ? lenOrCb : 0;
-        const existing = fileCache.get(fdInfo.path) || '';
-        const truncated = existing.slice(0, len);
-        fileCache.set(fdInfo.path, truncated);
-        inflight.push(ctx.fs.writeFile(fdInfo.path, truncated).catch(() => {}));
-      }
+      try { fsShim.ftruncateSync(fd, typeof lenOrCb === 'number' ? lenOrCb : 0); } catch (e) { callback?.(e); return; }
       callback?.(null);
     },
     lchmod: (_p: string, _m: any, cb?: any) => { cb?.(null); },
@@ -1885,6 +1925,13 @@ export function createFsPromisesModule(deps: FsDeps): any {
       fileMtimes.set(resolved, timeMs(mtime));
       await ctx.fs.utimes(resolved, timeMs(atime), timeMs(mtime));
     },
+    // (symlinks keep no times of their own here: the link's target's)
+    lutimes: async (p: string, atime: any, mtime: any) => {
+      const resolved = ctx.fs.resolvePath(pathArg(p), ctx.cwd);
+      fileMtimes.set(resolved, timeMs(mtime));
+      await ctx.fs.utimes(resolved, timeMs(atime), timeMs(mtime)).catch(() => {});
+    },
+    statfs: async (p: any, opts?: { bigint?: boolean }) => getBuiltinModule('fs').statfsSync(p, opts),
     mkdtemp: async (prefix: string) => {
       const dir = `${prefix}${Math.random().toString(36).slice(2)}`;
       await ctx.fs.mkdir(dir, { recursive: true });

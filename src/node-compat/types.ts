@@ -78,6 +78,8 @@ export interface SharedState {
   ownsStdinPassthrough: boolean;
   /** process.stdin reading the terminal's pty (tty-stdin.ts): closed when the script ends */
   ttyStdin?: { close(): void };
+  /** process.on('SIGWINCH'/'SIGCONT') subscriptions to the terminal (process.ts): ended with the script */
+  terminalSignalCleanups?: (() => void)[];
   deferredExitResolve: ((code: number) => void) | null;
   fakeProcess: any;  // set after createFakeProcess() returns
   portDetected?: boolean;

@@ -215,7 +215,9 @@ export function runChildSync(sys: GuestSys, cmd: string, opts: ChildOptions = {}
   if (typeof r === 'number') return { stdout: new Uint8Array(0), stderr: enc.encode(`spawn sh: errno ${-r}\n`), status: 127, signal: null, pid: 0 };
   while (!pump(sys, r, -1)) { /* until both outputs end */ }
   if (r.inW >= 0) { sys.close(r.inW); r.inW = -1; }
-  const w = sys.waitpid(r.pid, 0);
+  // (a signal this process catches, such as a terminal resize, interrupts the wait)
+  let w = sys.waitpid(r.pid, 0);
+  while (w.pid === -A.EINTR) w = sys.waitpid(r.pid, 0);
   return finish(r, w.status);
 }
 

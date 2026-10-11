@@ -36,17 +36,40 @@ function terminalFacade(sys: GuestSys, stdinTTY: boolean) {
   let saved: Uint8Array | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const buf = new Uint8Array(4096);
+  const getSize = () => {
+    const w = new Uint8Array(WINSIZE_SIZE);
+    if (ioctl(sys, 1, A.TIOCGWINSZ, w) < 0) return { cols: 80, rows: 24 };
+    const ws = decodeWinsize(w);
+    return { cols: ws.cols || 80, rows: ws.rows || 24 };
+  };
+  // The pty sends SIGWINCH to the foreground group when the terminal is resized, and
+  // SIGCONT comes after a stop (^Z, then fg). Both are ignored by default, so they reach
+  // this process only once it has handlers: then stdout's 'resize' and process's
+  // 'SIGWINCH'/'SIGCONT' listeners run (Ink re-lays out and redraws on them).
+  const resized = new Set<(cols: number, rows: number) => void>();
+  const continued = new Set<() => void>();
+  let caught = false;
+  const catchSignals = () => {
+    if (caught) return;
+    caught = true;
+    const prev = sys.ch.onSignal;
+    sys.ch.onSignal = (sig) => {
+      // (inside a syscall's reply: the listeners run after it)
+      if (sig === A.SIGWINCH) workerTimeout(() => { const { cols, rows } = getSize(); for (const f of [...resized]) f(cols, rows); }, 0);
+      else if (sig === A.SIGCONT) workerTimeout(() => { for (const f of [...continued]) f(); }, 0);
+      else prev?.(sig);
+    };
+    for (const sig of [A.SIGWINCH, A.SIGCONT]) sys.sigaction(sig, { handler: 2 }); // any number but SIG_DFL/SIG_IGN
+  };
+  const listen = <T>(set: Set<T>) => (cb: T) => { catchSignals(); set.add(cb); return () => { set.delete(cb); }; };
   return {
     tty: true,
     // node-compat writes a terminal's newlines as \r\n; the pty's line discipline (ONLCR) does that here
     writeOutput: (s: string) => { sys.write(1, s.replace(/\r\n/g, '\n')); },
-    getSize: () => {
-      const w = new Uint8Array(WINSIZE_SIZE);
-      if (ioctl(sys, 1, A.TIOCGWINSZ, w) < 0) return { cols: 80, rows: 24 };
-      const ws = decodeWinsize(w);
-      return { cols: ws.cols || 80, rows: ws.rows || 24 };
-    },
-    onResize: (_cb: (cols: number, rows: number) => void) => () => {},
+    getSize,
+    onResize: listen(resized),
+    /** After a stop: the process was continued (fg) */
+    onContinue: listen(continued),
     /** Raw keys from fd 0 to `onData` (polled: the worker can't block while the program's event loop runs) */
     enterStdinPassthrough: (onData: (d: string) => void, _onForceExit?: () => void) => {
       if (!stdinTTY || timer) return;

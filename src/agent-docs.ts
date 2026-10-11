@@ -65,7 +65,7 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     workaround: 'Wrap a command that may read stdin as `{ cmd; } </dev/null`; a group\'s redirect works.',
   },
   {
-    issue: "Images can't be pasted into Claude Code: `xclip` and `xsel` here are text only.",
+    issue: "Pasting an image into Claude Code is untested here: `xclip` gives Claude Code an image only when the browser lets the page read its clipboard (Chrome asks first).",
     workaround: 'Save the image to a file and give its path.',
   },
   {

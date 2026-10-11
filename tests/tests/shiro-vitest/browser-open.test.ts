@@ -101,6 +101,19 @@ describe('the clipboard tools', () => {
     expect((await run(shell, 'xclip -selection clipboard -t image/png -o')).exitCode).toBe(1);
   });
 
+  it("an image on the clipboard: a TARGETS entry, and -t image/png -o writes its bytes (Claude Code's image paste)", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xc3, 0x28, 0x80]);
+    nav.clipboard.read = async () => [{ types: ['image/png'], getType: async () => new Blob([png], { type: 'image/png' }) }];
+    const t = await run(shell, 'xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)"');
+    expect([t.exitCode, t.output.trim()]).toEqual([0, 'image/png']);
+    expect((await run(shell, 'xclip -selection clipboard -t image/png -o > /tmp/clip.png 2>/dev/null')).exitCode).toBe(0);
+    expect([...(await fs.readFile('/tmp/clip.png')) as Uint8Array]).toEqual([...png]);
+    expect((await run(shell, 'xclip -selection clipboard -t image/bmp -o')).exitCode).toBe(1);
+    // refused: no image, as before
+    nav.clipboard.read = async () => { throw new DOMException('denied', 'NotAllowedError'); };
+    expect((await run(shell, 'xclip -selection clipboard -t TARGETS -o')).output).not.toMatch(/image\//);
+  });
+
   it('a refused read is empty, not an error', async () => {
     nav.clipboard.readText = async () => { throw new DOMException('denied', 'NotAllowedError'); };
     const r = await run(shell, 'xsel --clipboard --output');

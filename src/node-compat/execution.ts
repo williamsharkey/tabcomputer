@@ -714,7 +714,10 @@ export async function executeNodeScript(
           const target = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
           const { relayAvailable, relayFetch } = await import('../commands/relay-fetch');
           const crossOrigin = /^https?:/.test(target) && typeof location !== 'undefined' && new URL(target).origin !== location.origin;
-          if (!(e instanceof TypeError) || !crossOrigin || !relayAvailable() || init?.signal?.aborted) throw e;
+          // (node in a Worker: its own sockets, through the kernel to the same relay)
+          const sockets = typeof window === 'undefined' ? nodeGuestOf(ctx)?.netStack as import('../commands/relay-fetch').SocketStack | undefined : undefined;
+          const guest = sockets ? { sockets, fetch: _origFetch } : null;
+          if (!(e instanceof TypeError) || !crossOrigin || !(relayAvailable() || guest) || init?.signal?.aborted) throw e;
           const req = input instanceof Request ? input : null;
           return relayFetch(target, {
             method: init?.method ?? req?.method,
@@ -722,7 +725,7 @@ export async function executeNodeScript(
             body: init?.body ?? (req && req.method !== 'GET' && req.method !== 'HEAD' ? new Uint8Array(await req.clone().arrayBuffer()) : undefined),
             redirect: init?.redirect ?? req?.redirect,
             signal: init?.signal ?? req?.signal,
-          });
+          }, guest);
         });
       };
       // Patch XMLHttpRequest prototype
@@ -1096,6 +1099,7 @@ export async function executeNodeScript(
     // Clean up
     uncountScript?.();
     _st.ttyStdin?.close();
+    for (const off of _st.terminalSignalCleanups?.splice(0) ?? []) off();
     if (ctx.terminal && _st.ownsStdinPassthrough) ctx.terminal.exitStdinPassthrough();
     if (typeof window !== 'undefined') {
       _baseST(() => window.removeEventListener('unhandledrejection', suppressRejection), 1000); // (the page's timer: the global one may be another script's, cleared when it ends)
@@ -1109,6 +1113,7 @@ export async function executeNodeScript(
     // Clean up on error
     uncountScript?.();
     _st.ttyStdin?.close();
+    for (const off of _st.terminalSignalCleanups?.splice(0) ?? []) off();
     if (ctx.terminal && _st.ownsStdinPassthrough) ctx.terminal.exitStdinPassthrough();
     if (typeof window !== 'undefined') {
       _baseST(() => window.removeEventListener('unhandledrejection', suppressRejection), 1000); // (the page's timer: the global one may be another script's, cleared when it ends)

@@ -75,6 +75,21 @@ export function createFakeProcess(
 
   /** process.exitCode as the script set it (undefined until it does, as in node) */
   let exitCodeSet: number | undefined;
+  /**
+   * 'SIGWINCH' and 'SIGCONT' listeners on a terminal: the terminal's resizes and,
+   * for a kernel guest, its continue after a stop (node-worker/guest.ts). Asked for
+   * once, when the first listener comes (a guest catches the signals only then).
+   */
+  const watchedSignals = new Set<string>();
+  const watchTerminalSignal = (event: string) => {
+    if (watchedSignals.has(event) || !ctx.terminal) return;
+    const t = ctx.terminal as { onResize?: (cb: () => void) => unknown; onContinue?: (cb: () => void) => unknown };
+    const subscribe = event === 'SIGWINCH' ? t.onResize : event === 'SIGCONT' ? t.onContinue : undefined;
+    if (typeof subscribe !== 'function') return;
+    watchedSignals.add(event);
+    const off = subscribe.call(t, () => { if (!_st.exitCalled) fp.emit(event, event); });
+    if (typeof off === 'function') (_st.terminalSignalCleanups ??= []).push(off as () => void);
+  };
   const fp: any = {
     env: processEnv,
     cwd: () => ctx.shell.cwd,
@@ -116,7 +131,9 @@ export function createFakeProcess(
     stdin: createStdin(ctx, _st, processEvents, pendingPromises, FakeBuffer),
     on: (event: string, fn: Function) => {
       (processEvents[event] ??= []).push(fn);
-      syncSignals(event);
+      watchTerminalSignal(event);
+      // (SIGWINCH and SIGCONT the terminal gives, when it does: not caught a second time)
+      if (!watchedSignals.has(event)) syncSignals(event);
       return fp;
     },
     off: (event: string, fn: Function) => { processEvents[event] = (processEvents[event] || []).filter(f => f !== fn); syncSignals(event); return fp; },
@@ -152,7 +169,7 @@ export function createFakeProcess(
       return fp;
     },
     addListener: (event: string, fn: Function) => fp.on(event, fn),
-    prependListener: (event: string, fn: Function) => { (processEvents[event] ??= []).unshift(fn); syncSignals(event); return fp; },
+    prependListener: (event: string, fn: Function) => { (processEvents[event] ??= []).unshift(fn); watchTerminalSignal(event); if (!watchedSignals.has(event)) syncSignals(event); return fp; },
     // (Next.js wraps each of process's emitter methods and needs them all)
     prependOnceListener: (event: string, fn: Function) => {
       const w = (...a: any[]) => { fp.removeListener(event, w); return fn(...a); };

@@ -590,6 +590,7 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         return t.startsWith('V') ? decodeClone(JSON.parse(t.slice(1))) : JSON.parse(t);
       },
       getHeapStatistics: () => ({ total_heap_size: 0, used_heap_size: 0, heap_size_limit: 0 }),
+      getHeapSpaceStatistics: () => [],
       setFlagsFromString: () => {},
     };
 

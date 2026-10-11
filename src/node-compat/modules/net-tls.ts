@@ -693,6 +693,8 @@ export function createTlsModule(deps: TlsDeps): any {
     createServer: () => new InertServer(),
     TLSSocket,
     createSecureContext: () => ({}),
+    // The browser checked the certificate for the host it connected to
+    checkServerIdentity: (_host: string, _cert: unknown) => undefined,
     getCiphers: () => ['TLS_AES_256_GCM_SHA384'],
     DEFAULT_MIN_VERSION: 'TLSv1.2',
     DEFAULT_MAX_VERSION: 'TLSv1.3',

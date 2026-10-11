@@ -153,7 +153,7 @@ describe('which, timeout, kill and Ctrl-C', () => {
 
   it('node -v and node --help answer at once though stdin is a pipe that stays open (tabcomputer#13)', async () => {
     const r = await agentSh('timeout 10 node -v; echo "rc=$?"; node --help | head -1; node -v & wait; echo done');
-    expect(r).toMatchObject({ out: 'v22.12.0\nrc=0\nUsage: node [options] [script.js] [arguments]\nv22.12.0\ndone\n', status: 0 });
+    expect(r).toMatchObject({ out: 'v22.12.0\nrc=0\nUsage: node [options] [ script.js ] [arguments]\nv22.12.0\ndone\n', status: 0 });
   });
 
   it('kill ends a shell process running a builtin that never returns', async () => {

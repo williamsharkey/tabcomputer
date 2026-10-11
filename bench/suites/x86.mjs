@@ -1,6 +1,7 @@
 // x86-64 ELF: Blink (wasm, Worker kernel process) when isolated, src/x86
 // (TS interpreter) otherwise or with TABCOMPUTER_X86_ENGINE=x86. Time and renderer
 // RSS peak per program, run at the prompt via the shell (`./prog > file`).
+import { execFileSync } from 'node:child_process';
 import { MB } from '../lib/harness.mjs';
 
 export const name = 'x86';
@@ -14,6 +15,45 @@ const PROGRAMS = [
   ['go_nethttp', 'nethttp', '', /pong/],
   ['gh_version', 'gh', '--version', /gh version/],
 ];
+const FIXTURES = [...PROGRAMS.map(([, f]) => f), 'pbench'];
+
+// perf-bench-style microbenchmarks (tests/tests/shiro-vitest/fixtures/x86/pbench.c),
+// the same static binary in Blink and natively on this machine (the reference row).
+// [metric, args, unit, value from pbench's key=values, in --quick, what it measures]
+export const PBENCH = [
+  ['syscall_rt', 'syscall', 'ns', (kv) => kv.ns_per_op, true, 'getppid() round trip (perf bench syscall basic)'],
+  ['pipe_pingpong', 'pipe', 'µs', (kv) => kv.ns_per_op / 1e3, true, 'one byte each way between two processes over two pipes (perf bench sched pipe): wake-up cost'],
+  ['messaging', 'messaging 1 10 50', 'µs', (kv) => kv.ns_per_op / 1e3, false, 'hackbench: 10 senders × 10 receivers (20 processes), 50 rounds of 100-byte pipe messages; µs per message (perf bench sched messaging -p -g 1 -l 50, fan-out of 10)'],
+  ['memcpy_bw', 'memcpy 32 8', 'MB/s', (kv) => kv.MBps, true, 'glibc memcpy of a 32 MiB buffer, 8 copies after a warm-up copy (perf bench mem memcpy)'],
+  ['fork_exec', 'forkexec', 'ms', (kv) => kv.ns_per_op / 1e6, true, 'fork + execv(pbench nop) + waitpid, static glibc binary'],
+];
+export const PBENCH_MS = 500;
+export const kvOf = (out) => Object.fromEntries([...out.matchAll(/^(\w+)=([\d.]+)$/gm)].map((m) => [m[1], Number(m[2])]));
+
+/** The pbench rows natively (no Blink, no browser): what this machine's Linux does. */
+export function nativePbench(h) {
+  const bin = h.fixtures.pbench;
+  const taskset = (() => { try { execFileSync('taskset', ['-c', '0', 'true']); return true; } catch { return false; } })();
+  for (const [metric, args, unit, value, quick, what] of PBENCH) {
+    if (h.quick && !quick) continue;
+    const nm = `x86.native.${metric}`;
+    const variants = [[nm, [], '']];
+    // one CPU: both processes on CPU 0, so a wake-up is a context switch, not an IPI to an idle CPU
+    if (metric === 'pipe_pingpong' && taskset) variants.push([`x86.native.pipe_pingpong_1cpu`, ['taskset', '-c', '0'], ' Pinned to one CPU (taskset -c 0).']);
+    for (const [name, pre, extra] of variants) {
+      if (!h.wants(name)) continue;
+      try {
+        const res = [];
+        for (let i = 0; i < h.runs; i++) {
+          const argv = [...pre, bin, ...args.split(' ')];
+          const out = execFileSync(argv[0], argv.slice(1), { encoding: 'utf8', env: { ...process.env, PBENCH_MS: String(PBENCH_MS) }, timeout: 60_000 });
+          res.push(value(kvOf(out)));
+        }
+        h.sample(name, res, unit, { notes: `native reference: \`pbench ${args}\` on this machine's Linux, no emulator. ${what}.${extra}` });
+      } catch (e) { h.skip(name, unit, `failed: ${String(e.message).split('\n')[0].slice(0, 160)}`); }
+    }
+  }
+}
 
 async function runOnce(h, cmd, limit = 60) {
   const line = `cd /home/user/x && ${cmd} < /dev/null > /tmp/x86.out 2>&1; echo "exit=$?"`;
@@ -40,10 +80,9 @@ async function releaseMs(h, run) {
 
 export async function run(h) {
   const engines = h.isolated ? (h.quick ? [['blink', '']] : [['blink', ''], ['x86', 'TABCOMPUTER_X86_ENGINE=x86 ']]) : [['x86', '']];
-  const available = PROGRAMS.filter(([, f]) => h.fixtures[f]);
   await h.eval(async (names) => {
     for (const n of names) await window.__bench.fetchInto('/__bench/' + n, '/home/user/x/' + n);
-  }, available.map(([, f]) => f));
+  }, FIXTURES.filter((f) => h.fixtures[f]));
   for (const [engine, prefix] of engines) {
     for (const [metric, fixture, args, expect] of PROGRAMS) {
       const nm = `x86.${engine}.${metric}`;
@@ -73,6 +112,35 @@ export async function run(h) {
         if (heavy) h.sample(`x86.${engine}.release_ms.${metric}`, res.map((r) => r.release), 'ms', { notes: 'after exit, until the renderer RSS gave back 3/4 of the peak (Workers and wasm memory freed)' });
       });
     }
+  }
+
+  // perf-bench-style rows: Blink (isolated only: Blink needs SAB), then the native reference
+  // blink_direct: Blink patch 0065's direct channels (opt-in TABCOMPUTER_BLINK_DIRECT=1), kernel calls only
+  if (h.isolated && h.fixtures.pbench) {
+    const variants = [['blink', '', ''], ['blink_direct', 'TABCOMPUTER_BLINK_DIRECT=1 ', ' With direct channels (TABCOMPUTER_BLINK_DIRECT=1).']];
+    for (const [engine, prefix, extra] of variants) for (const [metric, args, unit, value, quick, what] of PBENCH) {
+      const nm = `x86.${engine}.${metric}`;
+      if (h.quick && !quick) continue;
+      if (engine === 'blink_direct' && (h.quick || metric === 'memcpy_bw')) continue;
+      await h.try(nm, unit, async () => {
+        const cmd = `${prefix}PBENCH_MS=${PBENCH_MS} ./pbench ${args}`;
+        const first = await runOnce(h, cmd, 120);
+        if (first.code !== 0 || !/ns_per_op=/.test(first.out)) throw new Error(`${first.code === 124 ? 'timed out after 120 s' : `exit ${first.code}`}: ${first.out.trim().split('\n').slice(-1)[0]?.slice(0, 160) ?? ''}`);
+        const res = [];
+        let ops = 0;
+        for (let i = 0; i < h.runs; i++) {
+          const r = await runOnce(h, cmd, 120);
+          if (r.code !== 0) throw new Error(`exit ${r.code} on run ${i + 2}: ${r.out.trim().split('\n').slice(-1)[0]?.slice(0, 160) ?? ''}`);
+          const kv = kvOf(r.out);
+          ops = kv.ops;
+          res.push(value(kv));
+        }
+        h.sample(nm, res, unit, { notes: `\`${cmd}\` in Blink, guest clock (${ops} ops in the last run). ${what}.${extra}` });
+      });
+    }
+    nativePbench(h);
+  } else if (h.isolated) {
+    for (const [metric] of PBENCH) h.skip(`x86.blink.${metric}`, '', 'fixture pbench unavailable (gcc missing)');
   }
 
   // Vim's startup in Blink: sourcing defaults.vim (filetype.vim is most of it),

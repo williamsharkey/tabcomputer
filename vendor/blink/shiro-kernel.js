@@ -161,7 +161,7 @@ var ShiroKernelLibrary = {
       // keeps them (every thread's Worker comes through here, the pool's too)
       var shiroKeep = function (d) {
         var K = Module['shiroKernel'];
-        if (d && d.shiroWjModule && K && K.keepWasm) K.keepWasm(d);
+        if (d && d.shiroWjModules && K && K.keepWasm) K.keepWasm(d.shiroWjModules);
       };
       PThread.getNewWorker = function () {
         var worker = shiroGetNewWorker.call(PThread);

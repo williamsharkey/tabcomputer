@@ -40,4 +40,26 @@ describe('the shell yields to the page', () => {
       (fs) => fs.writeFile('/tmp/self-src.sh', 'source /tmp/self-src.sh\n'));
     expect(r.out).toBe('source: /tmp/self-src.sh: maximum nesting level exceeded (100)\nst=1\n');
   }, 30_000);
+
+  it('in loops whose iterations are slow, by time rather than by iteration count', async () => {
+    // 300 iterations of real work: under the old every-1000-iterations yield the page got no turn
+    const r = await timed('i=0; while [ $i -lt 300 ]; do x=$(echo $i); i=$((i + 1)); done; echo $i');
+    expect(r.out).toBe('300\n');
+    expect(r.ticks).toBeGreaterThanOrEqual(Math.floor(r.ms / 60));
+    expect(r.ticks).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('in for-in loops too', async () => {
+    const r = await timed('n=0; for w in $(seq 1 300); do x=$(echo $w); n=$((n + 1)); done; echo $n');
+    expect(r.out).toBe('300\n');
+    expect(r.ticks).toBeGreaterThanOrEqual(Math.floor(r.ms / 60));
+  }, 60_000);
+
+  it('runaway loops of every kind can be stopped (timeout)', async () => {
+    for (const loop of ['while :; do :; done', 'until false; do :; done', 'for ((;;)); do :; done', 'for i in $(seq 1 200000); do x=$(echo $i); done']) {
+      const r = await timed(`timeout 1 sh -c '${loop}'; echo st=$?`);
+      expect(r.out, loop).toBe('st=124\n');
+      expect(r.ms, loop).toBeLessThan(15_000);
+    }
+  }, 120_000);
 });

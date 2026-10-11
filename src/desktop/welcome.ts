@@ -110,6 +110,40 @@ export function showWelcome(ctx: AppContext): void {
     }
   });
   el.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  draggable(el, ctx.wm.root);
   ctx.wm.root.appendChild(el);
   current = el;
+}
+
+/**
+ * Drag the card by any part that isn't a button, like a window by its title
+ * bar; it stays inside the desktop. Not on phones (it spans the screen there).
+ */
+function draggable(el: HTMLElement, root: HTMLElement): void {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button, a, input, kbd') || root.classList.contains('sd-compact')) return;
+    // measured without its entrance animation (a drag right after it appears: mid-slide), which
+    // stays off afterwards: turning it back on would replay it
+    el.classList.add('sd-dragging', 'sd-moved');
+    const r = el.getBoundingClientRect(), box = root.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    // from its corner anchoring to left/top
+    Object.assign(el.style, { left: `${r.left - box.left}px`, top: `${r.top - box.top}px`, right: 'auto', bottom: 'auto' });
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    const move = (m: PointerEvent) => {
+      const x = Math.max(0, Math.min(box.width - r.width, m.clientX - box.left - dx));
+      const y = Math.max(0, Math.min(box.height - Math.min(r.height, 60), m.clientY - box.top - dy));
+      el.style.left = `${x}px`; el.style.top = `${y}px`;
+    };
+    const up = () => {
+      el.classList.remove('sd-dragging');
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    e.preventDefault();
+  });
 }

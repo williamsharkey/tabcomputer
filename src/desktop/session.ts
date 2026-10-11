@@ -3,6 +3,8 @@
  * what state (a terminal's working directory, Files' folder, Settings' pane).
  * Saved to localStorage `tabcomputer-desktop-session` as windows change; restored
  * after the first prompt (the main terminal's own geometry is applied at boot).
+ * The list is in stacking order, bottom to top, and marks the focused window:
+ * the restore puts them back in that order and focuses it again.
  * Program windows (vim, htop, X11 apps) aren't restored: that would run them.
  */
 
@@ -19,6 +21,8 @@ export interface SavedWindow {
   cwd?: string;
   path?: string;
   pane?: string;
+  /** It had the keyboard focus. */
+  focused?: boolean;
 }
 
 export function loadSession(): SavedWindow[] {
@@ -34,6 +38,7 @@ function describe(w: DesktopWindow): SavedWindow | null {
   if (w.appId === 'terminal' && w.options.title && w.options.title !== 'Terminal') return null;
   const c = (w as { content?: any }).content;
   const out: SavedWindow = { id: w.id, app: w.appId, g: w.geometry(), state: w.state };
+  if (w.focused) out.focused = true;
   if (typeof c?.cwd === 'function') out.cwd = c.cwd();
   if (typeof c?.path === 'function') out.path = c.path();
   if (typeof c?.pane === 'function') out.pane = c.pane();
@@ -63,15 +68,23 @@ export function place(w: DesktopWindow, s: SavedWindow, wa: Geometry): void {
   else if (s.state === 'minimized') w.minimize();
 }
 
-/** Reopen the saved windows other than the main terminal, bottom to top. */
-export async function restoreSession(wm: WindowManager, saved: SavedWindow[], openTerminal: (o: { cwd?: string }) => DesktopWindow | null): Promise<void> {
+/**
+ * Reopen the saved windows other than the main terminal, then stack all of
+ * them (the main terminal too) as they were. Returns the window that had the
+ * focus, for the caller to focus once the desktop shows (null: none saved).
+ */
+export async function restoreSession(wm: WindowManager, saved: SavedWindow[], openTerminal: (o: { cwd?: string }) => DesktopWindow | null): Promise<DesktopWindow | null> {
+  const placed: [SavedWindow, DesktopWindow][] = [];
   for (const s of saved) {
-    if (s.id === 'terminal') continue;
+    if (s.id === 'terminal') { const t = wm.get('terminal'); if (t) placed.push([s, t]); continue; }
     let w: DesktopWindow | null = null;
     try {
       if (s.app === 'terminal') w = openTerminal({ cwd: s.cwd || '/home/user' });
       else w = await wm.openApp(s.app, { newWindow: true, ...(s.path ? { path: s.path } : {}), ...(s.pane ? { pane: s.pane } : {}) });
     } catch (e) { console.warn('[desktop] restore', s.app, e); }
-    if (w) place(w, s, wm.workArea());
+    if (w) { place(w, s, wm.workArea()); placed.push([s, w]); }
   }
+  // Opening focused (raised) each window in turn, after the main terminal: restack bottom to top
+  for (const [s, w] of placed) if (s.state !== 'minimized' && w.state !== 'closed') w.focus();
+  return placed.find(([s, w]) => s.focused && w.state !== 'closed' && w.state !== 'minimized')?.[1] ?? null;
 }

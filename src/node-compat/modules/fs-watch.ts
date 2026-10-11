@@ -26,6 +26,37 @@ export interface WatchDeps {
 
 type Change = { eventType: 'rename' | 'change'; filename: string };
 
+/**
+ * Watch events to deliver, oldest first, shared by every watcher of the page.
+ * A burst is delivered in a microtask, as before; one whose callbacks run past
+ * DELIVER_BUDGET_MS (an `rm -rf node_modules` under a recursive watcher:
+ * chokidar or vite get a callback per file) goes on in later tasks, so the
+ * page paints and handles input between chunks instead of freezing.
+ */
+const DELIVER_BUDGET_MS = 8;
+const deliveries: (() => void)[] = [];
+let deliverHead = 0;
+let deliveryScheduled = false;
+function drainDeliveries(): void {
+  const t0 = performance.now();
+  while (deliverHead < deliveries.length) {
+    const fn = deliveries[deliverHead++];
+    try { fn(); } catch (e) { queueMicrotask(() => { throw e; }); } // a listener's throw stays its own
+    if (performance.now() - t0 > DELIVER_BUDGET_MS && deliverHead < deliveries.length) {
+      setTimeout(drainDeliveries, 0);
+      return;
+    }
+  }
+  deliveries.length = 0;
+  deliverHead = 0;
+  deliveryScheduled = false;
+}
+/** Deliver `fn` after the filesystem change that caused it (in order with the others) */
+export function deliverWatchEvent(fn: () => void): void {
+  deliveries.push(fn);
+  if (!deliveryScheduled) { deliveryScheduled = true; queueMicrotask(drainDeliveries); }
+}
+
 const parentOf = (p: string) => p.slice(0, p.lastIndexOf('/')) || '/';
 const baseOf = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 
@@ -68,7 +99,8 @@ export function createWatchApi(deps: WatchDeps) {
 
   /**
    * Subscribe to changes at `target` (a file, or a directory's entries).
-   * `emit` gets each change, later (a microtask after the filesystem's).
+   * `emit` gets each change, later (a microtask after the filesystem's; in a
+   * storm, in later tasks: deliverWatchEvent).
    */
   const subscribe = (target: string, recursive: boolean, emit: (c: Change) => void): (() => void) => {
     const dirWatch = isDir(target);
@@ -82,7 +114,7 @@ export function createWatchApi(deps: WatchDeps) {
       if (!recursive && rel.includes('/')) return null;
       return rel;
     };
-    const queue = (eventType: Change['eventType'], filename: string) => queueMicrotask(() => emit({ eventType, filename }));
+    const queue = (eventType: Change['eventType'], filename: string) => deliverWatchEvent(() => emit({ eventType, filename }));
     // A change from before this subscription (one relayed late to a guest) is already in
     // what its subscriber read, and so is one from before this process started watching
     // that file itself: chokidar found .astro/settings.json by reading its directory,

@@ -1310,6 +1310,10 @@ describe('worker guests over the SAB channel', () => {
     expect(text(`/proc/${p.pid}/task/${p.pid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x0 0x10 `));
     expect(text(`/proc/${p.pid}/task/${t.tid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x3 0x10 `));
     expect(text(`/proc/${p.pid}/task/${t.tid}/wchan`)).toBe('pipe_read');
+    // (a channel's blocked read waits on readiness, not in kernel.syscall: the process still counts as in it)
+    expect(text(`/proc/${p.pid}/stat`).split(' ')[2]).toBe('S');
+    expect(text(`/proc/${p.pid}/syscall`)).toMatch(new RegExp(`^${A.SYS_read} 0x`));
+    expect(text(`/proc/${p.pid}/wchan`)).toBe('pipe_read');
     const st = text(`/proc/${p.pid}/task/${t.tid}/status`);
     expect(st).toContain(`\nState:\tS (sleeping)\nTgid:\t${p.pid}\nNgid:\t0\nPid:\t${t.tid}\n`);
     expect(st).toMatch(/\nThreads:\t2\n/);

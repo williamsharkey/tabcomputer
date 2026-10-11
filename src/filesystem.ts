@@ -1043,6 +1043,36 @@ export class FileSystem {
     }
   }
 
+  /**
+   * Answered from memory, stat, readdir and readFile settle as microtasks, so
+   * a walk (find, grep -r, du, isomorphic-git's) over a big tree was one task:
+   * find over 30,000 files held the page 150 ms. Once YIELD_MS have passed
+   * since the last turn, the next call waits a macrotask first.
+   */
+  static YIELD_MS = 20;
+  /**
+   * The clock is read every 32nd call (each read cost ls -la of 1000 files
+   * 0.6 ms): when this run of calls began, and the last reading (50 ms
+   * between two readings is a pause, which starts a new run).
+   */
+  private _calls = 0;
+  private _runStart = 0;
+  private _lastCheck = 0;
+
+  private _turn(): Promise<void> | undefined {
+    if (++this._calls & 31) return undefined;
+    const now = performance.now();
+    const gap = now - this._lastCheck;
+    this._lastCheck = now;
+    if (gap > 50) { this._runStart = now; return undefined; }
+    if (now - this._runStart < FileSystem.YIELD_MS) return undefined;
+    this._runStart = now;
+    return new Promise((resolve) => scheduleMacrotask(resolve));
+  }
+
+  /** Main-thread time a commit spends issuing requests before it lets the page run (_commit). */
+  static COMMIT_SLICE_MS = 8;
+
   /** Commit everything dirty in one transaction; loops while new writes arrive. */
   private _flush(durability: 'default' | 'strict' | 'relaxed' = 'relaxed'): Promise<void> {
     if (this._flushing) return this._flushing;
@@ -1101,14 +1131,26 @@ export class FileSystem {
             tx = db.transaction(STORE_NAME, 'readwrite');
           }
           const store = tx.objectStore(STORE_NAME);
-          for (const [path, node] of batch) {
-            if (node) store.put(storableNode(node));
-            else if (path.startsWith(RANGE)) {
-              // Every key under the directory: from "dir/" up to "dir0" ('0' follows '/')
-              const dir = path.slice(RANGE.length);
-              store.delete(IDBKeyRange.bound(dir + '/', dir + '0', false, true));
-            } else store.delete(path);
-          }
+          // The requests go in COMMIT_SLICE_MS at a time, each slice from the last
+          // one's success: one transaction still (all or nothing, in order), but
+          // the page runs in between. Each put clones its record on this thread:
+          // npm's 5000-file batch held the page 150 ms in one go.
+          const items = batch.entries();
+          const pump = () => {
+            const t0 = performance.now();
+            let last: IDBRequest | undefined;
+            for (let it = items.next(); !it.done; it = items.next()) {
+              const [path, node] = it.value;
+              if (node) last = store.put(storableNode(node));
+              else if (path.startsWith(RANGE)) {
+                // Every key under the directory: from "dir/" up to "dir0" ('0' follows '/')
+                const dir = path.slice(RANGE.length);
+                last = store.delete(IDBKeyRange.bound(dir + '/', dir + '0', false, true));
+              } else last = store.delete(path);
+              if (performance.now() - t0 >= FileSystem.COMMIT_SLICE_MS) { last.onsuccess = pump; return; }
+            }
+          };
+          pump();
           tx.oncomplete = () => resolve();
           tx.onabort = () => reject(tx.error || new DOMException('Transaction aborted', 'AbortError'));
         });
@@ -2385,6 +2427,7 @@ export class FileSystem {
   }
 
   async stat(path: string): Promise<StatResult> {
+    const turn = this._turn(); if (turn) await turn;
     for (const vp of this.virtualProviders) {
       if (vp.handles(path)) {
         const s = vp.stat(path);
@@ -2402,6 +2445,7 @@ export class FileSystem {
   }
 
   async lstat(path: string): Promise<StatResult> {
+    const turn = this._turn(); if (turn) await turn;
     for (const vp of this.virtualProviders) {
       if (vp.handles(path)) { const s = vp.lstat ? vp.lstat(path) : vp.stat(path); if (s) return s; }
     }
@@ -2413,6 +2457,7 @@ export class FileSystem {
   }
 
   async exists(path: string): Promise<boolean> {
+    const turn = this._turn(); if (turn) await turn;
     for (const vp of this.virtualProviders) {
       if (vp.exists(path)) return true;
     }
@@ -2427,6 +2472,7 @@ export class FileSystem {
   fifoIO?: { read(path: string): Promise<Uint8Array>; write(path: string, data: Uint8Array | string): Promise<void> };
 
   async readFile(path: string, encoding?: 'utf8'): Promise<Uint8Array | string> {
+    const turn = this._turn(); if (turn) await turn;
     for (const vp of this.virtualProviders) {
       if (vp.handles(path)) {
         const data = vp.readFile(path, encoding);
@@ -2632,6 +2678,7 @@ export class FileSystem {
   }
 
   async readdir(path: string): Promise<string[]> {
+    const turn = this._turn(); if (turn) await turn;
     // Check virtual providers first
     for (const vp of this.virtualProviders) {
       if (vp.handles(path)) {

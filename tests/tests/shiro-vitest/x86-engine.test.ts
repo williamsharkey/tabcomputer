@@ -399,6 +399,10 @@ const haveForkmaps = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const tiddropBin = join(out, 'tiddrop');
 const haveTiddrop = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_tiddrop') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-pthread', '-o', tiddropBin, 'tiddrop.c', '-lrt']);
+// Blink 0536: mlock marks pages; /proc/self/smaps and smaps_rollup; msync of locked pages
+const smapsBin = join(out, 'smaps');
+const haveSmaps = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_smaps') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', smapsBin, 'smaps.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1221,6 +1225,13 @@ it.skipIf(!haveTiddrop)('a SIGEV_THREAD_ID timer whose thread exited signals no 
   const { shell } = await setup(readFileSync(tiddropBin));
   const r = await run(shell, './prog; echo rc $?');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('alive\nrc 0\n');
+}, 60_000);
+
+it.skipIf(!haveSmaps)('/proc/self/smaps: Size, Rss and Locked per mapping, smaps_rollup\'s sum; msync(MS_INVALIDATE) of locked pages is EBUSY (LTP mlock05, Open POSIX mlockall_3-6/3-7)', async () => {
+  const { shell } = await setup(readFileSync(smapsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('size 1024 rss 8 locked 0\nmsync 0\nmlocked rss 1024 locked 1024 rollup 1\n' +
+    'msync locked -1 16\nmunlocked locked 0 msync 0\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

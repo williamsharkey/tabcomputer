@@ -768,7 +768,7 @@ async function npmRun(ctx: CommandContext): Promise<number> {
 
   // Execute the script via the shell; on npm's terminal when that is where npm's output
   // goes, as npx does (a dev server's output comes as it runs, not when it ends)
-  return ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
+  return withBinPath(ctx, pkgPath, () => ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true));
 }
 
 /**
@@ -791,7 +791,7 @@ async function npmRunScript(ctx: CommandContext, scriptName: string, defaultScri
   if (!script) {
     if (defaultScript) {
       scriptOut(ctx)(`> ${scriptId(pkg)}${scriptName}\n> ${defaultScript}\n\n`);
-      return await ctx.shell.execute(defaultScript, scriptOut(ctx), scriptErr(ctx), false, undefined, true);
+      return await withBinPath(ctx, pkgPath, () => ctx.shell.execute(defaultScript, scriptOut(ctx), scriptErr(ctx), false, undefined, true));
     }
     ctx.stderr += `npm: missing script: ${scriptName}\n`;
     ctx.stderr += '\nAvailable scripts:\n';
@@ -804,7 +804,28 @@ async function npmRunScript(ctx: CommandContext, scriptName: string, defaultScri
   const extra = withScriptArgs(script, ctx.args.slice(1));
   scriptHeader(ctx, `> ${scriptId(pkg)}${scriptName}\n> ${extra}\n\n`);
 
-  return await ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true);
+  return await withBinPath(ctx, pkgPath, () => ctx.shell.execute(extra, scriptOut(ctx), scriptErr(ctx), false, scriptTerminal(ctx), true));
+}
+
+/**
+ * Run `fn` (a package script) with each node_modules/.bin from the package's directory up
+ * first on PATH, as npm does: the project's own programs before others of the same name
+ * (`"test": "jest"` ran Shiro's test runner, not the project's jest)
+ */
+async function withBinPath(ctx: CommandContext, pkgPath: string, fn: () => Promise<number>): Promise<number> {
+  const bins: string[] = [];
+  for (let d = pkgPath.slice(0, pkgPath.lastIndexOf('/')) || '/'; ; d = d.slice(0, d.lastIndexOf('/')) || '/') {
+    bins.push(`${d === '/' ? '' : d}/node_modules/.bin`);
+    if (d === '/') break;
+  }
+  const env = ctx.shell.env;
+  const had = 'PATH' in env, before = env.PATH;
+  env.PATH = [...bins, ...(before ? [before] : [])].join(':');
+  try {
+    return await fn();
+  } finally {
+    if (had) env.PATH = before!; else delete env.PATH;
+  }
 }
 
 /** A script with the arguments npm passes on (a leading `--` dropped), each quoted for the shell */

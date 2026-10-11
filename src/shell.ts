@@ -38,6 +38,9 @@ async function loadWasiRuntime() {
 /** A writer that forwards to another (or to a file when it returns null): `writesTo` sees through it */
 const WRITER_TARGET = Symbol('writerTarget');
 /** Does `w` write straight to `to` (through `exec >&` routing)? */
+/** Registered commands a project's node_modules/.bin never replaces (a package named node, npm, sh…) */
+const PROJECT_BIN_KEEP = new Set(['node', 'npm', 'npx', 'sh', 'bash', 'env']);
+
 function writesTo(w: (s: string) => void, to: (s: string) => void): boolean {
   for (let k = 0; k < 8 && w; k++) {
     if (w === to) return true;
@@ -5006,6 +5009,14 @@ export class Shell {
           !this.commands.get(effectiveCmdName)!.keepOverPackage?.(cmdArgs);
         // A Debian program that is gone (apt remove) no longer shadows the builtin
         if (pkgShadowed && !pkgOwnShadows(this.fs).has(effectiveCmdName) && !(await this.findExecutableInPath(effectiveCmdName))) pkgShadowed = false;
+        // A project's own program (npm run puts node_modules/.bin first on PATH) replaces a
+        // registered command of the same name: `npm test` running `jest` ran Shiro's test runner
+        if (!pkgShadowed && !_builtinDisabled && !SHELL_BUILTIN_NAMES.has(effectiveCmdName) && !PROJECT_BIN_KEEP.has(effectiveCmdName) &&
+          !effectiveCmdName.includes('/') && this.commands.get(effectiveCmdName) && (this.env.PATH ?? '').includes('node_modules/.bin')) {
+          for (const dir of (this.env.PATH ?? '').split(':')) {
+            if (dir.endsWith('node_modules/.bin') && await this.fs.exists(`${dir}/${effectiveCmdName}`)) { pkgShadowed = true; break; }
+          }
+        }
         // /bin/NAME, /usr/bin/NAME, …: Shiro's NAME when no such file exists (the kernel stats them the same way)
         const binPath = /^\/(?:usr\/)?(?:local\/)?s?bin\/([^/]+)$/.exec(effectiveCmdName);
         const cmd = pkgShadowed ? undefined : this.commands.get(effectiveCmdName)

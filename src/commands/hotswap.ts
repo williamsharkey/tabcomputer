@@ -18,8 +18,8 @@ const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's sou
        hotswap test [--root DIR] [-t RE] [-v] SUITE...
                                             run vitest suites from the checkout in this tab
        hotswap diff [--stat] [FILE...]       changes since the checkout
-       hotswap push BRANCH -m MSG [--repo OWNER/NAME] [--force]
-                                            commit them on the build's commit, as a GitHub branch
+       hotswap push BRANCH -m MSG [--repo OWNER/NAME]
+                                            commit them on the build's commit, as a new GitHub branch
 
 FILEs are paths in a checkout of tabcomputer's source (default root: the
 nearest directory above the cwd with src/shell.ts). Classes exported by a
@@ -314,16 +314,15 @@ async function diff(ctx: CommandContext, args: string[]): Promise<number> {
 async function push(ctx: CommandContext, args: string[]): Promise<number> {
   const root = await checkoutRoot(ctx, args);
   if (!root) return 1;
-  let message = '', repo = 'williamsharkey/shiro', branch = '', force = false;
+  let message = '', repo = 'williamsharkey/shiro', branch = '';
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-m' || a === '--message') message = args[++i] ?? '';
     else if (a === '--repo' || a === '-R') repo = args[++i] ?? repo;
-    else if (a === '--force' || a === '-f') force = true;
     else if (a.startsWith('-')) { ctx.stderr += `hotswap push: unknown option ${a}\n`; return 2; }
     else branch = a;
   }
-  if (!branch || !message) { ctx.stderr += 'Usage: hotswap push BRANCH -m MSG [--repo OWNER/NAME] [--force]\n'; return 2; }
+  if (!branch || !message) { ctx.stderr += 'Usage: hotswap push BRANCH -m MSG [--repo OWNER/NAME]\n'; return 2; }
   const { getToken, ghApi } = await import('./gh');
   const token = getToken(ctx);
   if (!token) { ctx.stderr += 'hotswap push: not signed in to GitHub: run gh auth login\n'; return 1; }
@@ -335,7 +334,7 @@ async function push(ctx: CommandContext, args: string[]): Promise<number> {
     if (name && email) author = { name, email };
   } catch { /* GitHub uses the token's account */ }
   try {
-    const r = await pushSource(ctx.fs as any, root, (method, path, body) => ghApi(token, method, path, body), { repo, branch, message, force, author });
+    const r = await pushSource(ctx.fs as any, root, (method, path, body) => ghApi(token, method, path, body), { repo, branch, message, author });
     ctx.stdout += `${r.created ? 'created' : 'updated'} ${repo} branch ${r.branch}: ${r.commit.slice(0, 12)} (${r.files} file(s))\n${r.url}\n`;
     ctx.stdout += `open a pull request: gh pr create -R ${repo} --head ${r.branch} --base unix/integration\n`;
     return 0;

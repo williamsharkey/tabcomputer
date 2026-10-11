@@ -141,8 +141,6 @@ export interface PushOptions {
   repo: string;
   branch: string;
   message: string;
-  /** Replace the branch even if it isn't where the last push from this checkout left it */
-  force?: boolean;
   author?: { name: string; email: string };
 }
 
@@ -155,11 +153,19 @@ function b64(data: Uint8Array): string {
 }
 
 /**
- * Commit the checkout's changes on top of the build's commit and point the
- * branch at it. A branch this checkout pushed before gets a new commit on
- * top (its content is still the build plus every change).
+ * Commit the checkout's changes on top of the build's commit as a new
+ * branch. A branch this checkout made gets a new commit on top (its content
+ * is still the build plus every change); any other existing branch, and
+ * main, deploy and unix/*, are refused. Never a force push.
  */
+/** Branches a push from the tab never touches: the trunk, the deploy branch, the shared unix/* work branches */
+export function protectedBranch(branch: string): boolean {
+  return /^(main|master|deploy|unix\/.*)$/.test(branch);
+}
+
 export async function pushSource(fs: SourceFs, dir: string, api: GhApi, opts: PushOptions): Promise<PushResult> {
+  if (protectedBranch(opts.branch)) throw new Error(`won't push to ${opts.branch}: push a new branch (e.g. hotswap/${opts.branch.replace(/^unix\//, '')}-fix) and open a pull request`);
+  if (!/^[\w.\/-]+$/.test(opts.branch) || opts.branch.includes('..') || opts.branch.endsWith('/')) throw new Error(`bad branch name: ${opts.branch}`);
   const m = await readManifest(fs, dir);
   if (!m.sha) throw new Error('the checkout has no commit id (a build outside git); push it some other way');
   const changes = await sourceChanges(fs, dir, m);
@@ -180,8 +186,9 @@ export async function pushSource(fs: SourceFs, dir: string, api: GhApi, opts: Pu
   const ref = await api('GET', `${repo}/git/ref/heads/${opts.branch}`);
   const head: string | null = ref.status === 200 ? ref.data?.object?.sha ?? null : null;
   if (ref.status !== 200 && ref.status !== 404) ok(ref, 'reading the branch');
-  if (head && head !== pushed[opts.branch] && head !== m.sha && !opts.force) {
-    throw new Error(`branch ${opts.branch} exists and wasn't pushed from this checkout (--force replaces it, or pick another name)`);
+  // Only a branch this checkout made, still where its last push left it
+  if (head && head !== pushed[opts.branch]) {
+    throw new Error(`branch ${opts.branch} ${opts.branch in pushed ? 'moved since this checkout pushed it' : "exists and wasn't made from this checkout"}; push to a new branch (e.g. ${opts.branch}-2)`);
   }
 
   const tree: unknown[] = [];
@@ -192,11 +199,11 @@ export async function pushSource(fs: SourceFs, dir: string, api: GhApi, opts: Pu
     tree.push({ path: c.path, mode: '100644', type: 'blob', sha: blob.sha });
   }
   const newTree = ok(await api('POST', `${repo}/git/trees`, { base_tree: baseTree, tree }), 'making the tree');
-  const parent = head && !opts.force ? head : m.sha;
+  const parent = head ?? m.sha;
   const commitBody: any = { message: opts.message, tree: newTree.sha, parents: [parent] };
   if (opts.author) commitBody.author = opts.author;
   const commit = ok(await api('POST', `${repo}/git/commits`, commitBody), 'making the commit');
-  if (head) ok(await api('PATCH', `${repo}/git/refs/heads/${opts.branch}`, { sha: commit.sha, force: !!opts.force }), 'moving the branch');
+  if (head) ok(await api('PATCH', `${repo}/git/refs/heads/${opts.branch}`, { sha: commit.sha, force: false }), 'moving the branch');
   else ok(await api('POST', `${repo}/git/refs`, { ref: `refs/heads/${opts.branch}`, sha: commit.sha }), 'making the branch');
 
   pushed[opts.branch] = commit.sha;

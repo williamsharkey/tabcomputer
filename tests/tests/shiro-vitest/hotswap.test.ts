@@ -570,7 +570,15 @@ describe('hotswap: checkout, diff and push of the build source', () => {
     expect(calls.find((c) => c[1].endsWith('/git/commits') && c[0] === 'POST')![2].parents).toEqual([r1.commit]);
     // a branch someone else moved is refused without --force
     branchHead = 'someoneelse';
-    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'm' })).rejects.toThrow(/wasn't pushed from this checkout/);
+    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'fix/x', message: 'm' })).rejects.toThrow(/moved since this checkout pushed it.*fix\/x-2/);
+    await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: 'theirs', message: 'm' })).rejects.toThrow(/wasn't made from this checkout/);
+    // the trunk, deploy and the shared work branches: never
+    calls.length = 0;
+    for (const b of ['main', 'deploy', 'unix/integration', 'unix/hot-swap']) {
+      await expect(src.pushSource(fs as any, '/home/user/shiro', api, { repo: 'o/r', branch: b, message: 'm' })).rejects.toThrow(/won't push/);
+    }
+    expect(calls).toEqual([]);
+    expect(src.protectedBranch('hotswap/fix-1')).toBe(false);
   });
 
   it('names the source tarball after the build commit', async () => {

@@ -13,8 +13,7 @@ Read this whole file once, then `AGENTS.md`, then the docs it points to.
 ## 0. Resume checklist (do these in order)
 
 1. **Environment.** A Claude Code cloud environment with:
-   - GitHub access (push) to `williamsharkey/tabcomputer`, the source repository
-     (§2). `williamsharkey/shiro` is a separate product; tabcomputer work doesn't go there.
+   - GitHub access (push) to `williamsharkey/shiro` and `williamsharkey/tabcomputer`.
    - Network: npm registry, GitHub (api, codeload, objects), Debian mirrors
      (deb.debian.org, snapshot.debian.org), busybox.net, jsdelivr/unpkg,
      api.digitalocean.com and api.porkbun.com (the coordinator only),
@@ -24,9 +23,11 @@ Read this whole file once, then `AGENTS.md`, then the docs it points to.
      - `DIGITALOCEAN_ACCESS_TOKEN`: droplet replacement only.
      - `PORKBUN_API_KEY` and `PORKBUN_SECRET_KEY`: DNS and the DNS-01 cert renewal.
      - `CLAUDE_CODE_OAUTH_TOKEN` (optional): only if an agent-CLI tester needs a real sign-in.
-2. **Coordinator clone.** Clone tabcomputer and check out `main`.
+2. **Coordinator clone.** Clone williamsharkey/tabcomputer and check out `main`.
+   (Before the 2026-10-11 move the coordinator worked in a shiro clone on
+   `unix/integration`; see §2.)
 3. **Check what moved since this file.** Run `git fetch origin`, then list the
-   worker branches that are ahead of `main` (§4). Some workers were still
+   worker branches that are ahead of integration (§4). Some workers were still
    committing when the old account was paused.
 4. **Recreate the workers** (§6) from the template in §7. Each is told its
    branch, its scope and its in-flight task from §6.
@@ -44,7 +45,7 @@ in §6 are for reference only (the user may archive them).
 > **Historical.** This section records the handoff on 2026-10-10. It is not the current state. Since then the
 > new coordinator has run integration cycles through Build 963. The current workers are unix/perf-blink,
 > perf-kernel, perf-fs-shell, conformance, shell-stdio, compat-dev, compat-tools, agent-clis, gui, gl, docs,
-> debian, bench, remote-debug and hot-swap. Live state: `git log` of tabcomputer `main`, the open issues on
+> debian, bench, remote-debug and hot-swap. Live state: tabcomputer `git log origin/main`, the open issues on
 > williamsharkey/tabcomputer, and each worker's branch. The old account's last branches
 > (unix/gui-fin, unix/perf-blink-fin) were handed to gui and perf-blink to fold in.
 
@@ -178,29 +179,26 @@ coordinator session, which merges, tests, benchmarks and deploys.
 
 ## 2. Repositories and branches
 
-- **`williamsharkey/tabcomputer`**: the source repository and the issue tracker.
-  - Workers develop on `unix/<area>` branches. They merge `main` into their
-    branch before pushing, and never push `main` or `deploy`.
-  - `main` is the integration branch. Only the coordinator moves it, by
-    fast-forward, to a merge it has tested (§4).
-  - `deploy` is the release trigger: the coordinator fast-forwards it to a
-    tested `main` commit and the droplet builds and goes live (§3). Each
-    release gets a line in docs/RELEASES.md (build number, commit, date); git
-    tags are blocked by the proxy.
+- **`williamsharkey/tabcomputer`**: the source of truth for tabcomputer, its
+  deploy trigger and its issue tracker (since 2026-10-11, Build 971).
+  - Workers develop on `unix/<area>` branches and merge `origin/main` before pushing.
+  - `main` is the trunk; only the coordinator merges into it (fast-forward from
+    a tested integration commit).
+  - Pushing to the `deploy` branch makes the droplet build and go live.
+    docs/RELEASES.md logs each build (tag pushes are refused by the git proxy).
   - Issues are filed here, including by Claude agents running inside tabcomputer.
-- **`williamsharkey/shiro`**: a separate product, shiro.computer, the
-  lightweight one without the x86-64 emulator, with its own `main` and
-  `deploy.sh`. tabcomputer work doesn't go there. Its old `unix/*` branches and
-  `unix/integration` were copied to tabcomputer at the repo move (Build 971,
-  573f0a64). shiro.computer no longer serves `/pkg/`, so the pkg fallback
-  mirror is tabcomputer.com (fa84cad).
-- **Remotes in a clone:** `origin` = tabcomputer.
-- **Interim, until a worker's session may add the tabcomputer repo** (`add_repo`
-  needs the user's approval in most sessions): the worker pushes to its shiro
-  `unix/<area>` branch as a staging transport and merges shiro
-  `origin/unix/integration`, which the coordinator keeps equal to tabcomputer
-  `main`. The coordinator copies each staged branch to tabcomputer
-  `unix/<area>` and integrates there. Nobody touches shiro `main`.
+- **`williamsharkey/shiro`**: a different product, shiro.computer, the
+  lightweight terminal without the full x86 emulator. Deployed by hand from its
+  `main`. Never touch shiro `main`.
+  - Its `unix/*` branches and `unix/integration` are the pre-move history.
+    During the move, sessions that could not yet push to tabcomputer staged
+    their work on shiro `unix/<area>`, and the coordinator copied it to
+    tabcomputer `unix/<area>` and kept shiro `unix/integration` equal to tab
+    `main`. Retire that once every worker pushes to tabcomputer.
+  - Anything shiro wants from tabcomputer is ported deliberately, if at all.
+- **Coordinator clone:** a tabcomputer clone (`origin` = tabcomputer). A
+  coordinator still on a shiro clone has `origin` = shiro and `tab` = tabcomputer;
+  integrate and push `tab main` / `tab deploy` there.
 
 ---
 
@@ -274,9 +272,7 @@ This ran every 2 h as a routine and between whenever workers reported. Steps:
    - Always pass `--config vitest.config.ts` from `tests/`. A run from the wrong cwd once "ran" 1275 files and no tests.
    - Rerun a lone failure in isolation before calling it real. Known timing flakes under load: `kernel-wasix` dash/bash pty, x86-engine POSIX-timer/futex cases, `toolchain-layers` "Killed".
    - `pkill -f "vitest run"` kills the calling shell (exit 144). That's expected.
-5. **Push and deploy.** Fast-forward `main` (`git push origin HEAD:main`), then
-   fast-forward `deploy` to it (§3), add the release to docs/RELEASES.md, and
-   watch `deployed.txt`.
+5. **Push and deploy.** Fast-forward `main` to the tested commit and push it, then deploy (§3: fast-forward `deploy`), add the build to docs/RELEASES.md, then watch `deployed.txt`.
 6. **Benchmark** about every 2 h.
    - Run `npm run bench:quick -- --no-build --out bench/results/integration-<sha>-quick.json`.
    - Compare with `node bench/compare.mjs <prev>.json <new>.json`. It A/Bs candidate regressions on the same machine.
@@ -495,21 +491,21 @@ find or archive them; they can't be messaged from the new account.
 
 ## 7. Worker recreation template
 
-Create each worker as a cloud session on tabcomputer, with
-`source_revision: unix/<area>` (or `main` for a new branch). Until its session
-may add tabcomputer, use shiro and the interim staging rule in §2. Prompt:
+Create each worker as a cloud session on williamsharkey/tabcomputer, with
+`source_revision: unix/<area>` (or `main` for a new branch), so the repo is
+attached with push access from the start. Prompt:
 
 ```
 You are the unix/<area> worker for tabcomputer (repo williamsharkey/tabcomputer,
-deployed to tabcomputer.com). Read HANDOFF.md (section 6, "<area>") and
+deployed to tabcomputer.com; williamsharkey/shiro is a separate product, don't push there). Read HANDOFF.md (section 6, "<area>") and
 AGENTS.md first, then `git log -15` on your branch to see where you were.
 
 Scope: <scope from §6>.
 Continue: <in-flight task from §6>. Then: <queue>.
 
 Rules:
-- develop on branch unix/<area>; merge origin/main before pushing; push your
-  branch, never main or deploy; the coordinator merges and deploys;
+- develop on branch unix/<area> of williamsharkey/tabcomputer; merge origin/main before pushing;
+  push your branch; the coordinator merges and deploys;
 - report each finished step to the coordinator session <new coordinator id>
   with send_message: what changed, the commit, tests, numbers;
 - tests for what you build (vitest under tests/, browser tests under

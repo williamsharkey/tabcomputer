@@ -57,35 +57,34 @@ function isWellFormed(s: string): boolean {
 }
 
 function decodeEscaped(b: Uint8Array): string {
-  const out: string[] = [];
-  const units: number[] = [];
-  const flush = () => { if (units.length) { out.push(String.fromCharCode.apply(null, units)); units.length = 0; } };
+  // UTF-16 units into a typed array (never more units than bytes), turned into
+  // strings a slice at a time: 30 MB of binary in ~100 ms, not ~500
   const n = b.length;
+  const u = new Uint16Array(n);
+  let o = 0;
   let i = 0;
   while (i < n) {
     const c = b[i];
-    if (c < 0x80) { units.push(c); i++; }
-    else {
-      let need = 0, cp = 0, min = 0;
-      if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; min = 0x80; }
-      else if (c >= 0xe0 && c <= 0xef) { need = 2; cp = c & 0x0f; min = 0x800; }
-      else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x07; min = 0x10000; }
-      let ok = need > 0 && i + need < n;
-      if (ok) {
-        for (let k = 1; k <= need; k++) {
-          const d = b[i + k];
-          if (d === undefined || (d & 0xc0) !== 0x80) { ok = false; break; }
-          cp = (cp << 6) | (d & 0x3f);
-        }
+    if (c < 0x80) { u[o++] = c; i++; continue; }
+    let need = 0, cp = 0, min = 0;
+    if (c >= 0xc2 && c <= 0xdf) { need = 1; cp = c & 0x1f; min = 0x80; }
+    else if (c >= 0xe0 && c <= 0xef) { need = 2; cp = c & 0x0f; min = 0x800; }
+    else if (c >= 0xf0 && c <= 0xf4) { need = 3; cp = c & 0x07; min = 0x10000; }
+    let ok = need > 0 && i + need < n;
+    if (ok) {
+      for (let k = 1; k <= need; k++) {
+        const d = b[i + k];
+        if ((d & 0xc0) !== 0x80) { ok = false; break; }
+        cp = (cp << 6) | (d & 0x3f);
       }
-      if (ok && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) ok = false;
-      if (!ok) { units.push(0xdc00 + c); i++; }
-      else if (cp >= 0x10000) { cp -= 0x10000; units.push(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff)); i += need + 1; }
-      else { units.push(cp); i += need + 1; }
     }
-    if (units.length >= 8192) flush();
+    if (ok && (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff))) ok = false;
+    if (!ok) { u[o++] = 0xdc00 + c; i++; }
+    else if (cp >= 0x10000) { cp -= 0x10000; u[o++] = 0xd800 + (cp >> 10); u[o++] = 0xdc00 + (cp & 0x3ff); i += need + 1; }
+    else { u[o++] = cp; i += need + 1; }
   }
-  flush();
+  const out: string[] = [];
+  for (let k = 0; k < o; k += 8192) out.push(String.fromCharCode.apply(null, u.subarray(k, Math.min(k + 8192, o)) as unknown as number[]));
   return out.join('');
 }
 

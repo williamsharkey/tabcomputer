@@ -1,5 +1,18 @@
 import { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
+import { decodeBytes } from '../utils/byte-text';
+
+/** A binary file decoded for matching only, a MiB at a time with the page running between (#19) */
+async function lossyDecode(bytes: Uint8Array): Promise<string> {
+  const dec = new TextDecoder();
+  const parts: string[] = [];
+  for (let off = 0; off < bytes.length; off += 1 << 20) {
+    const end = Math.min(off + (1 << 20), bytes.length);
+    parts.push(dec.decode(bytes.subarray(off, end), { stream: end < bytes.length }));
+    if (end < bytes.length) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return parts.join('');
+}
 
 /**
  * grep, following GNU grep: BRE by default (-E ERE, -F fixed strings, -P
@@ -271,7 +284,10 @@ export const grepCmd: Command = {
       if (top && recursive && includeRes.length && !fileWanted(base)) return;
       let content: string;
       try {
-        content = await ctx.fs.readFile(resolved, 'utf8') as string;
+        const bytes = await ctx.fs.readFile(resolved) as Uint8Array;
+        // A binary file's lines are never printed ("Binary file matches"): the native lossy decode
+        // is enough to match, where the byte-exact one took ~0.4 s on a 30 MB binary (#19)
+        content = !textMode && bytes.indexOf(0) >= 0 ? await lossyDecode(bytes) : decodeBytes(bytes);
       } catch {
         error(`${display}: Permission denied`);
         return;

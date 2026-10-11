@@ -11,11 +11,11 @@ function ghJq(data: any, expr: string): string {
 }
 
 export async function ghApiHandler(ctx: CommandContext, token: string): Promise<number> {
-  const valueFlags = ['X', 'method', 'f', 'F', 'H', 'repo', 'R', 'jq', 'q', 'template'];
+  const valueFlags = ['X', 'method', 'f', 'F', 'H', 'input', 'repo', 'R', 'jq', 'q', 'template'];
   const { flags, positional } = parseFlags(ctx.args.slice(1), valueFlags);
   const path = positional[0];
   if (!path) {
-    ctx.stderr = 'usage: gh api <path> [-X METHOD] [-f key=value] [--jq EXPR] [--paginate] [--dry-run]\n';
+    ctx.stderr = 'usage: gh api <path> [-X METHOD] [-f key=value] [--input FILE] [--jq EXPR] [--paginate] [--dry-run]\n';
     return 1;
   }
 
@@ -58,8 +58,25 @@ export async function ghApiHandler(ctx: CommandContext, token: string): Promise<
     }
   }
 
-  // Like gh: fields without an explicit method mean POST
-  if (body && !explicitMethod) method = 'POST';
+  // --input FILE ("-" is stdin): the request body as is, as in gh (a git tree's
+  // nested array can't be written with -f/-F); the fields then go in the query string
+  let input: string | undefined;
+  if (flags['input'] !== undefined) {
+    const src = flags['input'];
+    if (src === '-') input = ctx.stdin;
+    else {
+      try {
+        const data = await ctx.fs.readFile(ctx.fs.resolvePath(src, ctx.cwd), 'utf8');
+        input = typeof data === 'string' ? data : new TextDecoder().decode(data);
+      } catch {
+        ctx.stderr = `open ${src}: no such file or directory\n`;
+        return 1;
+      }
+    }
+  }
+
+  // Like gh: fields or --input without an explicit method mean POST
+  if ((body || input !== undefined) && !explicitMethod) method = 'POST';
 
   // Parse -H headers
   const extraHeaders: Record<string, string> = {};
@@ -88,7 +105,7 @@ export async function ghApiHandler(ctx: CommandContext, token: string): Promise<
   }
 
   // Bug fix: GET requests can't have a body — convert fields to query params
-  if (method === 'GET' && body) {
+  if ((method === 'GET' || input !== undefined) && body) {
     const sep = resolvedPath.includes('?') ? '&' : '?';
     const params = Object.entries(body).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
     resolvedPath += sep + params;
@@ -103,6 +120,7 @@ export async function ghApiHandler(ctx: CommandContext, token: string): Promise<
         ctx.stdout += `  ${k}: ${JSON.stringify(v)}\n`;
       }
     }
+    if (input !== undefined) ctx.stdout += input.endsWith('\n') ? input : input + '\n';
     return 0;
   }
 
@@ -123,7 +141,7 @@ export async function ghApiHandler(ctx: CommandContext, token: string): Promise<
     let allData: any[] = [];
     let nextUrl: string | null = resolvedPath;
     while (nextUrl) {
-      const { status, data, headers } = await ghApi(token, method, nextUrl, body, extraHeaders);
+      const { status, data, headers } = await ghApi(token, method, nextUrl, input ?? body, extraHeaders);
       if (status >= 400) {
         ctx.stderr = `error: API returned ${status}\n`;
         ctx.stdout = JSON.stringify(data, null, 2) + '\n';
@@ -151,7 +169,7 @@ export async function ghApiHandler(ctx: CommandContext, token: string): Promise<
     return 0;
   }
 
-  const { status, data } = await ghApi(token, method, resolvedPath, body, extraHeaders);
+  const { status, data } = await ghApi(token, method, resolvedPath, input ?? body, extraHeaders);
   if (status >= 400) {
     ctx.stderr = `error: API returned ${status}\n`;
   }

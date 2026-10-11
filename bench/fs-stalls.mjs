@@ -32,6 +32,8 @@ const steps = [
 ];
 // FS_STALL_CLONE=URL: a shallow git clone of a big repository (tabcomputer#28: 16 s in one task)
 if (process.env.FS_STALL_CLONE) steps.push([`git clone --depth 1 ${process.env.FS_STALL_CLONE}`, `cd ~ && git clone --depth 1 ${process.env.FS_STALL_CLONE} clone 2>&1 | tail -2`]);
+// FS_STALL_CMD="label::command;;label::command": extra steps, after the others (~/proj has the npm install)
+for (const s of (process.env.FS_STALL_CMD || '').split(';;').filter(Boolean)) { const [label, cmd] = s.split('::'); steps.push([label, cmd ?? label]); }
 // FS_STALL_ONLY=re: only the steps whose label matches
 if (process.env.FS_STALL_ONLY) { const re = new RegExp(process.env.FS_STALL_ONLY); for (let i = steps.length - 1; i >= 0; i--) if (!re.test(steps[i][0])) steps.splice(i, 1); }
 // FS_STALL_BIG=N: a big store too (N files in 100 directories), then what scans every key

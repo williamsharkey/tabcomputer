@@ -1,0 +1,304 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-11T08:05:02.656Z",
+  "git": {
+   "sha": "90599936eb96c0f829eed718defb93b435a80cdf",
+   "short": "9059993",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": false,
+  "runs": 3,
+  "machine": {
+   "id": "c7438dc4bb1e",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.10GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 60,
+  "netcache": {
+   "hits": 915,
+   "misses": 0,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "workflow.vite.create",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 418,
+   "p90": 423,
+   "min": 418,
+   "max": 423,
+   "n": 3,
+   "samples": [
+    423,
+    418,
+    418
+   ],
+   "notes": "`npm create vite@7 app -- --template react --no-interactive` typed at the terminal, fresh profile (pinned: @latest moves to new majors)"
+  },
+  {
+   "name": "workflow.vite.npm_i",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 3240,
+   "p90": 3443,
+   "min": 3153,
+   "max": 3443,
+   "n": 3,
+   "samples": [
+    3153,
+    3443,
+    3240
+   ],
+   "notes": "`npm i` in the new app (react, vite, plugins; registry from the bench cache)"
+  },
+  {
+   "name": "workflow.vite.build",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 2998,
+   "p90": 3011,
+   "min": 2962,
+   "max": 3011,
+   "n": 3,
+   "samples": [
+    2998,
+    2962,
+    3011
+   ],
+   "notes": "`npm run build` (vite build of the React template) from a second shell, after the HMR check"
+  },
+  {
+   "name": "workflow.vite.build.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 4.44,
+   "p90": 4.51,
+   "min": 4.43,
+   "max": 4.51,
+   "n": 3,
+   "samples": [
+    4.43,
+    4.51,
+    4.44
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `npm run build`"
+  },
+  {
+   "name": "workflow.vite.build.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 0.82,
+   "p90": 0.84,
+   "min": 0.72,
+   "max": 0.84,
+   "n": 3,
+   "samples": [
+    0.84,
+    0.72,
+    0.82
+   ],
+   "notes": "host sys CPU of the Chromium tree during `npm run build`"
+  },
+  {
+   "name": "workflow.vite.dev_ready",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 2022,
+   "p90": 2153,
+   "min": 1883,
+   "max": 2153,
+   "n": 3,
+   "samples": [
+    2153,
+    1883,
+    2022
+   ],
+   "notes": "`npm run dev` until vite prints ready"
+  },
+  {
+   "name": "workflow.vite.preview",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 2343,
+   "p90": 2522,
+   "min": 2252,
+   "max": 2522,
+   "n": 3,
+   "samples": [
+    2522,
+    2343,
+    2252
+   ],
+   "notes": "`serve open 5173` until the preview renders the app"
+  },
+  {
+   "name": "workflow.vite.hmr",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 87,
+   "p90": 95,
+   "min": 86,
+   "max": 95,
+   "n": 3,
+   "samples": [
+    87,
+    86,
+    95
+   ],
+   "notes": "edit src/App.jsx → the change shows in the preview by HMR (no reload)"
+  },
+  {
+   "name": "workflow.peak_rss.vite_npm_i",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 288.3,
+   "p90": 292.1,
+   "min": 283.3,
+   "max": 292.1,
+   "n": 3,
+   "samples": [
+    288.3,
+    292.1,
+    283.3
+   ],
+   "notes": "renderer RSS peak above the pre-run level, npm i"
+  },
+  {
+   "name": "workflow.peak_rss.vite_npm_i_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 237.8,
+   "p90": 240.3,
+   "min": 233.1,
+   "max": 240.3,
+   "n": 3,
+   "samples": [
+    237.8,
+    240.3,
+    233.1
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.vite_dev_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 155.8,
+   "p90": 175.6,
+   "min": 152.9,
+   "max": 175.6,
+   "n": 3,
+   "samples": [
+    152.9,
+    155.8,
+    175.6
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.vite_dev",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 159.4,
+   "p90": 181.1,
+   "min": 156.4,
+   "max": 181.1,
+   "n": 3,
+   "samples": [
+    156.4,
+    159.4,
+    181.1
+   ],
+   "notes": "renderer RSS peak above the pre-run level, npm run dev → ready"
+  },
+  {
+   "name": "workflow.native.vite_build",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1878,
+   "p90": 2009,
+   "min": 1681,
+   "max": 2009,
+   "n": 3,
+   "samples": [
+    1878,
+    1681,
+    2009
+   ],
+   "notes": "native reference: `npm run build` (vite build) of the same React template, Node v22.22.0 on this machine's Linux"
+  },
+  {
+   "name": "workflow.native.vite_build.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 2.586,
+   "p90": 2.654,
+   "min": 2.368,
+   "max": 2.654,
+   "n": 3,
+   "samples": [
+    2.586,
+    2.368,
+    2.654
+   ],
+   "notes": "native: user CPU of `npm run build` (vite build) of the same React template, Node v22.22.0 (bash `time`, children included)"
+  },
+  {
+   "name": "workflow.native.vite_build.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 0.335,
+   "p90": 0.368,
+   "min": 0.281,
+   "max": 0.368,
+   "n": 3,
+   "samples": [
+    0.335,
+    0.281,
+    0.368
+   ],
+   "notes": "native: sys CPU of `npm run build` (vite build) of the same React template, Node v22.22.0"
+  }
+ ]
+}

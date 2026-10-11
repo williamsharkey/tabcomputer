@@ -115,13 +115,14 @@ export async function run(h) {
   }
 
   // perf-bench-style rows: Blink (isolated only: Blink needs SAB), then the native reference
-  // blink_direct: Blink patch 0065's direct channels (opt-in TABCOMPUTER_BLINK_DIRECT=1), kernel calls only
+  // blink: the default, direct channels (each Blink thread's own, patches 0065 and 0130–0133);
+  // blink_pool: the pool channels only (TABCOMPUTER_BLINK_DIRECT=0), the path before them
   if (h.isolated && h.fixtures.pbench) {
-    const variants = [['blink', '', ''], ['blink_direct', 'TABCOMPUTER_BLINK_DIRECT=1 ', ' With direct channels (TABCOMPUTER_BLINK_DIRECT=1).']];
+    const variants = [['blink', '', ''], ['blink_pool', 'TABCOMPUTER_BLINK_DIRECT=0 ', ' Pool channels only (TABCOMPUTER_BLINK_DIRECT=0).']];
     for (const [engine, prefix, extra] of variants) for (const [metric, args, unit, value, quick, what] of PBENCH) {
       const nm = `x86.${engine}.${metric}`;
       if (h.quick && !quick) continue;
-      if (engine === 'blink_direct' && (h.quick || metric === 'memcpy_bw')) continue;
+      if (engine === 'blink_pool' && (h.quick || metric === 'memcpy_bw')) continue;
       await h.try(nm, unit, async () => {
         const cmd = `${prefix}PBENCH_MS=${PBENCH_MS} ./pbench ${args}`;
         const first = await runOnce(h, cmd, 120);

@@ -561,3 +561,47 @@ Promise.all([1, 2, 3, 4].map((n) => w.square(n))).then(async (r) => {
     expect(r.out).toBe('true string\n');
   }, 60_000);
 });
+
+describe("vitest 4's pools in a guest (tabcomputer#32)", () => {
+  it("fork with serialization: 'advanced' clones what JSON can't; the child's output reaches pipe()'s destination; unpipe()", async () => {
+    const r = await sh('cd /tmp/vp && node parent.js', async (fs) => {
+      await fs.mkdir('/tmp/vp', { recursive: true });
+      await fs.writeFile('/tmp/vp/child.js', `process.on('message', (m) => {
+  console.log('child out');
+  const cyc = { name: 'c' }; cyc.self = cyc;
+  process.send({ echo: m, big: 10n, u: undefined, nan: NaN, neg: -0, d: new Date(5), re: /a+/gi, map: new Map([[1, { x: 2 }]]), set: new Set(['s']),
+    bytes: new Uint8Array([1, 2, 3]), err: Object.assign(new TypeError('bad'), { code: 'E_X' }), cyc }, () => process.exit(0));
+});`);
+      await fs.writeFile('/tmp/vp/parent.js', `const { fork } = require('child_process');
+const { Writable } = require('stream');
+let piped = '';
+const sink = new Writable({ write(c, e, cb) { piped += c; cb(); } });
+const c = fork('./child.js', [], { stdio: 'pipe', serialization: 'advanced' });
+c.stdout.pipe(sink);
+c.on('message', (m) => {
+  const r = [m.echo.set instanceof Set && m.echo.set.has(1), m.big === 10n, 'u' in m && m.u === undefined, Number.isNaN(m.nan), Object.is(m.neg, -0),
+    m.d instanceof Date && +m.d === 5, m.re instanceof RegExp && m.re.flags === 'gi', m.map.get(1).x === 2, m.set.has('s'),
+    m.bytes instanceof Uint8Array && m.bytes[2] === 3, m.err instanceof TypeError && m.err.message === 'bad' && m.err.code === 'E_X', m.cyc.self === m.cyc];
+  console.log(r.every(Boolean) ? 'all' : JSON.stringify(r));
+});
+c.on('exit', (code) => { c.stdout.unpipe(sink); console.log('exit', code, JSON.stringify(piped)); });
+c.send({ set: new Set([1]) });`);
+    });
+    expect(r.out).toBe('all\nexit 0 "child out\\n"\n');
+  }, 60_000);
+
+  it('a Worker with { stdout: true, stderr: true }: what it writes is worker.stdout\'s and worker.stderr\'s, not the process\'s', async () => {
+    const r = await sh('cd /tmp/vw && node parent.js', async (fs) => {
+      await fs.mkdir('/tmp/vw', { recursive: true });
+      await fs.writeFile('/tmp/vw/w.js', `process.stdout.write('to out\\n'); console.log('logged'); process.stderr.write('to err\\n');`);
+      await fs.writeFile('/tmp/vw/parent.js', `const { Worker } = require('worker_threads');
+const w = new Worker('./w.js', { stdout: true, stderr: true });
+let out = '', err = '';
+w.stdout.on('data', (d) => out += d);
+w.stderr.on('data', (d) => err += d);
+w.on('exit', () => setTimeout(() => console.log(typeof w.stdout.unpipe, JSON.stringify(out), JSON.stringify(err)), 50));`);
+    });
+    expect(r.out).toBe('function "to out\\nlogged\\n" "to err\\n"\n');
+    expect(r.err).toBe('');
+  }, 60_000);
+});

@@ -1,0 +1,71 @@
+From 61d9f2973ed9d736ae7ac552ea672591276437c0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 08:27:44 +0000
+Subject: [PATCH] Shiro: host pages by address on a 32-bit host, not through
+ g_hostpages (forks of a process with many pages corrupted page tables:
+ debian's forkmaps, ldconfig, dracut-install)
+
+---
+ blink/machine.h      | 7 ++++++-
+ blink/memorymalloc.c | 8 +++++++-
+ blink/shiro.inc      | 4 ++++
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 2afbff3..733de58 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -982,8 +982,13 @@ MICRO_OP_SAFE u8 Cpl(struct Machine *m) {
+   m->nofault = nofault_;   \
+   }
+ 
++// A host page's address is in its entry's PAGE_TA bits with the linear
++// mapping, and on a 32-bit host (Shiro's wasm), where any address fits;
++// otherwise the bits index g_hostpages
++#define HostPagesByAddress() (HasLinearMapping() || sizeof(void *) == 4)
++
+ static inline u8 *FindHostPage(u64 entry) {
+-  if (HasLinearMapping()) {
++  if (HostPagesByAddress()) {
+     return (u8 *)(uintptr_t)(entry & PAGE_TA);
+   } else {
+     return g_hostpages.p[(entry & PAGE_TA) >> 12];
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index 278e917..cc9b3df 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -222,9 +222,15 @@ static void FreeHostPage(struct HostPage *hp) {
+   free(hp);
+ }
+ 
++// Shiro: by address on wasm (HostPagesByAddress). The index table grew by
++// one entry per page ever allocated (never reused, grown without a lock),
++// and AllocateAnonymousPage kept index << 12 in a 32-bit size_t: past 2^20
++// allocations an entry named an older page, so a fork child's new page
++// table could be another process's live page ("pt & PAGE_V" in
++// ReserveVirtual, "impossible memory" in FreePage: debian's forkmaps)
+ static u64 TrackHostPage(u8 *ptr) {
+   u64 entry;
+-  if (HasLinearMapping()) {
++  if (HostPagesByAddress()) {
+     return (uintptr_t)ptr;
+   } else {
+     if (g_hostpages.n == g_hostpages.c) {
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index bc3d7e2..915efbe 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3024,6 +3024,10 @@ static void *ShiroChildMain(void *arg) {
+   return 0;
+ }
+ 
++// host pages by address (machine.h HostPagesByAddress): forks of a process
++// with many pages no longer corrupt page tables
++EMSCRIPTEN_KEEPALIVE int blink_shiro_hostaddr(void) { return 1; }
++
+ static i64 ShiroForkSame(struct Machine *m, u64 flags, i64 stack, i64 ctid) {
+   struct System *s = m->system;
+   struct ShiroChildStart *c;
+-- 
+2.43.0
+

@@ -6,7 +6,7 @@
  *
  * Messages in: {init}, {batch, buf, sizes?} (buf transferred), {sizes}.
  * Messages out: {send, data} for the guest, {frame, xid, bitmap}, {done,
- * commands, frames}, {broken}.
+ * commands, frames, busy (ms running batches)}, {broken}.
  */
 import { Executor } from './exec';
 
@@ -19,6 +19,8 @@ type In =
 const scope = self as unknown as { postMessage(m: unknown, t?: Transferable[]): void; onmessage: ((e: MessageEvent<In>) => void) | null };
 const sizes = new Map<number, Size>();
 let ex: Executor | null = null;
+/** ms spent running batches */
+let busy = 0;
 
 function applySizes(list?: [number, Size | null][]) {
   for (const [xid, s] of list ?? []) s ? sizes.set(xid, s) : sizes.delete(xid);
@@ -42,7 +44,9 @@ scope.onmessage = (e) => {
   if (m.type === 'batch') {
     applySizes(m.sizes);
     if (!ex) return;
+    const t0 = performance.now();
     const ok = ex.run(m.buf);
-    scope.postMessage(ok ? { type: 'done', commands: ex.executed, frames: ex.frames } : { type: 'broken', reason: 'the GL stream broke' });
+    busy += performance.now() - t0;
+    scope.postMessage(ok ? { type: 'done', commands: ex.executed, frames: ex.frames, busy } : { type: 'broken', reason: 'the GL stream broke' });
   }
 };

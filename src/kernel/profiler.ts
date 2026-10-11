@@ -69,6 +69,12 @@ export interface KeyStat {
   readMs: number;
   /** read → first write back (ms; -1: none) */
   firstWriteMs: number;
+  /**
+   * read → the first write back that holds the key's bytes (its echo; ms, -1:
+   * none seen, or a key that isn't printable text). The first write may be
+   * something else (a cursor move, another part of the screen).
+   */
+  echoMs: number;
   /** read → last write before the next key or the end (ms) */
   lastWriteMs: number;
   writes: number;
@@ -187,7 +193,7 @@ interface KindStat { calls: number; wallUs: number; cpuUs: number; bytes: number
 interface PathStat { calls: number; errors: number; wallUs: number; nrs: Set<number>; times: number[] }
 interface Bucket { calls: number; cpuUs: number; wallUs: number }
 interface Thread { pid: number; tid: number; comm: string; calls: number; inUs: number; outUs: number; maxGapUs: number; maxGapAfter: number; maxGapBefore: number; gaps: [number, number, number, number, number]; inCall: boolean; enteredAt: number; lastEnd: number; lastNr: number; sleepUs: number; asleep: boolean; nextAsleep: boolean }
-interface Key { outside: Map<string, number>; t: number; bytes: number; readAt: number; firstWriteAt: number; lastWriteAt: number; writes: number; writeBytes: number; calls: number; wallUs: number; byName: Map<number, number>; paths: Map<string, number> }
+interface Key { data: Uint8Array | null; echoAt: number; outside: Map<string, number>; t: number; bytes: number; readAt: number; firstWriteAt: number; lastWriteAt: number; writes: number; writeBytes: number; calls: number; wallUs: number; byName: Map<number, number>; paths: Map<string, number> }
 
 /** What describe() reads off a call before it runs */
 export interface CallInfo { path?: string; kind?: string; args: ArrayLike<number>; th?: Thread; t?: number }
@@ -397,9 +403,11 @@ export class KernelProfiler {
 
   // ── pty trace (pty.ts) ──
 
-  input(_pty: Pty, n: number): void {
+  input(_pty: Pty, n: number, bytes?: Uint8Array): void {
     if (!n) return;
-    this.keyList.push({ t: now(), bytes: n, readAt: 0, firstWriteAt: 0, lastWriteAt: 0, writes: 0, writeBytes: 0, calls: 0, wallUs: 0, byName: new Map(), paths: new Map(), outside: new Map() });
+    // printable text (a key, a paste's start): its echo is looked for in the writes back
+    const data = bytes && bytes.length <= 16 && bytes.every((c) => c >= 0x20 && c !== 0x7f) ? bytes.slice() : null;
+    this.keyList.push({ data, echoAt: 0, t: now(), bytes: n, readAt: 0, firstWriteAt: 0, lastWriteAt: 0, writes: 0, writeBytes: 0, calls: 0, wallUs: 0, byName: new Map(), paths: new Map(), outside: new Map() });
   }
 
   read(_pty: Pty, n: number): void {
@@ -413,10 +421,17 @@ export class KernelProfiler {
     if (latest) this.curKey = latest;
   }
 
-  write(_pty: Pty, n: number): void {
+  write(_pty: Pty, n: number, bytes?: Uint8Array): void {
     const k = this.curKey;
     if (!k || !n) return;
     const t = now();
+    if (bytes) {
+      // the keys read and not echoed yet (the last few): does this write hold one?
+      for (let i = Math.max(0, this.keyList.length - 32); i < this.keyList.length; i++) {
+        const q = this.keyList[i];
+        if (q.readAt && !q.echoAt && q.data && contains(bytes, q.data)) q.echoAt = t;
+      }
+    }
     if (!k.firstWriteAt) k.firstWriteAt = t;
     k.lastWriteAt = t;
     k.writes++;
@@ -450,6 +465,7 @@ export class KernelProfiler {
         t: r3(k.t - this.t0), bytes: k.bytes,
         readMs: k.readAt ? r3(k.readAt - k.t) : -1,
         firstWriteMs: k.firstWriteAt ? r3(k.firstWriteAt - k.readAt) : -1,
+        echoMs: k.echoAt ? r3(k.echoAt - k.readAt) : -1,
         lastWriteMs: k.lastWriteAt ? r3(k.lastWriteAt - k.readAt) : -1,
         outside: Object.fromEntries([...k.outside.entries()].sort((a, b) => b[1] - a[1]).map(([t, us]) => [t, r3(us / 1000)])),
         writes: k.writes, writeBytes: k.writeBytes, calls: k.calls, kernelMs: r3(k.wallUs / 1000), byName: names, paths: Object.fromEntries(k.paths),
@@ -478,6 +494,16 @@ export class KernelProfiler {
       keys,
     };
   }
+}
+
+/** `needle` occurs in `hay` */
+function contains(hay: Uint8Array, needle: Uint8Array): boolean {
+  const n = needle.length;
+  outer: for (let i = hay.indexOf(needle[0]); i >= 0 && i + n <= hay.length; i = hay.indexOf(needle[0], i + 1)) {
+    for (let j = 1; j < n; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return true;
+  }
+  return false;
 }
 
 const pct = (a: number, b: number) => (b > 0 ? (100 * a / b).toFixed(2) : '0.00');
@@ -531,7 +557,7 @@ export function formatReport(r: ProfileReport, opts: { paths?: number; keys?: bo
   const keys = r.keys.filter((k) => k.readMs >= 0);
   if ((opts.keys ?? true) && keys.length) {
     const f = (xs: number[]) => (xs.length ? median(xs).toFixed(1) : '-');
-    out.push('', `keystrokes: ${r.keys.length} (${keys.length} read); median ms: input→read ${f(keys.map((k) => k.readMs))}, read→first write ${f(keys.filter((k) => k.firstWriteMs >= 0).map((k) => k.firstWriteMs))}, read→last write ${f(keys.filter((k) => k.lastWriteMs >= 0).map((k) => k.lastWriteMs))}; median per key: ${f(keys.map((k) => k.calls))} syscalls, ${f(keys.map((k) => k.kernelMs))} ms in the kernel, ${f(keys.map((k) => k.writeBytes))} bytes written`);
+    out.push('', `keystrokes: ${r.keys.length} (${keys.length} read); median ms: input→read ${f(keys.map((k) => k.readMs))}, read→first write ${f(keys.filter((k) => k.firstWriteMs >= 0).map((k) => k.firstWriteMs))}, read→echo ${f(keys.filter((k) => k.echoMs >= 0).map((k) => k.echoMs))}, read→last write ${f(keys.filter((k) => k.lastWriteMs >= 0).map((k) => k.lastWriteMs))}; median per key: ${f(keys.map((k) => k.calls))} syscalls, ${f(keys.map((k) => k.kernelMs))} ms in the kernel, ${f(keys.map((k) => k.writeBytes))} bytes written`);
   }
   return out.join('\n') + '\n';
 }

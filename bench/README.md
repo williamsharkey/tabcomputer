@@ -105,8 +105,11 @@ perf-kernel use the same definitions.
 | `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
 | `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
 | `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |
+| `claude_native.echo.stage.{read,compute,render}.*` | the same keys split by the kernel's pty trace (`kernel.startProfile()`, Build 975+; left out on older builds): pty input → Claude's `read`, → the write holding the key (`echoMs`; the first write of any kind on builds without it), → the echo matched |
 | `claude_native.echo_burst.total` | 10 keys typed at once → the last echoed |
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
+| `claude_native.exit.{cold,warm}` | `/exit` Enter → the shell's prompt line back (then a marker the shell prints confirms it reads input); `exit_hung.*` counts launches still running after 120 s, which the suite kills from a side shell to go on |
+| `claude_npm.*` | the same for `claude --npm` (installed before the round) |
 
 `claude_native.native.*` runs the same binary on this machine's Linux in a
 pty (`lib/native-pty.py`; needs musl's loader at `/lib/ld-musl-x86_64.so.1`,
@@ -178,10 +181,12 @@ then the same binary natively on this machine, `--runs` times each:
 
 In `--quick`: all but `messaging`. Counts are picked by pbench so a run
 takes about `PBENCH_MS` (500) ms, guest clock. Full runs add
-`x86.blink_direct.*` (Blink's direct kernel channels,
-`TABCOMPUTER_BLINK_DIRECT=1`) and `x86.native.pipe_pingpong_1cpu` (pinned
+`x86.blink_pool.*` (Blink's pool channels only, `TABCOMPUTER_BLINK_DIRECT=0`;
+`x86.blink.*` is the default, direct channels; before Build 975 the full run's
+extra rows were `x86.blink_direct.*`, direct channels opted in) and `x86.native.pipe_pingpong_1cpu` (pinned
 with `taskset -c 0`). WASI equivalents: `kernel.syscall_rtt.sab` (fstat
-round trip), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
+round trip), `kernel.pipe_pingpong` (kbench `ping` ↔ `pong`, two kernel
+pipes), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
 `kernel.spawn_wait.wasm` (no fork in WASI).
 
 Native numbers on a VM depend on what else runs: an idle vCPU woken by a
@@ -304,8 +309,9 @@ node bench/ab.mjs origin/unix/integration --quick          # integration vs your
 ## Fixtures
 
 - `fixtures/kbench.c` → `kbench.wasm` (committed; `sh fixtures/build.sh`):
-  freestanding WASI program for syscall loops, pipe and file throughput and a
-  CPU loop, and `memcpy` (memory.copy). It times itself with
+  freestanding WASI program for syscall loops, pipe and file throughput, a
+  pipe ping-pong (`ping`/`pong`, joined both ways by `B.pingPong`), a CPU
+  loop, and `memcpy` (memory.copy). It times itself with
   `clock_time_get`, which the guest answers without a syscall.
 - x86: Go hello / net/http from `tests/.../fixtures/x86`, the Go cpuloop from
   `vendor/blink/bench`, a static glibc hello and pbench (rebuilt when

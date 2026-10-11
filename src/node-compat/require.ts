@@ -7,7 +7,7 @@
 import { SCRIPT_TIMER_NAMES } from './page-globals';
 import type { CommandContext } from '../commands/index';
 import { patchPackageSource } from './source-patches';
-import { transformESModules, transformTS, transformJSX } from '../commands/jseval/module-transform';
+import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
 import { carryAsyncContext, carriesAsyncContext } from './async-context';
 import { ProcessExitError } from '../commands/jseval/utils';
 import { BrowserBuildFailure } from './browser-packages';
@@ -474,7 +474,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       }
       // Once a process uses AsyncLocalStorage, awaits carry its stores (async-context.ts)
       transformedContent = transformESModules(transformedContent,
-        carriesAsyncContext(content) ? carryAsyncContext : undefined);
+        carriesAsyncContext(content) ? carryAsyncContext : undefined, esmLive(ctx.env));
 
       const modImportMeta = {
         url: `file://${resolved}`,
@@ -652,7 +652,22 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
     '.node': (_mod, filename) => { throw Object.assign(new Error(`Cannot load native addon ${filename}`), { code: 'ERR_DLOPEN_FAILED' }); },
   };
   (requireModule as any).extensions = extensions;
-  (requireModule as any).setMain = (m: any) => { mainModule = m; };
+  // The entry is a module too: one that imports it back (a cycle through it) gets it, not a
+  // second run of it (vitest's entry ran twice), and re-reads its exports once it has run
+  (requireModule as any).setMain = (m: any) => {
+    mainModule = m;
+    if (typeof m?.filename === 'string' && m.filename.startsWith('/') && !moduleCache.has(m.filename)) {
+      moduleCache.set(m.filename, m);
+      loading.set(m.filename, []);
+    }
+  };
+  (requireModule as any).mainLoaded = () => {
+    const f = mainModule?.filename;
+    const fns = loading.get(f) ?? [];
+    loading.delete(f);
+    if (mainModule) mainModule.loaded = true;
+    for (const fn of fns) { try { fn(mainModule.exports); } catch { /* a const it can't reassign */ } }
+  };
 
   return Object.assign(requireModule, { ready: requireReady });
 }

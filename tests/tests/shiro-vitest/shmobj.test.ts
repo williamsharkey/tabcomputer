@@ -145,9 +145,14 @@ describe('SharedObjects through the kernel (SYS_shiro_shmobj_*)', () => {
     expect((await map(a, await open(a, '/tmp/plain'), 0, 1)).id).toBe(-A.EINVAL);
     // a SysV segment
     const shmid = await kernel.syscall(a, A.SYS_shmget, [IPC_PRIVATE, 4096, 0, 0o600], new Uint8Array(8));
-    expect((await map(a, shmid, 1, 0)).remote).toBe(0);
-    // kind flags other than eager are EINVAL
+    const seg = await map(a, shmid, 1, 0);
+    expect(seg.remote).toBe(0);
+    // kind flags other than eager and lookup are EINVAL
     expect((await map(a, shmid, 1 | 0x200, 0)).id).toBe(-A.EINVAL);
+    // lookup (Blink's F_SEAL_WRITE check): the object's id, mapping nothing
+    expect((await map(a, shmid, 1 | A.SHMOBJ_LOOKUP, 0)).id).toBe(seg.id);
+    const shmid2 = await kernel.syscall(a, A.SYS_shmget, [IPC_PRIVATE, 4096, 0, 0o600], new Uint8Array(8));
+    expect((await map(a, shmid2, 1 | A.SHMOBJ_LOOKUP, 0)).id).toBe(-A.ENOENT);
     // no engine instance: not for this process
     const c = kernel.spawn({ path: 'p', cwd: '/tmp', uid: 1000, run: () => new Promise<number>(() => {}) });
     expect(await kernel.syscall(c, A.SYS_shiro_shmobj_map, [shmid, 1, 0, 0], new Uint8Array(8))).toBe(-A.ENOSYS);

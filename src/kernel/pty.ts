@@ -200,9 +200,9 @@ interface Who { caller?: SignalTarget; abort?: AbortSignal }
 
 /** Keystroke timing for the kernel profiler (profiler.ts): input, the slave's reads and writes */
 export interface PtyTrace {
-  input(pty: Pty, n: number): void;
+  input(pty: Pty, n: number, bytes?: Uint8Array): void;
   read(pty: Pty, n: number): void;
-  write(pty: Pty, n: number): void;
+  write(pty: Pty, n: number, bytes?: Uint8Array): void;
 }
 let ptyTrace: PtyTrace | null = null;
 export function setPtyTrace(t: PtyTrace | null): void { ptyTrace = t; }
@@ -403,7 +403,7 @@ export class Pty {
   // ── line discipline (input) ──
 
   private receive(bytes: Uint8Array): void {
-    ptyTrace?.input(this, bytes.length);
+    ptyTrace?.input(this, bytes.length, bytes);
     const t = this.termios;
     const cc = t.cc;
     const lflag = t.lflag;
@@ -764,7 +764,7 @@ export class Pty {
     }
     if (this.hungUp) return -EIO;
     this.trackScreenModes(buf);
-    ptyTrace?.write(this, buf.length);
+    ptyTrace?.write(this, buf.length, buf);
     this.output(buf);
     return buf.length;
   }

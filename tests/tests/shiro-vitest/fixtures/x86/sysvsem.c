@@ -30,14 +30,20 @@ int main(void) {
   semctl(id, 0, IPC_STAT, u);
   printf("getall %d %d nsems %lu\n", got[0], got[1], (unsigned long)ds.sem_nsems);
   fflush(stdout);
+  // (the child says when it holds the unit: a fixed sleep let a loaded
+  // machine run the parent's IPC_NOWAIT take first, and both then blocked)
+  int ready[2];
+  char c;
+  pipe(ready);
   pid_t pid = fork();
   if (!pid) {  // takes the unit with SEM_UNDO and exits holding it
     struct sembuf take = {0, -1, SEM_UNDO};
     semop(id, &take, 1);
+    write(ready[1], "x", 1);
     usleep(150000);
     _exit(0);
   }
-  usleep(50000);
+  read(ready[0], &c, 1);
   struct sembuf take = {0, -1, 0}, nowait = {0, -1, IPC_NOWAIT};
   int r = semop(id, &nowait, 1);
   printf("nowait while held %d %s\n", r, r ? strerror(errno) : "");

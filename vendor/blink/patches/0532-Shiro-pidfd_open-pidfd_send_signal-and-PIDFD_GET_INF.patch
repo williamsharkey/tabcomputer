@@ -1,0 +1,72 @@
+From b1cdfb502f11fe0521c3f830054f1886fcc2192f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 06:32:50 +0000
+Subject: [PATCH] Shiro: pidfd_open, pidfd_send_signal and PIDFD_GET_INFO go to
+ the kernel; waitid(P_PIDFD) (LTP ioctl_pidfd01; tokio waits on pidfds)
+
+---
+ blink/shiro.inc | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 443be02..5c02f41 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -950,12 +950,20 @@ static i64 ShiroEpollWait(struct Machine *m, int epfd, i64 events, int max,
+ 
+ // ── ioctl ────────────────────────────────────────────────────────────────
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_pidfd(void) { return 1; }
++
+ static i64 ShiroIoctl(struct Machine *m, int fd, u64 req, i64 arg) {
+   int in = 0, out = 0, value = 0;
+   u8 buf[64];
+   i64 r;
+   memset(buf, 0, sizeof(buf));
+-  switch ((u32)req) {
++  // PIDFD_GET_INFO: struct pidfd_info is 64 bytes, 72 since Linux 6.16 (the
++  // kernel fills the first 64; one under 64 is EINVAL from a pidfd)
++  if (((u32)req & 0xC000FFFF) == 0xC000FF0B) {
++    in = out = MIN(((u32)req >> 16) & 0x3fff, 64);
++    req = ((u32)req & 0xC000FFFF) | (u32)in << 16;
++  }
++  if (!in) switch ((u32)req) {
+     case 0x5401: out = 36; break;                         // TCGETS
+     case 0x5402: case 0x5403: case 0x5404: in = 36; break;  // TCSETS*
+     case 0x5413: out = 8; break;                          // TIOCGWINSZ
+@@ -1826,6 +1834,14 @@ static i64 ShiroWaitid(struct Machine *m, int idtype, int id, i64 info,
+     case 0: pid = -1; break;   // P_ALL
+     case 1: pid = id; break;   // P_PID
+     case 2: pid = id ? -id : 0; break;  // P_PGID
++    case 3: {                           // P_PIDFD: its process's pid (PIDFD_GET_INFO)
++      u8 pi[64] = {0};
++      Write64(pi, 9);  // PIDFD_INFO_PID | PIDFD_INFO_EXIT
++      r = ShiroCall(m, 16, A12(id, (int)0xC040FF0B, 64), pi, 64, 64, false, false);
++      if (r < 0) return r == -ENOTTY_LINUX ? -EBADF_LINUX : r;
++      pid = Read32(pi + 16);
++      break;
++    }
+     default: return -EINVAL_LINUX;
+   }
+   // as Linux: unknown option bits, or none of WEXITED/WSTOPPED/WCONTINUED, are EINVAL
+@@ -5023,7 +5039,16 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       r = (int)b & ~3 ? -EINVAL_LINUX : ShiroTimerfd(m, a, b, c, d);
+       break;
+     case 0x11F: r = ShiroTimerfd(m, a, -1, 0, b); break;              // timerfd_gettime
+-    case 0x1B2: case 0x1A8: r = -ENOSYS_LINUX; break;                 // pidfd_open, pidfd_send_signal
++    // pidfds are the kernel's: they poll readable when the process exits
++    // (tokio waits for children so), and PIDFD_GET_INFO (ShiroIoctl) and
++    // waitid(P_PIDFD) work on them (LTP ioctl_pidfd01)
++    case 0x1B2: r = KS(m, 434, A12((int)a, (int)b)); break;          // pidfd_open
++    case 0x1A8: {                                                     // pidfd_send_signal
++      u8 si[128];
++      if (c && CopyFromUserRead(m, si, c, sizeof(si)) == -1) { r = -EFAULT_LINUX; break; }
++      r = ShiroCall(m, 424, A12((int)a, (int)b, c ? 1 : 0, (int)d), si, c ? sizeof(si) : 0, 0, false, false);
++      break;
++    }
+     case 0x03D: r = ShiroWait4(m, a, b, c, d); break;                 // wait4
+     case 0x0F7: r = ShiroWaitid(m, a, b, c, d, e); break;             // waitid
+     case 0x03E: r = KS(m, 62, A12(a, b)); break;                      // kill
+-- 
+2.43.0
+

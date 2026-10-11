@@ -1,0 +1,45 @@
+From 3849a74f20733a407c3ff03649b55883e64f4cfb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 08:55:22 +0000
+Subject: [PATCH] Shiro: a SIGEV_THREAD_ID timer's signal for a thread that has
+ exited is dropped, not passed to the process (it killed it: 0521's timerqueue
+ test under load)
+
+---
+ blink/blink.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/blink/blink.c b/blink/blink.c
+index 27b7f09..f985130 100644
+--- a/blink/blink.c
++++ b/blink/blink.c
+@@ -322,11 +322,25 @@ EMSCRIPTEN_KEEPALIVE void blink_shiro_signal_tid_info(int tid, int sig, int w0,
+                                                       int w6, int w7) {
+   const int w[8] = {w0, w1, w2, w3, w4, w5, w6, w7};
+   struct System *s = g_shiro_system;
++  struct Dll *e;
++  bool alive = false;
+   if (!s || sig < 1 || sig > 64) return;
++  // A thread that has exited takes nothing: Linux drops a SIGEV_THREAD_ID
++  // timer's signal when its thread is gone. Passed to the process, a
++  // SIGRTMIN nobody else blocks killed it (an expiry in flight while its
++  // thread disarmed the timer and returned: 0521's test under load)
++  LOCK(&s->machines_lock);
++  for (e = dll_first(s->machines); e && !alive; e = dll_next(s->machines, e)) {
++    alive = MACHINE_CONTAINER(e)->tid == tid;
++  }
++  UNLOCK(&s->machines_lock);
++  if (!alive) return;
+   ShiroQueueSiginfo(s, sig, w);
+-  if (!ShiroSignalThread(s, tid, sig)) ShiroSignalSystem(s, sig);
++  ShiroSignalThread(s, tid, sig);
+ }
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_tiddrop(void) { return 1; }
++
+ // the parent's System is going away while same-instance children run on
+ void ShiroDropSystem(void) {
+   g_shiro_system = 0;
+-- 
+2.43.0
+

@@ -73,8 +73,10 @@ export const timeout: Command = {
     // timeout's do: its signal goes to that group, not to a group shared with whoever runs timeout
     const own = Object.assign(new AbortController(), { ownProcessGroup: true });
     const outer = ctx.shell.abortController ?? child.inheritedAbort;
-    if (outer?.signal.aborted) own.abort();
-    else outer?.signal.addEventListener('abort', () => own.abort(), { once: true });
+    // (with the outer abort's reason: `kill -TERM $!` of a job running timeout sends
+    // COMMAND SIGTERM, not the SIGINT a reasonless abort means, #63)
+    if (outer?.signal.aborted) own.abort(outer.signal.reason);
+    else outer?.signal.addEventListener('abort', () => own.abort(outer.signal.reason), { once: true });
     child.inheritedAbort = own;
     // Piped or redirected: programs keep the tty for input, their stdout comes back here
     if (ctx.terminal) child.setTerminal(terminalForCommand(ctx.terminal, ctx) as any);

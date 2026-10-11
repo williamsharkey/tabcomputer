@@ -89,6 +89,9 @@ export class Process {
   engineSleepSince = 0;
   /** CPU ms of the children (and theirs) it has reaped: times() tms_cutime, getrusage(RUSAGE_CHILDREN). */
   childCpuMs = 0;
+  /** System time the engine reported (part of the CPU time), and its reaped children's: tms_stime, tms_cstime. */
+  systemMs = 0;
+  childSystemMs = 0;
   /** Pending signals not yet seen by the guest (also mirrored in the channel's signal word). */
   pendingSignals = new Set<number>();
   /** Blocked signals (sigprocmask); signals.ts maintains it. */

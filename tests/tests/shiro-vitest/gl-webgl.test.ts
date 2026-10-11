@@ -56,13 +56,16 @@ describe.skipIf(!existsSync(CHROME))('GL on WebGL2 in Chromium', () => {
       if (!/\.(vert|frag)$/.test(n)) continue;
       let src = readFileSync(join(CORPUS, n), 'utf8');
       if (n.startsWith('stk-')) src = `#version 330\n${src}`; // the game adds it
+      // Krita adds the version and its feature defines (KisOpenGLShaderLoader)
+      if (n.startsWith('krita-')) src = `#version 150 core\n${n === 'krita-highq_downscale.frag' ? '#define HIGHQ_SCALING\n' : ''}${src}`;
       if (n.startsWith('glmark2-')) src = glmark2Preamble(src) + src;
       files[n] = src;
     }
     const names = Object.keys(files);
     expect(names.length).toBeGreaterThan(40);
     const pairs: [string, string][] = names.filter((n) => n.endsWith('.vert') && files[n.replace(/\.vert$/, '.frag')]).map((n) => [n, n.replace(/\.vert$/, '.frag')]);
-    pairs.push(['glmark2-light-basic.vert', 'glmark2-light-basic-tex.frag'], ['stk-screenquad.vert', 'stk-gaussian3h.frag']);
+    pairs.push(['glmark2-light-basic.vert', 'glmark2-light-basic-tex.frag'], ['stk-screenquad.vert', 'stk-gaussian3h.frag'],
+      ['krita-matrix_transform.vert', 'krita-highq_downscale.frag'], ['krita-matrix_transform.vert', 'krita-simple_texture.frag']);
     const results = await page.evaluate(([f, p]) => (globalThis as any).glTest.corpus(f, p), [files, pairs] as const) as Record<string, string | null>;
     const failed = Object.entries(results).filter(([, r]) => r !== null);
     expect(failed.map(([n, r]) => `${n}: ${r}`)).toEqual([]);

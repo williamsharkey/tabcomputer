@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,7 +281,9 @@ static void free_info(struct tc_object *o) {
 struct tc_thread {
   struct tc_ctx *ctx;
   uint32_t *buf; size_t used; /* words, after the 3-word batch header */
-  uint32_t *big; size_t big_words;
+  uint32_t *big; size_t big_words; /* a command bigger than a batch, sent alone */
+  uint32_t *big_mem; size_t big_cap; /* kept for the next one: a fresh malloc each time is an mmap, page faults and an munmap */
+  const void *zc; size_t zc_bytes, zc_at; /* a big command's large array, sent from the caller's memory at word zc_at */
 };
 static __thread struct tc_thread T;
 
@@ -311,8 +314,13 @@ uint32_t *tc_begin(size_t argwords, unsigned op) {
   if (T.used + need > BATCH_WORDS) {
     flush();
     if (need > BATCH_WORDS) {
-      T.big = malloc((3 + need) * 4);
-      if (!T.big) return NULL;
+      if (T.big_cap < 3 + need) {
+        free(T.big_mem);
+        T.big_cap = 3 + need + (3 + need) / 8;
+        T.big_mem = malloc(T.big_cap * 4);
+        if (!T.big_mem) { T.big_cap = 0; return NULL; }
+      }
+      T.big = T.big_mem;
       T.big_words = 3 + need;
       w = T.big + 3;
       goto header;
@@ -328,13 +336,29 @@ header:
 void tc_end(void) {
   if (!T.big) return;
   pthread_mutex_lock(&sock_lock);
-  send_batch(T.ctx ? T.ctx->id : 0, T.big, T.big_words);
+  if (!T.zc) send_batch(T.ctx ? T.ctx->id : 0, T.big, T.big_words);
+  else {
+    /* the words before the array, the array from the caller's memory, its padding, and any words after it */
+    uint32_t *b = T.big;
+    size_t aw = (T.zc_bytes + 3) >> 2, after = T.zc_at + aw;
+    static const uint8_t zero[4];
+    b[0] = BATCH_MAGIC; b[1] = T.ctx ? T.ctx->id : 0; b[2] = (uint32_t)(T.big_words * 4);
+    if (sock_fd >= 0 && (write_all(b, T.zc_at * 4) < 0 || write_all(T.zc, T.zc_bytes) < 0 ||
+        write_all(zero, aw * 4 - T.zc_bytes) < 0 || write_all(b + after, (T.big_words - after) * 4) < 0)) lost_connection();
+    T.zc = NULL;
+  }
   pthread_mutex_unlock(&sock_lock);
-  free(T.big); T.big = NULL;
+  T.big = NULL;
+  if (T.big_cap > (64u << 20) / 4) { free(T.big_mem); T.big_mem = NULL; T.big_cap = 0; } /* keep up to 64 MB */
 }
 uint32_t *tc_put_array(uint32_t *w, const void *p, size_t n) {
   if (!p) { *w++ = 0xffffffffu; return w; }
   *w++ = (uint32_t)n;
+  /* in a command too big for a batch (a whole window's texture, say): not copied, written from p at tc_end */
+  if (n >= 65536 && T.big && !T.zc && w > T.big && w < T.big + T.big_words) {
+    T.zc = p; T.zc_bytes = n; T.zc_at = (size_t)(w - T.big);
+    return w + ((n + 3) >> 2);
+  }
   if (n) { memcpy(w, p, n); if (n & 3) memset((uint8_t *)w + n, 0, 4 - (n & 3)); }
   return w + ((n + 3) >> 2);
 }
@@ -348,13 +372,18 @@ void tc_unimplemented(const char *name) {
 /* A command whose answer the page sends back: flushes the batch (ending
  * with the command just encoded) and waits for the reply. Returns a malloc'd
  * payload (free it) or NULL. */
+/* TABCOMPUTER_GL_DEBUG=2: where frames' time goes, logged every 10 swaps (3: also each query that waits for a reply) */
+static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static struct { double since, reply_ms, throttle_ms, upload_ms; unsigned replies, swaps, uploads; } stat;
 static uint8_t *call_reply(uint32_t *len) {
   uint8_t *p = NULL; uint32_t n = 0;
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   flush_locked();
   int k;
   while ((k = read_message(&p, &n)) != MSG_REPLY) if (k < 0) { pthread_mutex_unlock(&sock_lock); *len = 0; return NULL; }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) { stat.reply_ms += now_ms() - t0; stat.replies++; }
   *len = n;
   return p;
 }
@@ -463,6 +492,7 @@ static int get_values(GLenum op, GLenum pname, const uint32_t *extra, int nextra
     int i = find_limit(c, pname);
     if (i >= 0) { int n = c->limit_n[i] < max ? c->limit_n[i] : max; memcpy(out, c->limit_val[i], (size_t)n * sizeof *out); return n; }
   }
+  if (dbg() >= 3) logf_("query op %u, pname 0x%x", op, pname);
   uint32_t *w = tc_begin(1 + (size_t)nextra, op);
   if (!w) return 0;
   w[0] = pname;
@@ -540,7 +570,7 @@ static uint32_t ask_u32(unsigned op, const uint32_t *args, int nargs) {
   free(p);
   return v;
 }
-#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; return (R)ask_u32(op, &a, 1); }
+#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; if (dbg() >= 3) logf_("query op %u, 0x%x", op, a); return (R)ask_u32(op, &a, 1); }
 ASK1(glIsEnabled, GLenum, GLboolean, OP_glIsEnabled)
 ASK1(glIsTexture, GLuint, GLboolean, OP_glIsTexture)
 ASK1(glIsBuffer, GLuint, GLboolean, OP_glIsBuffer)
@@ -1003,12 +1033,15 @@ void tc_glTexImage1D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLin
   put_image(w + 7, pixels, n); tc_end();
 }
 void tc_glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels) {
+  if (dbg() >= 3) logf_("glTexImage2D 0x%x level %d %dx%d format 0x%x type 0x%x", target, level, width, height, format, type);
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   size_t n = pixels ? image_bytes(&unpack, width, height, 1, format, type) : 0;
   uint32_t *w = tc_begin(8 + image_words(pixels, n), OP_glTexImage2D);
   if (!w) return;
   w[0] = target; w[1] = (uint32_t)level; w[2] = (uint32_t)ifmt; w[3] = (uint32_t)width; w[4] = (uint32_t)height; w[5] = (uint32_t)border;
   w[6] = format; w[7] = type;
   put_image(w + 8, pixels, n); tc_end();
+  if (t0) { stat.upload_ms += now_ms() - t0; stat.uploads++; }
 }
 void tc_glTexImage3D(GLenum target, GLint level, GLint ifmt, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels) {
   size_t n = pixels ? image_bytes(&unpack, width, height, depth, format, type) : 0;
@@ -1026,6 +1059,7 @@ void tc_glTexSubImage1D(GLenum target, GLint level, GLint x, GLsizei width, GLen
   put_image(w + 6, pixels, n); tc_end();
 }
 void tc_glTexSubImage2D(GLenum target, GLint level, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) {
+  if (dbg() >= 3) logf_("glTexSubImage2D 0x%x level %d %d,%d %dx%d format 0x%x", target, level, x, y, width, height, format);
   size_t n = image_bytes(&unpack, width, height, 1, format, type);
   uint32_t *w = tc_begin(8 + image_words(pixels, n), OP_glTexSubImage2D);
   if (!w) return;
@@ -1708,6 +1742,8 @@ static Bool make_current(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXCo
     flush();
     if (old != c) { old->bound = 0; T.ctx = NULL; release_context(old); }
   }
+  if (dbg()) logf_("make current: context %u, draw 0x%lx, read 0x%lx (was %u)%s", c ? c->id : 0, (unsigned long)draw, (unsigned long)read, old ? old->id : 0,
+    c && c->bound && old != c ? ": current in another thread" : "");
   if (!c) { T.ctx = NULL; return True; }
   if (c->bound && old != c) return False; /* current in another thread: BadAccess */
   c->bound = 1;
@@ -1728,6 +1764,7 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
   if (w) { w[0] = a[0]; w[1] = a[1]; tc_end(); flush(); }
   else control(0, OP_tcSwapBuffers, a, 2);
   /* throttle: never more than MAX_FRAMES_AHEAD frames ahead of the page */
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   while (sock_fd >= 0 && (int32_t)(frames_sent - frames_acked) > MAX_FRAMES_AHEAD) {
     uint8_t *p = NULL; uint32_t len;
@@ -1736,6 +1773,15 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     free(p);
   }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) {
+    double t1 = now_ms();
+    stat.throttle_ms += t1 - t0;
+    if (!stat.since) stat.since = t1;
+    else if (++stat.swaps == 10) {
+      logf_("10 frames in %.0f ms: %u replies waited %.0f ms, the swap throttle %.0f ms, %u glTexImage2D %.0f ms", t1 - stat.since, stat.replies, stat.reply_ms, stat.throttle_ms, stat.uploads, stat.upload_ms);
+      memset(&stat, 0, sizeof stat); stat.since = t1;
+    }
+  }
 }
 static Bool tc_glXIsDirect(Display *dpy, GLXContext ctx) { (void)dpy; (void)ctx; return True; }
 static void tc_glXCopyContext(Display *dpy, GLXContext src, GLXContext dst, unsigned long mask) { (void)dpy; (void)src; (void)dst; (void)mask; tc_unimplemented("glXCopyContext"); }

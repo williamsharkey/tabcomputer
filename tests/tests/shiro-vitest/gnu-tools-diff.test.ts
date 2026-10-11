@@ -4,7 +4,12 @@
  * host's bash (GNU sed, coreutils, findutils, gawk, util-linux) on the same
  * files; the differences go to a report. Opt-in, since it needs those tools:
  *   GNU_DIFF=1 npx vitest run --config vitest.config.ts gnu-tools-diff
- * (GNU_DIFF_CASES / GNU_DIFF_OUT: another case list, another report path).
+ * (GNU_DIFF_CASES / GNU_DIFF_OUT: another case list, another report path;
+ * GNU_DIFF_PRELUDE: shell code run first in both, e.g. git-cases.sh's setup.
+ * Real bash runs with a HOME of its own, so no ~/.gitconfig of the host's.
+ * GNU_DIFF_ALL=1 reports the commands that match too. GNU_DIFF_NO_PKG=1 keeps
+ * `pkg install` from running: the built-in git falls back to installing the
+ * real one, which then shadows it for every later command.)
  * Known differences: --version lines, find -depth's order and -newer within
  * one millisecond, xargs -t's trace order against 2>&1, gawk's FPAT, |&,
  * @include and length() of an untyped name, sed's e command, cmp's older
@@ -38,7 +43,10 @@ it.skipIf(!process.env.GNU_DIFF)('tabcomputer vs the GNU tools', async () => {
   const real = mkdtempSync('/tmp/gnudiff-');
   for (const [p, c] of Object.entries(FILES)) { mkdirSync(`${real}/${p}`.replace(/\/[^/]*$/, ''), { recursive: true }); writeFileSync(`${real}/${p}`, c); }
   const { shell, fs } = await createTestShell();
+  if (process.env.GNU_DIFF_NO_PKG) await shell.execute('pkg() { echo "pkg: disabled by the test" >&2; return 1; }', () => {}, () => {});
   // (a fresh copy of the files per command, in both: commands write and delete)
+  const prelude = process.env.GNU_DIFF_PRELUDE ? readFileSync(process.env.GNU_DIFF_PRELUDE, 'utf8').trim() + '\n' : '';
+  const home = mkdtempSync('/tmp/gnudiff-home-');
   const lines = CASES.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
   const report: string[] = [];
   let same = 0;
@@ -48,17 +56,18 @@ it.skipIf(!process.env.GNU_DIFF)('tabcomputer vs the GNU tools', async () => {
     const rd = mkdtempSync('/tmp/gnudiff-run-');
     execFileSync('cp', ['-r', `${real}/.`, rd]);
     let rOut = '', rCode = 0;
-    try { rOut = execFileSync('bash', ['-c', cmd], { cwd: rd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, LC_ALL: 'C.UTF-8' } }); }
+    try { rOut = execFileSync('bash', ['-c', prelude + cmd], { cwd: rd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, LC_ALL: 'C.UTF-8', HOME: home, GIT_CONFIG_NOSYSTEM: '1' } }); }
     catch (e: any) { rOut = e.stdout ?? ''; rCode = e.status ?? -1; }
     let vOut = '';
-    const vCode = await Promise.race([shell.execute(`cd ${virt} && ${cmd}`, (s) => { vOut += s; }, () => {}), new Promise<number>((r) => setTimeout(() => r(-99), 10000))]);
+    const vCode = await Promise.race([shell.execute(`cd ${virt} && ${prelude}${cmd}`, (s) => { vOut += s; }, () => {}), new Promise<number>((r) => setTimeout(() => r(-99), 10000))]);
     vOut = vOut.replace(/\r\n/g, '\n').split(virt).join('.').split(rd).join('.');
     rOut = rOut.split(rd).join('.');
     rmSync(rd, { recursive: true, force: true });
-    if (vOut === rOut && vCode === rCode) { same++; continue; }
+    if (vOut === rOut && vCode === rCode) { same++; if (!process.env.GNU_DIFF_ALL) continue; }
     report.push(`### ${cmd}\n--- real (${rCode})\n${rOut}--- tab (${vCode})\n${vOut}`);
   }
   rmSync(real, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
   console.log(`same ${same}/${lines.length}; report: ${process.env.GNU_DIFF_OUT || '/tmp/gnu-tools-diff.txt'}`);
   writeFileSync(process.env.GNU_DIFF_OUT || '/tmp/gnu-tools-diff.txt', `same ${same}/${lines.length}\n\n` + report.join('\n'));
 }, 1200000);

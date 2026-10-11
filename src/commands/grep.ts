@@ -1,18 +1,10 @@
 import { Command, CommandContext } from './index';
 import { posixToJsSource } from '../utils/posix-regex';
 import { byteLength, decodeBytes } from '../utils/byte-text';
+import { timeSlicer, yieldTask } from '../utils/time-slice';
 
-/** A binary file decoded for matching only, a MiB at a time with the page running between (#19) */
-async function lossyDecode(bytes: Uint8Array): Promise<string> {
-  const dec = new TextDecoder();
-  const parts: string[] = [];
-  for (let off = 0; off < bytes.length; off += 1 << 20) {
-    const end = Math.min(off + (1 << 20), bytes.length);
-    parts.push(dec.decode(bytes.subarray(off, end), { stream: end < bytes.length }));
-    if (end < bytes.length) await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  return parts.join('');
-}
+/** A binary file is decoded for matching 256 KiB at a time: the native decode of binary measured ~30 ms per MiB (#19) */
+const BINARY_CHUNK = 256 << 10;
 
 /**
  * grep, following GNU grep: BRE by default (-E ERE, -F fixed strings, -P
@@ -272,6 +264,44 @@ export const grepCmd: Command = {
       return count > 0;
     };
 
+    /**
+     * searchText for a binary file (NULs, no -a/-z): its lines are never
+     * printed, so they are matched as they are decoded, a chunk at a time with
+     * the page running between, instead of decoding the whole file into one
+     * string first (a 30 MB binary held the page for ~80 ms, #19). The
+     * decode is the native lossy one, enough to match.
+     */
+    const searchBinary = async (bytes: Uint8Array, name: string): Promise<boolean> => {
+      const dec = new TextDecoder();
+      let count = 0;
+      let carry = '';
+      let stop = false;
+      const line = (l: string): void => {
+        if (maxCount >= 0 && count >= maxCount) { stop = true; return; }
+        if ((matches(l) !== invertMatch)) {
+          count++;
+          anySelected = true;
+          if (quiet || filesWith || !countOnly && !filesWithout) stop = true;
+        }
+      };
+      for (let off = 0; off < bytes.length && !stop; off += BINARY_CHUNK) {
+        const end = Math.min(off + BINARY_CHUNK, bytes.length);
+        const text = carry + dec.decode(bytes.subarray(off, end), { stream: end < bytes.length });
+        let from = 0;
+        for (let nl = text.indexOf('\n'); nl >= 0 && !stop; nl = text.indexOf('\n', from)) { line(text.slice(from, nl)); from = nl + 1; }
+        carry = text.slice(from);
+        if (end < bytes.length && !stop) await yieldTask();
+      }
+      if (!stop && carry !== '') line(carry);
+      // (searchText's output, in its order)
+      const nameEnd = nullName ? '\0' : '\n';
+      if (count > 0 && !quiet && !filesWith && !filesWithout && !countOnly) ctx.stdout += `Binary file ${name} matches\n`;
+      if (countOnly && !quiet) ctx.stdout += (showNames ? name + (nullName ? '\0' : ':') : '') + count + '\n';
+      if (filesWith && count > 0 && !quiet) ctx.stdout += name + nameEnd;
+      if (filesWithout && count === 0) { listedWithout = true; if (!quiet) ctx.stdout += name + nameEnd; }
+      return count > 0;
+    };
+
     const globToRe = (g: string) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
     const includeRes = includeGlobs.map(globToRe);
     const excludeRes = excludeGlobs.map(globToRe);
@@ -279,6 +309,8 @@ export const grepCmd: Command = {
     const fileWanted = (base: string) =>
       (includeRes.length === 0 || includeRes.some((re) => re.test(base))) && !excludeRes.some((re) => re.test(base));
 
+    // cached reads resolve as microtasks: without a yield a -r walk is one task (#19)
+    const slice = timeSlicer();
     const searchPath = async (path: string, display: string, top: boolean): Promise<void> => {
       if (quiet && anySelected) return;
       const resolved = ctx.fs.resolvePath(path, ctx.cwd);
@@ -301,17 +333,17 @@ export const grepCmd: Command = {
       const base = display.split('/').pop() || display;
       if (!top && !fileWanted(base)) return;
       if (top && recursive && includeRes.length && !fileWanted(base)) return;
-      let content: string;
-      try {
-        const bytes = await ctx.fs.readFile(resolved) as Uint8Array;
-        // A binary file's lines are never printed ("Binary file matches"): the native lossy decode
-        // is enough to match, where the byte-exact one took ~0.4 s on a 30 MB binary (#19)
-        content = !textMode && bytes.indexOf(0) >= 0 ? await lossyDecode(bytes) : decodeBytes(bytes);
-      } catch {
+      let bytes: Uint8Array;
+      await slice();
+      try { bytes = await ctx.fs.readFile(resolved) as Uint8Array; }
+      catch {
         error(`${display}: Permission denied`);
         return;
       }
-      searchText(content, display);
+      // A binary file's lines are never printed ("Binary file matches"): the native lossy decode
+      // is enough to match, where the byte-exact one took ~0.4 s on a 30 MB binary (#19)
+      if (!textMode && !nullData && bytes.indexOf(0) >= 0) await searchBinary(bytes, display);
+      else searchText(decodeBytes(bytes), display);
     };
 
     if (files.length === 0) {

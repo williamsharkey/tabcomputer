@@ -16,7 +16,14 @@ Each installs firefox-esr in a fresh browser profile; Firefox's window takes ~4.
   `autoconfig/` (Firefox's enterprise autoconfig: `defaults/pref/autoconfig.js` loads `probe.cfg` as chrome JS), which
   logs the command line at `command-line-startup` and wraps BrowserContentHandler's `handle` methods so every
   `nsICommandLine` call is a `PROBE` line in the log. Add `user_pref("devtools.console.stdout.chrome", true)` to the
-  profile's user.js (with `-profile DIR` and a prep command) to see the chrome console too.
+  profile's user.js (with `-profile DIR` and a prep command) to see the chrome console too. `MAPS=1` (ff-url) and the
+  autoconfig probe log the executable mappings (tabcomputer's /proc/self/maps has no file names: find libxul by its
+  text size). `LOGTAIL=N` prints more of the log; `CONSOLE=regex` prints matching page console lines.
+- Engine (wjit) debugging: `BLINK_WJIT=0`, `BLINK_WJIT_OFF=mask` and `BLINK_WJIT_MAX=n` in the launch env work.
+  `BLINK_WJIT_BISECT=lo:hi` doesn't for guest addresses above 0x7fffffff (its bounds are a 32-bit `long` in wasm, and
+  strtol saturates). Blink's own stderr (`BLINK_WJIT_DEBUG`) is dropped in the page (`FS.init`'s stderr is a no-op in
+  host.mjs); route it to `console.error` for a probe run, add `TABCOMPUTER_BLINK_DEBUG=1`, and use `CONSOLE`.
+  Symbols for the Debian package: firefox-esr-dbgsym from deb.debian.org/debian-debug (match libxul's build id).
 - `pagesh.mjs 'cmd' …`: shell commands in a fresh page, output printed.
 - `runprobe.mjs BINARY`: copies a static x86-64 binary into the page and runs it.
 - `forkexec.c`, `forkexec2.c` (`gcc -static [-pthread]`): fork/vfork/clone/posix_spawn then exec, from the main

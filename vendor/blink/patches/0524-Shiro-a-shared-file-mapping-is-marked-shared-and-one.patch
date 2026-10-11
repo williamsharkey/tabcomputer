@@ -1,0 +1,127 @@
+From e4360280e340d9307d406b0c86fa708ce1184edd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 05:38:25 +0000
+Subject: [PATCH] Shiro: a shared file mapping is marked shared, and one of a
+ file it may not write (read-only fd, a write-sealed memfd) refuses
+ mprotect(PROT_WRITE) with EACCES (LTP memfd_create01)
+
+---
+ blink/machine.h |  4 ++++
+ blink/shiro.inc | 43 +++++++++++++++++++++++++++++++++++++++++++
+ blink/syscall.c |  4 +++-
+ 3 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 3f77270..5600c99 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -122,6 +122,10 @@
+ // Shiro: mapped PROT_WRITE without PROT_READ (the x86 accessed bit): x86
+ // reads such a page all the same, but /proc/self/maps prints it "-w"
+ #define PAGE_WO 0x0000000000000020
++// Shiro: a MAP_SHARED page of a file that may not be written through it (open
++// read-only, or a memfd sealed against writes; the x86 PCD bit): Linux
++// clears VM_MAYWRITE, so mprotect(PROT_WRITE) is EACCES
++#define PAGE_NOMW 0x0000000000000010
+ #define SHIRO_STASH_REMOTE 1  // m->stashaddr: only remote pages to write back
+ 
+ #define SREG_ES 0
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 446e2fb..d3d4b0a 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3694,11 +3694,49 @@ int ShiroBusFault(struct Machine *m, i64 va) {
+   return 2;
+ }
+ 
++// marks the pages of a shared file mapping, made as private anonymous memory
++// filled from the file: PAGE_SHRD for /proc/self/maps, PAGE_NOMW where the
++// file can't be written through it
++static void ShiroMarkShared(struct Machine *m, i64 addr, u64 size, u64 bits) {
++  u8 *slot;
++  u64 e;
++  i64 v;
++  LOCK(&m->system->mmap_lock);
++  for (v = addr; v < addr + (i64)ROUNDUP(size, 4096); v += 4096) {
++    if (!(slot = ShiroPteSlot(m->system, v))) continue;
++    do e = LoadPte(slot);
++    while ((e & PAGE_V) && !CasPte(slot, e, e | bits));
++  }
++  UNLOCK(&m->system->mmap_lock);
++}
++
++// mprotect from the guest: PROT_WRITE on a shared mapping of a file it may
++// not write is EACCES (LTP memfd_create01); Blink's own calls skip this
++EMSCRIPTEN_KEEPALIVE int blink_shiro_maywrite(void) { return 1; }
++
++static int ShiroMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
++  bool nomw = false;
++  i64 v;
++  if ((prot & 2) && !(addr & 4095) && IsValidAddrSize(addr, size)) {
++    LOCK(&m->system->mmap_lock);
++    if (IsFullyMapped(m->system, addr, size)) {
++      for (v = addr; v < addr + (i64)ROUNDUP(size, 4096) && !nomw; v += 4096) {
++        u8 *slot = ShiroPteSlot(m->system, v);
++        nomw = slot && (LoadPte(slot) & PAGE_NOMW);
++      }
++    }
++    UNLOCK(&m->system->mmap_lock);
++    if (nomw) return eacces();
++  }
++  return SysMprotect(m, addr, size, prot);
++}
++
+ static i64 ShiroMmapFile(struct Machine *m, i64 virt, u64 size, int prot,
+                          int flags, int fd, i64 off) {
+   u8 st[144], *buf;
+   i64 addr, fsize, o, r;
+   bool shared = (flags & 3) == 1 || (flags & 3) == 3;
++  u64 mark = PAGE_SHRD;
+   // (Linux: neither MAP_SHARED nor MAP_PRIVATE is EINVAL; a length past the
+   // address space is ENOMEM)
+   if (!(flags & 3)) return -EINVAL_LINUX;
+@@ -3712,7 +3750,11 @@ static i64 ShiroMmapFile(struct Machine *m, i64 virt, u64 size, int prot,
+   // a memfd sealed against writes can't be mapped shared and writable
+   // (F_SEAL_WRITE, F_SEAL_FUTURE_WRITE: EPERM; LTP memfd_create01)
+   if (shared && (prot & 2) && (r = KS(m, 72, A12(fd, 1034, 0))) > 0 && (r & 0x18)) return -EPERM_LINUX;
++  if (shared && ((KS(m, 72, A12(fd, 3, 0)) & 3) != 2 || ((r = KS(m, 72, A12(fd, 1034, 0))) > 0 && (r & 0x18)))) {
++    mark |= PAGE_NOMW;
++  }
+   if (shared && (r = ShiroRemoteMapFile(m, virt, size, prot, flags, fd, off)) != SHIRO_NOT_REMOTE) {
++    if (r >= 0) ShiroMarkShared(m, r, size, mark);
+     if (r >= 0 && ShiroStatAt(m, fd, 0, 0, 0x1000, st) >= 0 && (Read32(st + 24) & 0170000) == 0100000) {
+       ShiroBusAdd(m, r, size, prot, fd, off, Read64(st + 48), true);
+     }
+@@ -3766,6 +3808,7 @@ static i64 ShiroMmapFile(struct Machine *m, i64 virt, u64 size, int prot,
+   if ((Read32(st + 24) & 0170000) == 0100000) {
+     ShiroBusAdd(m, addr, size, prot, fd, off, fsize, false);
+   }
++  if (shared) ShiroMarkShared(m, addr, size, mark);
+   return addr;
+ }
+ 
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 9c9afc9..22597e8 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -6371,6 +6371,8 @@ static int SysEpollWait(struct Machine *m, i32 epfd, i64 eventsaddr,
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten.h>
+ #include "blink/shiro.inc"
++#else
++#define ShiroMprotect SysMprotect
+ #endif
+ 
+ // A call that let go of the GIL lets go of the pages it locked (its buffers)
+@@ -6480,7 +6482,7 @@ void OpSyscall(P) {
+     SYSCALL(5, 0x019, "mremap", SysMremap, STRACE_5);
+     SYSCALL(6, 0x10E, "pselect6", SysPselect, STRACE_6);
+     SYSCALL(3, 0x01A, "msync", SysMsync, STRACE_3);
+-    SYSCALL(3, 0x00A, "mprotect", SysMprotect, STRACE_MPROTECT);
++    SYSCALL(3, 0x00A, "mprotect", ShiroMprotect, STRACE_MPROTECT);
+     SYSCALL(2, 0x00B, "munmap", SysMunmap, STRACE_MUNMAP);
+     SYSCALL(4, 0x00D, "rt_sigaction", SysSigaction, STRACE_SIGACTION);
+     SYSCALL(4, 0x00E, "rt_sigprocmask", SysSigprocmask, STRACE_SIGPROCMASK);
+-- 
+2.43.0
+

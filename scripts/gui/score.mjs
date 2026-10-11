@@ -307,7 +307,8 @@ let srv = null;
 let base = opt('--url', '');
 if (!base) { srv = startServer(); base = `http://localhost:${PORT}`; }
 await waitFor(base + '/gui/apps.json');
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox'] });
+// SwiftShader WebGL2, so apps get GLX (as tests/browser/gl-apps.mjs)
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 try {
   for (const [id] of APPS) {
     if (ONLY && !ONLY.includes(id)) continue;

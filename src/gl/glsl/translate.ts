@@ -5,9 +5,11 @@
  * renamed built-in functions, fragment outputs, and the compatibility
  * built-ins (gl_Vertex, gl_ModelViewMatrix, gl_LightSource[n], ...), which
  * become `_tc_` attributes and uniforms the executor feeds from its
- * fixed-function state. It doesn't type-check, so desktop-only implicit
- * conversions (`float x = 1;`) are left to the WebGL compiler's error.
+ * fixed-function state. Then implicit.ts types the result and makes
+ * desktop-only implicit conversions (`float x = 1;`) explicit.
  */
+
+import { explicitConversions } from './implicit';
 
 export interface Translated {
   ok: boolean;
@@ -184,6 +186,8 @@ export function translateShader(input: string, stage: 'vertex' | 'fragment' | 'g
   ];
   // declarations go after the header but before any function; keep the original line numbering after them
   out.source = `${header.join('\n')}\n${decls.join('\n')}\n${helpers.join('\n')}\n#line 1\n${src}`;
+  // desktop GLSL's implicit int→float conversions, which ES doesn't have
+  out.source = explicitConversions(out.source).source;
   out.builtinAttribs = [...attribs];
   out.builtinUniforms = [...uniforms];
   return out;

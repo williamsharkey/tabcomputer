@@ -107,7 +107,7 @@ export const myCmd: Command = {
 
 ## Agent Context Inside The Tab
 
-- Every boot seeds `~/AGENTS.md` for agents on the machine (`src/agent-docs.ts`): what the machine is, what works and what doesn't, `doctor`, where the source lives (not checked out), and this boot's context (an injected `seed` boot says to start with `hc outer`). `~/CLAUDE.md` is `@AGENTS.md`, so Claude Code imports it directly.
+- Every boot seeds `~/AGENTS.md` for agents on the machine (`src/agent-docs.ts`): what the machine is, what works and what doesn't, `doctor`, where the source lives (not checked out), and this boot's context (an injected `seed` boot says to start with `hc outer`). Claude Code's user memory `~/.claude/CLAUDE.md` is `@~/AGENTS.md`, so Claude Code imports it in every directory. (A `~/CLAUDE.md` import, as earlier builds seeded and now remove, is outside the project in any directory below home, and Claude Code asks "Allow external CLAUDE.md file imports?" in each new one.)
 - Seeding never overwrites a file the user edited: `/var/lib/tabcomputer/seeded.json` holds the hash of what was written, and older installs are recognized by the exact texts earlier builds seeded. The retired `~/NEO.md` and `~/.shiro-context.json` are removed the same way. Keep the text accurate when behavior changes; it is what an agent here believes about the machine. `KNOWN_ISSUES` mirrors the open issues on github.com/williamsharkey/tabcomputer that an agent has to work around: add an entry with its workaround when such an issue is filed, and delete it in the change that fixes it. The in-tab text also tells agents to run `gh issue list -R williamsharkey/tabcomputer` first.
 
 ## Claude Code In tabcomputer

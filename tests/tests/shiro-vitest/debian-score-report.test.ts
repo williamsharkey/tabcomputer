@@ -27,6 +27,27 @@ describe('debian-score report parsing', () => {
     expect(rows.pipes.smoke).toBe('/usr/bin/x --help (ran: "a | b")');
   });
 
+  it('gives rows listed under "## Engines" their engine (score.mjs --engine)', () => {
+    const rows = parseReport([
+      '## Engines',
+      '',
+      'Rows scored on an engine other than the one committed at the time (score.mjs --engine):',
+      '',
+      '- Build 973 + fchmodat2 fix (local): ranks 3, 202',
+      '',
+      '## Packages',
+      '',
+      '| # | Package | Version | Result | How / failure | Install |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| 3 | adduser | 3.152 | pass | /usr/sbin/adduser --version | 54 s |',
+      "| 33 | bash | 5.2.37-2+b10 | pass | /usr/bin/bash -c 'echo smoke-ok' |  |",
+      '| 202 | linux-image-amd64 | 6.12.107-1 | **fail** (dpkg) | dpkg: error | 33 s |',
+    ].join('\n'));
+    expect(rows.adduser.engine).toBe('Build 973 + fchmodat2 fix (local)');
+    expect(rows['linux-image-amd64'].engine).toBe('Build 973 + fchmodat2 fix (local)');
+    expect(rows.bash.engine).toBeUndefined();
+  });
+
   it('covers every scored row of docs/DEBIAN_SCORE.md', () => {
     const doc = readFileSync(join(ROOT, 'docs/DEBIAN_SCORE.md'), 'utf8');
     const rows = Object.values(parseReport(doc)) as { result: string }[];

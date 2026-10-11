@@ -18,7 +18,7 @@ export interface GLServerHandle {
   proc: Process;
   connections: number;
   /** live connections: pid of the guest and its executor's stats */
-  clients: Set<{ commands: () => number; frames: () => number }>;
+  clients: Set<{ commands: () => number; frames: () => number; bytes: () => number; busyMs: () => number }>;
   stop(): void;
 }
 
@@ -31,6 +31,8 @@ export interface Backend {
   close(): void;
   commands(): number;
   frames(): number;
+  /** ms the executor spent running batches, if it keeps count */
+  busyMs?(): number;
 }
 export type BackendFactory = (send: (data: Uint8Array) => void) => Promise<Backend>;
 
@@ -111,7 +113,8 @@ async function serve(sock: KSocket, make: BackendFactory, handle: GLServerHandle
     void sock.close();
     return;
   }
-  const stats = { commands: () => backend.commands(), frames: () => backend.frames() };
+  let bytes = 0;
+  const stats = { commands: () => backend.commands(), frames: () => backend.frames(), bytes: () => bytes, busyMs: () => backend.busyMs?.() ?? 0 };
   handle.clients.add(stats);
   // reassemble batches: u32 magic, u32 context, u32 bytes
   let pending = new Uint8Array(1 << 20);
@@ -121,6 +124,7 @@ async function serve(sock: KSocket, make: BackendFactory, handle: GLServerHandle
     for (;;) {
       const n = await sock.recv(buf);
       if (n <= 0) break;
+      bytes += n;
       if (have + n > pending.length) {
         let size = pending.length * 2;
         while (size < have + n) size *= 2;

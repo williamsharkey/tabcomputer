@@ -28,12 +28,21 @@
     "acorn": "^8.19.0",
     "dejavu-fonts-ttf": "2.37.3",
     "esbuild-wasm": "^0.27.2",
+    "fzstd": "0.1.1",
     "http-cache-semantics": "^4.1.1",
     "isomorphic-git": "^1.27.1",
+    "semver": "7.8.5",
+    "slice-ansi": "9.0.1",
+    "smol-toml": "1.9.0",
     "sql.js": "1.12.0",
-    "three": "0.160.0"
+    "string-width": "8.3.0",
+    "strip-ansi": "7.2.0",
+    "three": "0.160.0",
+    "wrap-ansi": "10.0.2",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
+    "@types/semver": "7.8.0",
     "@types/three": "0.160.0",
     "fake-indexeddb": "^6.2.5",
     "playwright-core": "^1.56.1",

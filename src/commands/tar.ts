@@ -1,6 +1,7 @@
 import type { Command, CommandContext } from './index';
 import { decodeBytes, encodeText } from '../utils/byte-text';
 import { pipeBytes } from '../utils/stream-bytes';
+import { timeSlicer } from '../utils/time-slice';
 
 /**
  * tar — GNU tar-compatible (GNU format archives: ustar headers with
@@ -73,11 +74,11 @@ function headerBlocks(h: Header): Uint8Array[] {
   return out;
 }
 
+/** The data and the zeros that pad it to a whole block (not a padded copy: the archive is assembled once at the end) */
 function dataBlocks(data: Uint8Array): Uint8Array[] {
   if (!data.length) return [];
-  const padded = new Uint8Array(Math.ceil(data.length / BLOCK) * BLOCK);
-  padded.set(data);
-  return [padded];
+  const rest = data.length % BLOCK;
+  return rest ? [data, new Uint8Array(BLOCK - rest)] : [data];
 }
 
 function field(b: Uint8Array, off: number, len: number): string {
@@ -378,7 +379,10 @@ async function runTar(ctx: CommandContext): Promise<number> {
     const user = ctx.env.USER || 'user';
     // A file with more than one name: its first name in the archive, by inode (later names are hard-link members)
     const linkedNames = new Map<number, string>();
+    // cached reads resolve as microtasks: without a yield the whole walk is one task (#19)
+    const slice = timeSlicer();
     const addPath = async (shown: string, abs: string, _top: boolean) => {
+      await slice();
       let st: any;
       try { st = derefLinks ? await fs.stat(abs) : await fs.lstat(abs); }
       catch {
@@ -477,7 +481,11 @@ async function runTar(ctx: CommandContext): Promise<number> {
     total = blocks.reduce((n, b) => n + b.length, 0);
     let data: Uint8Array = new Uint8Array(total);
     let o = 0;
-    for (const b of blocks) { data.set(b, o); o += b.length; }
+    // in 4 MiB copies: one big member's copy is a long task by itself
+    for (const b of blocks) {
+      for (let i = 0; i < b.length; i += 4 << 20) { data.set(b.subarray(i, i + (4 << 20)), o + i); await slice(); }
+      o += b.length;
+    }
     data = await compress(data, compression);
     if (archive === '-') {
       ctx.stdout += decodeBytes(data);

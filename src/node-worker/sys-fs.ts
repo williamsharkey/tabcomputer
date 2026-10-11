@@ -347,7 +347,7 @@ export class SyscallFs {
     return () => { this.listeners.delete(listener); };
   }
 
-  /** A change the page reported (detail.at: its Date.now() then): what we cached about those paths goes, then the listeners hear it */
+  /** A change the page reported (detail.at: its wall-clock time then, to the microsecond): what we cached about those paths goes, then the listeners hear it */
   changed(event: string, path: string, newPath?: string, detail?: ChangeDetail): void {
     this.forget(path);
     if (newPath) this.forget(newPath);

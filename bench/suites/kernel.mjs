@@ -140,6 +140,21 @@ export async function run(h) {
   });
 
 
+  await h.try('kernel.pipe_pingpong', 'µs', async () => {
+    const rounds = h.quick ? 500 : 2000;
+    const r = await h.eval(async ([KB, rounds, n]) => {
+      const B = window.__bench, out = [];
+      for (let i = 0; i < n; i++) {
+        const x = await B.pingPong([KB, 'ping', String(rounds)], [KB, 'pong']);
+        if (x.codes.some((c) => c !== 0)) throw new Error(`exit ${x.codes}: ${x.out.slice(0, 200)}`);
+        const kv = B.kv(x.out);
+        out.push(kv.ns / kv.rounds / 1000);
+      }
+      return out;
+    }, [KB, rounds, n]);
+    h.sample('kernel.pipe_pingpong', r, 'µs', { notes: `${rounds} one-byte round trips between two WASM processes over two kernel pipes (kbench ping ↔ pong; each read blocks until the other's write): the WASI guest's counterpart of pbench's pipe ping-pong` });
+  });
+
   await h.try('kernel.epoll_wakeup', 'µs', async () => {
     const r = await h.eval(async (n) => {
       const B = window.__bench, S = B.SYS;

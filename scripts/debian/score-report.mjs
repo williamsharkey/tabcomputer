@@ -20,5 +20,11 @@ export function parseReport(text) {
     if (ms) Object.assign(r, { installMs: +ms[1] * 1000, already: !!ms[2] });
     rows[name] = r;
   }
+  // "## Engines": "- NOTE: ranks 1, 2" (score.mjs --engine)
+  const section = /^## Engines\n([\s\S]*?)(?=^## )/m.exec(text)?.[1] ?? '';
+  for (const m of section.matchAll(/^- (.+): ranks ([\d, ]+)$/gm)) {
+    const ranks = new Set(m[2].split(', ').map(Number));
+    for (const r of Object.values(rows)) if (ranks.has(r.rank)) r.engine = m[1];
+  }
   return rows;
 }

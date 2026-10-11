@@ -37,6 +37,7 @@ import {
   SYS_getpeername, SYS_socketpair, SYS_setsockopt, SYS_getsockopt, SYS_accept4, SOCKET_SYSCALLS,
   SOCKADDR_ROOM, SIGPIPE, ENOENT, SO_PEERCRED, SCM_RIGHTS, MSG_CTRUNC, MSG_TRUNC, MSG_CMSG_CLOEXEC, SYS_sendmsg,
   SYS_recvmsg, SOCKADDR_UN_MAX, ENAMETOOLONG, decodeText,
+  SO_SNDBUFFORCE, SO_RCVBUFFORCE, WMEM_MAX, RMEM_MAX, SOCK_MIN_SNDBUF, SOCK_MIN_RCVBUF, SOCK_BUF_HARD_MAX,
 } from './abi';
 
 // Socket constants live in abi.ts (the shared ABI); re-exported for net.ts users.
@@ -420,7 +421,7 @@ class RelayPeer implements StreamPeer {
   private startDrain() {
     if (this.drainTimer || this.ws.bufferedAmount === 0) return;
     this.drainTimer = setInterval(() => {
-      if (this.ws.bufferedAmount < this.stack.config.sndbuf) this.sock._wake();
+      if (this.ws.bufferedAmount < this.sock.sndbuf) this.sock._wake();
       if (this.ws.bufferedAmount === 0 || this.ws.readyState !== 1) this.stopDrain();
     }, 10);
   }
@@ -627,11 +628,11 @@ export class KSocket implements OpenFile {
       if (this.wrShut) return -EPIPE;
       if (this.state !== 'connected' || !this.peer) return this.everConnected ? -EPIPE : -ENOTCONN;
       if (buf.length === 0) return 0;
-      if (this.messages && buf.length > this.stack.config.sndbuf) return -EMSGSIZE;
+      if (this.messages && buf.length > this.sndbuf) return -EMSGSIZE;
       // (a datagram waits only while the buffer is full, then may overshoot
       // it, as Linux checks before allocating: two messages of half
       // SO_SNDBUF fit, Open POSIX aio_cancel_5-1)
-      const room = this.stack.config.sndbuf - this.peer.buffered();
+      const room = this.sndbuf - this.peer.buffered();
       if (room <= 0) {
         if (dontwait) return -EAGAIN;
         if (signal?.aborted) return -EINTR;
@@ -659,7 +660,7 @@ export class KSocket implements OpenFile {
       case 'connected':
         if (this.rxLen > 0 || this.rxEof || this.rdShut) r |= POLLIN;
         if (this.rxEof || this.rdShut) r |= POLLRDHUP; // the peer's FIN, or our own shutdown(SHUT_RD)
-        if (!this.wrShut && this.peer && this.peer.buffered() < this.stack.config.sndbuf) r |= POLLOUT;
+        if (!this.wrShut && this.peer && this.peer.buffered() < this.sndbuf) r |= POLLOUT;
         if (this.rxEof && this.wrShut) r |= POLLHUP;
         break;
       case 'closed':
@@ -750,6 +751,7 @@ export class KSocket implements OpenFile {
     if (listener) {
       const local = this.local ?? stack.autobindAddr(this.domain === AF_INET6 && host.includes(':') ? AF_INET6 : AF_INET, this, host);
       const server = new KSocket(stack, listener.domain, 0, 0);
+      server.inheritBuffers(listener);
       server.local = { ...listener.local!, address: host === '0.0.0.0' || host === '::' ? listener.local!.address : host };
       if (!listener._enqueue(server)) return -ECONNREFUSED;
       server._attach(new LoopbackPeer(server, this), server.local, { ...local });
@@ -871,8 +873,8 @@ export class KSocket implements OpenFile {
         // the peer's pid (the ucred's uid/gid are every process's: one user)
         case SO_PEERCRED: return this.domain === AF_UNIX && this.state === 'connected' ? this.peerPid : -ENOTCONN;
         case SO_ACCEPTCONN: return this.state === 'listening' ? 1 : 0;
-        case SO_SNDBUF: return this.opts.get(`${level}:${name}`) ?? this.stack.config.sndbuf;
-        case SO_RCVBUF: return this.opts.get(`${level}:${name}`) ?? 512 * 1024;
+        case SO_SNDBUF: return this.sndbuf;
+        case SO_RCVBUF: return this.ownRcvbuf ?? 512 * 1024;
         case SO_REUSEADDR: case SO_REUSEPORT: case SO_KEEPALIVE: case SO_BROADCAST: case SO_LINGER:
         case SO_RCVTIMEO: case SO_SNDTIMEO:
           return this.getOpt(level, name);
@@ -889,9 +891,35 @@ export class KSocket implements OpenFile {
     return -ENOPROTOOPT;
   }
 
+  /**
+   * The send buffer: queued bytes the peer hasn't read (or the relay hasn't
+   * sent) before a write blocks and POLLOUT clears. SO_SNDBUF sets it per
+   * socket, as Linux does (doubled, at most WMEM_MAX * 2); the stack's
+   * config.sndbuf is the default.
+   */
+  get sndbuf(): number { return this.ownSndbuf ?? this.stack.config.sndbuf; }
+  private ownSndbuf?: number;
+  private ownRcvbuf?: number;
+  /** @internal A connection accept() returns starts with its listener's buffer sizes, as on Linux */
+  inheritBuffers(listener: KSocket): void { this.ownSndbuf = listener.ownSndbuf; this.ownRcvbuf = listener.ownRcvbuf; }
+
   /** Store an int option (timeouts in ms). TCP tuning is accepted and recorded; the relay always sets TCP_NODELAY. */
   setsockopt(level: number, name: number, value: number): number {
     if (level === SOL_SOCKET && (name === SO_ERROR || name === SO_TYPE || name === SO_DOMAIN || name === SO_PROTOCOL || name === SO_ACCEPTCONN)) return -ENOPROTOOPT;
+    // Linux's sock_setsockopt: the value (taken as unsigned, so a negative one is the max), capped at
+    // [rw]mem_max unless FORCE, doubled, at least the minimum
+    if (level === SOL_SOCKET && (name === SO_SNDBUF || name === SO_SNDBUFFORCE || name === SO_RCVBUF || name === SO_RCVBUFFORCE)) {
+      const snd = name === SO_SNDBUF || name === SO_SNDBUFFORCE;
+      const force = name === SO_SNDBUFFORCE || name === SO_RCVBUFFORCE;
+      const v = Math.min(value >>> 0, force ? SOCK_BUF_HARD_MAX / 2 : snd ? WMEM_MAX : RMEM_MAX);
+      const size = Math.max(v * 2, snd ? SOCK_MIN_SNDBUF : SOCK_MIN_RCVBUF);
+      if (snd) {
+        const grew = size > this.sndbuf;
+        this.ownSndbuf = size;
+        if (grew) this.q.notify(); // writers waiting for room
+      } else this.ownRcvbuf = size;
+      return 0;
+    }
     if (level !== SOL_SOCKET && level !== IPPROTO_TCP && level !== IPPROTO_IPV6 && level !== IPPROTO_IP) return -ENOPROTOOPT;
     // (option numbers that don't exist: LTP setsockopt01's -1)
     if (name <= 0 || name > 100) return -ENOPROTOOPT;
@@ -1492,6 +1520,7 @@ export class NetStack {
     if (!listener || listener.state !== 'listening') return -ECONNREFUSED;
     if (listener.type !== s.type) return -EPROTOTYPE;
     const server = new KSocket(this, AF_UNIX, 0, 0, s.type);
+    server.inheritBuffers(listener);
     server.ownerPid = listener.ownerPid;
     server.unixKey = listener.unixKey;
     if (!listener._enqueue(server)) return -EAGAIN;

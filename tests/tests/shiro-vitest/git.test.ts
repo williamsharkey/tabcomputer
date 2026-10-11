@@ -203,7 +203,7 @@ describe('git commands', () => {
       expect((await sh('cd /tmp/p && git diff --name-status')).out).toBe('M\ta.txt\n'); // not the untracked file
       expect((await sh('cd /tmp/p && git diff --numstat')).out).toBe('1\t0\ta.txt\n');
       expect((await sh('cd /tmp/p && git diff --cached --name-only')).out).toBe('sub/st.txt\n');
-      expect((await sh('cd /tmp/p && git diff --stat main feat')).out).toBe(' a.txt | 1 +\n 1 file changed, 1 insertion(+)\n'.replace('| 1', '|   1'));
+      expect((await sh('cd /tmp/p && git diff --stat main feat')).out).toBe(' a.txt | 1 +\n 1 file changed, 1 insertion(+)\n');
       const patch = (await sh('cd /tmp/p && git diff --no-ext-diff --color=always -- a.txt')).out;
       expect(patch).toMatch(/^diff --git a\/a\.txt b\/a\.txt\nindex [0-9a-f]{7}\.\.[0-9a-f]{7} 100644\n--- a\/a\.txt\n\+\+\+ b\/a\.txt\n@@ -1 \+1,2 @@\n one\n\+x\n$/);
       expect((await sh('cd /tmp/p && git diff --cached -- sub/st.txt')).out).toContain('new file mode 100644\nindex 0000000..');
@@ -378,9 +378,9 @@ describe('git commands', () => {
       expect(s.code).toBe(129);
       expect(s.err).toContain("error: unknown switch `Z'");
       expect((await sh('cd /tmp/o && git log --format=%s')).out).toBe(''); // nothing committed
-      const b = await sh('cd /tmp/o && git blame f');
+      const b = await sh('cd /tmp/o && git bisect start');
       expect(b.code).toBe(1);
-      expect(b.err).toContain("git: 'blame' is not a git command");
+      expect(b.err).toContain("git: 'bisect' is not a git command");
       expect(b.err).toContain('pkg install git');
       const r = await sh('cd /tmp/o && git remote show origin');
       expect(r.code).toBe(129);

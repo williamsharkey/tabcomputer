@@ -113,7 +113,9 @@ describe('kernel profiler', () => {
       pty.input(key);
       expect(await reading).toBe(1);
       await tick(10);
-      for (const s of [`[${key}]`, '\r\n']) {
+      // a cursor move first, then the echo
+      for (const s of ['\x1b[2K', `[${key}]`, '\r\n']) {
+        if (s === `[${key}]`) await tick(5);
         data.set(enc.encode(s));
         expect(await kernel.syscall(p, A.SYS_write, [1, s.length, 0, 0, 0, 0], data)).toBe(s.length);
       }
@@ -122,19 +124,20 @@ describe('kernel profiler', () => {
       await kernel.syscall(p, A.SYS_stat, [4, 0, 0, 0, 0, 0], data);
     }
     const rep = kernel.stopProfile()!;
-    expect(out.join('')).toBe('[a]\r\n[b]\r\n');
+    expect(out.join('')).toBe('\x1b[2K[a]\r\n\x1b[2K[b]\r\n');
     expect(rep.keys).toHaveLength(2);
     for (const k of rep.keys) {
-      expect(k).toMatchObject({ bytes: 1, writes: 2, writeBytes: 5 });
+      expect(k).toMatchObject({ bytes: 1, writes: 3, writeBytes: 9 });
+      expect(k.echoMs).toBeGreaterThanOrEqual(k.firstWriteMs + 4);
       expect(k.readMs).toBeGreaterThanOrEqual(0);
       expect(k.firstWriteMs).toBeGreaterThanOrEqual(5);
       expect(k.lastWriteMs).toBeGreaterThanOrEqual(k.firstWriteMs);
-      expect(k.byName.write).toBe(2);
+      expect(k.byName.write).toBe(3);
       expect(k.byName.getpid).toBe(1);
       expect(k.paths).toEqual({ '/tmp': 1 });
     }
     expect(rep.byKind['read:pty']).toMatchObject({ calls: 2, bytes: 2 });
-    expect(formatReport(rep)).toMatch(/keystrokes: 2 \(2 read\); median ms: input→read [\d.]+, read→first write [\d.]+/);
+    expect(formatReport(rep)).toMatch(/keystrokes: 2 \(2 read\); median ms: input→read [\d.]+, read→first write [\d.]+, read→echo [\d.]+/);
     // the pty trace is off once the profile stops
     pty.input('c');
     expect(prof.report().keys).toHaveLength(2);

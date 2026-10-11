@@ -1,6 +1,6 @@
 // node ff-url.mjs URL 'ENV=1 ENV2=1' 'firefox args' ['prep shell cmd']: Firefox ESR started from the shell with that
 // environment and arguments; notes when it exits before a window, then dmesg, the log, and a screenshot.
-// MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
+// CONSOLE=regex prints matching page console messages. MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 const require = createRequire('/opt/node-tools/node_modules/');
@@ -9,6 +9,8 @@ const [url, envs = '', extra = '', prep = ''] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox'] });
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 await page.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-tour', '1'); localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
+// CONSOLE=regex prints matching page console messages (the engine's own stderr, e.g. BLINK_WJIT_DEBUG, lands there)
+if (process.env.CONSOLE) { const re = new RegExp(process.env.CONSOLE); page.on('console', (m) => { if (re.test(m.text())) console.log('[console] ' + m.text()); }); }
 await page.goto(url + '?ui=desktop');
 await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 120000 });
 const sh = (cmd) => page.evaluate(async (cmd) => {
@@ -46,6 +48,6 @@ if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
 }
 console.log('--- dmesg ---\n' + (await sh('dmesg 2>&1 | tail -25')).out);
 console.log('--- ps ---\n' + (await sh('ps -eo pid,ppid,stat,args 2>&1 | grep -i firefox | grep -v grep')).out);
-console.log('--- log ---\n' + (await sh('tail -300 /tmp/ff.log | cat -v | cut -c1-300')).out);
+console.log('--- log ---\n' + (await sh(`tail -${process.env.LOGTAIL || 300} /tmp/ff.log | cat -v | cut -c1-300`)).out);
 await page.screenshot({ path: process.env.SHOT });
 await browser.close();

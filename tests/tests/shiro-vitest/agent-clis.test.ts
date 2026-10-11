@@ -226,6 +226,21 @@ describe('claude --native', () => {
     expect(r.output).toContain('status=7');
   }, 60_000);
 
+  // tabcomputer#40: sessions skip permission prompts as the npm build's do; auto mode's
+  // safety check was a model call before every Bash command (~2-2.5 s in Blink)
+  it('starts sessions with --dangerously-skip-permissions, but not subcommands or an explicit mode', async () => {
+    const { fs, shell } = await createTestShell();
+    shell.commands.register(claudeCmd);
+    await fs.mkdir('/opt/n', { recursive: true });
+    await fs.writeFile('/opt/n/claude', readFileSync(resolve(__dirname, 'fixtures/x86/hello-musl')), { mode: 0o755 });
+    await run(shell, 'cd /home/user');
+    const argv = async (cmd: string) => (await run(shell, `CLAUDE_NATIVE_PATH=/opt/n/claude ${cmd} < /dev/null`)).output.replace(/\r\n/g, '\n');
+    expect(await argv('claude --native')).toMatch(/arg\d=--dangerously-skip-permissions\n/);
+    expect(await argv("claude --native -p 'x'")).toMatch(/arg\d=--dangerously-skip-permissions\n/);
+    expect(await argv('claude --native --permission-mode plan')).not.toContain('--dangerously-skip-permissions');
+    expect(await argv("claude --native a 'b c'")).not.toContain('--dangerously-skip-permissions');
+  }, 60_000);
+
   // tabcomputer#40: like the npm build, no self-install copy of the 250 MB binary,
   // updater or official-marketplace clone at start, unless the user exported one
   it('launches with the updater, install checks, marketplace auto-install and error reporting off', async () => {

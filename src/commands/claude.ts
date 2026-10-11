@@ -78,6 +78,11 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
     return 1;
   }
   args = loginArgs(args);
+  // Sessions skip permission prompts, as the npm build's do (below). Without the
+  // flag native Claude ran in auto mode, whose safety check is a model call
+  // before every Bash command: about 2-2.5 s each in the emulator (#40)
+  const bypass = needsSession(args) && !args.some(a => a === '--dangerously-skip-permissions' || a === '--permission-mode');
+  if (bypass) args.unshift('--dangerously-skip-permissions');
   // Same settings cleanup as the npm build's start (e.g. drop the "mcp__*"
   // allow rule older Shiro seeded, which current Claude Code warns about)
   try {
@@ -85,7 +90,7 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
     // Trust the working directory as the npm build does (node-compat/preload.ts):
     // without it every native start in a fresh or reset project stopped at
     // Claude's workspace trust prompt, a session restore included
-    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user', projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true });
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user', projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true, acceptBypassPermissions: bypass });
   } catch { /* settings are Claude's own business; never block the run */ }
   // JSC's JIT costs more than it saves under Blink: the code it writes at run
   // time mostly runs interpreted there. `-p` took 32.8 s without it, 56.9 s with

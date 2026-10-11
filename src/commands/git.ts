@@ -3,16 +3,13 @@ import git, { TREE, STAGE, withGitCache } from './git-cached';
 import http from 'isomorphic-git/http/web';
 import { Command, CommandContext } from './index';
 import { gitStashHandler } from './git-stash';
-import { gitResetHandler } from './git-reset';
+import { gitRm, gitMv, gitRestore, gitClean, gitReset } from './git-worktree';
+import { gitBlame } from './git-blame';
 import { gitTagHandler } from './git-tag';
-import {
-  unifiedDiff, resolveRevision, readFileAtRef,
-  diffCommits, diffStaged, formatCommit,
-  type DiffOpts,
-} from './git-utils';
+import { resolveRevision } from './git-utils';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { activeProfile } from '../profile';
-import { gitPlumbing } from './git-plumbing';
+import { gitPlumbing, changeSummary, stagedCount, statusText, gitDate, unmergedPaths, pathEntries, changesBetweenTrees } from './git-plumbing';
 import { packageShadows } from '../pkg-manager';
 import { installPackIndexer } from '../git-pack-indexer';
 import { builtinCloneHandles } from './git-clone-route';
@@ -155,6 +152,10 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             return abs === dir ? '.' : abs.slice(dir === '/' ? 1 : dir.length + 1);
           });
           const under = (f: string) => rel.some(r => r === '.' || f === r || f.startsWith(r + '/'));
+          // statusMatrix trusts the index's stat data: a file rewritten at the same size no later than
+          // the index was written reads as unchanged. Those ("racily clean", as git calls them) get hashed.
+          const indexTime = (await ctx.fs.stat(`${dir === '/' ? '' : dir}/.git/index`).catch(() => null) as any)?.mtimeMs ?? Infinity;
+          const racy = async (f: string) => ((await ctx.fs.stat(`${dir === '/' ? '' : dir}/${f}`).catch(() => null) as any)?.mtimeMs ?? Infinity) >= indexTime - 1000;
           const seen = new Set<string>();
           const matrix = await git.statusMatrix({ fs, dir, ...(rel.includes('.') ? {} : { filepaths: rel }) });
           for (const [filepath, head, work, stage] of matrix) {
@@ -165,9 +166,10 @@ async function gitMain(ctx: CommandContext): Promise<number> {
               continue;
             }
             if (update && head === 0 && stage === 0) continue; // -u: tracked files only
-            if ((work === 1 && stage === 1) || (work === 2 && stage === 2)) continue;
+            if (((work === 1 && stage === 1) || (work === 2 && stage === 2)) && !(await racy(filepath))) continue;
             await git.add({ fs, dir, filepath, force });
           }
+          const ignoredPaths: string[] = [];
           for (let i = 0; i < rel.length; i++) {
             if (rel[i] === '.' || [...seen].some(f => f === rel[i] || f.startsWith(rel[i] + '/'))) continue;
             // ignored (git add -f), or nothing there
@@ -176,6 +178,11 @@ async function gitMain(ctx: CommandContext): Promise<number> {
               ctx.stderr += `fatal: pathspec '${paths[i]}' did not match any files\n`;
               return 128;
             }
+            if (await git.isIgnored({ fs, dir, filepath: rel[i] }).catch(() => false)) ignoredPaths.push(paths[i]);
+          }
+          if (ignoredPaths.length) {
+            ctx.stderr += `The following paths are ignored by one of your .gitignore files:\n${ignoredPaths.map(p => p + '\n').join('')}hint: Use -f if you really want to add them.\nhint: Turn this message off by running\nhint: "git config advice.addIgnoredFile false"\n`;
+            return 1;
           }
           break;
         }
@@ -209,371 +216,144 @@ async function gitMain(ctx: CommandContext): Promise<number> {
           message = messages.map(m => m.replace(/\n+$/, '')).join('\n\n');
           if (all) {
             // -a: stage what changed in tracked files, as git does
+            // (a racily clean file is hashed, not trusted to its stat data: see add)
+            const indexTime = (await ctx.fs.stat(`${dir === '/' ? '' : dir}/.git/index`).catch(() => null) as any)?.mtimeMs ?? Infinity;
             for (const [filepath, head, work, stage] of await git.statusMatrix({ fs, dir })) {
               if (head === 0 && stage === 0) continue;
-              if (work === 0) await git.remove({ fs, dir, filepath });
-              else if (work !== stage || (head === 1 && work === 2)) await git.add({ fs, dir, filepath });
+              if (work === 0) { await git.remove({ fs, dir, filepath }); continue; }
+              const mtime = (await ctx.fs.stat(`${dir === '/' ? '' : dir}/${filepath}`).catch(() => null) as any)?.mtimeMs ?? Infinity;
+              if (work !== stage || (head === 1 && work === 2) || mtime >= indexTime - 1000) await git.add({ fs, dir, filepath });
             }
           }
 
           const author = await resolveAuthor(ctx, fs, dir);
-
-          if (amend) {
-            // Read current HEAD commit
-            const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-            const { commit: headCommit } = await git.readCommit({ fs, dir, oid: headOid });
-            if (!message) message = headCommit.message;
-            // Move HEAD to parent
-            const currentBranch = await git.currentBranch({ fs, dir }) || 'main';
-            if (headCommit.parent.length > 0) {
-              await git.writeRef({ fs, dir, ref: `refs/heads/${currentBranch}`, value: headCommit.parent[0], force: true });
+          const committer = await resolveCommitter(ctx, fs, dir);
+          const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }).catch(() => null);
+          const prefix = workDir === dir ? '' : workDir.slice(dir === '/' ? 1 : dir.length + 1) + '/';
+          // Concluding a merge: its other parent and message, once no path is left conflicted
+          const gitDir = `${dir === '/' ? '' : dir}/.git`;
+          const mergeHead = ((await ctx.fs.readFile(`${gitDir}/MERGE_HEAD`, 'utf8').catch(() => '')) as string).trim() || null;
+          if (mergeHead) {
+            const conflicted = await unmergedPaths(fs, dir);
+            if (conflicted.size) {
+              ctx.stdout = [...conflicted.keys()].sort().map((p) => `U\t${p}\n`).join('');
+              ctx.stderr = "error: Committing is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict.\n";
+              return 128;
             }
-            const sha = await git.commit({ fs, dir, message, author });
-            if (!quiet) ctx.stdout = `[${currentBranch} ${sha.slice(0, 7)}] ${message.split('\n')[0].trim()}\n`;
-            break;
+            if (!message) message = ((await ctx.fs.readFile(`${gitDir}/MERGE_MSG`, 'utf8').catch(() => '')) as string).replace(/\n+$/, '');
           }
-
-          if (!message) {
-            ctx.stderr = 'error: must supply commit message with -m\n';
+          // Nothing staged: git says so with the status, and commits nothing
+          if (!mergeHead && !amend && !allowEmpty && await stagedCount(fs, dir) === 0) {
+            ctx.stdout = await statusText(fs, dir, prefix);
             return 1;
           }
+          let headCommit: any = null;
+          if (amend) {
+            if (!headOid) { ctx.stderr = 'fatal: You have nothing to amend.\n'; return 128; }
+            headCommit = (await git.readCommit({ fs, dir, oid: headOid })).commit;
+            if (!message) message = headCommit.message;
+          }
+          if (!message) {
+            ctx.stderr = 'Aborting commit due to empty commit message.\n';
+            return 1;
+          }
+          // (--amend replaces HEAD's commit, with HEAD's parents and author; the committer is now)
           const sha = await git.commit({
-            fs, dir, message, author,
-            ...(allowEmpty ? { allowEmpty: true } : {}),
+            fs, dir, message, committer,
+            author: amend ? headCommit.author : author,
+            ...(amend ? { amend: true } : {}),
+            ...(mergeHead && headOid ? { parent: [headOid, mergeHead] } : {}),
           });
-          const branch = await git.currentBranch({ fs, dir }) || 'main';
-          if (!quiet) ctx.stdout = `[${branch} ${sha.slice(0, 7)}] ${message.split('\n')[0]}\n`;
-          break;
-        }
-
-        case 'status': {
-          let porcelain = false;
-          let short = false;
-          for (let i = 1; i < ctx.args.length; i++) {
-            if (ctx.args[i] === '--porcelain') porcelain = true;
-            if (ctx.args[i] === '-s' || ctx.args[i] === '--short') short = true;
+          if (mergeHead) for (const f of ['MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE']) await ctx.fs.unlink(`${gitDir}/${f}`).catch(() => {});
+          if (!quiet) {
+            const branch = await git.currentBranch({ fs, dir });
+            const parent = amend ? headCommit.parent[0] ?? null : headOid;
+            const subject = message.split('\n\n')[0].split('\n').join(' ').trim();
+            ctx.stdout = `[${branch ?? 'detached HEAD'}${!amend && !headOid ? ' (root-commit)' : ''} ${sha.slice(0, 7)}] ${subject}\n`;
+            if (amend) ctx.stdout += ` Date: ${gitDate(headCommit.author)}\n`;
+            if (!mergeHead) ctx.stdout += await changeSummary(fs, dir, parent, sha, false);
           }
-
-          const matrix = await git.statusMatrix({ fs, dir });
-          const STATUS_MAP: Record<string, string> = {
-            '003': 'added',
-            '020': 'deleted',
-            '023': 'deleted',
-            '100': 'deleted',
-            '101': 'deleted',
-            '103': 'modified',
-            '110': 'deleted',
-            '111': '',
-            '120': 'modified',
-            '121': 'modified',
-            '122': 'modified',
-            '123': 'modified',
-          };
-
-          if (porcelain || short) {
-            // Porcelain/short output: XY codes
-            for (const [filepath, head, workdir, stage] of matrix) {
-              const key = `${head}${workdir}${stage}`;
-              if (key === '111') continue;
-              let X = ' ', Y = ' ';
-              // Index (X) status
-              if (head === 0 && stage === 2) X = 'A';      // added to index
-              else if (head === 1 && stage === 3) X = 'M';  // modified in index
-              else if (head === 1 && stage === 0) X = 'D';  // deleted from index
-              // Worktree (Y) status
-              if (stage === 2 && workdir === 0) Y = 'D';    // deleted in worktree
-              else if (head === 1 && workdir === 2 && stage === 1) Y = 'M'; // modified in worktree
-              else if (head === 0 && workdir === 2 && stage === 0) { X = '?'; Y = '?'; } // untracked
-              ctx.stdout += `${X}${Y} ${filepath}\n`;
-            }
-            break;
-          }
-
-          let hasChanges = false;
-          const staged: string[] = [];
-          const unstaged: string[] = [];
-          const untracked: string[] = [];
-
-          for (const [filepath, head, workdir, stage] of matrix) {
-            const key = `${head}${workdir}${stage}`;
-            if (key === '111') continue;
-            hasChanges = true;
-            if (head === 0 && workdir === 2 && stage === 0) {
-              untracked.push(filepath as string);
-            } else if (stage === 3 || (head === 0 && stage === 2)) {
-              staged.push(`${STATUS_MAP[key] || 'modified'}:   ${filepath}`);
-            } else if (stage === 0 || workdir !== stage) {
-              unstaged.push(`${STATUS_MAP[key] || 'modified'}:   ${filepath}`);
-            }
-          }
-
-          ctx.stdout = `On branch main\n`;
-          if (staged.length > 0) {
-            ctx.stdout += `\nChanges to be committed:\n`;
-            for (const s of staged) ctx.stdout += `\t${s}\n`;
-          }
-          if (unstaged.length > 0) {
-            ctx.stdout += `\nChanges not staged for commit:\n`;
-            for (const s of unstaged) ctx.stdout += `\t${s}\n`;
-          }
-          if (untracked.length > 0) {
-            ctx.stdout += `\nUntracked files:\n`;
-            for (const f of untracked) ctx.stdout += `\t${f}\n`;
-          }
-          if (!hasChanges) {
-            ctx.stdout += `\nnothing to commit, working tree clean\n`;
-          }
-          break;
-        }
-
-        case 'log': {
-          let maxCount = 10;
-          let oneline = false;
-          let showStat = false;
-          let nameOnly = false;
-          let formatStr = '';
-          let showAll = false;
-          for (let i = 1; i < ctx.args.length; i++) {
-            if (ctx.args[i] === '-n' && ctx.args[i + 1]) maxCount = parseInt(ctx.args[++i]);
-            else if (ctx.args[i]?.startsWith('-') && /^-\d+$/.test(ctx.args[i])) maxCount = parseInt(ctx.args[i].slice(1));
-            else if (ctx.args[i]?.startsWith('--max-count=')) maxCount = parseInt(ctx.args[i].split('=')[1]);
-            else if (ctx.args[i] === '--oneline') oneline = true;
-            else if (ctx.args[i] === '--stat') showStat = true;
-            else if (ctx.args[i] === '--name-only') nameOnly = true;
-            else if (ctx.args[i] === '--all') showAll = true;
-            else if (ctx.args[i]?.startsWith('--format=')) formatStr = ctx.args[i].slice(9);
-            else if (ctx.args[i]?.startsWith('--pretty=format:')) formatStr = ctx.args[i].slice(16);
-            else if (ctx.args[i] === '--pretty=oneline') oneline = true;
-            else if (ctx.args[i]?.startsWith('--pretty=')) formatStr = ctx.args[i].slice(9);
-          }
-          let commits;
-          if (showAll) {
-            const branches = await git.listBranches({ fs, dir });
-            const allCommits = new Map<string, any>();
-            for (const branch of branches) {
-              try {
-                const branchCommits = await git.log({ fs, dir, ref: branch, depth: maxCount });
-                for (const c of branchCommits) {
-                  if (!allCommits.has(c.oid)) allCommits.set(c.oid, c);
-                }
-              } catch {}
-            }
-            commits = [...allCommits.values()]
-              .sort((a, b) => b.commit.author.timestamp - a.commit.author.timestamp)
-              .slice(0, maxCount);
-          } else {
-            commits = await git.log({ fs, dir, depth: maxCount });
-          }
-          for (const c of commits) {
-            if (formatStr) {
-              ctx.stdout += formatCommit(c, formatStr) + '\n';
-            } else if (oneline) {
-              ctx.stdout += `${c.oid.slice(0, 7)} ${c.commit.message.trim()}\n`;
-            } else {
-              ctx.stdout += `commit ${c.oid}\n`;
-              ctx.stdout += `Author: ${c.commit.author.name} <${c.commit.author.email}>\n`;
-              const date = new Date(c.commit.author.timestamp * 1000);
-              ctx.stdout += `Date:   ${date.toISOString()}\n`;
-              ctx.stdout += `\n    ${c.commit.message.trim()}\n\n`;
-            }
-            if (showStat || nameOnly) {
-              const parentOid = c.commit.parent.length > 0 ? c.commit.parent[0] : null;
-              const diffOut = await diffCommits(fs, dir, parentOid, c.oid, {
-                stat: showStat,
-                nameOnly,
-              });
-              ctx.stdout += diffOut;
-              if (diffOut) ctx.stdout += '\n';
-            }
-          }
-          break;
-        }
-
-        case 'diff': {
-          // Parse flags and positional args
-          let cached = false;
-          let nameOnlyFlag = false;
-          let nameStatusFlag = false;
-          let statFlag = false;
-          const positional: string[] = [];
-          for (let i = 1; i < ctx.args.length; i++) {
-            const a = ctx.args[i];
-            if (a === '--cached' || a === '--staged') cached = true;
-            else if (a === '--name-only') nameOnlyFlag = true;
-            else if (a === '--name-status') nameStatusFlag = true;
-            else if (a === '--stat') statFlag = true;
-            else if (!a.startsWith('-')) positional.push(a);
-          }
-          const diffOpts: DiffOpts = { nameOnly: nameOnlyFlag, nameStatus: nameStatusFlag, stat: statFlag };
-
-          if (cached) {
-            // git diff --cached: staged vs HEAD
-            ctx.stdout = await diffStaged(fs, dir, diffOpts);
-            break;
-          }
-
-          if (positional.length >= 1) {
-            // Check for commit..commit syntax
-            const dotDot = positional[0].indexOf('..');
-            let ref1: string, ref2: string;
-            if (dotDot > 0) {
-              ref1 = positional[0].slice(0, dotDot);
-              ref2 = positional[0].slice(dotDot + 2);
-              const oid1 = await resolveRevision(fs, dir, ref1);
-              const oid2 = await resolveRevision(fs, dir, ref2);
-              ctx.stdout = await diffCommits(fs, dir, oid1, oid2, diffOpts);
-            } else if (positional.length >= 2) {
-              // Two refs: git diff ref1 ref2
-              const oid1 = await resolveRevision(fs, dir, positional[0]);
-              const oid2 = await resolveRevision(fs, dir, positional[1]);
-              ctx.stdout = await diffCommits(fs, dir, oid1, oid2, diffOpts);
-            } else {
-              // Single ref: diff ref vs working tree
-              // For now, diff ref vs HEAD (since working tree diff requires statusMatrix)
-              const refOid = await resolveRevision(fs, dir, positional[0]);
-              const headOid = await resolveRevision(fs, dir, 'HEAD');
-              if (refOid !== headOid) {
-                ctx.stdout = await diffCommits(fs, dir, refOid, headOid, diffOpts);
-              } else {
-                ctx.stdout = '';
-              }
-            }
-            break;
-          }
-
-          // Default: working tree vs HEAD (existing behavior)
-          const matrix = await git.statusMatrix({ fs, dir });
-          let output = '';
-          for (const [filepath, head, workdir, _stage] of matrix) {
-            if (head === workdir) continue;
-            if (nameOnlyFlag) {
-              output += `${filepath}\n`;
-              continue;
-            }
-            if (nameStatusFlag) {
-              const status = (head === 0) ? 'A' : (workdir === 0) ? 'D' : 'M';
-              output += `${status}\t${filepath}\n`;
-              continue;
-            }
-            output += `diff --git a/${filepath} b/${filepath}\n`;
-            if (head === 0 && workdir === 2) {
-              const content = await ctx.fs.readFile(ctx.fs.resolvePath(filepath as string, dir), 'utf8');
-              output += `new file\n--- /dev/null\n+++ b/${filepath}\n`;
-              const lines = (content as string).split('\n');
-              output += `@@ -0,0 +1,${lines.length} @@\n`;
-              for (const line of lines) output += `+${line}\n`;
-            } else if (workdir === 0) {
-              const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-              const oldContent = await readFileAtRef(fs, dir, headOid, filepath as string);
-              output += `deleted file\n--- a/${filepath}\n+++ /dev/null\n`;
-              if (oldContent != null) {
-                const lines = oldContent.split('\n');
-                output += `@@ -1,${lines.length} +0,0 @@\n`;
-                for (const line of lines) output += `-${line}\n`;
-              }
-            } else {
-              const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-              const oldContent = await readFileAtRef(fs, dir, headOid, filepath as string);
-              const newContent = await ctx.fs.readFile(ctx.fs.resolvePath(filepath as string, dir), 'utf8');
-              output += `--- a/${filepath}\n+++ b/${filepath}\n`;
-              if (oldContent != null && newContent != null) {
-                output += unifiedDiff(oldContent.split('\n'), (newContent as string).split('\n'));
-              } else {
-                output += `(could not read file contents)\n`;
-              }
-            }
-          }
-          ctx.stdout = output;
-          break;
-        }
-
-        case 'show': {
-          const ref = ctx.args[1] || 'HEAD';
-          let nameOnlyFlag = false;
-          let statFlag = false;
-          for (let i = 1; i < ctx.args.length; i++) {
-            if (ctx.args[i] === '--name-only') nameOnlyFlag = true;
-            if (ctx.args[i] === '--stat') statFlag = true;
-          }
-          let oid = await resolveRevision(fs, dir, ref);
-
-          // Check if this is an annotated tag object
-          try {
-            const { type } = await git.readObject({ fs, dir, oid });
-            if (type === 'tag') {
-              const { tag } = await git.readTag({ fs, dir, oid });
-              ctx.stdout = `tag ${ref}\n`;
-              ctx.stdout += `Tagger: ${tag.tagger.name} <${tag.tagger.email}>\n`;
-              ctx.stdout += `Date:   ${new Date(tag.tagger.timestamp * 1000).toISOString()}\n`;
-              ctx.stdout += `\n    ${tag.message.trim()}\n\n`;
-              // Follow to the target commit
-              oid = tag.object;
-            }
-          } catch {
-            // Not a tag object, continue as commit
-          }
-
-          const { commit } = await git.readCommit({ fs, dir, oid });
-          const date = new Date(commit.author.timestamp * 1000);
-
-          ctx.stdout += `commit ${oid}\n`;
-          ctx.stdout += `Author: ${commit.author.name} <${commit.author.email}>\n`;
-          ctx.stdout += `Date:   ${date.toISOString()}\n`;
-          ctx.stdout += `\n    ${commit.message.trim()}\n\n`;
-
-          const parentOid = commit.parent.length > 0 ? commit.parent[0] : null;
-          const diffOpts: DiffOpts = { nameOnly: nameOnlyFlag, stat: statFlag };
-          ctx.stdout += await diffCommits(fs, dir, parentOid, oid, diffOpts);
           break;
         }
 
         case 'branch': {
-          const branchArgs = ctx.args.slice(1);
-          let showAll = false;
-          let showRemote = false;
-          for (const ba of branchArgs) {
-            if (ba === '-a' || ba === '--all') showAll = true;
-            if (ba === '-r' || ba === '--remotes') showRemote = true;
+          let del: 'd' | 'D' | null = null, move = false, force = false, all = false, remotes = false;
+          const names: string[] = [];
+          for (const a of ctx.args.slice(1)) {
+            if (a === '--delete') del = del ?? 'd';
+            else if (a === '--move') move = true;
+            else if (a === '--force') force = true;
+            else if (a === '--all') all = true;
+            else if (a === '--remotes') remotes = true;
+            else if (a === '--list' || a === '--quiet' || a.startsWith('--color') || a === '--no-color' || a.startsWith('--sort')) { /* listing as is */ }
+            else if (/^-[dDmMfarlq]+$/.test(a)) {
+              for (const c of a.slice(1)) {
+                if (c === 'd' || c === 'D') { del = c === 'D' || del === 'D' ? 'D' : 'd'; if (c === 'D') force = true; }
+                else if (c === 'm' || c === 'M') { move = true; if (c === 'M') force = true; }
+                else if (c === 'f') force = true;
+                else if (c === 'a') all = true;
+                else if (c === 'r') remotes = true;
+              }
+            } else names.push(a);
           }
-          const nonFlagArgs = branchArgs.filter(a => !a.startsWith('-'));
-          if (nonFlagArgs.length > 0 && !showAll && !showRemote) {
-            if (branchArgs[0] === '-d' || branchArgs[0] === '-D') {
-              const delBranch = nonFlagArgs[0];
-              if (!delBranch) { ctx.stderr = 'fatal: branch name required\n'; return 1; }
-              await git.deleteBranch({ fs, dir, ref: delBranch });
-              ctx.stdout += `Deleted branch ${delBranch}.\n`;
-              break;
+          const current = await git.currentBranch({ fs, dir });
+          const existing = await git.listBranches({ fs, dir });
+          const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }).catch(() => null);
+          if (del) {
+            if (!names.length) { ctx.stderr = 'fatal: branch name required\n'; return 128; }
+            let status = 0;
+            for (const name of names) {
+              if (!existing.includes(name)) { ctx.stderr += `error: branch '${name}' not found\n`; status = 1; continue; }
+              if (name === current) { ctx.stderr += `error: cannot delete branch '${name}' used by worktree at '${dir}'\n`; status = 1; continue; }
+              const oid = await git.resolveRef({ fs, dir, ref: `refs/heads/${name}` });
+              // -d deletes only what HEAD has merged
+              const merged = !headOid || oid === headOid || await git.isDescendent({ fs, dir, oid: headOid, ancestor: oid, depth: -1 }).catch(() => false);
+              if (del === 'd' && !force && !merged) {
+                ctx.stderr += `error: the branch '${name}' is not fully merged.\nIf you are sure you want to delete it, run 'git branch -D ${name}'\n`;
+                status = 1;
+                continue;
+              }
+              await git.deleteBranch({ fs, dir, ref: name });
+              ctx.stdout += `Deleted branch ${name} (was ${oid.slice(0, 7)}).\n`;
             }
-            const newBranch = nonFlagArgs[0];
-            await git.branch({ fs, dir, ref: newBranch });
+            return status;
+          }
+          if (move) {
+            const [from, to] = names.length >= 2 ? names : [current, names[0]];
+            if (!to || !from) { ctx.stderr = 'fatal: branch name required\n'; return 128; }
+            if (!existing.includes(from)) { ctx.stderr = `fatal: no branch named '${from}'\n`; return 128; }
+            if (existing.includes(to) && !force) { ctx.stderr = `fatal: a branch named '${to}' already exists\n`; return 128; }
+            if (existing.includes(to)) await git.deleteBranch({ fs, dir, ref: to });
+            await git.renameBranch({ fs, dir, oldref: from, ref: to, checkout: from === current });
             break;
           }
-          if (!showRemote) {
-            const branches = await git.listBranches({ fs, dir });
-            const current = await git.currentBranch({ fs, dir });
-            for (const b of branches) {
-              ctx.stdout += (b === current ? '* ' : '  ') + b + '\n';
-            }
+          if (names.length && !all && !remotes) {
+            const [name, start] = names;
+            if (existing.includes(name) && !force) { ctx.stderr = `fatal: a branch named '${name}' already exists\n`; return 128; }
+            let object: string | undefined;
+            if (start) {
+              try { object = await resolveRevision(fs, dir, start); }
+              catch { ctx.stderr = `fatal: not a valid object name: '${start}'\n`; return 128; }
+            } else if (!headOid) { ctx.stderr = `fatal: not a valid object name: '${current ?? 'HEAD'}'\n`; return 128; }
+            await git.branch({ fs, dir, ref: name, object, force });
+            break;
           }
-          if (showAll || showRemote) {
-            try {
-              const remotes = await git.listRemotes({ fs, dir });
-              for (const r of remotes) {
-                try {
-                  const remoteBranches = await git.listBranches({ fs, dir, remote: r.remote });
-                  for (const b of remoteBranches) {
-                    ctx.stdout += `  remotes/${r.remote}/${b}\n`;
-                  }
-                } catch {}
-              }
-            } catch {}
+          if (!remotes) {
+            if (!current && headOid) ctx.stdout += `* (HEAD detached at ${headOid.slice(0, 7)})\n`;
+            for (const b of [...existing].sort()) ctx.stdout += (b === current ? '* ' : '  ') + b + '\n';
+          }
+          if (all || remotes) {
+            for (const r of await git.listRemotes({ fs, dir }).catch(() => [] as { remote: string }[])) {
+              const list = await git.listBranches({ fs, dir, remote: r.remote }).catch(() => [] as string[]);
+              for (const b of list.sort()) ctx.stdout += `  ${all ? 'remotes/' : ''}${r.remote}/${b}\n`;
+            }
           }
           break;
         }
 
         case 'checkout':
         case 'switch': {
-          let newBranch = '', force = false, quiet = false, sawDashDash = false;
+          let newBranch = '', force = false, quiet = false, sawDashDash = false, detach = false;
           const rest: string[] = [];
           for (let i = 1; i < ctx.args.length; i++) {
             const a = ctx.args[i];
@@ -582,25 +362,53 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             else if (a === '-b' || a === '-B' || a === '-c' || a === '-C') { newBranch = ctx.args[++i] ?? ''; force = force || a === '-B' || a === '-C'; if (!newBranch) { ctx.stderr = `error: switch \`${a[1]}' requires a value\n`; return 129; } }
             else if (a === '-q' || a === '--quiet') quiet = true;
             else if (a === '-f' || a === '--force') force = true;
-            else if (a === '--no-track' || a === '--track' || a === '-t' || a === '--recurse-submodules' || a === '--no-recurse-submodules' || a === '--progress' || a === '--no-progress' || a === '--detach' || a === '-d') {}
+            else if (a === '--detach' || (a === '-d' && subcommand === 'switch')) detach = true;
+            else if (a === '--no-track' || a === '--track' || a === '-t' || a === '--recurse-submodules' || a === '--no-recurse-submodules' || a === '--progress' || a === '--no-progress') {}
             else rest.push(a);
           }
           const say = (m: string) => { if (!quiet) ctx.stderr += m; };
+          // a switch that would overwrite local changes stops, as git's
+          const switchTo = async (ref: string): Promise<boolean> => {
+            try { await git.checkout({ fs, dir, ref, force }); return true; }
+            catch (e: any) {
+              if (e?.code !== 'CheckoutConflictError') throw e;
+              ctx.stderr += `error: Your local changes to the following files would be overwritten by checkout:\n${(e.data?.filepaths ?? []).map((f: string) => `\t${f}\n`).join('')}Please commit your changes or stash them before you switch branches.\nAborting\n`;
+              return false;
+            }
+          };
+          const branches = await git.listBranches({ fs, dir });
           if (newBranch) {
-            const start = rest[0] ? await resolveRevision(fs, dir, rest[0]) : undefined;
-            await git.branch({ fs, dir, ref: newBranch, object: start, checkout: false, force });
-            await git.checkout({ fs, dir, ref: newBranch });
+            if (branches.includes(newBranch) && !force) { ctx.stderr = `fatal: a branch named '${newBranch}' already exists\n`; return 128; }
+            let start: string | undefined;
+            if (rest[0]) {
+              try { start = await resolveRevision(fs, dir, rest[0]); }
+              catch { ctx.stderr = `fatal: invalid reference: ${rest[0]}\n`; return 128; }
+            }
+            // (on an unborn branch there is nothing to point at yet: HEAD just names the new one)
+            const unborn = !start && !(await git.resolveRef({ fs, dir, ref: 'HEAD' }).catch(() => null));
+            if (!unborn) await git.branch({ fs, dir, ref: newBranch, object: start, checkout: false, force });
+            if (start && !(await switchTo(newBranch))) { await git.deleteBranch({ fs, dir, ref: newBranch }).catch(() => {}); return 1; }
+            if (!start) await git.writeRef({ fs, dir, ref: 'HEAD', value: `refs/heads/${newBranch}`, symbolic: true, force: true });
             say(`Switched to a new branch '${newBranch}'\n`);
             break;
           }
-          if (!rest.length) {
-            ctx.stderr = 'error: must specify branch or path\n';
-            return 1;
+          if (detach || (!rest.length && subcommand === 'checkout')) {
+            if (!detach) break; // (plain `git checkout`: nothing to do)
+            const oid = await resolveRevision(fs, dir, rest[0] ?? 'HEAD').catch(() => null);
+            if (!oid) { ctx.stderr = `fatal: invalid reference: ${rest[0]}\n`; return 128; }
+            if (!(await switchTo(oid))) return 1;
+            const { commit } = await git.readCommit({ fs, dir, oid });
+            say(`HEAD is now at ${oid.slice(0, 7)} ${commit.message.split('\n')[0]}\n`);
+            break;
           }
-          const branches = await git.listBranches({ fs, dir });
+          if (!rest.length) {
+            ctx.stderr = 'fatal: missing branch or commit argument\n';
+            return 128;
+          }
           const target = rest[0];
           if (!sawDashDash && rest.length === 1 && branches.includes(target)) {
-            await git.checkout({ fs, dir, ref: target, force });
+            if (target === await git.currentBranch({ fs, dir })) { say(`Already on '${target}'\n`); break; }
+            if (!(await switchTo(target))) return 1;
             say(`Switched to branch '${target}'\n`);
             break;
           }
@@ -618,27 +426,24 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             let oid: string | null = null;
             try { oid = await resolveRevision(fs, dir, target); } catch {}
             if (oid) {
-              await git.checkout({ fs, dir, ref: oid, force });
-              say(`HEAD is now at ${oid.slice(0, 7)}\n`);
+              if (!(await switchTo(oid))) return 1;
+              const { commit } = await git.readCommit({ fs, dir, oid });
+              say(`HEAD is now at ${oid.slice(0, 7)} ${commit.message.split('\n')[0]}\n`);
               break;
             }
           }
           if (subcommand === 'switch') { ctx.stderr = `fatal: invalid reference: ${target}\n`; return 128; }
-          // paths: from the index's HEAD, or from a commit (checkout REV -- paths)
-          let ref = 'HEAD', paths = rest;
-          if (sawDashDash && ctx.args.indexOf('--') > 1 && rest.length > 0) {
+          // paths: from the index, or from a commit (checkout REV -- paths), as git restore does them
+          let ref: string | null = null, paths = rest;
+          if (sawDashDash) {
             const before = ctx.args.slice(1, ctx.args.indexOf('--')).filter(a => !a.startsWith('-'));
             if (before.length) ref = before[0];
+            paths = ctx.args.slice(ctx.args.indexOf('--') + 1);
           }
-          if (sawDashDash) paths = ctx.args.slice(ctx.args.indexOf('--') + 1);
-          const rel = paths.map(p => {
-            const abs = ctx.fs.resolvePath(p, workDir);
-            return abs === dir ? '.' : abs.slice(dir === '/' ? 1 : dir.length + 1);
-          });
-          if (!rel.length) { ctx.stderr = 'error: must specify branch or path\n'; return 1; }
-          await git.checkout({ fs, dir, ref, filepaths: rel, force: true, noUpdateHead: true });
-          say(`Updated ${rel.length} path${rel.length === 1 ? '' : 's'} from ${ref === 'HEAD' ? 'the index' : ref}\n`);
-          break;
+          if (!paths.length) { ctx.stderr = 'fatal: you must specify path(s) to restore\n'; return 128; }
+          const saved = ctx.args;
+          ctx.args = ['restore', ...(ref ? ['--source', ref, '--staged', '--worktree'] : []), '--', ...paths];
+          try { return await gitRestore(ctx, fs, dir, workDir); } finally { ctx.args = saved; }
         }
 
         case 'clone': {
@@ -746,53 +551,51 @@ async function gitMain(ctx: CommandContext): Promise<number> {
         }
 
         case 'remote': {
-          const remoteCmd = ctx.args[1];
-          if (!remoteCmd || remoteCmd === '-v') {
-            const remotes = await git.listRemotes({ fs, dir });
-            if (remotes.length === 0) {
-              ctx.stdout = '';
-            } else {
-              for (const r of remotes) {
-                if (remoteCmd === '-v') {
-                  ctx.stdout += `${r.remote}\t${r.url} (fetch)\n`;
-                  ctx.stdout += `${r.remote}\t${r.url} (push)\n`;
-                } else {
-                  ctx.stdout += `${r.remote}\n`;
-                }
-              }
-            }
-          } else if (remoteCmd === 'add') {
-            const name = ctx.args[2];
-            const url = ctx.args[3];
-            if (!name || !url) {
-              ctx.stderr = 'usage: git remote add <name> <url>\n';
-              return 1;
-            }
-            await git.addRemote({ fs, dir, remote: name, url });
-            ctx.stdout = '';
-          } else if (remoteCmd === 'set-url') {
-            const name = ctx.args[2];
-            const url = ctx.args[3];
-            if (!name || !url) {
-              ctx.stderr = 'usage: git remote set-url <name> <url>\n';
-              return 1;
-            }
-            await git.deleteRemote({ fs, dir, remote: name });
-            await git.addRemote({ fs, dir, remote: name, url });
-            ctx.stdout = '';
-          } else if (remoteCmd === 'remove' || remoteCmd === 'rm') {
-            const name = ctx.args[2];
-            if (!name) {
-              ctx.stderr = 'usage: git remote remove <name>\n';
-              return 1;
-            }
-            await git.deleteRemote({ fs, dir, remote: name });
-            ctx.stdout = '';
-          } else {
-            ctx.stderr = `git remote: '${remoteCmd}' is not a valid subcommand\n`;
-            return 1;
+          const [, remoteCmd, name, url] = ctx.args;
+          const remotes = await git.listRemotes({ fs, dir });
+          const known = (n: string) => remotes.some(r => r.remote === n);
+          if (!remoteCmd || remoteCmd === '-v' || remoteCmd === '--verbose') {
+            for (const r of remotes) ctx.stdout += remoteCmd ? `${r.remote}\t${r.url} (fetch)\n${r.remote}\t${r.url} (push)\n` : `${r.remote}\n`;
+            break;
           }
-          break;
+          if (remoteCmd === 'add') {
+            if (!name || !url) { ctx.stderr = 'usage: git remote add [<options>] <name> <url>\n'; return 129; }
+            if (known(name)) { ctx.stderr = `error: remote ${name} already exists.\n`; return 3; }
+            await git.addRemote({ fs, dir, remote: name, url });
+            break;
+          }
+          if (remoteCmd === 'get-url' || remoteCmd === 'set-url' || remoteCmd === 'remove' || remoteCmd === 'rm' || remoteCmd === 'rename') {
+            if (!name) { ctx.stderr = `usage: git remote ${remoteCmd} <name>\n`; return 129; }
+            if (!known(name)) { ctx.stderr = remoteCmd === 'remove' || remoteCmd === 'rm' || remoteCmd === 'rename' ? `error: No such remote: '${name}'\n` : `error: No such remote '${name}'\n`; return 2; }
+            if (remoteCmd === 'get-url') { ctx.stdout = `${remotes.find(r => r.remote === name)!.url}\n`; break; }
+            if (remoteCmd === 'set-url') {
+              if (!url) { ctx.stderr = 'usage: git remote set-url [--push] <name> <newurl> [<oldurl>]\n'; return 129; }
+              await git.setConfig({ fs, dir, path: `remote.${name}.url`, value: url });
+              break;
+            }
+            if (remoteCmd === 'rename') {
+              if (!url) { ctx.stderr = 'usage: git remote rename [--[no-]progress] <old> <new>\n'; return 129; }
+              if (known(url)) { ctx.stderr = `error: remote ${url} already exists.\n`; return 3; }
+              const old = remotes.find(r => r.remote === name)!;
+              await git.deleteRemote({ fs, dir, remote: name });
+              await git.addRemote({ fs, dir, remote: url, url: old.url });
+              // its remote-tracking branches and the branches that track it move along
+              for (const b of await git.listBranches({ fs, dir, remote: name }).catch(() => [] as string[])) {
+                const oid = await git.resolveRef({ fs, dir, ref: `refs/remotes/${name}/${b}` }).catch(() => null);
+                if (oid && b !== 'HEAD') await git.writeRef({ fs, dir, ref: `refs/remotes/${url}/${b}`, value: oid, force: true });
+                await git.deleteRef({ fs, dir, ref: `refs/remotes/${name}/${b}` }).catch(() => {});
+              }
+              for (const b of await git.listBranches({ fs, dir })) {
+                if (await git.getConfig({ fs, dir, path: `branch.${b}.remote` }).catch(() => undefined) === name) await git.setConfig({ fs, dir, path: `branch.${b}.remote`, value: url });
+              }
+              break;
+            }
+            await git.deleteRemote({ fs, dir, remote: name });
+            for (const b of await git.listBranches({ fs, dir, remote: name }).catch(() => [] as string[])) await git.deleteRef({ fs, dir, ref: `refs/remotes/${name}/${b}` }).catch(() => {});
+            break;
+          }
+          ctx.stderr = `error: unknown subcommand: \`${remoteCmd}'\n`;
+          return 129;
         }
 
         case 'push': {
@@ -894,7 +697,7 @@ async function gitMain(ctx: CommandContext): Promise<number> {
         }
 
         case 'merge': {
-          let noFF = false, ffOnly = false, quiet = false, message: string | undefined;
+          let noFF = false, ffOnly = false, quiet = false, abort = false, message: string | undefined;
           const names: string[] = [];
           for (let i = 1; i < ctx.args.length; i++) {
             const a = ctx.args[i];
@@ -902,29 +705,76 @@ async function gitMain(ctx: CommandContext): Promise<number> {
             else if (a === '--ff') noFF = false;
             else if (a === '--ff-only') ffOnly = true;
             else if (a === '-q' || a === '--quiet') quiet = true;
+            else if (a === '--abort') abort = true;
             else if (a === '-m' || a === '--message') message = ctx.args[++i];
             else if (a.startsWith('--message=')) message = a.slice(10);
             else if (!a.startsWith('-')) names.push(a);
+          }
+          const gitDir = `${dir === '/' ? '' : dir}/.git`;
+          const mergeFiles = ['MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE'];
+          if (abort) {
+            if (!(await ctx.fs.exists(`${gitDir}/MERGE_HEAD`))) { ctx.stderr = 'fatal: There is no merge to abort (MERGE_HEAD missing).\n'; return 128; }
+            const saved = ctx.args;
+            ctx.args = ['reset', '--hard', '-q', 'HEAD'];
+            try { await gitReset(ctx, fs, dir, workDir); } finally { ctx.args = saved; }
+            for (const f of mergeFiles) await ctx.fs.unlink(`${gitDir}/${f}`).catch(() => {});
+            break;
+          }
+          if (await ctx.fs.exists(`${gitDir}/MERGE_HEAD`)) {
+            ctx.stderr = 'error: Merging is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use \'git add/rm <file>\'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict.\n';
+            return 128;
           }
           const theirs = names[0];
           if (!theirs) {
             ctx.stderr = 'fatal: No remote for the current branch.\n';
             return 128;
           }
+          const theirOid = await resolveRevision(fs, dir, theirs).catch(() => null);
+          if (!theirOid) { ctx.stderr = `merge: ${theirs} - not something we can merge\n`; return 1; }
           const ours = await git.currentBranch({ fs, dir }) || 'main';
           const before = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+          const msg = message ?? `Merge branch '${theirs}'`;
+          // what the work tree had before: a conflict's cleanly merged files are staged, these aren't
+          const local = new Set((await pathEntries(fs, dir, true)).filter((e) => !e.stage || e.work?.oid !== e.stage.oid).map((e) => e.path));
           let mergeResult;
           try {
             mergeResult = await git.merge({
-              fs, dir, ours, theirs,
+              // (a branch by name: isomorphic-git labels the conflict markers with it)
+              fs, dir, ours, theirs: await git.expandRef({ fs, dir, ref: theirs }).then(() => theirs, () => theirOid),
               fastForward: !noFF,
               fastForwardOnly: ffOnly,
-              message: message ?? `Merge branch '${theirs}'`,
+              message: msg,
               author: await resolveAuthor(ctx, fs, dir),
+              committer: await resolveCommitter(ctx, fs, dir),
+              // a conflict leaves the markers in the work tree and the stages in the index, as git
+              abortOnConflict: false,
             });
           } catch (e: any) {
-            if (e.code === 'MergeConflictError' || e.code === 'MergeNotSupportedError') {
-              ctx.stderr = `CONFLICT (content): Merge conflict in ${(e.data?.filepaths ?? []).join(', ') || 'the work tree'}\nAutomatic merge failed; nothing was changed (the built-in git; \`pkg install git\` merges with conflict markers).\n`;
+            if (e.code === 'MergeConflictError') {
+              const d = e.data ?? {};
+              await ctx.fs.writeFile(`${gitDir}/MERGE_HEAD`, `${theirOid}\n`);
+              await ctx.fs.writeFile(`${gitDir}/MERGE_MODE`, '');
+              await ctx.fs.writeFile(`${gitDir}/MERGE_MSG`, `${msg}\n\n# Conflicts:\n${(d.filepaths ?? []).map((f: string) => `#\t${f}\n`).join('')}`);
+              await git.writeRef({ fs, dir, ref: 'ORIG_HEAD', value: before, force: true }).catch(() => {});
+              const conflicted = await unmergedPaths(fs, dir);
+              for (const e of await pathEntries(fs, dir, true)) {
+                if (conflicted.has(e.path) || local.has(e.path) || !e.work || e.work.oid === e.stage?.oid) continue;
+                await git.add({ fs, dir, filepath: e.path });
+              }
+              // our side's marker says HEAD, as git's does
+              for (const f of d.bothModified ?? []) {
+                const path = `${dir === '/' ? '' : dir}/${f}`;
+                const text = await ctx.fs.readFile(path, 'utf8').catch(() => null) as string | null;
+                if (text !== null) await ctx.fs.writeFile(path, text.replace(new RegExp(`^<{7} ${ours.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'gm'), '<<<<<<< HEAD'));
+              }
+              for (const f of d.bothModified ?? []) ctx.stdout += `Auto-merging ${f}\nCONFLICT (content): Merge conflict in ${f}\n`;
+              for (const f of d.deleteByUs ?? []) ctx.stdout += `CONFLICT (modify/delete): ${f} deleted in HEAD and modified in ${theirs}.  Version ${theirs} of ${f} left in tree.\n`;
+              for (const f of d.deleteByTheirs ?? []) ctx.stdout += `CONFLICT (modify/delete): ${f} deleted in ${theirs} and modified in HEAD.  Version HEAD of ${f} left in tree.\n`;
+              ctx.stdout += 'Automatic merge failed; fix conflicts and then commit the result.\n';
+              return 1;
+            }
+            if (e.code === 'MergeNotSupportedError') {
+              ctx.stderr = 'error: the built-in git can\'t merge these changes (`pkg install git` has the full git)\n';
               return 1;
             }
             if (e.code === 'FastForwardError') { ctx.stderr = 'fatal: Not possible to fast-forward, aborting.\n'; return 128; }
@@ -933,106 +783,93 @@ async function gitMain(ctx: CommandContext): Promise<number> {
           // the merge moved the branch; the work tree and index follow
           if (!mergeResult.alreadyMerged) await git.checkout({ fs, dir, ref: ours });
           if (quiet) break;
-          if (mergeResult.alreadyMerged) ctx.stdout = 'Already up to date.\n';
-          else if (mergeResult.fastForward) ctx.stdout = `Updating ${before.slice(0, 7)}..${mergeResult.oid?.slice(0, 7)}\nFast-forward\n`;
+          if (mergeResult.alreadyMerged) { ctx.stdout = 'Already up to date.\n'; break; }
+          if (mergeResult.fastForward) ctx.stdout = `Updating ${before.slice(0, 7)}..${mergeResult.oid?.slice(0, 7)}\nFast-forward\n`;
           else ctx.stdout = `Merge made by the 'ort' strategy.\n`;
+          ctx.stdout += await changeSummary(fs, dir, before, mergeResult.oid!, true);
           break;
         }
 
         case 'stash':
-          return gitStashHandler(ctx, fs, dir);
+          return gitStashHandler(ctx, fs, dir, workDir, () => resolveCommitter(ctx, fs, dir));
 
         case 'reset':
-          return gitResetHandler(ctx, fs, dir);
+          return gitReset(ctx, fs, dir, workDir);
+        case 'rm':
+          return gitRm(ctx, fs, dir, workDir);
+        case 'mv':
+          return gitMv(ctx, fs, dir, workDir);
+        case 'restore':
+          return gitRestore(ctx, fs, dir, workDir);
+        case 'clean':
+          return gitClean(ctx, fs, dir, workDir);
+        case 'blame':
+          return gitBlame(ctx, fs, dir, workDir);
 
         case 'tag':
-          return gitTagHandler(ctx, fs, dir);
+          return gitTagHandler(ctx, fs, dir, () => resolveCommitter(ctx, fs, dir));
 
-        case 'cherry-pick': {
-          const ref = ctx.args[1];
-          if (!ref) { ctx.stderr = 'usage: git cherry-pick <commit>\n'; return 1; }
-          let oid: string;
-          try {
-            oid = await resolveRevision(fs, dir, ref);
-          } catch {
-            ctx.stderr = `fatal: bad revision '${ref}'\n`; return 128;
-          }
-          const commitObj = await git.readCommit({ fs, dir, oid });
-          const parentOid = commitObj.commit.parent[0];
-          if (!parentOid) { ctx.stderr = 'fatal: cannot cherry-pick root commit\n'; return 1; }
-          // Walk tree diff parent→commit, apply changes
-          const changes = await git.walk({ fs, dir, trees: [git.TREE({ ref: parentOid }), git.TREE({ ref: oid })],
-            map: async (filepath: string, [A, B]: any[]) => {
-              if (filepath === '.') return;
-              const aOid = A ? await A.oid() : null;
-              const bOid = B ? await B.oid() : null;
-              if (aOid === bOid) return;
-              const aType = A ? await A.type() : null;
-              const bType = B ? await B.type() : null;
-              if (bType === 'tree' || aType === 'tree') return;
-              return { filepath, aOid, bOid, bType };
-            },
-          });
-          for (const ch of changes.filter(Boolean)) {
-            const fullPath = dir + '/' + ch.filepath;
-            if (ch.bOid) {
-              const { blob } = await git.readBlob({ fs, dir, oid: ch.bOid });
-              await ctx.fs.mkdir(fullPath.split('/').slice(0, -1).join('/'), { recursive: true });
-              await ctx.fs.writeFile(fullPath, new TextDecoder().decode(blob));
-              await git.add({ fs, dir, filepath: ch.filepath });
-            } else {
-              await ctx.fs.unlink(fullPath).catch(() => {});
-              await git.remove({ fs, dir, filepath: ch.filepath });
-            }
-          }
-          const msg = commitObj.commit.message.trim() + `\n\n(cherry picked from commit ${oid.slice(0, 7)})`;
-          await git.commit({ fs, dir, message: msg, author: commitObj.commit.author });
-          ctx.stdout = `[cherry-pick ${oid.slice(0, 7)}] ${commitObj.commit.message.split('\n')[0]}\n`;
-          return 0;
-        }
-
+        case 'cherry-pick':
         case 'revert': {
-          const ref = ctx.args[1];
-          if (!ref) { ctx.stderr = 'usage: git revert <commit>\n'; return 1; }
-          let oid: string;
-          try {
-            oid = await resolveRevision(fs, dir, ref);
-          } catch {
-            ctx.stderr = `fatal: bad revision '${ref}'\n`; return 128;
-          }
-          const commitObj = await git.readCommit({ fs, dir, oid });
-          const parentOid = commitObj.commit.parent[0];
-          if (!parentOid) { ctx.stderr = 'fatal: cannot revert root commit\n'; return 1; }
-          // Reverse diff: commit→parent (apply parent state for changed files)
-          const changes = await git.walk({ fs, dir, trees: [git.TREE({ ref: oid }), git.TREE({ ref: parentOid })],
-            map: async (filepath: string, [A, B]: any[]) => {
-              if (filepath === '.') return;
-              const aOid = A ? await A.oid() : null;
-              const bOid = B ? await B.oid() : null;
-              if (aOid === bOid) return;
-              const aType = A ? await A.type() : null;
-              const bType = B ? await B.type() : null;
-              if (bType === 'tree' || aType === 'tree') return;
-              return { filepath, aOid, bOid, bType };
-            },
-          });
-          for (const ch of changes.filter(Boolean)) {
-            const fullPath = dir + '/' + ch.filepath;
-            if (ch.bOid) {
-              const { blob } = await git.readBlob({ fs, dir, oid: ch.bOid });
-              await ctx.fs.mkdir(fullPath.split('/').slice(0, -1).join('/'), { recursive: true });
-              await ctx.fs.writeFile(fullPath, new TextDecoder().decode(blob));
-              await git.add({ fs, dir, filepath: ch.filepath });
-            } else {
-              await ctx.fs.unlink(fullPath).catch(() => {});
-              await git.remove({ fs, dir, filepath: ch.filepath });
+          // Each commit's change applied to HEAD and committed, as git's sequencer does; where
+          // HEAD changed the same file since, the built-in stops (the full git merges)
+          const reverse = subcommand === 'revert';
+          const record = ctx.args.includes('-x');
+          const specs = ctx.args.slice(1).filter(a => !a.startsWith('-'));
+          if (!specs.length) { ctx.stderr = `usage: git ${subcommand} [<options>] <commit-ish>...\n`; return 129; }
+          for (const spec of specs) {
+            let oid: string;
+            try { oid = await resolveRevision(fs, dir, spec); }
+            catch { ctx.stderr = `fatal: bad revision '${spec}'\n`; return 128; }
+            const { commit: picked } = await git.readCommit({ fs, dir, oid });
+            const parent = picked.parent[0] ?? null;
+            if (picked.parent.length > 1) { ctx.stderr = `error: commit ${oid} is a merge but no -m option was given.\nfatal: ${subcommand} failed\n`; return 128; }
+            const [from, to] = reverse ? [oid, parent] : [parent, oid];
+            if (!to) { ctx.stderr = `error: cannot ${subcommand} a root commit\n`; return 128; }
+            const changes = await changesBetweenTrees(fs, dir, from, to);
+            const head = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+            const now = new Map((await pathEntries(fs, dir, true)).map(e => [e.path, e]));
+            const subject = picked.message.split('\n')[0];
+            const dirty = changes.filter(c => { const e = now.get(c.path); return e && (e.stage?.oid !== e.head?.oid || (e.stage && e.work?.oid !== e.stage.oid)); });
+            if (dirty.length) {
+              ctx.stderr = `error: your local changes would be overwritten by ${subcommand}.\nhint: commit your changes or stash them to proceed.\nfatal: ${subcommand} failed\n`;
+              return 128;
             }
+            const clash = changes.filter(c => { const ours = now.get(c.path)?.head?.oid; return ours !== c.old && ours !== c.new; });
+            if (clash.length) {
+              ctx.stderr = `error: could not ${reverse ? 'revert' : 'apply'} ${oid.slice(0, 7)}... ${subject}\n`
+                + `(the built-in git: ${clash.map(c => c.path).join(', ')} changed since; \`pkg install git\` merges the changes)\n`;
+              return 1;
+            }
+            const todo = changes.filter(c => now.get(c.path)?.head?.oid !== c.new);
+            if (!todo.length) {
+              ctx.stdout += `On branch ${await git.currentBranch({ fs, dir }) ?? 'HEAD'}\nnothing to commit, working tree clean\n`;
+              ctx.stderr += `The previous ${subcommand} is now empty, possibly due to conflict resolution.\nIf you wish to commit it anyway, use:\n\n    git commit --allow-empty\n\n`;
+              return 1;
+            }
+            const root = dir === '/' ? '' : dir;
+            for (const c of todo) {
+              if (c.new) {
+                const { blob } = await git.readBlob({ fs, dir, oid: c.new });
+                const full = `${root}/${c.path}`;
+                await ctx.fs.mkdir(full.slice(0, full.lastIndexOf('/')) || '/', { recursive: true }).catch(() => {});
+                await ctx.fs.writeFile(full, blob);
+                await git.add({ fs, dir, filepath: c.path });
+              } else {
+                await ctx.fs.unlink(`${root}/${c.path}`).catch(() => {});
+                await git.remove({ fs, dir, filepath: c.path });
+              }
+            }
+            const me = await resolveAuthor(ctx, fs, dir);
+            const message = reverse
+              ? `Revert "${subject}"\n\nThis reverts commit ${oid}.\n`
+              : picked.message.replace(/\n*$/, '\n') + (record ? `\n(cherry picked from commit ${oid})\n` : '');
+            const author = reverse ? { ...me, timestamp: me.timestamp ?? Math.floor(Date.now() / 1000), timezoneOffset: me.timezoneOffset ?? new Date().getTimezoneOffset() } : picked.author;
+            const sha = await git.commit({ fs, dir, message, author, committer: await resolveCommitter(ctx, fs, dir) });
+            const branch = await git.currentBranch({ fs, dir });
+            ctx.stdout += `[${branch ?? 'detached HEAD'} ${sha.slice(0, 7)}] ${message.split('\n')[0]}\n Date: ${gitDate(author as any)}\n`;
+            ctx.stdout += await changeSummary(fs, dir, head, sha, false);
           }
-          const subject = commitObj.commit.message.split('\n')[0];
-          const msg = `Revert "${subject}"\n\nThis reverts commit ${oid.slice(0, 7)}.`;
-          await git.commit({ fs, dir, message: msg,
-            author: { name: 'user', email: `user@${activeProfile().hostname}.local`, timestamp: Math.floor(Date.now() / 1000), timezoneOffset: 0 } });
-          ctx.stdout = `[revert ${oid.slice(0, 7)}] Revert "${subject}"\n`;
           return 0;
         }
 
@@ -1142,15 +979,37 @@ async function readGlobalConfig(ctx: CommandContext): Promise<Record<string, str
   try { return parseGitConfig(await ctx.fs.readFile(GLOBAL_GITCONFIG, 'utf8') as string); } catch { return {}; }
 }
 
-/** Commit author: repo config, then ~/.gitconfig, then GIT_AUTHOR_* env, then a default. */
-async function resolveAuthor(ctx: CommandContext, fs: any, dir: string): Promise<{ name: string; email: string }> {
+interface Ident { name: string; email: string; timestamp?: number; timezoneOffset?: number }
+
+/** A GIT_*_DATE: `@1700000000 +0100`, `1700000000 +0100`, or a date Date.parse reads (ISO 8601, RFC 2822) */
+export function parseGitDate(s: string | undefined): { timestamp: number; timezoneOffset: number } | null {
+  if (!s) return null;
+  const m = /^@?(\d+)(?:\s+([+-])(\d\d):?(\d\d))?$/.exec(s.trim());
+  // (isomorphic-git's timezoneOffset is getTimezoneOffset()'s: minutes west, so +0100 is -60)
+  // (`|| 0`: +0000 is 0, not -0, which isomorphic-git writes as -0000)
+  if (m) return { timestamp: Number(m[1]), timezoneOffset: (m[2] ? (m[2] === '+' ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4])) : 0) || 0 };
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return null;
+  const z = /([+-])(\d\d):?(\d\d)$/.exec(s.trim());
+  return { timestamp: Math.floor(t / 1000), timezoneOffset: (z ? (z[1] === '+' ? -1 : 1) * (Number(z[2]) * 60 + Number(z[3])) : 0) || 0 };
+}
+
+/**
+ * Commit author or committer, as git: GIT_AUTHOR_* / GIT_COMMITTER_* first, then
+ * the repo's config, ~/.gitconfig, then a default; GIT_*_DATE sets the time.
+ */
+async function resolveIdent(ctx: CommandContext, fs: any, dir: string, who: 'AUTHOR' | 'COMMITTER' = 'AUTHOR'): Promise<Ident> {
   const repoValue = async (path: string) => { try { return await git.getConfig({ fs, dir, path }); } catch { return undefined; } };
   const global = await readGlobalConfig(ctx);
-  return {
-    name: (await repoValue('user.name')) || global['user.name'] || ctx.env['GIT_AUTHOR_NAME'] || ctx.env['USER'] || 'user',
-    email: (await repoValue('user.email')) || global['user.email'] || ctx.env['GIT_AUTHOR_EMAIL'] || `user@${activeProfile().hostname}.local`,
+  const ident: Ident = {
+    name: ctx.env[`GIT_${who}_NAME`] || (await repoValue('user.name')) || global['user.name'] || ctx.env['USER'] || 'user',
+    email: ctx.env[`GIT_${who}_EMAIL`] || (await repoValue('user.email')) || global['user.email'] || ctx.env['EMAIL'] || `user@${activeProfile().hostname}.local`,
   };
+  const when = parseGitDate(ctx.env[`GIT_${who}_DATE`]);
+  return when ? { ...ident, ...when } : ident;
 }
+const resolveAuthor = (ctx: CommandContext, fs: any, dir: string) => resolveIdent(ctx, fs, dir, 'AUTHOR');
+const resolveCommitter = (ctx: CommandContext, fs: any, dir: string) => resolveIdent(ctx, fs, dir, 'COMMITTER');
 
 async function gitConfigCommand(ctx: CommandContext, fs: any, dir: string, overrides: [string, string][] = []): Promise<number> {
   const args = ctx.args.slice(1);

@@ -15,6 +15,7 @@ import {
   S_IFCHR, S_IFREG, S_IFDIR, S_IFIFO, FIONREAD, errnoFromError,
   EPERM, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_GROW, F_SEAL_WRITE, F_SEAL_FUTURE_WRITE,
 } from './abi';
+import { decodeBytes, encodeText } from '../utils/byte-text';
 
 export type OpenFileKind = 'file' | 'dir' | 'pipe' | 'pty' | 'socket' | 'dev' | 'epoll';
 
@@ -364,14 +365,15 @@ export class BufferFile implements OpenFile {
   private fifo: boolean;
 
   constructor(input: Uint8Array | string | null = null, public flags = 2, opts: { open?: boolean; fifo?: boolean } = {}) {
-    this.input = typeof input === 'string' ? new TextEncoder().encode(input) : (input ?? new Uint8Array(0));
+    // Byte-exact: a command's string stdin carries binary as lone surrogates (src/utils/byte-text.ts)
+    this.input = typeof input === 'string' ? encodeText(input) : (input ?? new Uint8Array(0));
     this.ended = !opts.open;
     this.fifo = !!opts.fifo;
   }
 
   /** Append more input (only for a BufferFile created with `{ open: true }`). */
   push(data: Uint8Array | string): void {
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    const bytes = typeof data === 'string' ? encodeText(data) : data;
     const rest = this.input.subarray(this.inputPos);
     const next = new Uint8Array(rest.length + bytes.length);
     next.set(rest);
@@ -422,7 +424,7 @@ export class BufferFile implements OpenFile {
   }
 
   text(): string {
-    return new TextDecoder().decode(this.bytes());
+    return decodeBytes(this.bytes());
   }
 
   poll(events: number): number {
@@ -1109,7 +1111,7 @@ export async function openInode(fs: FileSystem, path: string): Promise<Inode> {
     let raw = blob ? new Uint8Array(0) : await fs.readFile(path);
     // A lazy file the read just fetched may be stored as blocks now
     if (!blob && (blob = fs.blobOf?.(path))) raw = new Uint8Array(0);
-    const bytes = typeof raw === 'string' ? new TextEncoder().encode(raw) : raw;
+    const bytes = typeof raw === 'string' ? encodeText(raw) : raw;
     ino = findInode(fs, path) ?? newInode(fs, path, new Inode(fs, path, bytes, st.mode, st.mtime.getTime(), st.ctime.getTime(),
       { mtimeNs: st.mtimeNs, atime: st.atimeMs === st.mtime.getTime() && st.atimeNs === st.mtimeNs ? undefined : st.atimeMs, atimeNs: st.atimeNs },
       blob ? { id: blob, size: st.size } : undefined));

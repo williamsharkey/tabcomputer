@@ -41,13 +41,15 @@ export async function ghApi(
     'X-GitHub-Api-Version': '2022-11-28',
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (body) headers['Content-Type'] = 'application/json';
+  // a string body is sent as is (gh api --input)
+  const raw = typeof body === 'string';
+  if (raw || body) headers['Content-Type'] = 'application/json';
   if (extraHeaders) Object.assign(headers, extraHeaders);
 
   const resp = await fetch(url, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: raw ? body : body ? JSON.stringify(body) : undefined,
   });
   const data = await resp.json().catch(() => null);
   return { status: resp.status, data, headers: resp.headers };

@@ -6,7 +6,8 @@
 // 2. `hotswap apply --ttl 8s src/shell.ts`: the main terminal's shell sees the change, no reload.
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
-// 5. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
+// 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
+// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let chromium;
@@ -87,7 +88,18 @@ await boot(page, '/?ui=terminal');
 check((await mainEcho(page)) === '5.0.0', 'the next load has no swap');
 
 
-// 5. Suites from the checkout, in the tab
+// 5. A registry command (#47): git is a lazy command, a plain object, not a class
+r = await sh(page, `cd /home/user/shiro && sed -i 's/git version 2\\.47\\.0/git version 9.9.9-swapped/' src/commands/git.ts && hotswap apply --ttl 60s src/commands/git.ts`);
+check(r.code === 0 && /command git: replaced .*exec/.test(r.out) && !/not swapped.*gitCmd/.test(r.out), 'hotswap apply src/commands/git.ts patches the git command', r.out);
+check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the swapped code');
+await sh(page, 'hotswap revert');
+check(/git version 2\.47\.0/.test((await sh(page, 'git --version')).out), 'revert puts the old git back');
+// reload resolves the command's relative imports through the live modules
+r = await sh(page, 'cd /home/user/shiro && reload commands/git src/commands/git.ts');
+check(r.code === 0 && /Hot-reloaded 'commands\/git'/.test(r.out), 'reload of a command with relative imports', r.out);
+check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the reloaded code');
+
+// 6. Suites from the checkout, in the tab
 await page.evaluate(async () => {
   await window.__tabcomputer.fs.writeFile('/home/user/keep.txt', 'mine');
   localStorage.setItem('hotswap-check', 'mine');

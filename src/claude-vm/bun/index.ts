@@ -16,6 +16,7 @@ import { spawn, BunFile, stdinOf, type SpawnEnv, type SpawnOptions } from './spa
 import { CellSegmenter } from './cell-segmenter';
 import { serve } from './serve';
 import { listen, connect } from './sockets';
+import { addonLoader, type PageBridge } from '../addons/index';
 
 export interface BunEnv extends SpawnEnv {
   /** Bun.version, Bun.main */
@@ -26,15 +27,18 @@ export interface BunEnv extends SpawnEnv {
   http?: any;
   /** The extracted bundle's embedded assets by path: Bun's loader number (bun-graph.ts BunLoader) */
   assets?: Record<string, number>;
+  /** What only the page can do, for the native addons' stand-ins (addons/bridge.ts) */
+  page?: PageBridge;
 }
 
 /**
  * What the extracted bundle's `import.meta.require` became (extract.ts): a
  * module's require as Bun's, where an embedded text asset is its text, a file
- * asset its path, and a native addon can't load.
+ * asset its path, and a native addon its browser-backed stand-in (addons/).
  */
 function bunRequire(env: BunEnv) {
   const made = new WeakMap<object, (id: string) => unknown>();
+  const addon = addonLoader({ page: env.page, Buffer: env.Buffer, onExit: (fn) => env.process.on?.('exit', fn) });
   return (r: any) => {
     let f = made.get(r);
     if (!f) {
@@ -42,7 +46,7 @@ function bunRequire(env: BunEnv) {
         const loader = env.assets?.[id];
         if (loader === 13) return env.fs.readFileSync(id, 'utf8');
         if (loader === 5) return id;
-        if (loader === 10) throw Object.assign(new Error(`Cannot load native addon ${id} in claude --vm`), { code: 'ERR_DLOPEN_FAILED' });
+        if (loader === 10) return addon(id);
         return r(id);
       }, { resolve: r.resolve, cache: r.cache, main: r.main });
       made.set(r, f);

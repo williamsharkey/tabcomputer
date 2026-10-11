@@ -18,6 +18,7 @@ import { getShiroOrigin } from '../utils/shiro-origin';
 const EXITING_MARK = 0x45584954;
 import type { Process } from '../kernel/process';
 import { writeClipboard } from '../utils/clipboard';
+import { PAGE_CALL, pageCallServer } from '../claude-vm/addons/bridge';
 
 export { setNodeWorkerFactory, nodeWorkerMode } from './boot';
 
@@ -49,8 +50,14 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
   let watching = false;
   const threads = new Map<number, GuestThread>();
   const toGuest = (m: unknown) => { try { w.postMessage(m); } catch { /* gone */ } };
+  // (calls from claude --vm's addon stand-ins; a recording the process leaves running stops with it)
+  const pageCalls = pageCallServer(toGuest);
+  proc.onTerminate(() => pageCalls.close());
   w.onMessage((m: any) => {
     switch (m?.type) {
+      case PAGE_CALL:
+        void pageCalls.serve(m);
+        return;
       case 'node-guest-listen':
         if (typeof m.port === 'number') openPreview(m.port);
         return;

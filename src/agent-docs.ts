@@ -256,10 +256,11 @@ reload would end your session). The loop:
     # edit src/shell.ts (or any module) with your usual tools, then:
     hotswap watch --wait                   # one line per save: what changed, or the build error
     hotswap test --changed                 # the suites that import what you changed
+                                           # (or: hotswap watch -d --test, after each save)
     hotswap confirm                        # keep it; otherwise it reverts 90 s after the last save
     hotswap push BRANCH -m MSG             # a new branch of williamsharkey/tabcomputer (never main)
 
-- A save is live about half a second later. A save that doesn't build changes
+- A save is live about 0.4 s later, and the build doesn't block the page. A save that doesn't build changes
   nothing. A swap that breaks things undoes itself: by the TTL, or, if the page
   froze, when it runs again. \`hotswap revert --all\` undoes everything now.
 - Classes and registry commands are patched in place, so existing shells run

@@ -15,8 +15,9 @@ const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's sou
        hotswap revert [--all]               undo the newest swap (or all)
        hotswap status                       applied swaps, TTLs, what changed
        hotswap persisted [clear]            swaps re-applied at boot
-       hotswap watch [--root DIR] [--ttl 90s | --no-ttl] [--debounce 150ms] [-d] [PATH...]
-                                            swap each module under src/ as it's saved (-d: in the background)
+       hotswap watch [--root DIR] [--ttl 90s | --no-ttl] [--debounce 150ms] [--test [--test-max N]] [-d] [PATH...]
+                                            swap each module under src/ as it's saved (-d: in the background;
+                                            --test: then run up to N (3) suites that import it)
        hotswap watch --wait [--timeout 30s] | --stop
                                             the background watcher's new results | stop it
        hotswap test [--root DIR] [-t RE] [-v] [--changed [--max N]] [SUITE...]
@@ -239,6 +240,7 @@ async function watch(ctx: CommandContext, args: string[]): Promise<number> {
   let ttl: number | null = DEFAULT_TTL_MS;
   let debounce: number | undefined;
   let detach = false;
+  let testMax = -1;
   const paths: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -249,7 +251,11 @@ async function watch(ctx: CommandContext, args: string[]): Promise<number> {
       if (v === null) { ctx.stderr += `hotswap watch: bad ${a} '${args[i]}'\n`; return 2; }
       if (a === '--ttl') ttl = v; else debounce = v;
     } else if (a === '-d' || a === '--detach') detach = true;
-    else if (a.startsWith('-')) { ctx.stderr += `hotswap watch: unknown option ${a}\n`; return 2; }
+    else if (a === '--test') { if (testMax < 0) testMax = 3; }
+    else if (a === '--test-max') {
+      testMax = parseInt(args[++i] ?? '', 10);
+      if (!(testMax >= 0)) { ctx.stderr += 'hotswap watch: bad --test-max\n'; return 2; }
+    } else if (a.startsWith('-')) { ctx.stderr += `hotswap watch: unknown option ${a}\n`; return 2; }
     else paths.push(ctx.fs.resolvePath(a, ctx.cwd));
   }
   root ??= await findRoot(ctx, paths[0] ?? ctx.cwd);
@@ -264,11 +270,24 @@ async function watch(ctx: CommandContext, args: string[]): Promise<number> {
     manager: hotswap,
     build: (files) => buildSwap({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root: checkout, files }),
     evaluate: evaluateBundle,
+    test: testMax < 0 ? undefined : async (files, rec) => {
+      const pick = suitesForChanges(files, await listSuites(ctx, checkout), testMax);
+      const label = rec ? `#${rec.id}` : files.join(' ');
+      if (!pick.run.length) return { ok: true, line: `- tests after ${label}: no suite imports ${files.join(' ')}` };
+      const sum = await runSuites(ctx, checkout, pick.run, { out: () => {} });
+      const names = pick.run.map((p) => p.split('/').pop()!.replace(/\.test\.ts$/, ''));
+      const which = `${names.join(', ')}${pick.all.length > pick.run.length ? ` (${pick.run.length} of ${pick.all.length})` : ''}`;
+      if (!sum.failed) return { ok: true, line: `\u2713 tests after ${label}: ${which}: ${sum.passed} passed (${(sum.ms / 1000).toFixed(1)} s)` };
+      const f = sum.failures[0];
+      const first = `${f.suite.split('/').pop()!.replace(/\.test\.ts$/, '')}${f.name ? ` > ${f.name}` : ''}: ${f.error.split('\n')[0]}`;
+      const more = sum.failures.length > 1 ? ` (+${sum.failures.length - 1} more: hotswap test ${f.suite.split('/').pop()!.replace(/\.test\.ts$/, '')})` : '';
+      return { ok: false, line: `\u2717 tests after ${label}: ${which}: ${sum.failed} failed, ${sum.passed} passed; ${first}${more}` };
+    },
   }, { root: checkout, paths, ttlMs: ttl, debounceMs: debounce });
   w.start();
   W.setCurrent(w);
   waitCursor = 0;
-  const what = `watching ${w.paths.join(' ')}: each save is swapped in${ttl ? ` and reverts ${Math.round(ttl / 1000)}s after the last save unless 'hotswap confirm'` : ''}`;
+  const what = `watching ${w.paths.join(' ')}: each save is swapped in${testMax >= 0 ? `, then tested (up to ${testMax || 'all'} suites)` : ''}${ttl ? `, and reverts ${Math.round(ttl / 1000)}s after the last save unless 'hotswap confirm'` : ''}`;
   if (detach) {
     ctx.stdout += `${what}\n'hotswap watch --wait' prints what each save did; 'hotswap watch --stop' stops it\n`;
     return 0;
@@ -367,18 +386,24 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
     let changes;
     try { changes = await sourceChanges(ctx.fs as any, root); } catch (e: any) { ctx.stderr += `hotswap test --changed: ${e?.message ?? e} (a checkout from 'hotswap checkout' has a manifest)\n`; return 1; }
     const files = changes.filter((c) => c.status !== 'D').map((c) => c.path);
-    const suites: { path: string; text: string }[] = [];
-    for (const n of (await ctx.fs.readdir(`${root}/${SUITE_DIR}`).catch(() => [] as string[])).sort()) {
-      if (!n.endsWith('.test.ts')) continue;
-      try { suites.push({ path: `${SUITE_DIR}/${n}`, text: await ctx.fs.readFile(`${root}/${SUITE_DIR}/${n}`, 'utf8') as string }); } catch { /* unreadable */ }
-    }
-    const pick = suitesForChanges(files, suites, max);
+    const pick = suitesForChanges(files, await listSuites(ctx, root), max);
     if (!files.length) out('no changes since the checkout\n');
     else if (!pick.all.length) out(`no suite imports ${files.join(' ')}\n`);
     else out(`${pick.all.length} suite(s) import ${files.join(' ')}${pick.run.length < pick.all.length ? `; running ${pick.run.length} (--max ${max}; --max 0 runs all)` : ''}\n`);
     names.push(...pick.run);
     if (!names.length) return 0;
   }
+  const sum = await runSuites(ctx, root, names, { filter, verbose, out });
+  if (names.length > 1) out(`Tests: ${sum.passed} passed${sum.failed ? `, ${sum.failed} failed` : ''}${sum.skipped ? `, ${sum.skipped} skipped` : ''}\n`);
+  return sum.failed ? 1 : 0;
+}
+
+export interface SuitesRun { passed: number; failed: number; skipped: number; ms: number; failures: { suite: string; name: string; error: string }[] }
+
+/** Build and run vitest suites from the checkout in this tab, printing with `out` */
+async function runSuites(ctx: CommandContext, root: string, names: string[], opts: { filter?: RegExp; verbose?: boolean; out: (s: string) => void }): Promise<SuitesRun> {
+  const { filter, verbose, out } = opts;
+  const started = performance.now();
   const { buildTest } = await import('../hotswap/build');
   const { runTestBundle } = await import('../hotswap/test-runner');
   // The suites' node:fs: the checkout as it is now, read once; their writes stay in memory
@@ -387,9 +412,10 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
   const files = await snapshotTree(ctx.fs as any, root);
   if (verbose) out(` (read ${files.size} files of ${root} for node:fs in ${Math.round(performance.now() - t0)} ms)\n`);
   let failed = 0, passed = 0, skipped = 0;
+  const failures: { suite: string; name: string; error: string }[] = [];
   for (const name of names) {
     const file = await suitePath(ctx, root, name);
-    if (!file) { ctx.stderr += `hotswap test: no suite ${name}\n`; failed++; continue; }
+    if (!file) { ctx.stderr += `hotswap test: no suite ${name}\n`; failed++; failures.push({ suite: name, name: '', error: 'no such suite' }); continue; }
     const rel = file.startsWith(root + '/') ? file.slice(root.length + 1) : file;
     let code: string;
     try {
@@ -400,6 +426,7 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
       if (errs?.length) for (const x of errs.slice(0, 10)) out(`   ${x.location ? `${x.location.file}:${x.location.line}: ` : ''}${x.text}\n`);
       else out(`   ${e?.message ?? e}\n`);
       failed++;
+      failures.push({ suite: rel, name: 'build', error: errs?.[0]?.text ?? String(e?.message ?? e) });
       continue;
     }
     const sum = await runTestBundle(code, {
@@ -407,16 +434,30 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
       files,
       cwd: ctx.cwd,
       onResult: (r) => {
-        if (r.status === 'fail') out(` \u00d7 ${r.name}\n${(r.error ?? '').split('\n').map((l) => `     ${l}`).join('\n')}\n`);
-        else if (verbose) out(` ${r.status === 'pass' ? '\u2713' : '-'} ${r.name}${r.status === 'pass' ? ` (${r.ms}ms)` : ` (${r.status})`}\n`);
+        if (r.status === 'fail') {
+          failures.push({ suite: rel, name: r.name, error: r.error ?? '' });
+          out(` \u00d7 ${r.name}\n${(r.error ?? '').split('\n').map((l) => `     ${l}`).join('\n')}\n`);
+        } else if (verbose) out(` ${r.status === 'pass' ? '\u2713' : '-'} ${r.name}${r.status === 'pass' ? ` (${r.ms}ms)` : ` (${r.status})`}\n`);
       },
     });
-    for (const e of sum.errors) out(` \u00d7 ${e.split('\n').join('\n     ')}\n`);
+    for (const e of sum.errors) {
+      failures.push({ suite: rel, name: '', error: e });
+      out(` \u00d7 ${e.split('\n').join('\n     ')}\n`);
+    }
     out(` ${sum.failed ? 'FAIL' : 'PASS'} ${rel}: ${sum.passed} passed${sum.failed ? `, ${sum.failed} failed` : ''}${sum.skipped ? `, ${sum.skipped} skipped` : ''} (${(sum.ms / 1000).toFixed(1)}s)\n`);
     failed += sum.failed; passed += sum.passed; skipped += sum.skipped;
   }
-  if (names.length > 1) out(`Tests: ${passed} passed${failed ? `, ${failed} failed` : ''}${skipped ? `, ${skipped} skipped` : ''}\n`);
-  return failed ? 1 : 0;
+  return { passed, failed, skipped, failures, ms: Math.round(performance.now() - started) };
+}
+
+/** The checkout's vitest suites and their text */
+async function listSuites(ctx: CommandContext, root: string): Promise<{ path: string; text: string }[]> {
+  const suites: { path: string; text: string }[] = [];
+  for (const n of (await ctx.fs.readdir(`${root}/${SUITE_DIR}`).catch(() => [] as string[])).sort()) {
+    if (!n.endsWith('.test.ts')) continue;
+    try { suites.push({ path: `${SUITE_DIR}/${n}`, text: await ctx.fs.readFile(`${root}/${SUITE_DIR}/${n}`, 'utf8') as string }); } catch { /* unreadable */ }
+  }
+  return suites;
 }
 
 const home = (ctx: CommandContext) => ctx.env['HOME'] || '/home/user';

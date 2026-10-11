@@ -312,8 +312,9 @@ function runUndo(steps: (() => void)[]): string[] {
 
 export type RevertReason = 'manual' | 'ttl' | 'error' | 'wedge';
 
-// Hot-swap's own long work (an esbuild-wasm build runs on the page's thread, a
-// test run can too): a freeze during it isn't a swap's fault (revertOnWedge)
+// Hot-swap's own long work (a test run is on the page's thread, and so is an
+// esbuild-wasm build where there are no Workers): a freeze during it isn't a
+// swap's fault (revertOnWedge)
 let quietDepth = 0;
 const quietSpans: [number, number][] = [];
 export async function quietDuring<T>(fn: () => Promise<T>): Promise<T> {

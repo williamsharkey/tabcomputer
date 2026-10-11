@@ -55,6 +55,24 @@ function redeclared(src: string, inCode: (i: number) => boolean, locals: Map<str
 
 export function liveEsbuildChunk(src: string): string {
   if (!isEsbuildChunk(src)) return src;
+  return liveBindings(src, false);
+}
+
+/**
+ * The same for any ES module (tabcomputer#35: a module that reads an import while the
+ * module it comes from is still loading read a copy made too early, "later undefined";
+ * vitest's chunks). Every static import's module loads first, in the source's order, as
+ * ES modules evaluate their imports before their body; one that replaces its
+ * module.exports while this one loads (a cycle) is re-read. Declared exports
+ * (`export let n`) and re-exports are getters too.
+ */
+export function liveModule(src: string): string {
+  return liveBindings(src, true);
+}
+
+const STATIC_IMPORT = /(?<![\w$.])import\s*(?:[\w$*{][^;'"()]*?\bfrom\s*)?(['"])([^'"\n]+)\1/g;
+
+function liveBindings(src: string, general: boolean): string {
   const mask = codeMask(src);
   const inCode = (i: number) => mask[i] === 1;
 
@@ -62,25 +80,46 @@ export function liveEsbuildChunk(src: string): string {
   const modules: string[] = [];
   const locals = new Map<string, [number, string]>();
   const skip: [number, number][] = [];
+  // (general: each import statement's items, to write it again without the live names)
+  const imports: { items: [string, string][]; raw: string[]; quote: string; spec: string }[] = [];
   for (const m of src.matchAll(NAMED_IMPORT)) {
     if (!inCode(m.index!)) continue;
     const idx = modules.push(m[3]) - 1;
+    const rec = { items: [] as [string, string][], raw: [] as string[], quote: m[2], spec: m[3] };
     for (const item of m[1].split(',')) {
       const t = item.trim();
       if (!t) continue;
+      rec.raw.push(t);
       const as = /^([\w$]+)\s+as\s+([\w$]+)$/.exec(t);
-      if (as) locals.set(as[2], [idx, as[1]]);
-      else if (/^[\w$]+$/.test(t)) locals.set(t, [idx, t]);
+      if (as) { locals.set(as[2], [idx, as[1]]); rec.items.push([as[2], t]); }
+      else if (/^[\w$]+$/.test(t)) { locals.set(t, [idx, t]); rec.items.push([t, t]); }
     }
+    imports.push(rec);
     skip.push([m.index!, m.index! + m[0].length]);
   }
+  /** An export's getter: in general mode an uninitialized one reads undefined, and setting the same value keeps it live */
+  const getter = (name: string, value: string) => general
+    ? `${JSON.stringify(name)}: { get() { try { return ${value}; } catch { return undefined; } }, set(v) { let c; try { c = ${value}; } catch {} if (v !== c) Object.defineProperty(this, ${JSON.stringify(name)}, { value: v, writable: true, enumerable: true, configurable: true }); }, enumerable: true, configurable: true }`
+    : `${JSON.stringify(name)}: { get: () => ${value}, set(v) { Object.defineProperty(this, ${JSON.stringify(name)}, { value: v, writable: true, enumerable: true, configurable: true }); }, enumerable: true, configurable: true }`;
 
   // Local export lists become getters; the statements are removed
   const getters: string[] = [];
   const removals: [number, number][] = [];
   for (const m of src.matchAll(LOCAL_EXPORT)) {
     if (!inCode(m.index!)) continue;
-    // `export { x } from 'y'` is a re-export, handled by the regular transform
+    // `export { x } from 'y'` is a re-export, handled by the regular transform (in general
+    // mode also a getter that reads it through: a module still loading has it later)
+    const from = /^\s*from\s*(['"])([^'"\n]+)\1/.exec(src.slice(m.index! + m[0].length));
+    if (from) {
+      if (general) {
+        const idx = modules.push(from[2]) - 1;
+        for (const item of m[1].split(',')) {
+          const as = /^\s*([\w$]+)(?:\s+as\s+([\w$]+))?\s*$/.exec(item);
+          if (as && as[1] !== 'default' && (as[2] ?? as[1]) !== 'default') getters.push(getter(as[2] ?? as[1], `__shiro_live${idx}.${as[1]}`));
+        }
+      }
+      continue;
+    }
     if (/^\s*from\b/.test(src.slice(m.index! + m[0].length))) continue;
     if (/\bfrom\s*['"]$/.test(m[0])) continue;
     for (const item of m[1].split(',')) {
@@ -92,9 +131,16 @@ export function liveEsbuildChunk(src: string): string {
       // re-exporting an import stays live too
       const imp = locals.get(local);
       const value = imp ? `__shiro_live${imp[0]}.${imp[1]}` : local;
-      getters.push(`${JSON.stringify(name)}: { get: () => ${value}, set(v) { Object.defineProperty(this, ${JSON.stringify(name)}, { value: v, writable: true, enumerable: true, configurable: true }); }, enumerable: true, configurable: true }`);
+      getters.push(getter(name, value));
     }
     removals.push([m.index!, m.index! + m[0].length]);
+  }
+  // (general) `export let n = 1`, `export function f`: getters too; the transform still copies
+  // the value at the end, which the getter's setter takes as the same value
+  if (general) {
+    for (const m of src.matchAll(/(?<![\w$.])export\s+(?:async\s+)?(?:function\s*\*?|class|let|const|var)\s+([\w$]+)/g)) {
+      if (inCode(m.index!)) getters.push(getter(m[1], m[1]));
+    }
   }
   // An imported name the module declares again (rolldown's chunks reuse names in nested
   // scopes, `catch (error)` beside an imported `error`; esbuild renames those) keeps the copy
@@ -109,8 +155,31 @@ export function liveEsbuildChunk(src: string): string {
   // object, which is its live namespace even while its body is still
   // running. `(__shiro_require)(…)` is not rewritten to wait for that body
   // (compileAsyncModule); the import statements themselves still wait.
-  const header = (getters.length ? `Object.defineProperties(__shiro_module.exports, {${getters.join(', ')}}); ` : '')
-    + (modules.length ? 'var ' + modules.map((m, k) => `__shiro_live${k} = (__shiro_require)(${JSON.stringify(m)})`).join(', ') + ';' : '');
+  let header = (getters.length ? `Object.defineProperties(__shiro_module.exports, {${getters.join(', ')}}); ` : '');
+  if (!general) {
+    header += modules.length ? 'var ' + modules.map((m, k) => `__shiro_live${k} = (__shiro_require)(${JSON.stringify(m)})`).join(', ') + ';' : '';
+  } else {
+    // every static import, in the source's order (side-effect ones too); a named one's exports object kept
+    const vars = new Map<string, number[]>();
+    modules.forEach((m, k) => vars.set(m, [...(vars.get(m) ?? []), k]));
+    const steps: string[] = [];
+    const seen = new Set<string>();
+    const assign = (spec: string, ks: number[] | undefined) => {
+      const load = `(__shiro_require)(${JSON.stringify(spec)})`;
+      steps.push(ks ? `${ks.map((k) => `__shiro_live${k} = `).join('')}${load};` : `${load};`);
+      if (ks) steps.push(`__shiro_require.relink?.(${JSON.stringify(spec)}, (__e) => { ${ks.map((k) => `__shiro_live${k} = `).join('')}__e; });`);
+    };
+    for (const m of src.matchAll(STATIC_IMPORT)) {
+      if (!inCode(m.index!) || seen.has(m[2])) continue;
+      seen.add(m[2]);
+      assign(m[2], vars.get(m[2]));
+    }
+    for (const [m, ks] of vars) if (!seen.has(m)) assign(m, ks);
+    header += (modules.length ? 'var ' + modules.map((_, k) => `__shiro_live${k}`).join(', ') + '; ' : '') + steps.join(' ');
+  }
+  // (after a directive prologue: "use strict" stays one)
+  const directives = /^(?:\s*(?:(['"])use [\w ]+\1\s*;?))*/.exec(src)![0];
+  if (directives) { out.push(directives); last = directives.length; }
   out.push(header);
 
   // Bracket stack: '(' '[' or '{' tagged object (o), block (b) or class body (c)
@@ -123,6 +192,12 @@ export function liveEsbuildChunk(src: string): string {
   let i = 0;
   while (i < len) {
     if (skipI < skip.length && i === skip[skipI][0]) {
+      // (general: the statement keeps only the names read as copies; the module is loaded above)
+      if (general) {
+        const rec = imports[skipI];
+        const kept = rec.raw.filter((t) => !rec.items.some(([local, text]) => text === t && locals.has(local)));
+        emit(i, skip[skipI][1], kept.length ? `import { ${kept.join(', ')} } from ${rec.quote}${rec.spec}${rec.quote};` : '');
+      }
       i = skip[skipI++][1]; prev = ';'; prevWord = '';
       continue;
     }

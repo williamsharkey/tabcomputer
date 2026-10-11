@@ -480,7 +480,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
           queueMicrotask(() => (cb ? cb(e) : (io.events['error'] || []).forEach((fn) => fn(e))));
           return false;
         }
-        control.send(new TextEncoder().encode(ipcLine(message)));
+        control.send(new TextEncoder().encode(ipcLine(message, opts?.serialization === 'advanced')));
         if (cb) queueMicrotask(() => cb(null));
         return true;
       };
@@ -505,6 +505,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }),
       ...(ipcIn ? { ipc: (b: Uint8Array | null) => { if (b) ipcIn!(b); else ipcGone(); } } : {}),
       ...(direct ? { argv: direct } : {}),
+      ...(opts?.serialization === 'advanced' ? { serialization: 'advanced' as const } : {}),
       // (inherited output: this process's own fds, a terminal stays one for the child)
       inherit: [false, io.inheritOut, io.inheritErr],
       control: (c) => {

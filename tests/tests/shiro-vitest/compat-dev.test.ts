@@ -832,6 +832,14 @@ for (const fd of fds) fs.closeSync(fd);
 console.log(new Set(fds).size, wrong);`)).toBe('300 0\n');
   }, 60_000);
 
+  it("node's own options before the script: skipped with their values; -r and --import load first (vitest 4's forks pool)", async () => {
+    await fs.writeFile('/home/user/m/pre.cjs', `globalThis.__pre = (globalThis.__pre || '') + 'r';`);
+    await fs.writeFile('/home/user/m/pre2.cjs', `globalThis.__pre = (globalThis.__pre || '') + 'i';`);
+    await fs.writeFile('/home/user/m/main-opts.js', `console.log(globalThis.__pre, process.argv.slice(2).join(','));`);
+    const r = await sh(shell, 'cd /home/user/m && node --experimental-import-meta-resolve -r ./pre.cjs --conditions dev --import=./pre2.cjs --no-warnings main-opts.js a --b');
+    expect(r.out).toBe('ri a,--b\n');
+  }, 60_000);
+
   it("a node child's stdio are live pipes: the parent talks to it while it runs (esbuild's service)", async () => {
     // The child answers each line as it comes, from fs.read(0) (as Go does), with raw bytes on fd 1
     await fs.writeFile('/home/user/m/echo-child.js', `const fs = require('fs');
@@ -1920,6 +1928,26 @@ describe('live bindings for code-split chunks: an import named like a member key
     await fs.writeFile('/home/user/cyc/zod.mjs', `import * as z from "./ext.mjs";\nexport * from "./ext.mjs";\nexport { z };\nexport default z;\n`);
     await fs.writeFile('/home/user/cyc/m4.mjs', `const m = await import('./zod.mjs');\nimport { z, string } from './zod.mjs';\nimport zd from './zod.mjs';\nconsole.log('z' in m, typeof m.z.string, typeof string, typeof z.number, typeof zd.string);\n`);
     expect((await sh(shell, 'cd /home/user/cyc && node m4.mjs')).out).toBe('true function function function function\n');
+  });
+
+  it("a const whose value is a named function expression isn't hoisted as a declaration (vitest 4's `const assertType = function assertType() {}`)", async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/nfe', { recursive: true });
+    await fs.writeFile('/home/user/nfe/a.mjs', `const assertType = function assertType() {};\nconst f2 = (0, function f2() { return 2; });\nexport { assertType as a, f2 };\n`);
+    await fs.writeFile('/home/user/nfe/main.mjs', `import { a, f2 } from './a.mjs';\nconsole.log(typeof a, a.name, f2());\n`);
+    expect((await sh(shell, 'cd /home/user/nfe && node main.mjs')).out).toBe('function assertType 2\n');
+  });
+
+  it('the entry module runs once: a module importing it back gets it, not a second run (tabcomputer#35)', async () => {
+    const { fs, shell } = await createTestShell();
+    await fs.mkdir('/home/user/ent', { recursive: true });
+    await fs.writeFile('/home/user/ent/main.mjs', `import { a, later } from './a.mjs';\nconsole.log('main runs');\nexport function bump() { return 'bumped'; }\nexport const k = 1;\nconsole.log(a(), typeof later);\nsetTimeout(() => console.log(later()), 0);\n`);
+    await fs.writeFile('/home/user/ent/a.mjs', `import { bump, k } from './main.mjs';\nexport const a = () => bump();\nexport const later = () => k;\n`);
+    expect((await sh(shell, 'cd /home/user/ent && node main.mjs')).out).toBe('main runs\nbumped function\n1\n');
+    // CommonJS: the entry's exports so far, and require.main is it
+    await fs.writeFile('/home/user/ent/cjs.js', `exports.x = 1; const b = require('./b.js'); console.log(b.seen, module === require.main);`);
+    await fs.writeFile('/home/user/ent/b.js', `exports.seen = require('./cjs.js').x;`);
+    expect((await sh(shell, 'cd /home/user/ent && node cjs.js')).out).toBe('1 true\n');
   });
 
   it('a method named import stays one; import() calls become dynamic imports', () => {

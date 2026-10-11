@@ -209,7 +209,7 @@ export async function executeNodeScript(
     // As a kernel guest (node-worker), files come from blocking syscalls as they're needed
     const guest = nodeGuestOf(ctx);
     // A forked guest: its channel to the parent (process.send / 'message')
-    const ipcAlive = guest?.ipc ? attachProcessIpc(fakeProcess, guest.ipc, processEvents) : () => false;
+    const ipcAlive = guest?.ipc ? attachProcessIpc(fakeProcess, guest.ipc, processEvents, guest.ipcAdvanced) : () => false;
     const { fileCache, fileMtimes, moduleCache, tickSyncOps } = createFileCache(guest?.readText, guest ? (p) => !!(ctx.fs as any).isDirCached?.(p) : undefined, guest ? undefined : ctx.fs);
 
     // Pre-load environment (the page's: files into the cache, Claude's bootstrap)
@@ -379,7 +379,9 @@ export async function executeNodeScript(
         const target = options?.eval ? String(filename)
           : filename.startsWith('file://') ? decodeURIComponent(new URL(filename).pathname) : ctx.fs.resolvePath(String(filename), ctx.cwd);
         const env = options?.env && typeof options.env === 'object' ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : undefined;
-        const h = guest.startThread(target, { threadId: worker.threadId, eval: !!options?.eval, workerData: options?.workerData, argv: options?.argv?.map(String), env }, {
+        const h = guest.startThread(target, { threadId: worker.threadId, eval: !!options?.eval, workerData: options?.workerData, argv: options?.argv?.map(String), env, stdout: !!options?.stdout, stderr: !!options?.stderr }, {
+          stdout: (b) => worker.stdout?._push(b),
+          stderr: (b) => worker.stderr?._push(b),
           online: () => worker.emit('online'),
           message: (v) => { if (!worker._exited) worker.emit('message', v); },
           error: (e) => {
@@ -425,9 +427,18 @@ export async function executeNodeScript(
       // `new Worker(f, { env })`: the worker's process.env (SvelteKit's build tells its forked steps so)
       const workerEnv = options?.env && typeof options.env === 'object'
         ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : null;
-      const workerProcess = workerEnv ? new Proxy(fakeProcess, { get: (t, k) => k === 'env' ? workerEnv : Reflect.get(t, k) }) : fakeProcess;
+      // `{ stdout: true }` / `{ stderr: true }`: what it writes is worker.stdout's / worker.stderr's
+      const enc = new TextEncoder();
+      const streamTo = (s: any, own: any) => s && new Proxy(own, { get: (t, k) => k === 'write'
+        ? (d: any, ...rest: any[]) => { s._push(typeof d === 'string' ? enc.encode(d) : d); const cb = rest.find((a) => typeof a === 'function'); if (cb) queueMicrotask(cb); return true; }
+        : Reflect.get(t, k) });
+      const workerOut = options?.stdout ? streamTo(worker.stdout, fakeProcess.stdout) : null;
+      const workerErr = options?.stderr ? streamTo(worker.stderr, fakeProcess.stderr) : null;
+      const workerProcess = workerEnv || workerOut || workerErr ? new Proxy(fakeProcess, {
+        get: (t, k) => k === 'env' && workerEnv ? workerEnv : k === 'stdout' && workerOut ? workerOut : k === 'stderr' && workerErr ? workerErr : Reflect.get(t, k),
+      }) : fakeProcess;
       const workerBuiltin = (name: string) => (name === 'worker_threads' || name === 'node:worker_threads') ? workerWT
-        : workerEnv && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
+        : workerProcess !== fakeProcess && (name === 'process' || name === 'node:process') ? workerProcess : getBuiltinModule(name);
       const workerRequire = createRequireFunction({
         ctx, fileCache, fileMtimes, moduleCache: new Map(), pendingPromises, processEvents,
         getBuiltinModule: workerBuiltin, fakeConsole, fakeProcess: workerProcess, FakeBuffer,
@@ -882,6 +893,7 @@ export async function executeNodeScript(
         ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...workerOnly.map(() => undefined)),
         timeoutPromise,
       ]);
+      (requireModule as any).mainLoaded?.();
     } catch (e: any) {
       if (e instanceof ProcessExitError) {
         _st.exitCode = e.code;

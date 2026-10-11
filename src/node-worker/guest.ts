@@ -96,7 +96,14 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
     rejection = null;
     installWorkerHandlers();
     // A worker_threads thread of a node process (host.ts started it with attachThread)
-    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number } | undefined;
+    const nodeThread = (start as any).nodeThread as { file: string; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; threadId: number; stdout?: boolean; stderr?: boolean } | undefined;
+    // A thread's output to its Worker's worker.stdout/stderr (`new Worker(f, { stdout: true })`:
+    // vitest 4's threads pool) instead of this process's fds 1 and 2
+    const enc = new TextEncoder();
+    const toWorker = (kind: 'stdout' | 'stderr') => (b: Uint8Array | string) => post({ type: 'node-thread-out', kind, value: typeof b === 'string' ? enc.encode(b) : b });
+    const out1 = nodeThread?.stdout ? toWorker('stdout') : (b: Uint8Array | string) => { sys.write(1, b); };
+    const out2 = nodeThread?.stderr ? toWorker('stderr') : (b: Uint8Array | string) => { sys.write(2, b); };
+    const ttyOut = stdoutTTY && !nodeThread?.stdout;
     const hooks: NodeGuestHooks = {
       readText(path) {
         const b = fs.readRaw(path);
@@ -106,7 +113,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       // a child may change the tree: fs forgets the directories it knew
       runChildSync: (cmd, opts) => { try { return runChildSync(sys, cmd, opts); } finally { fs.invalidate(); } },
       runChild: (cmd, opts) => runChild(sys, cmd, opts).finally(() => fs.invalidate()),
-      writeOut: (fd, s) => { sys.write(fd, s); },
+      writeOut: (fd, s) => { (fd === 1 ? out1 : fd === 2 ? out2 : (b: string) => { sys.write(fd, b); })(s); },
       netStack: net,
       busy: () => net.busy,
       ids: { pid: sys.getpid(), ppid: sys.getppid() },
@@ -122,7 +129,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
         runSync,
         ProcExit,
       },
-      ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)) } : {}),
+      ...(ipcFd(sys, start.env) >= 0 ? { ipc: guestIpc(sys, ipcFd(sys, start.env)), ipcAdvanced: start.env.NODE_CHANNEL_SERIALIZATION_MODE === 'advanced' } : {}),
       onUnhandledRejection: (fn) => { rejection = fn; },
       page: {
         clipboard: (text) => post({ type: 'node-guest-clipboard', text }),
@@ -133,7 +140,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       startThread(file, opts, events) {
         const id = ++lastThread;
         threadEvents.set(id, events);
-        post({ type: 'node-guest-thread', id, file, eval: !!opts.eval, workerData: opts.workerData, argv: opts.argv ?? [], env: opts.env, threadId: opts.threadId });
+        post({ type: 'node-guest-thread', id, file, eval: !!opts.eval, workerData: opts.workerData, argv: opts.argv ?? [], env: opts.env, threadId: opts.threadId, stdout: !!opts.stdout, stderr: !!opts.stderr });
         return {
           post: (value) => post({ type: 'node-guest-thread-post', id, value }),
           terminate: () => post({ type: 'node-guest-thread-kill', id }),
@@ -165,13 +172,13 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       stdout: '',
       stderr: '',
       shell,
-      stdoutIsTTY: stdoutTTY,
+      stdoutIsTTY: ttyOut,
       // (fd 2 a file or pipe while fd 1 is the tty: `node x.js 2> err` wrote on the screen)
-      stderrIsTTY: isatty(sys, 2),
+      stderrIsTTY: !nodeThread?.stderr && isatty(sys, 2),
       stdinIsTTY: stdinTTY,
-      terminal: stdoutTTY ? terminalFacade(sys, stdinTTY) : undefined,
+      terminal: ttyOut ? terminalFacade(sys, stdinTTY) : undefined,
       // Not a terminal: fds 1 and 2 take what's written as written (bytes stay bytes: esbuild's protocol)
-      ...(stdoutTTY ? {} : { stdoutBytes: (b: Uint8Array) => { sys.write(1, b); }, stderrBytes: (b: Uint8Array) => { sys.write(2, b); } }),
+      ...(ttyOut ? {} : { stdoutBytes: out1, stderrBytes: out2 }),
       nodeGuest: hooks,
     };
     // stdin: read when the program asks for it (a pipe until its end); a thread's is the main thread's
@@ -196,11 +203,11 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       ctx.stderr += `node: ${e?.stack ?? e}\n`;
       status = 1;
     }
-    if (ctx.stdout) sys.write(1, ctx.stdout);
+    if (ctx.stdout) out1(ctx.stdout);
     if (nodeThread) {
       // A thread's uncaught error is its Worker's 'error' event; its exit ends only the thread
       if (status !== 0 && ctx.stderr) post({ type: 'node-thread-out', kind: 'error', value: { message: ctx.stderr.trim() } });
-      else if (ctx.stderr) sys.write(2, ctx.stderr);
+      else if (ctx.stderr) out2(ctx.stderr);
       post({ type: 'node-thread-out', kind: 'exit', value: status }); // after its messages (the kernel's exit can overtake them)
       sys.exitThread(status);
     }

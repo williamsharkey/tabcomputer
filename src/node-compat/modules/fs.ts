@@ -252,9 +252,12 @@ async function realpathAsync(deps: FsDeps, p: string): Promise<string> {
     if (await ctx.fs.exists(real)) return real;
   } catch { /* below */ }
   {
-    if (fileCache.has(resolved) || fileCache.has(resolved + '/.') || [...fileCache.keys()].some((k) => k.startsWith(resolved + '/'))) {
-      return ctx.fs.realpathCached?.(resolved) ?? resolved;
-    }
+    // (the cache holds canonical paths: a file written through a symlinked directory, its write
+    // still in flight, is under the directory's real path; storage can't resolve it yet)
+    const slash = resolved.lastIndexOf('/');
+    const dir = slash > 0 ? (ctx.fs.realpathCached?.(resolved.slice(0, slash)) ?? resolved.slice(0, slash)) : '';
+    const canonical = ctx.fs.realpathCached?.(resolved) ?? (slash > 0 ? (dir === '/' ? '' : dir) + resolved.slice(slash) : resolved);
+    if (fileCache.has(canonical) || fileCache.has(canonical + '/.') || [...fileCache.keys()].some((k) => k.startsWith(canonical + '/'))) return canonical;
     throw fsError('ENOENT', `ENOENT: no such file or directory, realpath '${p}'`, 'realpath', String(p));
   }
 }
@@ -278,6 +281,8 @@ function createRemovalHelpers(
   ctx: CommandContext,
   fileCache: Map<string, string>,
   fileMtimes: Map<string, number>,
+  /** Counts a removal still landing among the script's writes (awaited before it ends) */
+  track: (p: Promise<unknown>) => void,
 ) {
   const isProtectedRecentTaskOutput = (path: string, now = Date.now()) => {
     const mtime = fileMtimes.get(path);
@@ -289,17 +294,48 @@ function createRemovalHelpers(
     );
   };
 
+  /** Remove the tree at `root` from the filesystem's memory now: false when part of it isn't known there */
+  const removeTreeNow = (root: string): boolean => {
+    const fsx = ctx.fs as any;
+    // A kernel guest: syscalls, synchronous (its unlink and rmdir make theirs when called)
+    if (nodeGuestOf(ctx) && fsx.statSync && fsx.readdirSync) {
+      const walk = (p: string) => {
+        let st: any;
+        try { st = fsx.statSync(p, false); } catch { return; }
+        if (!st.isDirectory()) { fsx.unlink(p).catch(() => {}); return; }
+        for (const n of fsx.readdirSync(p)) walk(`${p === '/' ? '' : p}/${n}`);
+        fsx.rmdir(p).catch(() => {});
+      };
+      walk(root);
+      return true;
+    }
+    if (!fsx.lookupCached || !fsx.readdirCached || !fsx.rmdirNow) return false;
+    const walk = (p: string): boolean => {
+      const hit = fsx.lookupCached(p, false);
+      if (hit === null) return true;
+      if (!hit) return false;
+      if (hit.node.type !== 'dir') { ctx.fs.unlinkNow(p).catch(() => {}); return true; }
+      for (const n of fsx.readdirCached(p) ?? []) if (!walk(`${p === '/' ? '' : p}/${n}`)) return false;
+      return fsx.rmdirNow(p) === true;
+    };
+    return walk(root);
+  };
   const removePathFromCaches = (resolved: string, recursive = false) => {
     const now = Date.now();
     if (recursive) {
       const prefix = resolved.endsWith('/') ? resolved : resolved + '/';
+      let kept = false;
       for (const key of [...fileCache.keys()]) {
         if (key !== resolved && !key.startsWith(prefix)) continue;
-        if (isProtectedRecentTaskOutput(key, now)) continue;
+        if (isProtectedRecentTaskOutput(key, now)) { kept = true; continue; }
         fileCache.delete(key);
         fileMtimes.delete(key);
-        ctx.fs.unlinkNow(key).catch(() => {});
+        if (!key.endsWith('/.')) ctx.fs.unlinkNow(key).catch(() => {});
       }
+      // The tree's directories and the files this script never read go too, as node's rmSync
+      // (they stayed: `rm -r` then `mkdir` of the same tree found the old one), at once where
+      // memory knows the tree, so a write right after can't be undone by a removal landing late
+      if (!kept && !removeTreeNow(resolved) && typeof (ctx.fs as any).rm === 'function') track(ctx.fs.rm(resolved, { recursive: true }).catch(() => {}));
       return;
     }
     if (isProtectedRecentTaskOutput(resolved, now)) return;
@@ -353,7 +389,7 @@ function createRemovalHelpers(
 
 export function createFsModule(deps: FsDeps): any {
   const { ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir } = deps;
-  const { removePathFromCaches, toBytes, currentBytes, storeData, concatBytes } = createRemovalHelpers(ctx, fileCache, fileMtimes);
+  const { removePathFromCaches, toBytes, currentBytes, storeData, concatBytes } = createRemovalHelpers(ctx, fileCache, fileMtimes, (p) => { writeStateFor(deps.pendingPromises).push(p); });
 
   // Writes to one path through fds land in order (openSync's truncate used to
   // finish after the first writeSync and empty the file: tsc's output)
@@ -1699,7 +1735,7 @@ const NOT_CALLBACK_API = new Set(['createReadStream', 'createWriteStream', 'watc
 export function createFsPromisesModule(deps: FsDeps): any {
   const { ctx, fileCache, fileMtimes, FakeBuffer, homeDir, getBuiltinModule } = deps;
   const fsDirCached = dirCachedChecker(deps);
-  const { removePathFromCaches, toBytes, currentBytes, storeData, concatBytes } = createRemovalHelpers(ctx, fileCache, fileMtimes);
+  const { removePathFromCaches, toBytes, currentBytes, storeData, concatBytes } = createRemovalHelpers(ctx, fileCache, fileMtimes, (p) => { writeStateFor(deps.pendingPromises).push(p); });
 
   /** The fs module's async internals: its write chains, pending modes and flag checks */
   const shared = () => getBuiltinModule('fs')[ASYNC];

@@ -1519,9 +1519,13 @@ export class Shell {
 
   /** The environment a program started from this shell gets: env minus unexported variables */
   exportedEnv(): Record<string, string> {
-    if (!this.localVars.size) return this.env;
-    const e = { ...this.env };
-    for (const n of this.localVars) delete e[n];
+    // Variables only: not $? $# $1…, LINENO and $_ (bash doesn't export them) or the shell's own
+    // __PIPE_STDIN (env - ./prog gave the program ?=0 and LINENO=1)
+    const e: Record<string, string> = {};
+    for (const k in this.env) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k === 'LINENO' || k === '_' || k === '__PIPE_STDIN' || k.startsWith('__shiro') || this.localVars.has(k)) continue;
+      e[k] = this.env[k];
+    }
     return e;
   }
 

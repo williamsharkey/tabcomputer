@@ -163,6 +163,34 @@ describe('python3 (CPython WASI package)', () => {
     expect(r.out).toBe('[1]\n');
   }, 60_000);
 
+  it('python3 -m http.server binds IPv4 and serves request after request without threads (#64)', async () => {
+    // a net stack with loopback only (no relay)
+    const stack = new NetStack();
+    stack.configure({ relayUrl: null, tokenUrl: null, dohUrl: null, portHost: null });
+    const off = installNet(kernelForContext({ fs, shell } as any), stack);
+    await sh(shell, 'mkdir -p /tmp/www && echo hello-www > /tmp/www/index.txt');
+    await sh(shell, 'cd /tmp/www && python3 -m http.server 8764 > /tmp/www.log 2>&1 &');
+    const get = `python3 -c 'import urllib.request as u; print(u.urlopen("http://127.0.0.1:8764/index.txt", timeout=10).read().decode(), end="")'`;
+    let first = { out: '', err: '', exitCode: 1 };
+    for (let i = 0; i < 100 && first.exitCode !== 0; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      first = await sh(shell, get);
+    }
+    expect(first.out, first.err + (await sh(shell, 'cat /tmp/www.log')).out).toBe('hello-www\n');
+    expect((await sh(shell, get)).out).toBe('hello-www\n');
+    // (the server logs a request after answering it)
+    let log = await sh(shell, 'cat /tmp/www.log');
+    for (let i = 0; i < 50 && (log.out.match(/" 200/g)?.length ?? 0) < 2; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      log = await sh(shell, 'cat /tmp/www.log');
+    }
+    // (its stdout, "Serving HTTP on 0.0.0.0", is still in Python's buffer; the request log is stderr)
+    expect(log.out.match(/"GET \/index\.txt HTTP\/1\.1" 200/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(log.out).not.toMatch(/bad family|can't start new thread/);
+    await sh(shell, 'pkill -f http.server');
+    off?.();
+  }, 120_000);
+
   it('subprocess runs programs (os.posix_spawn over WASIX)', async () => {
     const r = await sh(shell, `cd /tmp && python3 -c '
 import subprocess, os

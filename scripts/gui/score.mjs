@@ -49,7 +49,7 @@ const APPS = [
 const OPENS_IMAGE = new Set(['eog', 'ristretto', 'gpicview', 'lximage-qt', 'krita', 'shotwell']);
 /** Apps whose first window is a splash or a progress dialog: render and input are checked on the window whose title matches */
 const READY = { krita: /sample/, 'libreoffice-writer': /^LibreOffice$|Writer/, audacity: /^Audacity$/, gimp: /GNU Image Manipulation Program/ };
-const READY_S = 300;
+const READY_S = 600;
 
 const manifest = JSON.parse(readFileSync(join(ROOT, 'public/gui/apps.json'), 'utf8'));
 const results = existsSync(RESULTS) ? JSON.parse(readFileSync(RESULTS, 'utf8')) : {};
@@ -255,7 +255,8 @@ async function scoreApp(browser, base, id) {
 const KNOWN = {
   blender: 'past the CPU check and PI futexes (engine fixes); needs OpenGL 3.3 over GLX, which Xshiro doesn\'t provide',
   'libreoffice-writer': 'runs (via oosplash): its first window is the splash, the start center follows (~2 min)',
-  'firefox-esr': 'runs (~4.5 min to its window): content processes get the font list by message (an overlay pref) until shared mappings work across processes; its text isn\'t reported',
+  'firefox-esr': 'its text isn\'t reported (no DOM text hook for Gecko)',
+  thunderbird: 'its text isn\'t reported (no DOM text hook for Gecko)',
   audacity: 'its first window is the first-run plugin scan; the main window follows (~70 s); wxWidgets text isn\'t reported',
   dillo: 'FLTK draws its text as pixels',
 };

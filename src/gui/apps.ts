@@ -34,7 +34,7 @@ export interface GuiApp {
   links?: [string, string][];
   /** Settings written into the user's home (relative path: contents) before a launch, when not there yet */
   home?: Record<string, string>;
-  /** Arguments before the user's (Audacious: --qt, the UI its set has) */
+  /** Arguments every launch starts with (Audacious's Qt interface is `--qt`) */
   args?: string[];
 }
 /**

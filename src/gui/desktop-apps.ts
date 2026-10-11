@@ -34,10 +34,9 @@ const APPS: [string, string, string, boolean, string?][] = [
   ['abiword', 'AbiWord', 'gui/icons/abiword.png', true],
   ['keepassxc', 'KeePassXC', 'gui/icons/keepassxc.svg', true],
   ['audacity', 'Audacity', '♫', true, 'first start takes a minute'],
-  // (Firefox and Thunderbird stop in the engine on their shared memfds: docs/GUI_SCORE.md; listed again once they start)
-  ['firefox-esr', 'Firefox ESR', 'gui/icons/firefox-esr.png', false, 'first start takes a few minutes'],
+  ['firefox-esr', 'Firefox ESR', 'gui/icons/firefox-esr.png', true, 'first start takes a few minutes'],
   ['libreoffice-writer', 'LibreOffice Writer', 'W', true, 'first start takes a few minutes'],
-  ['thunderbird', 'Thunderbird', 'gui/icons/thunderbird.png', false, 'first start takes a few minutes'],
+  ['thunderbird', 'Thunderbird', 'gui/icons/thunderbird.png', true, 'first start takes a few minutes'],
   ['pidgin', 'Pidgin', 'gui/icons/pidgin.svg', true],
   ['hexchat', 'HexChat', 'gui/icons/hexchat.svg', true],
   ['audacious', 'Audacious', 'gui/icons/audacious.svg', true],

@@ -28,7 +28,10 @@ export const topCmd: Command = {
       return `${m}:${String(s).padStart(2, '0')}`;
     };
 
-    const renderSnapshot = (cols: number, maxRows?: number): string => {
+    /** `s` in SGR `code`, or plain: batch mode and output that isn't a terminal get no escapes, as procps top -b (#62) */
+    const sgr = (color: boolean, code: string, s: string, end = '0') => (color ? `\x1b[${code}m${s}\x1b[${end}m` : s);
+
+    const renderSnapshot = (cols: number, maxRows?: number, color = true): string => {
       const procs = processTable.list();
       const running = procs.filter(p => p.status === 'running').length;
       const exited = procs.filter(p => p.status !== 'running').length;
@@ -39,24 +42,24 @@ export const topCmd: Command = {
       const lines: string[] = [];
 
       // Header
-      lines.push(`\x1b[1mtop\x1b[0m - ${timeStr} up ${formatUptime()}, 1 user`);
-      lines.push(`Tasks: \x1b[1m${procs.length}\x1b[0m total, \x1b[32m${running} running\x1b[0m, ${exited} exited`);
+      lines.push(`${sgr(color, '1', 'top')} - ${timeStr} up ${formatUptime()}, 1 user`);
+      lines.push(`Tasks: ${sgr(color, '1', String(procs.length))} total, ${sgr(color, '32', `${running} running`)}, ${exited} exited`);
 
       // Memory (use performance.memory if available, else estimate)
       const mem = (performance as any).memory;
       if (mem) {
         const used = (mem.usedJSHeapSize / 1048576).toFixed(1);
         const total = (mem.jsHeapSizeLimit / 1048576).toFixed(1);
-        lines.push(`MiB Mem: \x1b[1m${used}\x1b[0m used / ${total} total`);
+        lines.push(`MiB Mem: ${sgr(color, '1', used)} used / ${total} total`);
       } else {
-        lines.push(`CPUs: \x1b[1m${navigator.hardwareConcurrency || '?'}\x1b[0m`);
+        lines.push(`CPUs: ${sgr(color, '1', String(navigator.hardwareConcurrency || '?'))}`);
       }
 
       lines.push('');
 
       // Process table header
       const header = '  PID  STATUS     TIME  COMMAND';
-      lines.push(`\x1b[7m${header.padEnd(cols)}\x1b[27m`);
+      lines.push(color ? sgr(color, '7', header.padEnd(cols), '27') : header);
 
       // Sort: running first, then by PID
       const sorted = [...procs].sort((a, b) => {
@@ -69,8 +72,7 @@ export const topCmd: Command = {
       for (let i = 0; i < Math.min(sorted.length, limit); i++) {
         const p = sorted[i];
         const time = formatTime(p.startTime);
-        const statusColor = p.status === 'running' ? '\x1b[32m' : '\x1b[90m';
-        const status = `${statusColor}${p.status.padEnd(8)}\x1b[0m`;
+        const status = sgr(color, p.status === 'running' ? '32' : '90', p.status.padEnd(8));
         const cmd = p.command.length > cols - 28 ? p.command.slice(0, cols - 31) + '...' : p.command;
         lines.push(`  ${String(p.pid).padStart(3)}  ${status}  ${time.padStart(5)}  ${cmd}`);
       }
@@ -82,7 +84,7 @@ export const topCmd: Command = {
     if (batchMode) {
       let iter = 0;
       do {
-        ctx.stdout += renderSnapshot(80);
+        ctx.stdout += renderSnapshot(80, undefined, false);
         iter++;
         if (maxIter > 0 && iter >= maxIter) break;
         if (iter < (maxIter || 1)) {
@@ -93,9 +95,9 @@ export const topCmd: Command = {
     }
 
     // Interactive TUI mode
-    if (!ctx.terminal) {
-      // No terminal — fall back to single batch snapshot
-      ctx.stdout += renderSnapshot(80);
+    if (!ctx.terminal || ctx.stdoutIsTTY === false) {
+      // No terminal, or output to a pipe or file (top | head): one plain snapshot, as batch mode
+      ctx.stdout += renderSnapshot(80, undefined, false);
       return 0;
     }
 
@@ -213,7 +215,9 @@ export const topCmd: Command = {
       terminal.enterRawMode(onKey);
       render();
 
-      interval = setInterval(render, delay);
+      // (not when that first render was the last, -n 1: cleanup ran before there was an interval
+      // to clear, and the page kept a render timer for good)
+      if (running) interval = setInterval(render, delay);
     });
   },
 };

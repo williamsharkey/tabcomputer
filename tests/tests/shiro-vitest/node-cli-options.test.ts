@@ -80,6 +80,12 @@ describe('tabcomputer#33: options before the script', () => {
     expect((await sh('cd /tmp/nopt && node --no-warnings -- p.js --not-an-option')).out).toBe('ran ["--no-warnings"] ["--not-an-option"]\n');
   });
 
+  it('a #! line with node\'s options: `env -S node --no-warnings`, `node --no-deprecation`', async () => {
+    await fs.writeFile('/tmp/nopt/s1.js', '#!/usr/bin/env -S node --no-warnings\nconsole.log("s1", JSON.stringify(process.execArgv), JSON.stringify(process.argv.slice(2)));\n');
+    await fs.writeFile('/tmp/nopt/s2.js', '#!/usr/local/bin/node --no-deprecation\nconsole.log("s2", JSON.stringify(process.execArgv));\n');
+    expect((await sh('cd /tmp/nopt && chmod +x s1.js s2.js && ./s1.js q && ./s2.js')).out).toBe('s1 ["--no-warnings"] ["q"]\ns2 ["--no-deprecation"]\n');
+  });
+
   it('--check: the syntax only', async () => {
     await fs.writeFile('/tmp/nopt/bad.js', 'let x = ;\n');
     expect(await sh('cd /tmp/nopt && node --check p.js')).toEqual({ out: '', err: '', code: 0 });

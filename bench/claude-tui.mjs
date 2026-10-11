@@ -44,7 +44,7 @@ const log = (...a) => console.log(...a);
 
 const fx = prepareFixtures({ cacheDir: join(ROOT, 'bench/.cache'), publishDir: join(ROOT, 'dist/__bench'), log });
 if (binary) copyFileSync(binary, join(ROOT, 'dist/__bench/claude-native-alt'));
-if (build === 'native' && !binary && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
+if (build !== 'npm' && !binary && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
 const server = await startShiroServer({ staticDir: join(ROOT, 'dist'), isolated: true, tcpPorts: [], allowCidrs: [hostAddress() + '/32'], log: process.env.BENCH_SERVER_LOG ? (l) => log('[server]', l) : null });
 const results = [];
 const h = new Harness({ mode: 'isolated', origin: server.origin, netcache: new NetCache(join(ROOT, 'bench/.cache/net'), { log: process.env.BENCH_VERBOSE ? log : () => {} }), runs, log, results });
@@ -95,7 +95,7 @@ try {
     await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm' });
     const home = '/home/user';
     await h.eval(async ({ build, json, home, tui, binary }) => {
-      if (build === 'native') {
+      if (build === 'native' || build === 'vm') {
         await window.__bench.fetchInto(binary ? '/__bench/claude-native-alt' : '/__bench/claude-native', home + '/.local/bin/claude');
         await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
       }

@@ -11,13 +11,17 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { claudeJson } from './claude.mjs';
+import { FAKE_KEY } from '../lib/mockmodel.mjs';
 
 export const name = 'blinkprof';
 export const ownPages = true;
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', '.cache', 'blinkprof');
-const PROF = 'SHIRO_BLINK_PROFILE=/tmp/prof/%p.txt SHIRO_BLINK_PROFILE_REGIONS=100000 SHIRO_BLINK_PROFILE_TOP=5000 LD_DEBUG=files LD_DEBUG_OUTPUT=/tmp/prof/ld';
-const APT = 'sudo DEBIAN_FRONTEND=noninteractive apt-get';
+// exported, and through `sudo -E`: tabcomputer's sudo drops a plain prefix (and `sudo env X=…`)
+const VARS = 'SHIRO_BLINK_PROFILE=/tmp/prof/%p.txt SHIRO_BLINK_PROFILE_REGIONS=100000 SHIRO_BLINK_PROFILE_TOP=5000';
+const PROF = `export ${VARS} LD_DEBUG=files LD_DEBUG_OUTPUT=/tmp/prof/ld DEBIAN_FRONTEND=noninteractive PATH=$PATH:/usr/sbin:/sbin;`;
+const APT = 'sudo -E apt-get';
 const LIBS = ['/usr/lib/x86_64-linux-gnu/libz.so.1', '/usr/lib/x86_64-linux-gnu/liblzma.so.5', '/usr/lib/x86_64-linux-gnu/libc.so.6', '/lib/ld-musl-x86_64.so.1'];
 
 /** A shell command with a limit; { code, ms, out }. */
@@ -46,13 +50,15 @@ async function pull(h, path, dest) {
 /** Runs `cmd` profiled, then copies /tmp/prof/* out to OUT/<label>/; returns its wall ms. */
 async function profiled(h, label, cmd, limitS) {
   await h.sh('rm -rf /tmp/prof && mkdir -p /tmp/prof');
-  const r = await shRun(h, `${PROF} sh -c '${cmd.replace(/'/g, "'\\''")}'`, limitS);
+  const r = await shRun(h, `${PROF} ${cmd}`, limitS);
   const dir = join(OUT, label);
   rmSync(dir, { recursive: true, force: true });
-  const files = (await h.sh('ls /tmp/prof')).out.split('\n').filter(Boolean);
+  mkdirSync(dir, { recursive: true });
+  const files = (await h.sh('ls /tmp/prof')).out.split(/\r?\n/).map((f) => f.trim()).filter(Boolean);
   for (const f of files) await pull(h, `/tmp/prof/${f}`, join(dir, f));
   writeFileSync(join(dir, 'wall.json'), JSON.stringify({ cmd, wallMs: r.ms, files: files.length }));
   h.log(`    ${label}: ${Math.round(r.ms)} ms, ${files.length} files`);
+  if (!files.some((f) => /^\d+\.txt$/.test(f))) throw new Error(`${label}: no profile files (did the variables reach Blink?)`);
   return r.ms;
 }
 
@@ -64,20 +70,25 @@ export async function run(h) {
     await h.boot({ path: '/?ui=terminal' });
     await shRun(h, 'debian install', 600);
     // untimed: the indexes the profiled update refreshes, and the tools
-    await shRun(h, `${APT} update`, 1800);
-    await shRun(h, `${APT} install -y git`, 1800);
+    await shRun(h, `export DEBIAN_FRONTEND=noninteractive; ${APT} update`, 1800);
+    await shRun(h, `export DEBIAN_FRONTEND=noninteractive; ${APT} install -y git`, 1800);
     await shRun(h, `mkdir -p /tmp/debs && cd /tmp/debs && apt-get download linux-perf gcc-14-x86-64-linux-gnu`, 1800);
     for (const l of LIBS) await pull(h, l, join(OUT, 'libs', l.split('/').pop()));
     // apt-get update again from scratch: drop the lists so it fetches and decompresses them all
-    W.apt_update = await profiled(h, 'apt_update', `sudo rm -rf /var/lib/apt/lists/* && ${APT} update`, 1800);
-    W.dpkg_linux_perf = await profiled(h, 'dpkg_linux_perf', 'cd /tmp/debs && sudo dpkg --unpack linux-perf_*.deb', 1800);
-    W.dpkg_gcc = await profiled(h, 'dpkg_gcc', 'cd /tmp/debs && sudo dpkg --unpack gcc-14-x86-64-linux-gnu_*.deb', 1800);
+    await shRun(h, 'sudo rm -rf /var/lib/apt/lists/*', 300);
+    W.apt_update = await profiled(h, 'apt_update', `${APT} update`, 1800);
+    W.dpkg_linux_perf = await profiled(h, 'dpkg_linux_perf', 'cd /tmp/debs && sudo -E dpkg --unpack linux-perf_*.deb', 1800);
+    W.dpkg_gcc = await profiled(h, 'dpkg_gcc', 'cd /tmp/debs && sudo -E dpkg --unpack gcc-14-x86-64-linux-gnu_*.deb', 1800);
     const g = h.gitServer;
     if (g) W.git_clone = await profiled(h, 'git_clone', `cd /tmp && rm -rf tmux && git clone -q git://${g.host}:${g.port}/tmux.git tmux`, 1800);
     else h.skip('blinkprof.git_clone', '', 'no git daemon');
   });
   await h.try('blinkprof.claude', '', async () => {
     if (!h.fixtures['claude-native']) { h.skip('blinkprof.claude', '', 'no native Claude fixture'); return; }
+    await h.page?.context().close().catch(() => {});
+    await h.boot({ path: '/?ui=terminal' });
+    // onboarding done, the key approved, ~/w trusted: no dialogs before the prompt
+    await h.eval((json) => window.__bench.writeFile('/home/user/.claude.json', json), claudeJson('/home/user', '/home/user/w'));
     await h.eval(async () => {
       await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
       await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
@@ -85,10 +96,11 @@ export async function run(h) {
     // the profile is written when Claude first reads its terminal (its prompt is up), and at exit
     await h.sh('rm -rf /tmp/prof && mkdir -p /tmp/prof && mkdir -p ~/w');
     const t0 = Date.now();
-    await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && SHIRO_BLINK_PROFILE=/tmp/prof/%p.txt SHIRO_BLINK_PROFILE_REGIONS=100000 SHIRO_BLINK_PROFILE_TOP=5000 ANTHROPIC_API_KEY=sk-ant-api03-bench-not-a-real-key-000000000000000000000000 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
+    await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && export ${VARS}; ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
     for (;;) {
-      const files = (await h.sh('ls /tmp/prof 2>/dev/null')).out.trim();
-      if (files) break;
+      // Claude's prompt on screen: its profile was written at that first terminal read
+      const screen = await h.eval(() => { const b = window.__tabcomputer.terminal.term.buffer.active; const r = []; for (let y = b.viewportY; y < b.viewportY + 40; y++) r.push(b.getLine(y)?.translateToString(true) ?? ''); return r.join('\n'); });
+      if (/for shortcuts|\? for|shift\+tab to cycle/.test(screen)) break;
       if (Date.now() - t0 > 600000) throw new Error('no profile from claude in 600 s');
       await h.page.waitForTimeout(500);
     }
@@ -96,7 +108,8 @@ export async function run(h) {
     await h.page.waitForTimeout(2000);
     const dir = join(OUT, 'claude_start');
     rmSync(dir, { recursive: true, force: true });
-    const files = (await h.sh('ls /tmp/prof')).out.split('\n').filter(Boolean);
+    mkdirSync(dir, { recursive: true });
+    const files = (await h.sh('ls /tmp/prof')).out.split(/\r?\n/).map((f) => f.trim()).filter(Boolean);
     for (const f of files) await pull(h, `/tmp/prof/${f}`, join(dir, f));
     writeFileSync(join(dir, 'wall.json'), JSON.stringify({ cmd: 'claude --native → its first terminal read (prompt)', wallMs: W.claude_start, files: files.length }));
   });

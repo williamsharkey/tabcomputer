@@ -1,6 +1,9 @@
 // node ff-url.mjs URL 'ENV=1 ENV2=1' 'firefox args' ['prep shell cmd']: Firefox ESR started from the shell with that
 // environment and arguments; notes when it exits before a window, then dmesg, the log, and a screenshot.
-// POST='cmd' runs a shell command before the final dump. CONSOLE=regex prints matching page console messages. MAPS=1 logs libxul's mappings 20 s in. AUTOCONFIG=1 installs autoconfig/ (a command-line trace: PROBE lines in the log) before the launch.
+// Options (env): AUTOCONFIG=1 installs autoconfig/ (an nsICommandLine trace: PROBE lines in the log); MAPS=1 logs
+// libxul's mappings 20 s in; POLL=1 logs each new process; AFTER=ms waits that long after the window (90000);
+// POST='cmd' runs a shell command before the final dump; LOGTAIL=N prints that much of the log (300);
+// CONSOLE=regex prints matching page console messages; SHOT=path for the screenshot.
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 const require = createRequire('/opt/node-tools/node_modules/');
@@ -9,7 +12,7 @@ const [url, envs = '', extra = '', prep = ''] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox'] });
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 await page.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-tour', '1'); localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
-// POST='cmd' runs a shell command before the final dump. CONSOLE=regex prints matching page console messages (the engine's own stderr, e.g. BLINK_WJIT_DEBUG, lands there)
+// CONSOLE: the engine's own stderr (BLINK_WJIT_DEBUG, with TABCOMPUTER_BLINK_DEBUG=1) lands in the page console
 if (process.env.CONSOLE) { const re = new RegExp(process.env.CONSOLE); page.on('console', (m) => { if (re.test(m.text())) console.log('[console] ' + m.text()); }); }
 await page.goto(url + '?ui=desktop');
 await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 120000 });
@@ -35,11 +38,21 @@ if (process.env.MAPS) { // where libxul is mapped in the parent (for BLINK_WJIT_
   await page.waitForTimeout(20000);
   log('maps\n' + (await sh("for p in $(pgrep -f 'firefox-esr/firefox-esr'); do echo pid $p; grep libxul /proc/$p/maps; done")).out);
 }
+// POLL=1: every new process (pid, ppid, args) as it appears, until the end
+const seen = new Set();
+const poll = async () => {
+  if (!process.env.POLL) return;
+  for (const line of (await sh('ps -eo pid,ppid,args 2>&1 | cut -c1-160')).out.split('\n')) {
+    const pid = line.trim().split(/\s+/)[0];
+    if (/^\d+$/.test(pid) && !seen.has(pid)) { seen.add(pid); log('new ' + line.trim()); }
+  }
+};
+const wait = async (ms) => { for (const end = Date.now() + ms; Date.now() < end;) { await poll(); await page.waitForTimeout(Math.min(3000, Math.max(0, end - Date.now()))); } };
 const isFx = () => page.evaluate(() => window.__tabcomputer.desktop.windows().some((w) => w.surface && /Firefox/.test(w.title)));
 const alive = async () => Number((await sh('ps -eo args 2>&1 | grep -v grep | grep -c ^/usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
-for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await page.waitForTimeout(5000); }
+for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await wait(5000); }
 log(`window: ${await isFx()}`);
-if (await isFx()) { await page.waitForTimeout(90000); } if (false) {
+if (await isFx()) { await wait(Number(process.env.AFTER || 90000)); if (!(await alive())) log('firefox exited after its window'); } if (false) {
   await page.waitForTimeout(20000);
   await page.evaluate(() => { const w = window.__tabcomputer.desktop.windows().find((w) => w.surface && /Firefox/.test(w.title)); w.focus(); w.surface.canvas.focus(); });
   await page.keyboard.press('Control+l'); await page.waitForTimeout(3000);

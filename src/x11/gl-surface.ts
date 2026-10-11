@@ -33,6 +33,14 @@ export interface GLSurface {
   onChange(cb: () => void): () => void;
   /** The window was destroyed (the canvas is gone). */
   onDestroy(cb: () => void): () => void;
+  /** Show a frame (top row first) in the canvas; closes the bitmap without a DOM. */
+  present(bitmap: ImageBitmap): void;
+  /**
+   * The frame shown, read back from the canvas: RGBA bytes, top row first,
+   * or null before the first frame (or since a resize, or without a DOM).
+   * For XGetImage, which is rare; frames themselves are never read back.
+   */
+  pixels(): { width: number; height: number; data: Uint8ClampedArray } | null;
   /** Done with it: the canvas is removed; the window is drawn from its pixels again. */
   release(): void;
 }
@@ -94,6 +102,9 @@ export class GLSurfaceImpl implements GLSurface {
   private changeCbs = new Set<() => void>();
   private destroyCbs = new Set<() => void>();
   private key = '';
+  private ctx: ImageBitmapRenderingContext | null = null;
+  /** a frame is in the canvas */
+  private framed = false;
   released = false;
 
   constructor(readonly win: XWindow, private site: SurfaceSite, private onRelease: (s: GLSurfaceImpl) => void) {
@@ -129,8 +140,7 @@ export class GLSurfaceImpl implements GLSurface {
         overlay.insertBefore(c, base ? base.nextSibling : overlay.firstChild);
       } else if (!overlay && c.parentElement) c.remove();
       const s = this.site.scale || 1;
-      if (c.width !== w.width) c.width = w.width;
-      if (c.height !== w.height) c.height = w.height;
+      if (c.width !== w.width || c.height !== w.height) { c.width = w.width; c.height = w.height; this.framed = false; }
       Object.assign(c.style, {
         display: this.visible ? 'block' : 'none',
         left: `${ox / s}px`, top: `${oy / s}px`, width: `${w.width / s}px`, height: `${w.height / s}px`,
@@ -150,6 +160,26 @@ export class GLSurfaceImpl implements GLSurface {
 
   onChange(cb: () => void): () => void { this.changeCbs.add(cb); return () => this.changeCbs.delete(cb); }
   onDestroy(cb: () => void): () => void { this.destroyCbs.add(cb); return () => this.destroyCbs.delete(cb); }
+
+  present(bitmap: ImageBitmap): void {
+    const c = this.canvas;
+    if (!c || this.released) { bitmap.close(); return; }
+    if (c.width !== bitmap.width || c.height !== bitmap.height) { c.width = bitmap.width; c.height = bitmap.height; }
+    this.ctx ??= c.getContext('bitmaprenderer');
+    if (!this.ctx) { bitmap.close(); return; }
+    this.ctx.transferFromImageBitmap(bitmap);
+    this.framed = true;
+  }
+
+  pixels(): { width: number; height: number; data: Uint8ClampedArray } | null {
+    const c = this.canvas;
+    if (!c || !this.framed || this.released || !c.width || !c.height) return null;
+    const out = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(c.width, c.height) : Object.assign(document.createElement('canvas'), { width: c.width, height: c.height });
+    const g = out.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+    if (!g) return null;
+    g.drawImage(c, 0, 0);
+    return { width: c.width, height: c.height, data: g.getImageData(0, 0, c.width, c.height).data };
+  }
 
   release(): void {
     if (this.released) return;

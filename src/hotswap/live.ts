@@ -12,6 +12,14 @@
 
 export type LiveMap = Map<string, Record<string, unknown>>;
 
+/**
+ * Modules the page doesn't register: generated tables (src/gl/gen/) and vendored
+ * code (src/browser/vendor/). Registering keeps all their exports from being
+ * tree-shaken (about 25 KB gzipped), and they aren't edited by hand; a swap that
+ * imports one gets its own copy from the checkout.
+ */
+export const NOT_LIVE = /^src\/(?:.+\/)?(?:gen|vendor)\//;
+
 export function liveModules(): LiveMap {
   const g = globalThis as any;
   return (g.__tabcomputerLive ??= new Map());

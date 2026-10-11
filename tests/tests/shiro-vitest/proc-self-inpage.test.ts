@@ -40,7 +40,8 @@ describe('/proc/self of an in-page command', () => {
   });
 
   it('stat -L of fd 1 sees the file; cmdline is the command; self is not $$', async () => {
-    expect((await sh('stat -L -c %F /proc/self/fd/1 > /tmp/ps5; cat /tmp/ps5')).out).toBe('regular file\n');
+    // (the redirect's file is still empty when stat looks: GNU says so)
+    expect((await sh('stat -L -c %F /proc/self/fd/1 > /tmp/ps5; cat /tmp/ps5')).out).toBe('regular empty file\n');
     expect((await sh('cat /proc/self/cmdline | tr "\\0" " "')).out).toBe('cat /proc/self/cmdline ');
     const r = await sh('echo $$; readlink /proc/self; cat /proc/self/stat | cut -d" " -f4');
     const [shellPid, self, ppid] = r.out.trim().split('\n');

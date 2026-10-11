@@ -33,7 +33,8 @@ for (const n of [0, 1, 65536, 65537, 1 << 20]) {
 }
 c.randomBytes(200000, (e, b) => console.log('cb', e, b.length));
 `);
-    expect(r).toMatchObject({ out: '0 0 true true\n1 1 true true\n65536 65536 true true\n65537 65537 true true\n1048576 1048576 true true\ncb null 200000\n', status: 0 });
+    // (a lost callback reads as this mismatch, with what node printed; a hang as the test's timeout)
+    expect(r, `node printed ${JSON.stringify(r)}`).toMatchObject({ out: '0 0 true true\n1 1 true true\n65536 65536 true true\n65537 65537 true true\n1048576 1048576 true true\ncb null 200000\n', status: 0 });
   });
 
   it('randomFillSync and randomFill: offsets and sizes in elements, past 64 KiB', async () => {

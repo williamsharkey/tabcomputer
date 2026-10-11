@@ -8,7 +8,8 @@
  * isolated storage: IndexedDB database names get a per-run prefix, and
  * localStorage/sessionStorage live in memory. Tests run one at a time.
  */
-import { importCode } from './swap';
+import { importCode, quietDuring } from './swap';
+import { makeTestNode, type Snapshot } from './test-fs';
 
 type Fn = () => unknown;
 type Mode = 'run' | 'skip' | 'only' | 'todo';
@@ -456,13 +457,17 @@ export interface RunOptions {
   filter?: RegExp;
   /** Called with each finished test */
   onResult?: (r: TestResult) => void;
+  /** The files the suite's node:fs starts with (test-fs.ts snapshotTree); its writes stay in memory */
+  files?: Snapshot;
+  /** The suite's process.cwd() for relative fs paths */
+  cwd?: string;
 }
 
 let running: Promise<unknown> = Promise.resolve();
 
 /** Evaluate a bundle from buildTest and run its tests (one run at a time per page) */
 export function runTestBundle(code: string, opts: RunOptions = {}): Promise<RunSummary> {
-  const run = running.then(() => runNow(code, opts));
+  const run = running.then(() => quietDuring(() => runNow(code, opts)));
   running = run.catch(() => {});
   return run;
 }
@@ -477,7 +482,7 @@ async function runNow(code: string, opts: RunOptions): Promise<RunSummary> {
   const runId = Math.random().toString(36).slice(2, 8);
   g.__tcTestEnv = isolatedEnv(runId);
   g.__tcTestApi = makeApi(root, restorers);
-  g.__tcTestNode = { path: testPath, os: testOs };
+  g.__tcTestNode = { path: testPath, os: testOs, ...makeTestNode(opts.files ?? new Map(), opts.cwd) };
   try {
     try {
       await importCode(code);

@@ -2,12 +2,14 @@
 // Needs a build and a running server:
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/hotswap.mjs [http://localhost:5299/]
-// 1. `hotswap checkout` unpacks the build's own source into ~/shiro; sed edits src/shell.ts; `hotswap diff` shows it.
+// 1. `hotswap checkout` unpacks the build's own source into ~/tabcomputer; sed edits src/shell.ts; `hotswap diff` shows it.
 // 2. `hotswap apply --ttl 8s src/shell.ts`: the main terminal's shell sees the change, no reload.
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
 // 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
-// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
+// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage;
+//    their node:fs reads the checkout (fixtures included) and writes only in memory.
+// 7. `hotswap watch -d`: each save of src/shell.ts is live in the main shell; --wait reports; a broken save changes nothing.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let chromium;
@@ -48,10 +50,13 @@ check(true, 'boots');
 // 1. A checkout of this build's source in the tab
 let t0 = Date.now();
 let r = await sh(page, 'hotswap checkout');
-check(r.code === 0 && /checked out build \d+/.test(r.out), `hotswap checkout (${Date.now() - t0} ms)`, r.out);
-check(/No changes/.test((await sh(page, 'cd /home/user/shiro && hotswap diff')).out), 'a fresh checkout has no changes');
+check(r.code === 0 && /checked out build \d+/.test(r.out) && /in \/home\/user\/tabcomputer/.test(r.out), `hotswap checkout (${Date.now() - t0} ms)`, r.out);
+// A tab with a checkout in ~/shiro (the old default) and none in ~/tabcomputer keeps using it
+r = await sh(page, 'mv /home/user/tabcomputer /home/user/shiro && hotswap checkout; mv /home/user/shiro /home/user/tabcomputer');
+check(/using the existing checkout in \/home\/user\/shiro/.test(r.out), 'hotswap checkout falls back to an existing ~/shiro checkout', r.out);
+check(/No changes/.test((await sh(page, 'cd /home/user/tabcomputer && hotswap diff')).out), 'a fresh checkout has no changes');
 
-r = await sh(page, `cd /home/user/shiro && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
 check(r.out.trim() === '1', 'edited src/shell.ts in the tab', r.out);
 check((await mainEcho(page)) === '5.0.0', 'before: BASH_VERSION is 5.0.0');
 
@@ -89,15 +94,19 @@ check((await mainEcho(page)) === '5.0.0', 'the next load has no swap');
 
 
 // 5. A registry command (#47): git is a lazy command, a plain object, not a class
-r = await sh(page, `cd /home/user/shiro && sed -i 's/git version 2\\.47\\.0/git version 9.9.9-swapped/' src/commands/git.ts && hotswap apply --ttl 60s src/commands/git.ts`);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i 's/git version 2\\.47\\.0/git version 9.9.9-swapped/' src/commands/git.ts && hotswap apply --ttl 60s src/commands/git.ts`);
 check(r.code === 0 && /command git: replaced .*exec/.test(r.out) && !/not swapped.*gitCmd/.test(r.out), 'hotswap apply src/commands/git.ts patches the git command', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the swapped code');
 await sh(page, 'hotswap revert');
 check(/git version 2\.47\.0/.test((await sh(page, 'git --version')).out), 'revert puts the old git back');
 // reload resolves the command's relative imports through the live modules
-r = await sh(page, 'cd /home/user/shiro && reload commands/git src/commands/git.ts');
+r = await sh(page, 'cd /home/user/tabcomputer && reload commands/git src/commands/git.ts');
 check(r.code === 0 && /Hot-reloaded 'commands\/git'/.test(r.out), 'reload of a command with relative imports', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the reloaded code');
+
+// Generated tables aren't live (NOT_LIVE): a module importing them builds with its own copy
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap build src/gl/exec.ts');
+check(r.code === 0 && /src\/gl\/gen\/enums\.ts is generated or vendored/.test(r.out), 'hotswap build of a module importing generated tables', r.out);
 
 // 6. Suites from the checkout, in the tab
 await page.evaluate(async () => {
@@ -105,10 +114,30 @@ await page.evaluate(async () => {
   localStorage.setItem('hotswap-check', 'mine');
 });
 t0 = Date.now();
-r = await sh(page, 'cd /home/user/shiro && hotswap test shell-posix shell-syntax shell-issue74');
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test shell-posix shell-syntax shell-issue74');
 console.log(r.out.split('\n').map((l) => '     ' + l).join('\n'));
 check(r.code === 0 && /PASS tests\/tests\/shiro-vitest\/shell-posix\.test\.ts: \d+ passed/.test(r.out) && /Tests: \d+ passed\n/.test(r.out), `hotswap test runs the shell suites (${Date.now() - t0} ms)`, r.out);
-r = await sh(page, 'cd /home/user/shiro && hotswap test -t "nothing matches this" shell-posix');
+// node:fs: a fixture by import.meta.url, and a guest worker from a lazy module (shell-conformance's argv0.wasm)
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test -t argv shell-conformance');
+check(r.code === 0 && /PASS .*shell-conformance\.test\.ts: 1 passed/.test(r.out), 'a suite reads its wasm fixture with node:fs and runs it', r.out);
+// a suite's node:fs writes stay in memory: the tab's files and the checkout are unchanged
+r = await sh(page, `cd /home/user/tabcomputer && cat > tests/tests/shiro-vitest/fs-probe.test.ts <<'END'
+import { it, expect } from 'vitest';
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+it('reads the checkout and writes in memory', () => {
+  expect(readFileSync(join(__dirname, '../../../src/shell.ts'), 'utf8')).toContain('export class Shell');
+  expect(existsSync('/home/user/keep.txt')).toBe(false); // only the checkout is in its fs
+  writeFileSync('/home/user/keep.txt', 'clobbered');
+  writeFileSync(join(__dirname, 'fs-probe.test.ts'), 'clobbered');
+  const d = mkdtempSync('/tmp/probe-');
+  writeFileSync(d + '/x', Buffer.from('y'));
+  expect([readFileSync('/home/user/keep.txt', 'utf8'), existsSync(d + '/x'), process.env.HOME]).toEqual(['clobbered', true, '/home/user']);
+});
+END
+hotswap test fs-probe; head -c 6 tests/tests/shiro-vitest/fs-probe.test.ts; echo; ls -d /tmp/probe-* 2>/dev/null | wc -l; rm tests/tests/shiro-vitest/fs-probe.test.ts`);
+check(/PASS .*fs-probe\.test\.ts: 1 passed/.test(r.out) && /\nimport\n0\n$/.test(r.out), "a suite's node:fs reads the checkout and its writes stay in memory", r.out);
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test -t "nothing matches this" shell-posix');
 check(/0 passed/.test(r.out), 'hotswap test -t filters');
 const kept = await page.evaluate(async () => ({
   file: await window.__tabcomputer.fs.readFile('/home/user/keep.txt', 'utf8'),
@@ -116,6 +145,60 @@ const kept = await page.evaluate(async () => ({
   dbs: (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith('tabcomputer-test-')).length,
 }));
 check(kept.file === 'mine' && kept.ls === 'mine', "the tab's own files and localStorage are untouched", JSON.stringify(kept));
+
+// 7. The save loop: `hotswap watch -d`, edit, `hotswap watch --wait`
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap revert --all >/dev/null; hotswap watch -d --ttl 20s');
+check(r.code === 0 && /watching \/home\/user\/tabcomputer\/src/.test(r.out), 'hotswap watch -d', r.out);
+const latencies = [];
+for (const v of ['8.8.1', '8.8.2', '8.8.3']) {
+  latencies.push(await page.evaluate(async (v) => {
+    const fs = window.__tabcomputer.fs, p = '/home/user/tabcomputer/src/shell.ts';
+    const next = (await fs.readFile(p, 'utf8')).replace(/result \+= '[^']*'/, `result += '${v}'`);
+    const t0 = performance.now();
+    await fs.writeFile(p, next);
+    for (;;) {
+      let out = '';
+      await window.__tabcomputer.shell.execute('echo $BASH_VERSION', (x) => { out += x; }, () => {});
+      if (out.trim() === v) return Math.round(performance.now() - t0);
+      if (performance.now() - t0 > 30000) return -1;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+  }, v));
+}
+check(latencies.every((ms) => ms > 0), `each save is live in the main shell (edit->live ms: ${latencies.join(', ')})`);
+r = await sh(page, 'hotswap watch --wait');
+check(r.code === 0 && (r.out.match(/^✓ #\d+ src\/shell\.ts \(Shell/gm) ?? []).length === 3 && /live \d+ ms after the save/.test(r.out), 'hotswap watch --wait prints one line per save', r.out);
+r = await sh(page, 'hotswap status');
+check((r.out.match(/^#\d+ src\/shell\.ts/gm) ?? []).length === 1, 'the saves are one swap record', r.out);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '8.8.3'/result += '8.8.3' BROKEN/" src/shell.ts && hotswap watch --wait`);
+check(r.code === 1 && /^✗ src\/shell\.ts: src\/shell\.ts:\d+:\d+: .*the page keeps the code it had/m.test(r.out), 'a broken save reports where, and changes nothing', r.out);
+check((await mainEcho(page)) === '8.8.3', 'the page still runs the last good save');
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '8.8.3' BROKEN/result += '8.8.4'/" src/shell.ts && hotswap watch --wait && hotswap test --changed --max 1`);
+check(/8\.8\.4/.test(await mainEcho(page)) && /\d+ suite\(s\) import .*src\/shell\.ts; running 1 \(--max 1/.test(r.out) && /PASS tests\/tests\/shiro-vitest\/shell-/.test(r.out), 'fixed, then hotswap test --changed runs a suite for it', r.out);
+r = await sh(page, 'hotswap watch --stop && hotswap revert --all');
+check(/stopped watching/.test(r.out) && (await mainEcho(page)) === '5.0.0', 'stop, and one revert undoes all the saves', r.out);
+// In the foreground it prints each save until Ctrl-C (the shell's abort)
+r = await page.evaluate(async () => {
+  let out = '';
+  const s = Object.assign(window.__tabcomputer.shell.fork(), { terminal: null });
+  const done = s.execute('cd /home/user/tabcomputer && hotswap watch --ttl 10s', (x) => { out += x; }, (x) => { out += x; });
+  await new Promise((res) => setTimeout(res, 300));
+  const fs = window.__tabcomputer.fs, p = '/home/user/tabcomputer/src/shell.ts';
+  await fs.writeFile(p, (await fs.readFile(p, 'utf8')).replace(/result \+= '[^']*'/, "result += '8.8.5'"));
+  // (output captured by a callback arrives when the command ends; the main shell shows the swap now)
+  let live = '';
+  for (let i = 0; i < 200 && live !== '8.8.5'; i++) {
+    live = '';
+    await window.__tabcomputer.shell.execute('echo $BASH_VERSION', (x) => { live += x; }, () => {});
+    live = live.trim();
+    await new Promise((res) => setTimeout(res, 50));
+  }
+  s.abortController?.abort();
+  const code = await done;
+  return { code, out, live };
+});
+check(r.live === '8.8.5' && /^✓ #\d+ src\/shell\.ts/m.test(r.out) && /stopped watching/.test(r.out) && !/reverted/.test(r.out) && r.code === 130, 'hotswap watch in the foreground, stopped by Ctrl-C', JSON.stringify(r));
+await sh(page, 'hotswap revert --all');
 
 await browser.close();
 console.log(failures ? `${failures} failure(s)` : 'all ok');

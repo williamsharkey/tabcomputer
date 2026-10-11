@@ -52,7 +52,7 @@ async function profiled(h, label, cmd, limitS) {
   const dir = join(OUT, label);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  const files = (await h.sh('ls /tmp/prof')).out.split('\n').filter(Boolean);
+  const files = (await h.sh('ls /tmp/prof')).out.split(/\r?\n/).map((f) => f.trim()).filter(Boolean);
   for (const f of files) await pull(h, `/tmp/prof/${f}`, join(dir, f));
   writeFileSync(join(dir, 'wall.json'), JSON.stringify({ cmd, wallMs: r.ms, files: files.length }));
   h.log(`    ${label}: ${Math.round(r.ms)} ms, ${files.length} files`);
@@ -92,8 +92,8 @@ export async function run(h) {
     const t0 = Date.now();
     await h.eval((c) => window.__tabcomputer.terminal.term.input(c, true), `cd ~/w && export ${VARS}; ANTHROPIC_API_KEY=sk-ant-api03-bench-not-a-real-key-000000000000000000000000 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude --native\r`);
     for (;;) {
-      const files = (await h.sh('ls /tmp/prof 2>/dev/null')).out.trim();
-      if (files) break;
+      const files = (await h.sh('ls /tmp/prof 2>/dev/null')).out;
+      if (/^\d+\.txt\s*$/m.test(files)) break;
       if (Date.now() - t0 > 600000) throw new Error('no profile from claude in 600 s');
       await h.page.waitForTimeout(500);
     }
@@ -101,7 +101,8 @@ export async function run(h) {
     await h.page.waitForTimeout(2000);
     const dir = join(OUT, 'claude_start');
     rmSync(dir, { recursive: true, force: true });
-    const files = (await h.sh('ls /tmp/prof')).out.split('\n').filter(Boolean);
+    mkdirSync(dir, { recursive: true });
+    const files = (await h.sh('ls /tmp/prof')).out.split(/\r?\n/).map((f) => f.trim()).filter(Boolean);
     for (const f of files) await pull(h, `/tmp/prof/${f}`, join(dir, f));
     writeFileSync(join(dir, 'wall.json'), JSON.stringify({ cmd: 'claude --native → its first terminal read (prompt)', wallMs: W.claude_start, files: files.length }));
   });

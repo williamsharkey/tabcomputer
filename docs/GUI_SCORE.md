@@ -4,7 +4,7 @@ Debian 12 GUI apps installed from the streaming manifest (`public/gui/apps.json`
 
 Columns: **installs**; **window**: a desktop window appears, with the time from launch (installed) to it; **renders**: its largest window isn't one flat colour after 8 s; **input**: focusing it and typing `abc 123` changes its pixels (or, if not, clicking into its middle and typing does, or Ctrl+O opens a window or changes them); **text**: the DOM text layer has spans for it (GTK via libshiro-text-hook.so, core X text; Qt and others draw pixels only).
 
-**38/38 install, 34/38 open a window, 33/38 render, 31/38 react to input, 30/38 have DOM text.**
+**38/38 install, 35/38 open a window, 35/38 render, 35/38 react to input, 33/38 have DOM text.** (Krita, Shotwell, Audacity, Audacious and LXImage-Qt rescored 2026-10-10; the rest as before.)
 
 
 ### Editors & viewers
@@ -27,9 +27,9 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 |---|---|---:|---:|:-:|---:|:-:|:-:|:-:|---|
 | gimp | gtk2 | 66.1 MB | 10 s | ✓ | 35 s | ✓ | ✓ | ✓ (1) | main window at 285 s |
 | inkscape | gtk3 | 83 MB | 14 s | ✓ | 54 s | ✓ | ✓ | ✓ (18) |  |
-| krita | qt5 | 118.3 MB | 13 s | ✓ | 16 s | ✓ | ✗ | ✓ (1) | opened with an image |
+| krita | qt5 | 121.8 MB | 12 s | ✓ | 11 s | ✓ | ✗ | ✓ (1) | opened with an image; no step changes its pixels in time (rescored 2026-10-10) |
 | blender | gl | 231.5 MB | 22 s | ✗ | – | – | – | – | exited (status 256) before a window; past the CPU check and PI futexes (engine fixes); needs OpenGL 3.3 over GLX, which Xshiro doesn't provide |
-| shotwell | gtk3 | 60.2 MB | 9.1 s | ✓ | 21 s | ✓ | ✗ | ✗ | opened with an image |
+| shotwell | gtk3 | 60.2 MB | 8.0 s | ✓ | 13 s | ✓ | ✓ | ✓ (11) | opened with an image; input via its zoom keys |
 | simple-scan | gtk3 | 51.7 MB | 7.1 s | ✓ | 20 s | ✓ | ✓ | ✗ |  |
 
 ### Desktop
@@ -61,8 +61,8 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 | pidgin | gtk2 | 55.1 MB | 6.1 s | ✓ | 18 s | ✓ | ✓ | ✓ (38) |  |
 | hexchat | gtk2 | 46.4 MB | 7.9 s | ✓ | 8.5 s | ✓ | ✓ | ✓ (8) |  |
 | vlc | qt5 | 39.4 MB | 5.1 s | ✓ | 13 s | ✓ | ✓ | ✓ (11) |  |
-| audacity | gtk3 | 64.3 MB | 8.6 s | ✓ | 45 s | ✗ | ✓ | ✓ (64) | main window at 103 s; its first window is the first-run plugin scan; the main window follows (~70 s); wxWidgets text isn't reported |
-| audacious | qt5 | 37.8 MB | 8.3 s | ✗ | – | – | – | – | exited (status 134) before a window |
+| audacity | gtk3 | 64.3 MB | 7.7 s | ✓ | 32 s | ✓ | ✓ | ✓ (112) | its first window is the first-run plugin scan; the main window follows |
+| audacious | qt5 | 38.6 MB | 4.5 s | ✓ | 8.2 s | ✓ | ✓ | ✓ (13) | Qt UI (`--qt`) and the file-writer output (no sound device); input via Ctrl+O |
 
 ### Qt
 
@@ -73,7 +73,7 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 | qpdfview | qt5 | 40.1 MB | 8.0 s | ✓ | 21 s | ✓ | ✓ | ✓ (6) |  |
 | keepassxc | qt5 | 48 MB | 5.3 s | ✓ | 21 s | ✓ | ✓ | ✓ (21) |  |
 | kcalc | qt5 | 44.4 MB | 5.2 s | ✓ | 13 s | ✓ | ✓ | ✓ (8) |  |
-| lximage-qt | qt5 | 36.8 MB | 5.7 s | ✓ | 13 s | ✓ | ✗ | ✗ | opened with an image |
+| lximage-qt | qt5 | 36.8 MB | 4.7 s | ✓ | 7.6 s | ✓ | ✓ | ✓ (7) | opened with an image; input via its zoom keys |
 
 2026-10-10; per-app details (output tails, window titles) in .gui-score/results.json.
 
@@ -233,6 +233,13 @@ Fourth round (nine more apps; input; startup time):
 - **Audacious** exited at once: its Qt interface (`qtui.so`, `libaudqt`) is
   a plug-in, so Qt wasn't in its set; then "No output plugin found". It now
   has the Qt UI and the file-writer output (there's no sound device).
+  It still exited ("No output plugin found", status 134): Debian's build
+  starts in GTK mode, which refuses the Qt UI ("Incompatible plugin
+  flags"), and its output probe never picks the file writer (priority 10).
+  The launcher now runs it with `--qt` (manifest `args`), and a home default
+  `~/.config/audacious/plugin-registry` (format 10, which Audacious reads
+  only for each plugin's enabled flag) selects the file writer and the Qt
+  UI. Its window maps in 8 s and it passes every check.
 - **Audacity**'s main window paints more than 8 s after it appears: the
   render check also takes a sample after the input steps.
 - **qpdfview** gets Qt's SQLite driver (its bookmarks database).

@@ -205,6 +205,9 @@
    "toolkit": "gtk3"
   },
   "audacious": {
+   "args": [
+    "--qt"
+   ],
    "bin": "/usr/bin/audacious",
    "closureSize": 147094988,
    "description": "Music player (Qt5)",
@@ -398,6 +401,9 @@
     "libaudgui5",
     "gtk2-engines-pixbuf"
    ],
+   "home": {
+    ".config/audacious/plugin-registry": "format 10\noutput /usr/lib/x86_64-linux-gnu/audacious/Output/filewriter.so\nenabled 1\niface /usr/lib/x86_64-linux-gnu/audacious/General/qtui.so\nenabled 1\n"
+   },
    "icon": "gui/icons/audacious.svg",
    "packages": [
     "audacious-plugins",
@@ -7187,18 +7193,6 @@
    "sha256": "8d8e759db5b791606eda2b3ea43e8def8c2f8dbbbd8004d233db51228a09d4a8",
    "size": 2988,
    "when": "librsvg2-common"
-  },
-  {
-   "path": "/etc/firefox-esr/shared-memory.js",
-   "sha256": "6841b52604d147a01d889654c856c1e91504cfd521a6541c094f964e0ae912f9",
-   "size": 373,
-   "when": "firefox-esr"
-  },
-  {
-   "path": "/etc/thunderbird/pref/shared-memory.js",
-   "sha256": "6841b52604d147a01d889654c856c1e91504cfd521a6541c094f964e0ae912f9",
-   "size": 373,
-   "when": "thunderbird"
   },
   {
    "path": "/var/cache/fontconfig/d589a48862398ed80a3d6066f4f56f4c-le64.cache-8",

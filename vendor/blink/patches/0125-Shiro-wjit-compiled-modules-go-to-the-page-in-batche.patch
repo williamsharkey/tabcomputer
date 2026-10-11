@@ -1,0 +1,164 @@
+From de2fdb9431f27bd829864d8e0dc6de34114d599f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 22:05:11 +0000
+Subject: [PATCH] Shiro wjit: compiled modules go to the page in batches, and
+ one the page keeps goes as its key alone
+
+0124 posted every compiled module from its thread as it was made, about
+0.1 ms each between the thread's postMessage and host.mjs passing it on.
+Now a thread posts its modules in one message before its next system call
+(exit_group the last) or every 32, and a module the page keeps already
+(host.mjs adds their keys with shiro_wj_kept before the guest starts) goes
+as its key alone, which tells the page it's in use.
+---
+ blink/shiro.inc |  3 ++
+ blink/wjit.c    | 80 +++++++++++++++++++++++++++++++++++++++++++------
+ blink/wjit.h    |  2 ++
+ 3 files changed, 76 insertions(+), 9 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 3f8e7c9..6edfbde 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3612,10 +3612,13 @@ static bool ShiroIsOwnThread(struct Machine *m, int tid) {
+   return found;
+ }
+ 
++void WjFlushPosts(void);  // (wjit.c)
++
+ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+                          u64 d, u64 e, u64 f, i64 *res) {
+   i64 r;
+   if (!g_shiro_pid) return false;
++  WjFlushPosts();  // the compiled modules this thread has for the page
+   if (t_vfork) {
+     // The vfork child: its own pid, signal table and exit
+     switch (nr) {
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 1685605..d2d7977 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -105,7 +105,7 @@ static _Atomic(long) g_wj_blocks, g_wj_bytes, g_wj_failed, g_wj_insns,
+ // JavaScript glue
+ 
+ EM_JS(int, wj_install,
+-      (const u8 *p, int n, int k, int *out, const int *imp, int nimp), {
++      (const u8 *p, int n, int k, int *out, const int *imp, int nimp, int post, int have), {
+   var st = Module['wjStats'] || (Module['wjStats'] = {c : 0, i : 0, n : 0});
+   var env = {m : wasmMemory};
+   for (var j = 0; j < nimp; j++) env[j] = wasmTable.get(HEAP32[(imp >> 2) + j]);
+@@ -118,13 +118,11 @@ EM_JS(int, wj_install,
+     // The page keeps compiled modules (src/x86-engine/blink.ts): V8 caches
+     // a module by its bytes while one is alive, so the next process that
+     // compiles the same code (the same program again, a library's) takes it
+-    // ready-made rather than compiling it again
+-    if (ENVIRONMENT_IS_PTHREAD) {
+-      try {
+-        var h = 2166136261;
+-        for (var q = 0; q < n; q += 7) h = Math.imul(h ^ bytes[q], 16777619);
+-        postMessage({ shiroWjModule: mod, key: (h >>> 0).toString(36) + '.' + n, size: n });
+-      } catch (e) {}
++    // ready-made rather than compiling it again. Posted in batches
++    // (wj_flush_posts); one the page has already goes as its key alone
++    // (WjKept), which tells the page it's still in use
++    if (ENVIRONMENT_IS_PTHREAD && post) {
++      (Module['wjPending'] || (Module['wjPending'] = [])).push({ shiroWjModule: have ? null : mod, key: (post >>> 0).toString(36) + '.' + n, size: n });
+     }
+     inst = new WebAssembly.Instance(mod, {e : env});
+     st.c += t1 - t0;
+@@ -151,6 +149,65 @@ EM_JS(int, wj_install,
+   return 0;
+ });
+ 
++EM_JS(void, wj_flush_posts, (void), {
++  var q = Module['wjPending'];
++  if (q && q.length) {
++    Module['wjPending'] = [];
++    try {
++      postMessage({ shiroWjModules: q });
++    } catch (e) {}
++  }
++});
++
++// The modules the page keeps, by key: FNV-1a over every 7th byte, and the
++// length. host.mjs adds them (shiro_wj_kept) before the guest starts, so a
++// thread posts only modules the page doesn't have yet.
++#define kWjKept 8192
++static u64 g_wj_kept[kWjKept];
++static unsigned g_wj_nkept;
++static _Thread_local int t_wj_posts;
++
++static unsigned KeptSlot(u32 h, u32 n) {
++  return (h ^ n * 0x9e3779b1u) & (kWjKept - 1);
++}
++
++EMSCRIPTEN_KEEPALIVE void shiro_wj_kept(u32 h, u32 n) {
++  u64 v = (u64)h << 32 | n;
++  unsigned i;
++  if (!n || g_wj_nkept >= kWjKept / 2) return;
++  for (i = KeptSlot(h, n); g_wj_kept[i]; i = (i + 1) & (kWjKept - 1)) {
++    if (g_wj_kept[i] == v) return;
++  }
++  g_wj_kept[i] = v;
++  ++g_wj_nkept;
++}
++
++static bool WjKept(u32 h, u32 n) {
++  u64 v = (u64)h << 32 | n;
++  unsigned i;
++  for (i = KeptSlot(h, n); g_wj_kept[i]; i = (i + 1) & (kWjKept - 1)) {
++    if (g_wj_kept[i] == v) return true;
++  }
++  return false;
++}
++
++// a module's key (0: none)
++static u32 WjPostKey(const u8 *p, int n) {
++  u32 h = 2166136261u;
++  int q;
++  for (q = 0; q < n; q += 7) h = (h ^ p[q]) * 16777619u;
++  return h;
++}
++
++// posts the modules this thread compiled since the last time: before a
++// system call (exit_group the last), or every 32
++void WjFlushPosts(void) {
++  if (t_wj_posts) {
++    t_wj_posts = 0;
++    wj_flush_posts();
++  }
++}
++
+ // BLINK_WJIT_DUMP=<pc>: Node only, writes that region's module to /tmp
+ EM_JS(void, wj_dump, (const u8 *p, int n, const char *name), {
+   var fs = globalThis.process && process.getBuiltinModule && process.getBuiltinModule('fs');
+@@ -3976,7 +4033,12 @@ static int Assemble(struct Mod *mod, struct Buf *body, int k, int *out,
+     snprintf(name, sizeof(name), "x86_%llx", (unsigned long long)pc);
+     wj_dump(m.p, m.n, name);
+   }
+-  rc = wj_install(m.p, m.n, k, out, (const int *)mod->imp, mod->nimp);
++  {
++    u32 post = WjPostKey(m.p, m.n);
++    rc = wj_install(m.p, m.n, k, out, (const int *)mod->imp, mod->nimp, (int)post,
++                    post && WjKept(post, m.n));
++    if (post && !rc && ++t_wj_posts >= 32) WjFlushPosts();
++  }
+   g_wj_bytes += m.n;
+   free(m.p);
+   free(sec.p);
+diff --git a/blink/wjit.h b/blink/wjit.h
+index fa42d4d..f77d4bb 100644
+--- a/blink/wjit.h
++++ b/blink/wjit.h
+@@ -28,6 +28,8 @@ void WjInit(void);
+ // and the compiled code there failed (a straddling or unsupported
+ // instruction), so try the next instruction as an entry
+ int WjExecute(struct Machine *);
++// posts the compiled modules this thread has for the page (a system call)
++void WjFlushPosts(void);
+ void WjResetTlb(struct Machine *);
+ void WjPageChanged(i64);
+ #else
+-- 
+2.43.0
+

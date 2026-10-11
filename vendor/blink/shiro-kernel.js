@@ -14,18 +14,26 @@
  */
 
 var ShiroKernelLibrary = {
-  shiro_ksys__proxy: 'sync',
-  shiro_ksys__async: 'auto',
-  shiro_ksys: (nr, argsPtr, as, dataPtr, inLen, outCap) => {
+  // tid: the calling guest thread's (Blink patch 0127), for the kernel's per-thread state
+  shiro_ksys2__proxy: 'sync',
+  shiro_ksys2__async: 'auto',
+  shiro_ksys2: (nr, argsPtr, as, dataPtr, inLen, outCap, tid) => {
     var K = Module['shiroKernel'];
     if (!K) return -38; // ENOSYS
     var args = HEAP32.slice(argsPtr >> 2, (argsPtr >> 2) + 12);
     var input = inLen ? HEAPU8.slice(dataPtr, dataPtr + inLen) : new Uint8Array(0);
-    return K.call(nr, args, as, input, outCap).then((res) => {
+    return K.call(nr, args, as, input, outCap, tid).then((res) => {
       if (res.out && res.out.length) HEAPU8.set(res.out, dataPtr);
       HEAP32[argsPtr >> 2] = res.hi;
       return res.r;
     });
+  },
+
+  // a guest thread started (op 1) or ended (0): the kernel's list of the process's threads
+  shiro_thread_note__proxy: 'async',
+  shiro_thread_note: (tid, op) => {
+    var K = Module['shiroKernel'];
+    if (K && K.threadNote) K.threadNote(tid, op);
   },
 
   // fork(): hand the process snapshot (blink/shiro.inc) to the page, which
@@ -161,7 +169,7 @@ var ShiroKernelLibrary = {
       // keeps them (every thread's Worker comes through here, the pool's too)
       var shiroKeep = function (d) {
         var K = Module['shiroKernel'];
-        if (d && d.shiroWjModule && K && K.keepWasm) K.keepWasm(d);
+        if (d && d.shiroWjModules && K && K.keepWasm) K.keepWasm(d.shiroWjModules);
       };
       PThread.getNewWorker = function () {
         var worker = shiroGetNewWorker.call(PThread);

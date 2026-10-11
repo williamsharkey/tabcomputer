@@ -26,6 +26,20 @@ beforeEach(() => {
 });
 
 describe('window manager', () => {
+  it('opens windows inside the work area, never past the top of the dock, however they cascade', () => {
+    // the work area here: 1000 × 600 below the menu bar, the dock under it
+    for (let i = 0; i < 8; i++) {
+      const w = wm.createWindow({ appId: 'apps', title: 'Apps', width: 660, height: 640 });   // the Apps sheet's size
+      const g = w.geometry();
+      expect(g.y).toBeGreaterThanOrEqual(0);
+      expect(g.y + 38 + g.height).toBeLessThanOrEqual(600);
+      expect(g.x + g.width).toBeLessThanOrEqual(1000);
+    }
+    // an asked-for spot low on the screen moves up rather than spilling over the dock
+    const low = wm.createWindow({ title: 'Low', x: 100, y: 500, width: 400, height: 300 }).geometry();
+    expect([low.y, low.height]).toEqual([600 - 38 - 300, 300]);
+  });
+
   it('creates windows with ids, titles, frames and geometry', () => {
     const w = wm.createWindow({ title: 'One', appId: 'a', x: 10, y: 20, width: 300, height: 200 });
     expect(w.id).toMatch(/^w\d+$/);
@@ -290,6 +304,32 @@ describe('quarters, launcher matching, session', () => {
     await s.restoreSession(wm, saved, () => null);
     expect(opened).toEqual([{ newWindow: true, path: '/usr/bin' }]);
     expect(wm.windows().filter(w => w.appId === 'files').pop()!.state).toBe('snapped-right');
+  });
+
+  it('keeps the stacking order and the focused window across a reload, the main terminal included', async () => {
+    const s = await import('@shiro/desktop/session');
+    localStorage.removeItem(s.SESSION_KEY);
+    const stop = s.trackSession(wm);
+    const t = wm.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
+    wm.createWindow({ appId: 'files' });
+    wm.createWindow({ appId: 'settings' });
+    t.focus();                                  // the main terminal on top, focused: files, settings, terminal
+    await new Promise(r => setTimeout(r, 500));
+    stop();
+    const saved = s.loadSession();
+    expect(saved.map(w => [w.app, !!w.focused])).toEqual([['files', false], ['settings', false], ['terminal', true]]);
+    // the reload: the main terminal comes first (boot), the others reopen after it
+    document.body.innerHTML = '';
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const wm2 = new WindowManager(root, { workArea: () => ({ x: 0, y: 30, width: 1000, height: 600 }) });
+    const t2 = wm2.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
+    for (const id of ['files', 'settings']) wm2.registerApp({ id, name: id, launch: () => wm2.createWindow({ appId: id }) });
+    const focused = await s.restoreSession(wm2, saved, () => null);
+    expect(wm2.windows().map(w => w.appId)).toEqual(['files', 'settings', 'terminal']);
+    expect(focused).toBe(t2);
+    // a session saved by an older build (no focus mark): stacked as listed, nothing to refocus
+    expect(await s.restoreSession(wm2, saved.map(({ focused: _, ...w }) => w), () => null)).toBe(null);
   });
 });
 

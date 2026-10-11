@@ -284,6 +284,7 @@ export async function openClaudeSignIn(opts: ClaudeSignInOptions): Promise<boole
     const win = createServerWindow({
       mode: 'iframe',
       title: 'Sign in to Claude',
+      appId: 'claude-signin', appName: 'Claude Sign-in',
       width: '26em',
       height: '25em',
       onClose: () => finish(false),

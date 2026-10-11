@@ -6,11 +6,17 @@ export const base64: Command = {
   name: "base64",
   description: "Base64 encode or decode",
   async exec(ctx) {
-    const args = ctx.args;
-    const { flags, positional } = parseArgs(args);
+    // (-w N, -wN, --wrap N, --wrap=N)
+    const args = ctx.args.flatMap((a) => (/^--wrap=/.test(a) ? ['--wrap', a.slice(7)] : [a]));
+    const { flags, values, positional } = parseArgs(args, ['w', 'wrap']);
 
     const decode = flags.d || flags.decode;
-    const wrap = flags.w ? parseInt(flags.w as any) : 76;
+    const wrapArg = values.w ?? values.wrap;
+    const wrap = wrapArg === undefined ? 76 : Number(wrapArg);
+    if (!Number.isInteger(wrap) || wrap < 0) {
+      ctx.stderr += `base64: invalid wrap size: '${wrapArg}'\n`;
+      return 1;
+    }
     const ignoreGarbage = flags.i || flags["ignore-garbage"];
 
     try {
@@ -57,8 +63,8 @@ export const base64: Command = {
         }
       }
 
-      // Decoded data is written as it is (no newline of its own, like GNU)
-      ctx.stdout += decode ? result : result + (result ? "\n" : "");
+      // Decoded data is written as it is, and -w 0 output has no newline of its own (as GNU)
+      ctx.stdout += decode || wrap === 0 ? result : result + (result ? "\n" : "");
       return 0;
     } catch (e: unknown) {
       ctx.stderr += `base64: ${e instanceof Error ? e.message : e}\n`;

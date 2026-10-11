@@ -112,6 +112,8 @@ const blockedkidsBin = join(out, 'blockedkids');
 const haveBlockedkids = tryBuild('gcc', ['-static', '-O1', '-o', blockedkidsBin, 'blockedkids.c']);
 const pingpongBin = join(out, 'futexpingpong');
 const havePingpong = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', pingpongBin, 'futexpingpong.c']);
+const pbenchBin = join(out, 'pbench');
+const havePbench = tryBuild('gcc', ['-static', '-O2', '-o', pbenchBin, 'pbench.c']);
 const sockaddrsBin = join(out, 'sockaddrs');
 const haveSockaddrs = tryBuild('gcc', ['-static', '-O1', '-o', sockaddrsBin, 'sockaddrs.c']);
 const sleepintrBin = join(out, 'sleepintr');
@@ -317,6 +319,14 @@ const haveProcbits = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const inotifyBin = join(out, 'inotifywatch');
 const haveInotify = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_inotify') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', inotifyBin, 'inotifywatch.c']);
+// Blink 0518: whole reads of regular files, mremap of a file's shared mapping, write-back to the file's end
+const mapfileBin = join(out, 'mapfile');
+const haveMapfile = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapfile') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapfileBin, 'mapfile.c']);
+// Blink 0519: mmap's argument checks, MAP_32BIT below 2 GiB
+const mmapargsBin = join(out, 'mmapargs');
+const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmapargs') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmapargsBin, 'mmapargs.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -554,6 +564,22 @@ describe.skipIf(!haveHttp)('Blink engine: Go net/http over loopback', () => {
     for (let i = 0; i < 4; i++) expect(r.output).toContain(`pong /${i}`);
     expect(r.exitCode).toBe(0);
   }, 120_000);
+
+  it("tells the kernel its threads (Blink patch 0127)", async () => {
+    const { fs } = await setup(readFileSync(httpBin));
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { BufferFile } = await import('@shiro/kernel/fd');
+    const { blinkRunner } = await import('@shiro/x86-engine/blink');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const out = new BufferFile(null);
+    const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
+    let most = 0;
+    const t = setInterval(() => { most = Math.max(most, (p.data.engineThreads as Set<number> | undefined)?.size ?? 0); }, 5);
+    expect(await p.wait()).toBe(0);
+    clearInterval(t);
+    expect(out.text()).toContain('pong /3');
+    expect(most).toBeGreaterThan(1);  // Go's runtime starts threads
+  }, 120_000);
 });
 
 describe('Blink engine: kernel processes', () => {
@@ -596,6 +622,34 @@ describe('Blink engine: kernel processes', () => {
     await w.close();
     expect(await p.wait()).toBe(0);
     expect(out.text()).toContain('stdin=late line');
+  }, 60_000);
+
+  it("shows who holds Blink's GIL while it runs (patch 0126), and lets go of the memory after", async () => {
+    const { fs } = await setup(readFileSync(join(FIX, 'hello-musl')));
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { BufferFile } = await import('@shiro/kernel/fd');
+    const { createPipe } = await import('@shiro/kernel/pipe');
+    const { blinkRunner } = await import('@shiro/x86-engine/blink');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const [r, w] = createPipe();
+    const out = new BufferFile(null);
+    const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: r, 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
+    await new Promise((res) => setTimeout(res, 1500));
+    const engine = p.data.engine as { memory: { buffer: SharedArrayBuffer }; gilAddr: number } | undefined;
+    expect(engine?.memory.buffer.byteLength).toBe(16);  // a copy, not Blink's wasm memory
+    expect(engine).toBeDefined();
+    const [holder, waiters, acquires] = new Int32Array(engine!.memory.buffer, engine!.gilAddr, 4);
+    expect(holder).toBe(0);           // blocked reading stdin: the lock is free
+    expect(waiters).toBe(0);
+    expect(acquires).toBeGreaterThan(0);
+    // and the kernel call it's in, by its tid (patch 0127): read (0) on the main thread
+    const calls = p.data.engineCalls as Map<number, { nr: number; since: number }> | undefined;
+    expect(calls?.get(p.pid)?.nr).toBe(0);
+    expect((p.data.engineThreads as Set<number>).has(p.pid)).toBe(true);
+    await w.write(new TextEncoder().encode('x\n'));
+    await w.close();
+    expect(await p.wait()).toBe(0);
+    expect(p.data.engine).toBeUndefined();
   }, 60_000);
 });
 
@@ -1034,6 +1088,18 @@ it.skipIf(!haveInotify)('inotify: a guest hears its own changes and, blocked in 
   ].join('\n'));
 }, 60_000);
 
+it.skipIf(!haveMapfile)('a 6 MiB read of a file is whole; a shared mapping grown by mremap writes the file back; a page past the file\'s end stays in the mapping (LTP mmap21, mremap01, mmap01)', async () => {
+  const { shell } = await setup(readFileSync(mapfileBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('read 6291456 of 6291456, first wrong -1\nsize 12\n');
+}, 60_000);
+
+it.skipIf(!haveMmapargs)('mmap checks in Linux\'s order: a bad fd, no length, access, a fixed address past user space, MAP_SHARED_VALIDATE\'s unknown flags; MAP_32BIT below 2 GiB (LTP mmap06, 08, 15, 20, 23, 24)', async () => {
+  const { shell } = await setup(readFileSync(mmapargsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('bad fd no length 9\nno length 22\nread-only shared write 13\nhigh fixed 12\nvalidate 95\n32bit below 2G 1\n32bit 2G 12\n');
+}, 60_000);
+
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {
   const { shell } = await setup(readFileSync(leaseBin));
   const r = await run(shell, './prog');
@@ -1230,6 +1296,16 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const { shell } = await setup(readFileSync(pingpongBin));
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('fork: parent bad 0 child bad 0\nthreads: main bad 0 thread bad 0\n');
+  }, 120_000);
+
+  // bench/suites/x86.mjs's perf-bench-style rows: every mode finishes (messaging's 20 processes start together)
+  it.skipIf(!havePbench)('pbench: syscall, pipe ping-pong, messaging, memcpy, fork+exec finish', async () => {
+    const { shell } = await setup(readFileSync(pbenchBin));
+    const r = await run(shell, './prog syscall 200 && ./prog pipe 20 && ./prog messaging 1 4 5 && ./prog memcpy 4 2 && ./prog forkexec 2');
+    const out = r.output.replace(/\r\n/g, '\n');
+    expect([...out.matchAll(/^mode=(\w+)$/gm)].map((m) => m[1])).toEqual(['syscall', 'pipe', 'messaging', 'memcpy', 'forkexec']);
+    expect(out).toMatch(/^procs=8$/m);
+    expect(out).toMatch(/^MBps=\d/m);
   }, 120_000);
 
   // LTP bind04 (abstract names), nft/getifaddrs (netlink), uv venvs ($ORIGIN), go link (fallocate)

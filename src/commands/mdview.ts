@@ -44,6 +44,7 @@ export const mdviewCmd: Command = {
     const win = createServerWindow({
       mode: 'iframe',
       title: ctx.args[0] || 'mdview',
+      appId: 'mdview', appName: 'Markdown Viewer',
       width: '48em',
       height: '32em',
     });

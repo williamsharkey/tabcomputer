@@ -35,6 +35,86 @@ more on the `hygiene.*_delta` ones. Compare full runs with full runs and
 quick with quick (`--quick` uses smaller sizes for some metrics), and re-run
 a flagged metric (`--suites X --only name`) before acting on one regression.
 
+## tabcomputer vs native Linux
+
+The same static x86-64 binary in tabcomputer (Blink, isolated Chromium
+141) and directly on this machine's Linux. The machine is a 4-vCPU Xeon
+@ 2.80 GHz Firecracker VM, Linux 6.18. Figures are the medians of two
+back-to-back runs of 5 samples each (one value when they agree, else both) at 7cdc95f
+([a](../bench/results/bench-26-pbench-a.json),
+[b](../bench/results/bench-26-pbench-b.json); workflows:
+[quick](../bench/results/bench-26-workflows-quick.json) at 920a9df, 1 round). The
+microbenchmarks are `pbench` (`tests/tests/shiro-vitest/fixtures/x86/pbench.c`,
+the x86 suite's `x86.blink.*` / `x86.native.*`). Debian's own `perf bench`
+(linux-perf 6.12) also runs in Blink, so its column lines up with published
+numbers (opt-in suite `perfbench`; one run each). WSL2/WSL3 are the
+published figures that prompted this table (tonym.us, "WSL2 vs WSL3
+benchmarks": i5-8500T, 2 vCPUs, different sizes). They are reference
+points for the method, not same-machine comparisons.
+`node bench/native.mjs --label wsl2` prints this table's native rows on
+any Linux, WSL included.
+
+| benchmark | tabcomputer (Blink) | Blink, direct channels | WASI guest | native (this VM) | Blink / native | `perf bench` in Blink | WSL2 / WSL3 (published) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
+| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | crashes (below) | 14.5 / 13.0 s (20 groups) |
+| memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
+| fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
+| `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
+| `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
+| `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
+
+What each row measures:
+
+- **Syscall round trip.** One kernel call from a Blink process to the
+  TypeScript kernel and back. This is the floor under every syscall-heavy
+  workload. By default the call goes through emscripten's proxy to
+  host.mjs's thread and two `postMessage`s, about 155 µs. With Blink's direct
+  channels (patch 0065, opt-in `TABCOMPUTER_BLINK_DIRECT=1`) it is one
+  SAB-channel round trip, 1.5 µs, faster than a WASI guest's fstat
+  (`kernel.syscall_rtt.sab`). The first call costs ~1.4 ms and the first ~60
+  vary between 140 and 860 µs before the default path settles.
+- **Pipe ping-pong.** Wake-up cost, not bandwidth (that is
+  `kernel.pipe_throughput`): each byte wakes a process blocked in `read`,
+  through Atomics.wait/notify in a Worker. ~390 µs here; direct channels make
+  it slower (650–720 µs). Natively on this VM, ~35 µs of the 39 µs is an
+  idle vCPU waking up: the same loop pinned to one CPU, or on a busy
+  machine, is 3 µs.
+- **Messaging** (hackbench, `perf bench sched messaging -p` shape). Scheduler
+  and channel contention across 20 Worker-backed processes passing 100-byte
+  messages through pipes. ~580 µs per message, so per-message cost is the
+  same wake-up path as ping-pong, with no batching. Debian's `perf bench sched
+  messaging -p -g 1 -l 20` crashes the page in Blink ("WebAssembly.Table.get():
+  Argument 0 must be convertible to a valid number"; reported to perf-blink).
+- **memcpy.** How Blink runs glibc's memcpy, which picks its copy routine by
+  CPUID: ~0.55 GB/s against 8.9 GB/s natively. perf's own unrolled copy
+  reaches 1.25 GB/s in Blink. The same copy as wasm `memory.copy` in a WASI
+  process (`kernel.memcpy_bw.wasm`) is at native speed, so the whole gap is
+  Blink's x86 translation of `rep movs`/SSE copies.
+- **fork + exec + wait.** Fork (Blink snapshots the process into a new
+  Worker), exec of the same 870 KB static binary, exit and reap: 90 ms. The
+  issue's estimate of "3.9 ms + 0.8 ms/MB" does not hold for this binary.
+  It probably came from a page-shell spawn of a tiny program or an older
+  build; the 90 ms is measured here and is the number to use. A WASI spawn+wait
+  (`kernel.spawn_wait.wasm`, no fork) is ~1 ms.
+- **`go build -a`.** Real compile work, with user and sys CPU: for
+  tabcomputer it is the whole Chromium tree's host CPU from
+  `/proc/<pid>/stat` (`workflow.go.build_a.user/.sys`), natively bash's
+  `time`. The ~1.9 cores of user time and the large sys share (735 s) show
+  where Blink's time goes beyond the guest's own work. The first `go run` is
+  not comparable to a native empty-cache build: the go layer ships a warm
+  `~/.cache/go-build`. `go build -a` is in full runs only, at about 20 minutes.
+- **`vite build`.** Node-in-the-page (no x86) on the same template: 2.3× native
+  wall time and 3.3× its user CPU.
+- **`apt-get install`.** dpkg and apt in Blink from the mirror cache. There is
+  no native row, since installing would change this machine.
+
+Rerun: `npm run bench:quick` (syscall_rt, pipe_pingpong, memcpy_bw, fork_exec
+and the workflows' user/sys); full runs add messaging, direct channels, the
+pinned native pipe and `go build -a`; `node bench/run.mjs --suites perfbench
+--modes isolated` for Debian's perf bench.
+
 ## Real workloads
 
 What a user waits for, end to end, in the isolated (production) page:
@@ -843,6 +923,27 @@ proc/s within one run); two further 15-run passes on the new code gave
 medians 1240 and 1215 proc/s, base 1200. One of those passes stalled at
 ≈10 proc/s for its last 11 samples and did not recur in two more; worth
 watching if it shows up on other branches.
+
+### unix/perf-blink 16 — the page's kept compiled modules
+
+Blink patches 0124/0125 and src/x86-engine/blink.ts: the page keeps Blink's
+compiled-code modules so the next process gets them from V8's cache. In
+headless Chromium a kept module costs **5–7× its wasm bytes in renderer
+RSS** (its compiled code). One page running Debian perl (12 modules) ×4,
+vim ×3, perl ×2, 3 rounds, RSS after the sequence:
+
+| kept | renderer RSS | perl repeat launch | perl again after vim |
+|---|---|---|---|
+| none (`TABCOMPUTER_BLINK_WJ_KEEP=0`) | 342–358 MiB | ≈7.4 s | ≈7.4 s |
+| 6 MiB (default with ≥8 GB) | 389–392 MiB | ≈5.9 s | 7.1 s, then 5.6 s |
+| 16 MiB (`TABCOMPUTER_BLINK_WJ_KEEP=16`) | 467–471 MiB | ≈4.7 s | ≈4.7 s |
+
+perl compiles ~14 MB of modules in the same order every run, so keeping
+the most recent ones (plain LRU) kept none it would use: a module seen
+before now displaces only modules compiled less often (6.6 → 6.1 s at 6
+MiB). 16 MiB stays opt-in while renderer-memory freezes are open: the
+JS-heap pressure signal (performance.memory, which shrinks the cache to
+2 MiB past 60%) doesn't see this memory.
 
 ### unix/perf-blink 15 — SSE float arithmetic in compiled code
 

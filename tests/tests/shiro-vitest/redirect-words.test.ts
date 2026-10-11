@@ -38,6 +38,11 @@ describe('compound redirects open first', () => {
     expect((await sh('echo in > g; { cat; } 0<g')).out).toBe('in\n');
   });
 
+  it('~ and $HOME in a compound\'s redirect (compat-dev: became /tmp/~/x or a quoted "/home/user")', async () => {
+    const r = await sh('cd /tmp; (echo a) > ~/rw1; { echo b; } >> ~/rw1; { ls /nope; } 2> ~/rw2; for i in 1; do echo c; done > $HOME/rw3; { cat; } < ~/rw1; cat ~/rw2 ~/rw3');
+    expect(r.out).toBe("a\nb\nls: cannot access '/nope': No such file or directory\nc\n");
+  });
+
   it("a function body's redirect is expanded on each call", async () => {
     const r = await sh('i=0; fun() { echo "file $i"; } 1> "/tmp/rw/file$((i++))"; fun; fun; echo i=$i; cat file0 file1');
     expect(r.out).toBe('i=2\nfile 1\nfile 2\n');
@@ -81,6 +86,11 @@ describe('exec N<>', () => {
   it('reads from the start and writes after', async () => {
     const r = await sh('echo first > rw.txt; exec 8<>rw.txt; read line <&8; echo line=$line; echo second 1>&8; exec 8>&-; cat rw.txt');
     expect(r.out).toBe('line=first\nfirst\nsecond\n');
+  });
+
+  it('one position for reading and writing (and noclobber does not apply)', async () => {
+    const r = await sh('set -C; echo foo >| nc.txt; exec 3<> nc.txt; read -n 1 <&3; echo -n . >&3; exec 3>&-; cat nc.txt; set +C');
+    expect(r.out).toBe('f.o\n');
   });
 
   it('creates a missing file', async () => {

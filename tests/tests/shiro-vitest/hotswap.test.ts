@@ -288,6 +288,12 @@ describe('hotswap watch', () => {
     expect(t.w.results[0].line).not.toMatch(/helper/);
     expect(t.w.results[1].line).toMatch(/src\/greeter\.ts \(Greeter\.greet; changed but not swapped \(importers keep the old one\): helper\)/);
 
+    // a save whose built code is the same says so
+    t.save('/co/src/greeter.ts', 'three');
+    await t.w.idle();
+    expect(t.w.results[2].line).toMatch(/src\/greeter\.ts \(no change in the built code\)/);
+    t.w.results.splice(2, 1);
+
     // another file joins the same record
     t.save('/co/src/other.ts', 'four');
     await t.w.idle();

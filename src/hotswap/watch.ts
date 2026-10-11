@@ -64,19 +64,22 @@ const KEEP_RESULTS = 50;
  * code changed since the watcher's last build of the module: their importers
  * outside the swap keep the old ones, so the edit doesn't take effect there.
  */
-export function summarize(report: ModuleReport[], stale: Record<string, string[]> = {}): string {
+export function summarize(report: ModuleReport[], stale: Record<string, string[]> = {}, seen: ReadonlySet<string> = new Set()): string {
   const out: string[] = [];
   for (const m of report) {
     if (!m.live) { out.push(`${m.module}: not loaded in the page, nothing swapped`); continue; }
+    // (a module this watcher swapped before: its methods can be compared, so "nothing changed" is known)
+    const again = seen.has(m.module);
     const bits: string[] = [];
     for (const c of m.classes) {
       if (c.errors.length) bits.push(`${c.name}: ${c.errors[0]}`);
       else if (c.changed.length || c.added.length) bits.push(`${c.name}.${[...c.changed, ...c.added].slice(0, 4).join(', .')}${c.changed.length + c.added.length > 4 ? ', ...' : ''}`);
-      else if (c.swapped) bits.push(`${c.name} (${c.swapped} members)`);
+      else if (c.swapped && !again) bits.push(`${c.name} (${c.swapped} members)`);
     }
     for (const c of m.commands) if (c.changed.length) bits.push(`command ${c.command}`);
     const st = stale[m.module] ?? [];
     if (st.length) bits.push(`changed but not swapped (importers keep the old one): ${st.slice(0, 3).join(', ')}${st.length > 3 ? ', ...' : ''}`);
+    if (!bits.length && again) bits.push('no change in the built code');
     out.push(`${m.module}${bits.length ? ` (${bits.join('; ')})` : ''}`);
   }
   return out.join(', ');
@@ -199,6 +202,7 @@ export class HotswapWatcher {
     if (prev) manager.squash(prev, rec);
     this.record = rec;
     const stale: Record<string, string[]> = {};
+    const seen = new Set(rec.report.map((m) => m.module).filter((k) => this.lastBuilt.has(k)));
     for (const m of rec.report) {
       const before = this.lastBuilt.get(m.module), now = modules[m.module];
       if (before) stale[m.module] = m.fixed.filter((k) => typeof now?.[k] === 'function' && String(now[k]) !== String(before[k]));
@@ -209,7 +213,7 @@ export class HotswapWatcher {
     const warn = built.warnings.length ? `, ${built.warnings.length} warning(s)` : '';
     this.emit({
       ok: !errors,
-      line: `${errors ? '✗' : '✓'} #${rec.id} ${summarize(rec.report.filter((m) => built.keys.includes(m.module)), stale)}: live ${Date.now() - firstSave} ms after the save (build ${buildMs} ms${warn}); ${ttl}`,
+      line: `${errors ? '✗' : '✓'} #${rec.id} ${summarize(rec.report.filter((m) => built.keys.includes(m.module)), stale, seen)}: live ${Date.now() - firstSave} ms after the save (build ${buildMs} ms${warn}); ${ttl}`,
       files: rel, warnings: built.warnings, buildMs, totalMs: Date.now() - firstSave, record: rec,
     });
     if (!errors && this.deps.test) this.queueTests(rel);

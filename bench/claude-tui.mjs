@@ -3,7 +3,7 @@
 // latency and renderer memory, for the native build (Blink) and the npm build.
 //   node bench/claude-tui.mjs [--build native|npm] [--runs N] [--keys N]
 //        [--env 'K=V K2=V2'] [--args '...'] [--tui fullscreen|default]
-//        [--settle S] [--binary FILE] [--out file.json] [--shot file.png]
+//        [--settle S] [--binary FILE] [--prewarm CMD] [--out file.json] [--shot file.png]
 // Each run is a fresh profile booted at /?ui=terminal. ~/.claude.json is
 // preset (onboarding done, the home directory trusted) so the session goes
 // straight to its prompt; there is no sign-in, so nothing reaches the API.
@@ -37,7 +37,8 @@ const extraArgs = opt('--args', '');
 const out = opt('--out');
 const shot = opt('--shot');
 const binary = opt('--binary'); // another linux-x64-musl build, e.g. bench/.cache/fixtures/claude-native-2.1.112
-const tui = opt('--tui'); // fullscreen | default: Claude's renderer (settings.json `tui`)
+const tui = opt('--tui');
+const prewarm = opt('--prewarm'); // a command run untimed first (e.g. `claude --vm --version`: the extraction) // fullscreen | default: Claude's renderer (settings.json `tui`)
 const promptRe = new RegExp(opt('--prompt', '^\\s*(❯|│ >|> )'), 'm');
 const TIMEOUT = Number(opt('--timeout', 300)) * 1000;
 const log = (...a) => console.log(...a);
@@ -105,6 +106,7 @@ try {
         await window.__tabcomputer.fs.writeFile(home + '/.claude/settings.json', JSON.stringify({ tui }));
       }
     }, { build, json: CLAUDE_JSON(home), home, tui, binary: !!binary });
+    if (prewarm) { const t0 = Date.now(); const r = await h.sh(prewarm); log(`  prewarm \`${prewarm}\`: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}`); }
     await h.eval(SETUP);
     const cmd = `${extraEnv ? extraEnv + ' ' : ''}claude --${build}${extraArgs ? ' ' + extraArgs : ''}`;
     const rss0 = await h.rendererRss();

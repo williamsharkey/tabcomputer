@@ -31,13 +31,14 @@ const ENSURE_GIT = `if git --version 2>/dev/null | grep -q isomorphic; then prin
 /** git's credentials for github.com from $GITHUB_TOKEN, for this command only */
 const AUTH_ENV = `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"`;
 
-/** The Terminal command for a clone */
-export function cloneScript(spec: { owner: string; repo: string; url: string }, signedIn: boolean): string {
-  const parent = `~/src/${spec.owner}`;
+/** The command for a clone: into ~/src/OWNER/REPO, or `dest` (an absolute folder) */
+export function cloneScript(spec: { owner: string; repo: string; url: string }, signedIn: boolean, dest?: string): string {
+  const parent = dest ? shq(dest.slice(0, dest.lastIndexOf('/')) || '/') : `~/src/${spec.owner}`;
+  const base = dest ? dest.slice(dest.lastIndexOf('/') + 1) : spec.repo;
   const clone = signedIn
-    ? `${ENSURE_GIT} && ${AUTH_ENV} git clone --filter=blob:none --progress ${shq(spec.url)} ${shq(spec.repo)}`
-    : `git clone --depth 1 ${shq(spec.url)} ${shq(spec.repo)}`;
-  return `mkdir -p ${parent} && cd ${parent} && ${clone} && cd ${shq(spec.repo)} && git log --oneline -3`;
+    ? `${ENSURE_GIT} && ${AUTH_ENV} git clone --filter=blob:none --progress ${shq(spec.url)} ${shq(base)}`
+    : `git clone --depth 1 ${shq(spec.url)} ${shq(base)}`;
+  return `mkdir -p ${parent} && cd ${parent} && ${clone} && cd ${shq(base)} && git log --oneline -3`;
 }
 
 /** The Terminal command for a branch folder: an existing branch is checked out there, a new one is made from HEAD */
@@ -52,7 +53,7 @@ export function mainRoot(repo: Repo): string {
   return repo.worktree ? repo.gitdir.replace(/\/\.git\/worktrees\/[^/]+$/, '') : repo.root;
 }
 
-function sheet(ctx: AppContext, label: string, html: string): { el: HTMLElement; close: () => void } {
+export function sheet(ctx: AppContext, label: string, html: string): { el: HTMLElement; close: () => void } {
   const el = document.createElement('div');
   el.className = 'sd-sheet sd-git-sheet';
   el.setAttribute('role', 'dialog');

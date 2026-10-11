@@ -5,6 +5,8 @@
  * the repository directly with isomorphic-git (the builtin git's library), so
  * nothing runs under emulation; pull and push open a Terminal with git there.
  * It follows the repository's changes from the filesystem, not a timer.
+ * Without a repository it shows its home (githome-ui.ts): GitHub sign-in,
+ * your repositories, notifications and the repositories on this computer.
  */
 
 import type { AppContext } from '../index';
@@ -12,6 +14,8 @@ import type { DesktopWindow } from '../wm';
 import { GLOBAL_GITCONFIG, parseGitConfig } from '../../commands/git-config';
 import { findRepo, headBranch, upstreamOf, type Repo } from '../gitstatus';
 import { openBranchFolderSheet, openCloneSheet, mainRoot } from '../gitsheets';
+import { GLYPHS } from '../icons';
+import { rememberRepo } from '../github-home';
 import { activeProfile } from '../../profile';
 
 function esc(s: string): string {
@@ -69,32 +73,34 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     };
   };
 
-  // ── Choosing a repository ──
-  async function repos(): Promise<string[]> {
-    const out: string[] = [];
-    for (const owner of await fs.readdir(`${HOME}/src`).catch(() => [] as string[])) {
-      for (const r of await fs.readdir(`${HOME}/src/${owner}`).catch(() => [] as string[])) {
-        if (await fs.exists(`${HOME}/src/${owner}/${r}/.git`).catch(() => false)) out.push(`${HOME}/src/${owner}/${r}`);
-      }
-    }
-    return out;
-  }
+  // ── Home: your repositories here and on GitHub (githome-ui.ts) ──
+  let leaveHome: (() => void) | null = null;
+  let homeSeq = 0;
   async function pick(): Promise<void> {
     repo = null;
     win.setTitle('Git');
-    const list = await repos();
-    el.innerHTML = `<div class="sd-scroll"><div class="sd-panel">
-      <h2>Git</h2><p class="sd-muted">Pick a repository, or clone one into <code>~/src</code>.</p>
-      <div class="sd-card">${list.length ? list.map(p => `<div class="sd-row"><span class="sd-grow">${esc(p.replace(HOME + '/src/', ''))}</span><button class="sd-btn" data-open="${esc(p)}">Open</button></div>`).join('') : '<div class="sd-row sd-muted">No repositories in ~/src yet.</div>'}</div>
-      <div class="sd-row" style="margin-top:12px;border:0"><button class="sd-btn sd-primary" data-act="clone">Clone…</button></div>
-    </div></div>`;
+    const seq = ++homeSeq;
+    const ui = await import('../githome-ui');
+    if (seq !== homeSeq || repo) return; // a repository was opened meanwhile
+    leaveHome?.();
+    leaveHome = ui.mountGitHome(el, {
+      ctx,
+      openLocal: (p) => void load(p),
+      altLabel: 'Files',
+      openAlt: (p) => void wm.openApp('files', { path: p, newWindow: true }),
+      cloned: (p) => void load(p),
+    });
   }
 
   // ── The repository view ──
   async function load(dir: string): Promise<void> {
     const r = await findRepo(fs, dir);
     if (!r) { await pick(); return; }
+    homeSeq++;
+    leaveHome?.();
+    leaveHome = null;
     repo = r;
+    rememberRepo(r.root);
     win.setTitle(`Git — ${r.root.split('/').pop()}`);
     if (r.worktree) {
       // isomorphic-git reads a worktree's objects only through the main repository
@@ -102,7 +108,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       el.innerHTML = `<div class="sd-scroll"><div class="sd-panel">
         <h2>${esc(r.root.split('/').pop()!)} <span class="sd-muted">${esc(branch ?? '')}</span></h2>
         <p class="sd-muted">This folder is a branch folder (a git worktree) of <code>${esc(mainRoot(r).replace(HOME, '~'))}</code>. The Git app shows main folders; here, use git in a Terminal.</p>
-        <div class="sd-row" style="border:0;gap:8px"><button class="sd-btn sd-primary" data-act="term">Terminal Here</button><button class="sd-btn" data-act="main">Open the Main Folder</button></div>
+        <div class="sd-row" style="border:0;gap:8px"><button class="sd-btn" data-act="home">${GLYPHS.back}Repositories</button><button class="sd-btn sd-primary" data-act="term">Terminal Here</button><button class="sd-btn" data-act="main">Open the Main Folder</button></div>
       </div></div>`;
       return;
     }
@@ -144,6 +150,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     const nothing = !lists.staged.length && !lists.changed.length && !lists.untracked.length;
     el.innerHTML = `
       <div class="sd-toolbar">
+        <button class="sd-btn sd-icon-btn" data-act="home" title="Home: all repositories" aria-label="Home">${GLYPHS.back}</button>
         <div class="sd-path" title="${esc(repo.root)}">${esc(repo.root.replace(HOME, '~'))}</div>
         <button class="sd-btn sd-git-branch" data-act="branches" aria-haspopup="menu">${esc(up.branch ?? 'no branch')}${up.ahead ? ` <span class="sd-ahead">↑${up.ahead}</span>` : ''}${up.behind ? ` <span class="sd-behind">↓${up.behind}</span>` : ''} ▾</button>
         <button class="sd-btn" data-act="pull" title="git pull, in a Terminal">Pull</button>
@@ -260,6 +267,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     if (open) { void load(open); return; }
     const a = t.closest<HTMLElement>('[data-act]')?.dataset.act;
     if (a === 'clone') { openCloneSheet(ctx); return; }
+    if (a === 'home') { void pick(); return; }
     if (a === 'term' && repo) { ctx.openTerminal({ cwd: repo.root }); return; }
     if (a === 'main' && repo) { void load(mainRoot(repo)); return; }
     if (a === 'branches') { void branchMenu(t.closest('button')!); return; }
@@ -297,8 +305,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = null; void refresh(); }, 600);
   });
-  win.on('close', () => { off(); if (timer) clearTimeout(timer); });
-  (win as { content?: unknown }).content = { navigate: (a: Record<string, unknown>) => { if (typeof a.dir === 'string') void load(a.dir); }, dir: () => repo?.root ?? null };
+  win.on('close', () => { off(); homeSeq++; leaveHome?.(); if (timer) clearTimeout(timer); });
+  (win as { content?: unknown }).content = { navigate: (a: Record<string, unknown>) => { if (typeof a.dir === 'string') void load(a.dir); else if (a.home) void pick(); }, dir: () => repo?.root ?? null };
   void (typeof args?.dir === 'string' ? load(args.dir) : pick());
   return win;
 }

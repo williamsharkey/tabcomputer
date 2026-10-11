@@ -2,20 +2,16 @@
 // Needs a build and a running server:
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/hotswap.mjs [http://localhost:5299/]
-// 1. Copies this checkout's src/ into the tab (~/shiro), edits src/shell.ts there with sed.
+// 1. `hotswap checkout` unpacks the build's own source into ~/shiro; sed edits src/shell.ts; `hotswap diff` shows it.
 // 2. `hotswap apply --ttl 8s src/shell.ts`: the main terminal's shell sees the change, no reload.
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
 // 5. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
 import { createRequire } from 'node:module';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 let chromium;
 try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const base = process.argv[2] || 'http://localhost:5299/';
 const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
@@ -48,40 +44,21 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await boot(page, '/?ui=terminal');
 check(true, 'boots');
 
-// 1. A checkout of the source in the tab
-const files = [];
-const walk = (dir) => {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); }
-    else if (/\.(ts|tsx|json|txt|js|mjs)$/.test(e.name)) files.push(p);
-  }
-};
-walk(path.join(repo, 'src'));
-walk(path.join(repo, 'profiles'));
-for (const f of fs.readdirSync(path.join(repo, 'tests/tests/shiro-vitest'))) {
-  if (/^(shell-posix|shell-syntax|shell-issue74)\.test\.ts$|^helpers\.ts$/.test(f)) files.push(path.join(repo, 'tests/tests/shiro-vitest', f));
-}
-for (const f of ['tsconfig.json', 'build-number.txt', 'package.json']) files.push(path.join(repo, f));
-for (let i = 0; i < files.length; i += 100) {
-  const batch = files.slice(i, i + 100).map((f) => [path.relative(repo, f), fs.readFileSync(f, 'utf8')]);
-  await page.evaluate(async (batch) => {
-    const vfs = window.__tabcomputer.fs;
-    for (const [rel, text] of batch) {
-      const p = `/home/user/shiro/${rel}`;
-      await vfs.mkdir(p.slice(0, p.lastIndexOf('/')), { recursive: true });
-      await vfs.writeFile(p, text);
-    }
-  }, batch);
-}
-check(true, `copied ${files.length} files to ~/shiro`);
+// 1. A checkout of this build's source in the tab
+let t0 = Date.now();
+let r = await sh(page, 'hotswap checkout');
+check(r.code === 0 && /checked out build \d+/.test(r.out), `hotswap checkout (${Date.now() - t0} ms)`, r.out);
+check(/No changes/.test((await sh(page, 'cd /home/user/shiro && hotswap diff')).out), 'a fresh checkout has no changes');
 
-let r = await sh(page, `cd /home/user/shiro && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
+r = await sh(page, `cd /home/user/shiro && sed -i "s/result += '5.0.0'/result += '9.9.9-hotswap'/" src/shell.ts && grep -c 9.9.9-hotswap src/shell.ts`);
 check(r.out.trim() === '1', 'edited src/shell.ts in the tab', r.out);
 check((await mainEcho(page)) === '5.0.0', 'before: BASH_VERSION is 5.0.0');
 
+r = await sh(page, 'hotswap diff --stat; hotswap diff');
+check(/^M src\/shell\.ts$/m.test(r.out) && /^\+.*9\.9\.9-hotswap/m.test(r.out) && /^-.*'5\.0\.0'/m.test(r.out), 'hotswap diff shows the edit', r.out);
+
 // 2. Swap it in
-let t0 = Date.now();
+t0 = Date.now();
 r = await sh(page, 'hotswap apply --ttl 8s src/shell.ts');
 console.log(r.out.split('\n').map((l) => '     ' + l).join('\n'));
 check(r.code === 0 && /applied #\d+ src\/shell\.ts/.test(r.out) && /Shell: \d+ method\(s\) swapped/.test(r.out), `hotswap apply (${Date.now() - t0} ms)`, r.out);

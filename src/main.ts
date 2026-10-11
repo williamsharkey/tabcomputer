@@ -3,7 +3,7 @@
 import { toolkitScaleEnv } from './gui/display-scale';
 import { queryConsole, clearConsoleLog } from './console-log';
 // Freeze watchdog (event-loop lag, long tasks, commands in flight), from boot too
-import './watchdog';
+import { previousLoadWedge } from './watchdog';
 
 // Old capture API, kept as a view over the bounded log (console command, clip-report)
 Object.defineProperty(window, '__shiroCapturedMessages', {
@@ -773,7 +773,14 @@ async function main() {
   try { hasPersistedSwaps = !!localStorage.getItem('tabcomputer-hotswap-persisted'); } catch { /* no storage */ }
   if (hasPersistedSwaps && !safe && new URLSearchParams(location.search).get('hotswap') !== '0') {
     await bootStep('hotswap', async () => {
-      const { restorePersisted } = await import('./hotswap/persist');
+      // A load that froze last time is treated like safe mode: the swap may be why
+      const wedge = await previousLoadWedge();
+      const { restorePersisted, clearPersisted } = await import('./hotswap/persist');
+      if (wedge) {
+        await clearPersisted();
+        console.warn(`hotswap: dropped the persisted swaps: the last load froze for ${Math.round((wedge.seenAt - wedge.since) / 1000)} s`);
+        return;
+      }
       for (const l of await restorePersisted()) console.warn(l);
     });
   }

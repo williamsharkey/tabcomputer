@@ -80,6 +80,11 @@ What each row measures:
   1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
   is 17 s. Native numbers stop at the pty, without a terminal emulator; in
   the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
+  `/exit` returns the shell in 3.4 s (10 s on a launch with no turn). For
+  comparison the npm build (`claude_npm.*`, [c](../bench/results/bench-27-claude-c.json))
+  starts in 1.2 s, echoes a key in ~19 ms (p99 ~25 ms), answers the mocked
+  turn in 0.22 s and holds 426 MiB; it doesn't exit on `/exit` at Build 973
+  (its node process stays running; reported to agent-clis).
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to

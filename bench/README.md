@@ -108,6 +108,7 @@ perf-kernel use the same definitions.
 | `claude_native.echo.stage.{read,compute,render}.*` | the same keys split by the kernel's pty trace (`kernel.startProfile()`, Build 975+; left out on older builds): pty input → Claude's `read`, → its first write back, → the echo matched |
 | `claude_native.echo_burst.total` | 10 keys typed at once → the last echoed |
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
+| `claude_native.exit.{cold,warm}` | `/exit` Enter → the shell's prompt line back (then a marker the shell prints confirms it reads input); `exit_hung.*` counts launches still running after 120 s, which the suite kills from a side shell to go on |
 | `claude_npm.*` | the same for `claude --npm` (installed before the round) |
 
 `claude_native.native.*` runs the same binary on this machine's Linux in a

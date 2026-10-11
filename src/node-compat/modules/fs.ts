@@ -658,7 +658,11 @@ export function createFsModule(deps: FsDeps): any {
       if (ctx.fs.readCached(resolved) !== undefined) return true;
       // Fallback: check Shiro FS cache for directories
       if (fsDirCached(resolved)) return true;
-      return false;
+      // a file whose bytes the cache let go (a large binary, after a while):
+      // its inode is still known (codex's npm wrapper found its own binary
+      // missing after one long run: tabcomputer#27). Only such a node: the
+      // FileSystem's view of a path node just renamed away is behind node's own
+      return ctx.fs.lookupCached?.(resolved)?.node.evicted === true;
     },
     statSync: (p: string, opts?: any) => {
       tickSyncOps();

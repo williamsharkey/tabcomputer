@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { installOsc52 } from './utils/osc52';
+import { installTermQueries } from './utils/term-queries';
 import { useUnicode11 } from './utils/term-unicode';
 import { Shell } from './shell';
 import buildNumber from '../build-number.txt?raw';
@@ -13,6 +14,7 @@ import { needsMoreInput } from './shell-syntax';
 import { activeProfile } from './profile';
 import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
+import * as agentResume from './agent-resume';
 import { frozenLastTimeNotice } from './watchdog';
 
 /**
@@ -202,6 +204,7 @@ export class ShiroTerminal {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     installOsc52(this.term);
+    installTermQueries(this.term);
     useUnicode11(this.term);
     this.term.open(container);
     this.fitAddon.fit();
@@ -836,6 +839,37 @@ export class ShiroTerminal {
     return { stdout, stderr, exitCode };
   }
 
+  /** The line the user entered that is still running (session restore offers it again), or null at the prompt. */
+  foregroundLine: string | null = null;
+
+  /** Run a line the user entered; an agent it starts (claude, codex) is tracked for session restore (agent-resume.ts). */
+  private async runLine(line: string): Promise<number> {
+    agentResume.lineStarted(this, line, this.shell.cwd, this.shell.env, this.shell.fs);
+    this.foregroundLine = line;
+    try {
+      return await this.shell.execute(line, (s: string) => this.term.write(s));
+    } finally {
+      this.foregroundLine = null;
+      agentResume.lineEnded(this);
+    }
+  }
+
+  /**
+   * Session restore (src/desktop/session.ts): replace the screen with what the
+   * terminal showed before the reload, a dim separator line, then a fresh
+   * prompt. Only at the prompt (not while something runs).
+   */
+  restoreScreen(scrollback: string, note: string): void {
+    if (this.running) return;
+    this.term.reset();
+    const text = scrollback.replace(/\r?\n/g, '\r\n');
+    if (text) this.term.write(text.endsWith('\r\n') ? text : text + '\r\n');
+    this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
+    this.lineBuffer = '';
+    this.cursorPos = 0;
+    this.showPrompt();
+  }
+
   private async handleInput(data: string) {
     // (bracketed paste markers, left on by a program that enabled mode 2004: the text is what counts)
     if (data.includes('\x1b[20')) data = data.replace(/\x1b\[20[01]~/g, '');
@@ -984,7 +1018,7 @@ export class ShiroTerminal {
           this.typeAheadDropped = false;
           this.running = true;
           try {
-            await this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s));
+            await this.runLine(this.lineBuffer);
           } finally {
             this.running = false;
           }
@@ -1378,7 +1412,7 @@ export class ShiroTerminal {
         this.term.writeln('');
         if (this.lineBuffer.trim()) {
           this.running = true;
-          this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s)).then(() => {
+          this.runLine(this.lineBuffer).then(() => {
             this.running = false;
             this.lineBuffer = '';
             this.cursorPos = 0;

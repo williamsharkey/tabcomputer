@@ -78,6 +78,17 @@ describe('Node.js Module Compatibility', () => {
       expect(ctx.stdout).toContain('missing:false');
     });
 
+    it('existsSync is true for a file whose bytes left memory (codex\'s npm wrapper and its 290 MB binary, tabcomputer#27)', async () => {
+      await fs.mkdir('/opt/nc-evicted', { recursive: true });
+      await fs.writeFile('/opt/nc-evicted/big.bin', new Uint8Array(FileSystem.CONTENT_BIG + 4096).fill(0xff));
+      await fs.sync();
+      fs.sweepContent(Date.now() + FileSystem.CONTENT_IDLE_MS + 1);
+      expect(fs.readBytesCached('/opt/nc-evicted/big.bin')).toBeUndefined();
+      const ctx = createCtx(shell, fs, ['-e', 'console.log("evicted:" + require("fs").existsSync("/opt/nc-evicted/big.bin"));']);
+      expect(await nodeCmd.exec(ctx)).toBe(0);
+      expect(ctx.stdout).toContain('evicted:true');
+    });
+
     it('mkdirSync creates a directory recognized by existsSync', async () => {
       const ctx = createCtx(shell, fs, ['-e', [
         'const fs = require("fs");',

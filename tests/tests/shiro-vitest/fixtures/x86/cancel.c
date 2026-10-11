@@ -10,11 +10,12 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-static volatile int cleaned, spin = 1, got_code, got_pid, rip_ok;
+static volatile int cleaned, spin = 1, got_code, got_pid, rip_ok, ready;
 static void cleanup(void *a) { cleaned += (int)(long)a; }
 
 static void *deferred(void *a) {
   pthread_cleanup_push(cleanup, (void *)1);
+  ready = 1;
   for (;;) sleep(1);
   pthread_cleanup_pop(0);
   return 0;
@@ -22,6 +23,7 @@ static void *deferred(void *a) {
 static void *async(void *a) {
   pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, 0);
   pthread_cleanup_push(cleanup, (void *)10);
+  ready = 1;
   while (spin) {}
   pthread_cleanup_pop(0);
   return 0;
@@ -33,15 +35,23 @@ static void handler(int sig, siginfo_t *si, void *ctx) {
 }
 static void *waiter(void *a) { while (!got_code) usleep(1000); return 0; }
 
+// (each thread says when its handler is pushed: a cancel that came first,
+// on a loaded machine, ran no handler, or acted at setcanceltype)
+static void await_ready(void) {
+  while (!ready) usleep(1000);
+  ready = 0;
+}
+
 int main(void) {
   pthread_t t; void *r;
   pthread_create(&t, 0, deferred, 0);
-  usleep(50000);
+  await_ready();
+  usleep(20000);  // (into its sleep: the cancel interrupts a blocking call)
   pthread_cancel(t);
   pthread_join(t, &r);
   printf("deferred cleaned %d canceled %d\n", cleaned, r == PTHREAD_CANCELED);
   pthread_create(&t, 0, async, 0);
-  usleep(50000);
+  await_ready();
   pthread_cancel(t);
   pthread_join(t, &r);
   printf("async cleaned %d canceled %d\n", cleaned, r == PTHREAD_CANCELED);

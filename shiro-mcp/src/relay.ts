@@ -14,6 +14,13 @@
  * direction and sequence number, so the server (or anyone who learns the
  * mailbox id) can't forge, reflect or replay messages.
  *
+ * v2 (the offer says which): each channel also has a random epoch, sealed into
+ * every message, so a peer that reconnects to the same mailbox (shiro-mcp
+ * restarted while the tab stayed up) starts a new sequence the tab accepts,
+ * where v1 dropped all its messages as replays and the tab never noticed the
+ * old peer had gone (the new one kept the mailbox alive). Epochs already
+ * seen stay closed.
+ *
  * This file has no imports and is copied verbatim to shiro-mcp/src/relay.ts
  * (remote-relay.test.ts checks they match). Needs fetch and WebCrypto
  * (globalThis.crypto.subtle).
@@ -21,7 +28,7 @@
 
 export type RelaySide = 'tab' | 'peer';
 
-export interface RelayInfo { v: 1; id: string; salt: string }
+export interface RelayInfo { v: 1 | 2; id: string; salt: string }
 
 export const RELAY_WAIT_MS = 25_000;
 /** The other side hasn't polled for this long: it's gone */
@@ -47,7 +54,7 @@ function hex(bytes: Uint8Array): string {
 
 /** A fresh mailbox id and salt for an offer. */
 export function newRelayInfo(): RelayInfo {
-  return { v: 1, id: hex(crypto.getRandomValues(new Uint8Array(16))), salt: b64(crypto.getRandomValues(new Uint8Array(16))) };
+  return { v: 2, id: hex(crypto.getRandomValues(new Uint8Array(16))), salt: b64(crypto.getRandomValues(new Uint8Array(16))) };
 }
 
 export async function relayKey(code: string, salt: string): Promise<CryptoKey> {
@@ -57,26 +64,37 @@ export async function relayKey(code: string, salt: string): Promise<CryptoKey> {
     base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-/** Seal one message sent by `from`: "seq.base64(iv || ciphertext)". */
-export async function sealMessage(key: CryptoKey, from: RelaySide, seq: number, text: string): Promise<string> {
+/** What a message's additional data binds: direction, epoch (v2) and sequence */
+const aad = (from: RelaySide, epoch: string, seq: number) => enc.encode(epoch ? `${from}:${epoch}:${seq}` : `${from}:${seq}`);
+
+/** Seal one message sent by `from`: "seq.base64(iv || ciphertext)", or "epoch:seq.…" (v2). */
+export async function sealMessage(key: CryptoKey, from: RelaySide, seq: number, text: string, epoch = ''): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: enc.encode(`${from}:${seq}`) }, key, enc.encode(text)));
+    { name: 'AES-GCM', iv, additionalData: aad(from, epoch, seq) }, key, enc.encode(text)));
   const out = new Uint8Array(12 + ct.length);
   out.set(iv);
   out.set(ct, 12);
-  return `${seq}.${b64(out)}`;
+  return `${epoch ? epoch + ':' : ''}${seq}.${b64(out)}`;
 }
 
-/** Open a message sent by `from`; throws if it was tampered with, replayed or misdirected. */
-export async function openMessage(key: CryptoKey, from: RelaySide, envelope: string, lastSeq: number): Promise<{ seq: number; text: string }> {
+/**
+ * Open a message sent by `from`; throws if it was tampered with, replayed or
+ * misdirected. `lastSeq` is the last sequence number taken (per epoch when a
+ * function: Infinity closes an epoch).
+ */
+export async function openMessage(key: CryptoKey, from: RelaySide, envelope: string, lastSeq: number | ((epoch: string) => number)): Promise<{ epoch: string; seq: number; text: string }> {
   const dot = envelope.indexOf('.');
-  const seq = Number(envelope.slice(0, dot));
-  if (dot < 1 || !Number.isSafeInteger(seq) || seq <= lastSeq) throw new Error('relay: bad or replayed sequence');
+  const head = dot > 0 ? envelope.slice(0, dot) : '';
+  const colon = head.indexOf(':');
+  const epoch = colon >= 0 ? head.slice(0, colon) : '';
+  const seq = Number(colon >= 0 ? head.slice(colon + 1) : head);
+  const last = typeof lastSeq === 'function' ? lastSeq(epoch) : lastSeq;
+  if (dot < 1 || (colon >= 0 && !/^[0-9a-f]{1,32}$/.test(epoch)) || !Number.isSafeInteger(seq) || seq <= last) throw new Error('relay: bad or replayed sequence');
   const raw = unb64(envelope.slice(dot + 1));
   const pt = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: raw.subarray(0, 12), additionalData: enc.encode(`${from}:${seq}`) }, key, raw.subarray(12));
-  return { seq, text: dec.decode(pt) };
+    { name: 'AES-GCM', iv: raw.subarray(0, 12), additionalData: aad(from, epoch, seq) }, key, raw.subarray(12));
+  return { epoch, seq, text: dec.decode(pt) };
 }
 
 export interface RelayChannelOptions {
@@ -104,6 +122,10 @@ export class RelayChannel {
   private other: RelaySide;
   private sendSeq = 0;
   private recvSeq = 0;
+  /** This channel's epoch (v2; '' in v1), and the other side's current and past ones */
+  private sendEpoch: string;
+  private recvEpoch: string | null = null;
+  private closedEpochs = new Set<string>();
   private outbox: Promise<string>[] = [];
   private flushing = false;
   private abort = new AbortController();
@@ -114,6 +136,7 @@ export class RelayChannel {
   constructor(opts: RelayChannelOptions) {
     this.opts = { fetch: (...a) => fetch(...a), waitMs: RELAY_WAIT_MS, peerGoneMs: RELAY_PEER_GONE_MS, ...opts };
     this.other = opts.as === 'tab' ? 'peer' : 'tab';
+    this.sendEpoch = opts.info.v >= 2 ? hex(crypto.getRandomValues(new Uint8Array(4))) : '';
     this.key = relayKey(opts.code, opts.info.salt);
     this.key.then(() => {
       if (this.readyState !== 'connecting') return;
@@ -130,7 +153,7 @@ export class RelayChannel {
   send(text: string): void {
     if (this.readyState !== 'open') throw new Error('relay channel is not open');
     const seq = ++this.sendSeq;
-    this.outbox.push(this.key.then((k) => sealMessage(k, this.opts.as, seq, text)));
+    this.outbox.push(this.key.then((k) => sealMessage(k, this.opts.as, seq, text, this.sendEpoch)));
     if (!this.flushing) this.flush();
   }
 
@@ -179,7 +202,13 @@ export class RelayChannel {
         const key = await this.key;
         for (const m of msgs) {
           try {
-            const { seq, text } = await openMessage(key, this.other, m, this.recvSeq);
+            const { epoch, seq, text } = await openMessage(key, this.other, m,
+              (e) => (e === this.recvEpoch ? this.recvSeq : this.closedEpochs.has(e) ? Infinity : 0));
+            // An authentic message from a new epoch: the other side reconnected; its old epoch is closed
+            if (epoch !== this.recvEpoch) {
+              if (this.recvEpoch !== null) this.closedEpochs.add(this.recvEpoch);
+              this.recvEpoch = epoch;
+            }
             this.recvSeq = seq;
             if (this.readyState === 'open') this.onmessage?.({ data: text });
           } catch (e: any) {

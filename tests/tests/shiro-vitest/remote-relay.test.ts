@@ -128,6 +128,49 @@ describe('remote relay', () => {
       tab.close();
     }, 30_000);
 
+    it('a restarted peer rejoins a live tab on the same mailbox (v2 epochs); the old epoch stays closed', async () => {
+      const code = `relay-test5-${Date.now().toString(36)}`;
+      const info = newRelayInfo();
+      expect(info.v).toBe(2);
+      await post(`${server.base}/offer`, { code, offer: { type: 'offer', sdp: 'v=0' }, candidates: [], relay: info });
+      expect((await json(await fetch(`${server.base}/offer/${code}`))).relay.v).toBe(2); // the server passes v through
+      const tab = new RelayChannel({ base: server.base, info, code, as: 'tab', waitMs: 300 });
+      const seen: string[] = [];
+      tab.onmessage = (e) => { seen.push(e.data); tab.send(`echo ${e.data}`); };
+      // The first peer, and what it sent (for a replay later)
+      const sent: string[] = [];
+      const realFetch = globalThis.fetch;
+      const spy = ((u: any, init: any) => { if (String(u).includes('/send?as=peer')) sent.push(...JSON.parse(init.body).msgs); return realFetch(u, init); }) as typeof fetch;
+      const first = new PeerRelayChannel({ base: server.base, info, code, as: 'peer', waitMs: 300, fetch: spy });
+      await Promise.all([opened(first), opened(tab)]);
+      const r1 = nextMessage(first); first.send('one'); expect(await r1).toBe('echo one');
+      first.onclose = null; first.close(); // shiro-mcp restarted: no goodbye, the tab doesn't know
+
+      const second = new PeerRelayChannel({ base: server.base, info, code, as: 'peer', waitMs: 300 });
+      await opened(second);
+      const r2 = nextMessage(second); second.send('two'); expect(await r2).toBe('echo two');
+      // The first peer's messages, replayed after the second took over, are dropped
+      await post(`${server.base}/relay/${info.id}/send?as=peer`, { msgs: sent });
+      await new Promise((r) => setTimeout(r, 800));
+      expect(seen).toEqual(['one', 'two']);
+      second.close(); tab.close();
+    }, 30_000);
+
+    it('v1 (an older tab or peer) still works', async () => {
+      const code = `relay-test6-${Date.now().toString(36)}`;
+      const info = { ...newRelayInfo(), v: 1 as const };
+      await post(`${server.base}/offer`, { code, offer: { type: 'offer', sdp: 'v=0' }, candidates: [], relay: info });
+      const tab = new RelayChannel({ base: server.base, info, code, as: 'tab', waitMs: 300 });
+      const peer = new PeerRelayChannel({ base: server.base, info, code, as: 'peer', waitMs: 300 });
+      await Promise.all([opened(peer), opened(tab)]);
+      tab.onmessage = (e) => tab.send(`v1 ${e.data}`);
+      const r = nextMessage(peer); peer.send('x'); expect(await r).toBe('v1 x');
+      // v1 envelopes carry no epoch
+      const raw = await json(await fetch(`${server.base}/relay/${info.id}/recv?as=tab`));
+      expect(raw.msgs.every((m: string) => /^\d+\./.test(m))).toBe(true);
+      peer.close(); tab.close();
+    }, 30_000);
+
     it('closes when the other side stops polling', async () => {
       const code = `relay-test4-${Date.now().toString(36)}`;
       const info = newRelayInfo();

@@ -49,6 +49,11 @@ The swap bundle includes only the swap set. Every other import resolves to the p
 - **Hooks.**
   - `migrateFrom(old)` on the new class's prototype runs once for each tracked live instance. `this` is the instance, and `old` carries the previous methods. It isn't installed on the prototype. The boot's shell, terminal, kernel and fs and the desktop's extra shells are tracked (`trackInstance` in `src/hotswap/live.ts`).
   - `export function __hotswap(ctx)` in a swapped module runs after its classes are swapped. `ctx.old` is the live namespace, `ctx.instances(Class)` the tracked instances, and `ctx.onRevert(fn)` registers cleanup. It may also return a function to run on revert.
+- **Module state.**
+  - The plugin also exposes each module's state: its column-0 `let`/`var` bindings, and consts holding an empty `new Map()`/`Set`/`WeakMap`/`WeakSet`, `[]` or `{}`.
+  - A swapped module's copy then shares that state with the page (`src/hotswap/state.ts`). Containers become the live objects, so both copies see the same Map. `let` values are carried in, and a revert writes them back. For shell.ts that covers the in-page PID counter, the shell-by-PID map and the job table, for example. `hotswap apply` lists what it shared.
+  - A const declared with its contents (a lookup table) is code: the swap uses its own copy, so edits to it take effect.
+  - `--fresh-state` turns the sharing off.
 - **Lazy modules.**
   - An `import()` of a module outside the swap set gets the page's module when the code runs, loading the page's chunk if needed. The plugin records a loader for every `import()` in `src/`.
   - A static import of a lazy module that isn't loaded yet is loaded before the bundle runs.
@@ -59,7 +64,8 @@ The swap bundle includes only the swap set. Every other import resolves to the p
 
 - **Free functions and constants** exported by a swapped file and imported by modules outside the swap set: ESM bindings are fixed, so `hotswap apply` lists them as "not swapped". To change one, add the importer to the swap set, or move the logic into a method.
 - **Constructors and fields of existing instances.** The new constructor runs only for instances the new code makes. Set new fields on old instances in `migrateFrom`.
-- **Module-level state of a swapped file** (`let cache = ...`). The bundle has a fresh copy, and all the swapped methods use it. Carry state over in `__hotswap` if it matters. The module's top-level code also runs again.
+- **Module state not declared as above**: a `const` object filled in at load, or a binding inside a closure. The bundle has its own copy, and all the swapped methods use it; carry it over in `__hotswap` if it matters.
+- **Top-level code** runs again when the bundle loads, so registrations in it (`addProcInfoSource(...)` and the like) happen twice.
 - **Closures already handed out**: bound listeners, timers, a stored `this.fn.bind(this)`. They keep the old code until they're re-created.
 - **Classes with `#private` members**: old instances fail the brand check in new methods.
 - **Anything running in a Worker**: the node runtime's workers, WASM and Blink guests, the watchdog worker. That includes everything they share with the page: the kernel's syscall channel layout, SharedArrayBuffer formats, syscall numbers and ABI structs. Change those with a deploy.
@@ -80,7 +86,7 @@ Patches and page scripts shouldn't depend on minified names. Use these on `windo
 
 ## Cost
 
-The live map stops tree-shaking from removing unused exports of `src/` modules, and the registrations add bytes of their own. On build 961 it added 4.3% to the JS: 8.17 MB → 8.52 MB, or 2.49 MB → 2.56 MB gzipped (all of `dist/assets/*.js`, `npx vite build` with and without the plugin).
+The live map keeps the exports and state bindings of `src/` modules from being tree-shaken, and the registrations add bytes of their own. On build 962 the JS grew by 4.8%: 8.17 MB → 8.56 MB, or 2.49 MB → 2.58 MB gzipped. That's all of `dist/assets/*.js`, measured with `npx vite build` with and without the plugin. The source tarball (about 3 MB) is downloaded only by `hotswap checkout`.
 
 ## Tests
 

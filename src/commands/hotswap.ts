@@ -9,7 +9,7 @@ import { evaluateBundle, hotswap, type ModuleReport, type SwapRecord } from '../
  */
 
 const USAGE = `Usage: hotswap checkout [DIR] [--force]          this build's source, in DIR (~/shiro)
-       hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...
+       hotswap apply [--root DIR] [--ttl 90s | --no-ttl] [--fresh-state] FILE...
        hotswap build [--root DIR] FILE...   build and report, swap nothing
        hotswap confirm [--persist] [ID]     keep pending swaps (stop their TTL)
        hotswap revert [--all]               undo the newest swap (or all)
@@ -61,6 +61,7 @@ function describe(report: ModuleReport[]): string {
       out += `  ${m.module}: ${c.name}: ${parts.join('; ')}\n`;
       for (const e of c.errors) out += `    error: ${e}\n`;
     }
+    if (m.state.length) out += `  ${m.module}: shares the page's module state: ${m.state.join(', ')}\n`;
     if (m.hook) out += `  ${m.module}: ran __hotswap\n`;
     if (m.fixed.length) out += `  ${m.module}: not swapped (other modules keep the old ones): ${m.fixed.join(', ')}\n`;
   }
@@ -147,6 +148,7 @@ export const hotswapCmd: Command = {
     let root: string | null = null;
     let ttl: number | null = DEFAULT_TTL_MS;
     let sourcemap = false;
+    let freshState = false;
     const files: string[] = [];
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -158,6 +160,7 @@ export const hotswapCmd: Command = {
         ttl = parseDuration(v ?? '');
         if (ttl === null) { ctx.stderr += `hotswap: bad --ttl '${v}' (90s, 5m, 500ms)\n`; return 2; }
       } else if (a === '--sourcemap') sourcemap = true;
+      else if (a === '--fresh-state') freshState = true;
       else if (a.startsWith('-')) { ctx.stderr += `hotswap: unknown option ${a}\n`; return 2; }
       else files.push(a);
     }
@@ -168,7 +171,7 @@ export const hotswapCmd: Command = {
 
     let built;
     try {
-      built = await buildSwap({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root, files: abs, sourcemap });
+      built = await buildSwap({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root, files: abs, sourcemap, freshState });
     } catch (e: any) {
       const errs = e?.errors as { text: string; location?: { file: string; line: number; column: number } }[] | undefined;
       if (errs?.length) for (const x of errs) ctx.stderr += `hotswap: ${x.location ? `${x.location.file}:${x.location.line}:${x.location.column}: ` : ''}${x.text}\n`;

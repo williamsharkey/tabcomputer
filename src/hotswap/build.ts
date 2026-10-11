@@ -13,6 +13,7 @@
  */
 import type * as esbuild from 'esbuild-wasm';
 import { liveLoaders, liveModules, type LiveLoaders, type LiveMap } from './live';
+import { carryState } from './state';
 
 export interface HotswapFs {
   /** A file's text; throws if it doesn't exist or is a directory */
@@ -33,6 +34,8 @@ export interface BuildOptions {
   /** Extra defines; __BUILD_SHA__ and import.meta.env come from the page */
   define?: Record<string, string>;
   sourcemap?: boolean;
+  /** Don't take the live modules' state (swap.ts state.ts): the swap starts with fresh module state */
+  freshState?: boolean;
 }
 
 export interface TestBuildOptions extends Omit<BuildOptions, 'files'> {
@@ -192,7 +195,10 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
       build.onLoad({ filter: /.*/, namespace: 'hs-src' }, async (args) => {
         const p = args.path;
         const loader = p.endsWith('.tsx') ? 'tsx' : p.endsWith('.ts') ? 'ts' : p.endsWith('.json') ? 'json' : 'js';
-        return { contents: await fs.readFile(p), loader, resolveDir: dirOf(p) };
+        let contents = await fs.readFile(p);
+        const key = keyOf(p);
+        if (!testPath && !opts.freshState && key && swapSet.has(key) && loader !== 'json') contents = carryState(contents, key).code;
+        return { contents, loader, resolveDir: dirOf(p) };
       });
     },
   };

@@ -252,6 +252,51 @@ describe('hotswap: building a swap bundle', () => {
     }
   });
 
+  it("shares the live module's state: containers aliased, lets carried in and written back on revert", async () => {
+    const src = `let counter = 0;\nconst reg = new Map<string, number>();\nconst TABLE = new Set(['a']);\nexport class C { inc(): number { reg.set('n', ++counter); return counter; } get reg() { return reg; } get table() { return TABLE; } }\n`;
+    const files: Record<string, string> = { '/co/src/hs-fixture/c.ts': src };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    // the live module, as the Vite plugin exposes it
+    let liveCounter = 41;
+    const liveReg = new Map<string, number>();
+    class C { inc() { return ++liveCounter; } }
+    registerLive('src/hs-fixture/c.ts', { C });
+    const g = globalThis as any;
+    (g.__tabcomputerLiveState ??= new Map()).set('src/hs-fixture/c.ts', {
+      get counter() { return liveCounter; }, set counter(v: number) { liveCounter = v; },
+      get reg() { return liveReg; },
+    });
+    try {
+      const out = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/c.ts'], build: esbuild.build as any });
+      const mgr = new HotswapManager();
+      const rec = mgr.apply(await evalCode(out.code));
+      expect(rec.report[0].state.sort()).toEqual(['counter', 'reg']);
+      const { moduleState } = await import('@shiro/hotswap/state');
+      expect(moduleState(src).map((x) => x.name)).toEqual(['counter', 'reg']);
+      expect(moduleState('const a = /* @__PURE__ */ new Map();\nconst b = new WeakMap<number, WeakRef<C>>();\nconst t = { x: 1 };\nconst l = [];\nexport let e = 1;\n  let inner = 2;\n'))
+        .toEqual([{ name: 'e', mutable: true }, { name: 'a', mutable: false }, { name: 'b', mutable: false }, { name: 'l', mutable: false }]);
+      expect(rec.report[0].fixed).toEqual([]);
+      const c = new C() as any;
+      expect(c.inc()).toBe(42);
+      expect(c.inc()).toBe(43);
+      expect(c.reg).toBe(liveReg);
+      expect(liveReg.get('n')).toBe(43);
+      expect(c.table.has('a')).toBe(true);
+      mgr.revert();
+      expect(liveCounter).toBe(43);
+      expect(c.inc()).toBe(44);
+
+      // --fresh-state: the swap keeps its own
+      const fresh = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/c.ts'], build: esbuild.build as any, freshState: true });
+      const rec2 = mgr.apply(await evalCode(fresh.code));
+      expect(rec2.report[0].state).toEqual([]);
+      expect((new C() as any).inc()).toBe(1);
+      mgr.revert();
+    } finally {
+      g.__tabcomputerLiveState.delete('src/hs-fixture/c.ts');
+    }
+  });
+
   it('refuses bare imports that are not live', async () => {
     const fs: HotswapFs = { async readFile(p) { if (p === '/co/src/hs-fixture/x.ts') return `import 'left-pad';\nexport const x = 1;\n`; throw new Error('ENOENT'); } };
     await expect(buildSwap(fs, { root: '/co', files: ['src/hs-fixture/x.ts'], build: esbuild.build as any }))

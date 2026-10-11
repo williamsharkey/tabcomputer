@@ -4,6 +4,7 @@ import zlib from 'zlib';
 import crypto from 'crypto';
 import { execSync } from 'child_process';
 import type { Plugin } from 'vite';
+import { moduleState } from './src/hotswap/state';
 
 /**
  * The live module map for hot-swapping (src/hotswap/, docs/HOTSWAP.md): every
@@ -35,6 +36,14 @@ export function hotswapLiveModules(root: string): Plugin {
         extra += `import * as __tcLiveDep${i} from ${JSON.stringify(dep)};\n` +
           `globalThis.__tabcomputerLive.set(${JSON.stringify('npm:' + dep)}, __tcLiveDep${i});\n`;
       });
+      // Module state (top-level lets and Map/Set/array/object consts): a swap of this
+      // module aliases its own copies to these (build.ts carryState)
+      const state = moduleState(code);
+      if (state.length) {
+        extra += `(globalThis.__tabcomputerLiveState ??= new Map()).set(${JSON.stringify(key)}, {` +
+          state.map(({ name, mutable }) => `get ${name}() { return ${name}; }${mutable ? `, set ${name}(v) { ${name} = v; }` : ''}`).join(', ') +
+          '});\n';
+      }
       // Vite query imports (a Worker, an asset URL): registered as 'src/x.ts?worker&inline'
       let q = 0;
       for (const m of code.matchAll(/\bfrom\s*(['"])(\.{1,2}\/[^'"?]+)\?((?:worker|sharedworker|url)[^'"]*)\1/g)) {

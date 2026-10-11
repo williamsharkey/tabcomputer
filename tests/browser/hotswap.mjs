@@ -7,7 +7,8 @@
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
 // 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
-// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
+// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage;
+//    their node:fs reads the checkout (fixtures included) and writes only in memory.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let chromium;
@@ -111,6 +112,26 @@ t0 = Date.now();
 r = await sh(page, 'cd /home/user/tabcomputer && hotswap test shell-posix shell-syntax shell-issue74');
 console.log(r.out.split('\n').map((l) => '     ' + l).join('\n'));
 check(r.code === 0 && /PASS tests\/tests\/shiro-vitest\/shell-posix\.test\.ts: \d+ passed/.test(r.out) && /Tests: \d+ passed\n/.test(r.out), `hotswap test runs the shell suites (${Date.now() - t0} ms)`, r.out);
+// node:fs: a fixture by import.meta.url, and a guest worker from a lazy module (shell-conformance's argv0.wasm)
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test -t argv shell-conformance');
+check(r.code === 0 && /PASS .*shell-conformance\.test\.ts: 1 passed/.test(r.out), 'a suite reads its wasm fixture with node:fs and runs it', r.out);
+// a suite's node:fs writes stay in memory: the tab's files and the checkout are unchanged
+r = await sh(page, `cd /home/user/tabcomputer && cat > tests/tests/shiro-vitest/fs-probe.test.ts <<'END'
+import { it, expect } from 'vitest';
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+it('reads the checkout and writes in memory', () => {
+  expect(readFileSync(join(__dirname, '../../../src/shell.ts'), 'utf8')).toContain('export class Shell');
+  expect(existsSync('/home/user/keep.txt')).toBe(false); // only the checkout is in its fs
+  writeFileSync('/home/user/keep.txt', 'clobbered');
+  writeFileSync(join(__dirname, 'fs-probe.test.ts'), 'clobbered');
+  const d = mkdtempSync('/tmp/probe-');
+  writeFileSync(d + '/x', Buffer.from('y'));
+  expect([readFileSync('/home/user/keep.txt', 'utf8'), existsSync(d + '/x'), process.env.HOME]).toEqual(['clobbered', true, '/home/user']);
+});
+END
+hotswap test fs-probe; head -c 6 tests/tests/shiro-vitest/fs-probe.test.ts; echo; ls -d /tmp/probe-* 2>/dev/null | wc -l; rm tests/tests/shiro-vitest/fs-probe.test.ts`);
+check(/PASS .*fs-probe\.test\.ts: 1 passed/.test(r.out) && /\nimport\n0\n$/.test(r.out), "a suite's node:fs reads the checkout and its writes stay in memory", r.out);
 r = await sh(page, 'cd /home/user/tabcomputer && hotswap test -t "nothing matches this" shell-posix');
 check(/0 passed/.test(r.out), 'hotswap test -t filters');
 const kept = await page.evaluate(async () => ({

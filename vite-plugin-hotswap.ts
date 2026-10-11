@@ -73,9 +73,9 @@ export function hotswapLiveModules(root: string): Plugin {
 }
 
 /** What `hotswap checkout` gets: the source of this build (src/hotswap/source.ts) */
+// The suites' fixtures are in too (about 200 KB gzipped), for `hotswap test`'s node:fs
 const SOURCE_DIRS = ['src', 'profiles', 'tests/tests/shiro-vitest'];
 const SOURCE_FILES = ['tsconfig.json', 'package.json', 'build-number.txt', 'vite.config.ts', 'vite-plugin-hotswap.ts', 'AGENTS.md', 'CLAUDE.md', 'docs/HOTSWAP.md'];
-const SOURCE_SKIP = /^tests\/tests\/shiro-vitest\/fixtures\//;
 
 /** The tarball's name for a build ('' sha: outside a git checkout) */
 export function sourceTarName(sha: string): string {
@@ -132,7 +132,7 @@ export function hotswapSource(root: string, sha: string): Plugin {
       } catch {
         return; // not a git checkout: no source tarball
       }
-      const files = listed.filter((f) => (SOURCE_FILES.includes(f) || SOURCE_DIRS.some((d) => f.startsWith(d + '/'))) && !SOURCE_SKIP.test(f))
+      const files = listed.filter((f) => (SOURCE_FILES.includes(f) || SOURCE_DIRS.some((d) => f.startsWith(d + '/'))))
         .filter((f) => fs.existsSync(path.join(root, f)) && fs.statSync(path.join(root, f)).isFile())
         .sort();
       const entries: [string, Buffer][] = files.map((f) => [f, fs.readFileSync(path.join(root, f))]);

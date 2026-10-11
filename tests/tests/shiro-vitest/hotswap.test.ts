@@ -442,6 +442,7 @@ describe('hotswap: the in-tab test runner', () => {
 import { describe, it, test, expect, beforeEach, afterAll, vi } from 'vitest';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { helper } from '@shiro/hs-fixture/util';
 const log = [];
 describe('outer', () => {
@@ -470,7 +471,11 @@ describe('outer', () => {
     expect(localStorage.getItem('k')).toBe('v');
     expect(globalThis.__tcTestEnv.localStorage.getItem('k')).toBe('v');
   });
-  it('node:fs throws when used', () => { expect(() => readFileSync('/x')).toThrow(/node:fs isn't available/); });
+  it('node:fs is the snapshot', () => {
+    expect(readFileSync('/co/tests/fixtures/f.txt', 'utf8')).toBe('fixture');
+    expect(() => readFileSync('/x')).toThrow(/ENOENT/);
+  });
+  it('node:child_process throws when used', () => { expect(() => execSync('true')).toThrow(/node:child_process isn't available/); });
   it('times out', async () => { await new Promise((r) => setTimeout(r, 200)); }, 20);
   afterAll(() => { log.push('afterAll'); });
 });
@@ -487,7 +492,8 @@ describe('outer', () => {
     const out = await buildTest(fs, { root: '/co', file: 'tests/x.test.ts', build: esbuild.build as any });
     expect(out.code).toContain('globalThis.__tcTestEnv.localStorage');
     const seen: string[] = [];
-    const sum = await runTestBundle(out.code, { onResult: (r) => seen.push(`${r.status} ${r.name}`) });
+    const snap = new Map([['/co/tests/fixtures/f.txt', new TextEncoder().encode('fixture')]]);
+    const sum = await runTestBundle(out.code, { files: snap, onResult: (r) => seen.push(`${r.status} ${r.name}`) });
     expect(sum.errors).toEqual([]);
     expect(seen).toEqual([
       'pass outer > passes',
@@ -498,18 +504,109 @@ describe('outer', () => {
       'todo outer > later',
       'pass outer > matchers',
       'pass outer > isolated storage',
-      'pass outer > node:fs throws when used',
+      'pass outer > node:fs is the snapshot',
+      'pass outer > node:child_process throws when used',
       'fail outer > times out',
     ]);
     expect(sum.results.find((r) => r.name === 'outer > fails')!.error).toMatch(/expected \{a: \[1, 2\]\} to deeply equal \{a: \[1, 3\]\}/);
     expect(sum.results.find((r) => r.name === 'outer > times out')!.error).toMatch(/timed out in 20ms/);
-    expect([sum.passed, sum.failed, sum.skipped]).toEqual([6, 2, 2]);
+    expect([sum.passed, sum.failed, sum.skipped]).toEqual([7, 2, 2]);
     // the page's storage was never touched
     expect((globalThis as any).localStorage).toBe(before);
 
     // -t filters by full name
     const only = await runTestBundle(out.code, { filter: /adds/ });
     expect(only.results.map((r) => r.name)).toEqual(['outer > adds 1 + 2', 'outer > adds 2 + 2']);
+  });
+});
+
+describe("hotswap: the in-tab tests' node:fs", () => {
+  it('reads the snapshot, writes in memory, and never changes the snapshot', async () => {
+    const { makeTestNode } = await import('@shiro/hotswap/test-fs');
+    const snap = new Map([['/co/a/b.txt', new TextEncoder().encode('hi')]]);
+    const { fs, 'fs/promises': fsp, url } = makeTestNode(snap, '/co') as any;
+    expect(fs.readFileSync('a/b.txt', 'utf8')).toBe('hi');
+    expect(fs.readFileSync(new URL('file:///co/a/b.txt')).toString()).toBe('hi');
+    expect(fs.readdirSync('/co')).toEqual(['a']);
+    expect(fs.readdirSync('/co', { withFileTypes: true })[0].isDirectory()).toBe(true);
+    expect(fs.statSync('/co/a/b.txt').size).toBe(2);
+    expect(fs.statSync('/nope', { throwIfNoEntry: false })).toBeUndefined();
+    expect(() => fs.readFileSync('/co/a')).toThrow(/EISDIR/);
+    expect(() => fs.readFileSync('/co/a/b.txt/c')).toThrow(/ENOTDIR/);
+    try { fs.readFileSync('/co/none'); } catch (e: any) { expect([e.code, e.errno, e.syscall]).toEqual(['ENOENT', -2, 'open']); }
+
+    const tmp = fs.mkdtempSync('/tmp/x-');
+    expect(tmp).toMatch(/^\/tmp\/x-\w+$/);
+    fs.writeFileSync(`${tmp}/f`, 'one');
+    fs.appendFileSync(`${tmp}/f`, new Uint8Array([0x32]));
+    expect(fs.readFileSync(`${tmp}/f`, 'utf8')).toBe('one2');
+    fs.writeFileSync('/co/a/b.txt', 'changed');
+    expect(fs.readFileSync('/co/a/b.txt', 'utf8')).toBe('changed');
+    expect(new TextDecoder().decode(snap.get('/co/a/b.txt'))).toBe('hi');
+    expect(() => fs.writeFileSync('/no/dir/f', 'x')).toThrow(/ENOENT/);
+    fs.mkdirSync(`${tmp}/d/e`, { recursive: true });
+    expect(() => fs.mkdirSync(`${tmp}/d`)).toThrow(/EEXIST/);
+    fs.renameSync(`${tmp}/d`, `${tmp}/g`);
+    expect(fs.existsSync(`${tmp}/g/e`)).toBe(true);
+    expect(fs.readdirSync(tmp, { recursive: true })).toEqual(['f', 'g', 'g/e']);
+    expect(() => fs.rmdirSync(`${tmp}/g`)).toThrow(/ENOTEMPTY/);
+    fs.rmSync(tmp, { recursive: true });
+    expect(fs.existsSync(tmp)).toBe(false);
+    fs.rmSync('/gone', { force: true });
+
+    await fsp.writeFile('/tmp/p', 'async');
+    expect(await fsp.readFile('/tmp/p', 'utf8')).toBe('async');
+    await expect(fsp.readFile('/tmp/none')).rejects.toThrow(/ENOENT/);
+    expect(await new Promise((r) => fs.readFile('/tmp/p', 'utf8', (_e: unknown, d: string) => r(d)))).toBe('async');
+    expect(url.fileURLToPath('file:///co/a%20b')).toBe('/co/a b');
+    expect(() => fs.createReadStream('/tmp/p')).toThrow(/node:fs in the tab has no createReadStream/);
+  });
+
+  it('snapshots a checkout, skipping .hotswap and node_modules', async () => {
+    const { snapshotTree } = await import('@shiro/hotswap/test-fs');
+    const tree: Record<string, string | null> = { '/co': null, '/co/src': null, '/co/src/a.ts': 'a', '/co/.hotswap': null, '/co/.hotswap/x': 'x', '/co/node_modules': null, '/co/node_modules/y': 'y', '/co/t.bin': 'b' };
+    const fs = {
+      async readdir(p: string) { return Object.keys(tree).filter((k) => k !== p && k.startsWith(p + '/') && !k.slice(p.length + 1).includes('/')).map((k) => k.slice(p.length + 1)); },
+      async stat(p: string) { if (!(p in tree)) throw new Error('ENOENT'); const dir = tree[p] === null; return { isFile: () => !dir, isDirectory: () => dir, size: 1 }; },
+      async readFile(p: string) { return tree[p]!; },
+    };
+    const snap = await snapshotTree(fs, '/co');
+    expect([...snap.keys()].sort()).toEqual(['/co/src/a.ts', '/co/t.bin']);
+    expect(snap.get('/co/src/a.ts')).toEqual(new TextEncoder().encode('a'));
+  });
+
+  it("gives a suite its fixtures by import.meta.url, Buffer, process, node:url and fs/promises", async () => {
+    const suite = `
+import { it, expect } from 'vitest';
+import fs from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
+it('fixtures', async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  expect(here).toBe('/co/tests');
+  expect(here).toBe(__dirname);
+  const bin = fs.readFileSync(new URL('./fixtures/bin', import.meta.url));
+  expect(Buffer.isBuffer(bin)).toBe(true);
+  expect(bin.toString('hex')).toBe('00ff');
+  expect(await readFile(path.join(here, 'fixtures/bin'))).toEqual(Buffer.from([0, 255]));
+  const tmp = fs.mkdtempSync('/tmp/s-');
+  fs.writeFileSync(tmp + '/out', Buffer.from('w'));
+  expect(fs.readFileSync(tmp + '/out', 'utf8')).toBe('w');
+  expect([process.env.HOME, process.cwd(), typeof process.nextTick]).toEqual(['/home/user', '/co', 'function']);
+  expect(fs.readFileSync('tests/fixtures/bin').length).toBe(2);
+});
+`;
+    const files: Record<string, string> = { '/co/tests/f.test.ts': suite };
+    const { buildTest } = await import('@shiro/hotswap/build');
+    const { runTestBundle } = await import('@shiro/hotswap/test-runner');
+    const out = await buildTest({ async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } },
+      { root: '/co', file: 'tests/f.test.ts', build: esbuild.build as any });
+    expect(out.code).toContain('globalThis.__tcTestNode.Buffer');
+    const snap = new Map([['/co/tests/fixtures/bin', new Uint8Array([0, 255])]]);
+    const sum = await runTestBundle(out.code, { files: snap, cwd: '/co' });
+    expect(sum.errors).toEqual([]);
+    expect(sum.results.map((r) => `${r.status} ${r.error ?? ''}`)).toEqual(['pass ']);
   });
 });
 

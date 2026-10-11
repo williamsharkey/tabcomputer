@@ -228,6 +228,11 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
   const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
   const { buildTest } = await import('../hotswap/build');
   const { runTestBundle } = await import('../hotswap/test-runner');
+  // The suites' node:fs: the checkout as it is now, read once; their writes stay in memory
+  const { snapshotTree } = await import('../hotswap/test-fs');
+  const t0 = performance.now();
+  const files = await snapshotTree(ctx.fs as any, root);
+  if (verbose) out(` (read ${files.size} files of ${root} for node:fs in ${Math.round(performance.now() - t0)} ms)\n`);
   let failed = 0, passed = 0, skipped = 0;
   for (const name of names) {
     const file = await suitePath(ctx, root, name);
@@ -246,6 +251,8 @@ async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
     }
     const sum = await runTestBundle(code, {
       filter,
+      files,
+      cwd: ctx.cwd,
       onResult: (r) => {
         if (r.status === 'fail') out(` \u00d7 ${r.name}\n${(r.error ?? '').split('\n').map((l) => `     ${l}`).join('\n')}\n`);
         else if (verbose) out(` ${r.status === 'pass' ? '\u2713' : '-'} ${r.name}${r.status === 'pass' ? ` (${r.ms}ms)` : ` (${r.status})`}\n`);

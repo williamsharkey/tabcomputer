@@ -90,14 +90,17 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
  * source as edited, in fresh module instances. Their IndexedDB and
  * localStorage go to the runner's isolated stand-ins (`__tcTestEnv`), never
  * the page's. `vitest` is the runner's API; `@shiro/x` is src/x; npm imports
- * are the page's live ones where it has them; node:path and node:os are the
- * runner's; anything else (node:fs, ...) throws when used.
+ * are the page's live ones where it has them; node:path, node:os, node:fs (in
+ * memory over a snapshot, test-fs.ts), node:url, node:buffer and node:process are the
+ * runner's; anything else (node:child_process, ...) throws when used.
  */
 export async function buildTest(fs: HotswapFs, opts: TestBuildOptions): Promise<BuildResult> {
   return bundle(fs, { ...opts, files: [] }, opts.file);
 }
 
 const TEST_GLOBALS = ['indexedDB', 'localStorage', 'sessionStorage'];
+/** node's globals the page lacks, given to the tests' own files (test-fs.ts) */
+const NODE_GLOBALS = ['Buffer', 'process'];
 
 async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null): Promise<BuildResult> {
   const root = normalize(opts.root);
@@ -163,6 +166,9 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
           if (query === 'raw') return { path: abs, namespace: 'hs-raw' };
           // A Worker or asset URL: the page's own, which the plugin registers
           const qkey = `${keyOf(abs)}?${query}`;
+          // The page registers it when the importing module loads: load a lazy importer the page's way
+          const importer = keyOf(args.importer);
+          if (!live.has(qkey) && importer && loaders.has(importer)) await loaders.get(importer)!().catch(() => {});
           if (live.has(qkey)) return { path: qkey, namespace: 'hs-live' };
           if (testPath) return { path: args.path, namespace: 'hs-stub' };
           return { errors: [{ text: `${args.path}: Vite's ?${query} imports can't be built in the tab and the page doesn't have this one; keep it outside the swap set` }] };
@@ -206,6 +212,18 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
         const p = args.path;
         const loader = p.endsWith('.tsx') ? 'tsx' : p.endsWith('.ts') ? 'ts' : p.endsWith('.json') ? 'json' : 'js';
         let contents = await fs.readFile(p);
+        // The tests' own files (src/ is built as for the page): import.meta.url is the file's, as under
+        // node (new URL('./fixtures/x', import.meta.url)), and they get node's Buffer and process globals
+        const testOwn = testPath && loader !== 'json' && !p.startsWith(`${root}/src/`);
+        if (testOwn) contents = contents.replace(/\bimport\.meta\.url\b/g, JSON.stringify(`file://${p}`));
+        if (testOwn) {
+          for (const g of NODE_GLOBALS) {
+            if (new RegExp(`\\b${g}\\b`).test(contents) &&
+                !new RegExp(`(\\bimport\\b[^;]*\\b${g}\\b[^;]*\\bfrom\\b|\\b(const|let|var|class|function)\\s+${g}\\b)`).test(contents)) {
+              contents = `var ${g} = globalThis.__tcTestNode.${g};\n${contents}`;
+            }
+          }
+        }
         const key = keyOf(p);
         if (!testPath && !opts.freshState && key && swapSet.has(key) && loader !== 'json') contents = carryState(contents, key).code;
         return { contents, loader, resolveDir: dirOf(p) };

@@ -232,13 +232,13 @@ folder has the details and the measured scoreboards. Where things live:
 - prebuilt packages: \`src/pkg-index.json\`, recipes in \`scripts/pkgbuild/\`
 
 To change ${name} itself from here, without a reload: \`hotswap checkout\` puts
-this build's own source (src/, the vitest suites) in ~/shiro. Edit it, then
+this build's own source (src/, the vitest suites) in ~/tabcomputer. Edit it, then
 \`hotswap apply src/shell.ts\` swaps the change into this running tab. It
 reverts by itself after 90 s unless you run \`hotswap confirm\`, so a broken
 shell fixes itself. \`hotswap test shell-posix\` runs a suite here, and
 \`hotswap push BRANCH -m MSG\` pushes the changes as a new branch of
 williamsharkey/tabcomputer (your own \`gh auth login\` account; never main).
-~/shiro/docs/HOTSWAP.md says what can and can't be swapped.
+~/tabcomputer/docs/HOTSWAP.md says what can and can't be swapped.
 
 ## Known issues
 

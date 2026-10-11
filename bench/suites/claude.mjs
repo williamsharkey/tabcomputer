@@ -163,7 +163,9 @@ const echoKeys = (h, keys, gapMs, limitMs, profile = false) => h.eval(async ([ke
   const stages = () => {
     if (!prof) return null;
     const keys = (kernel.stopProfile()?.keys ?? []).filter((k) => k.readMs >= 0);
-    return keys.map((k) => ({ read: k.readMs, compute: k.firstWriteMs }));
+    // echoMs (newer builds): the read → the first write holding the key's bytes, i.e. the echo
+    // itself; firstWriteMs: → the first write of any kind
+    return keys.map((k) => ({ read: k.readMs, compute: k.echoMs >= 0 ? k.echoMs : k.firstWriteMs, exact: k.echoMs >= 0 }));
   };
   const out = [];
   let typed = '';
@@ -245,7 +247,7 @@ async function round(h, add, mock, { cold, build }) {
     // one trace entry per key typed: the rest of each echo is the write → xterm → the match
     if (e.stages?.length === e.out.length) {
       e.stages.forEach((st, i) => {
-        add('echo.stage.read', st.read); add('echo.stage.compute', st.compute);
+        add('echo.stage.read', st.read); add('echo.stage.compute', st.compute); add('echo.stage.exact', st.exact ? 1 : 0);
         add('echo.stage.render', e.out[i].parsed - st.read - st.compute);
       });
     } else if (e.stages) h.log(`    echo stages: ${e.stages.length} traced keys for ${e.out.length} typed; not recorded`);
@@ -358,7 +360,10 @@ async function measureBuild(h, build, mock, rounds) {
   percentiles(h, `${pre}.echo`, R.echo, `key → its echo on the input line, ${ECHO_KEYS.length} keys ${ECHO_GAP_MS} ms apart after each echo, from ${SETTLE_MS / 1000} s after the prompt`);
   percentiles(h, `${pre}.echo.frame`, R['echo.frame'], 'key → the painted frame showing it');
   percentiles(h, `${pre}.echo.stage.read`, R['echo.stage.read'], "stage 1 of the same keys (kernel pty trace, Build 975+): pty input → Claude's read of it");
-  percentiles(h, `${pre}.echo.stage.compute`, R['echo.stage.compute'], 'stage 2: that read → its first write to the pty');
+  const exact = R['echo.stage.exact']?.every((x) => x === 1);
+  percentiles(h, `${pre}.echo.stage.compute`, R['echo.stage.compute'], exact
+    ? "stage 2: that read → the pty write holding the key (the echo; the trace's echoMs)"
+    : "stage 2: that read → Claude's first write to the pty (the trace's firstWriteMs; builds before echoMs)");
   percentiles(h, `${pre}.echo.stage.render`, R['echo.stage.render'], 'stage 3: the rest of the echo, from that first write to the input line matched (xterm parse, and any later writes when the first one was not the echo)');
   S('echo_burst.total', 'ms', `${ECHO_BURST.length} keys typed at once → the last echoed`);
   S('echo_burst.total.frame', 'ms', 'same, painted');

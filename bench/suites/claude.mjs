@@ -36,11 +36,11 @@ const ECHO_BURST = 'zyxwvutsrq';
 const PROMPT_RE = /for shortcuts|shift\+tab to cycle|\? for|Try "/;
 const ENV = (url) => `ANTHROPIC_BASE_URL=${url} ANTHROPIC_API_KEY=${FAKE_KEY} DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 DISABLE_ERROR_REPORTING=1`;
 
-/** Claude's config: onboarding done, the key approved, ~/w trusted (no dialogs at start). */
+/** Claude's config: onboarding done, the key approved, ~/w trusted and its CLAUDE.md imports allowed (no dialogs at start). */
 const claudeJson = (home, cwd) => JSON.stringify({
   hasCompletedOnboarding: true, theme: 'dark', lastOnboardingVersion: '9.9.9',
   customApiKeyResponses: { approved: [FAKE_KEY.slice(-20)], rejected: [] },
-  projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, allowedTools: [] } },
+  projects: { [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, hasClaudeMdExternalIncludesApproved: true, hasClaudeMdExternalIncludesWarningShown: true, allowedTools: [] } },
 });
 
 // In-page helpers, installed once per page: window.__cn
@@ -71,8 +71,49 @@ const install = (h) => h.eval(() => {
   window.__cn = { screen, until, T };
 });
 
+/**
+ * Runs `fn` (a page.evaluate) while checking every 15 s that the page still
+ * answers. After 60 s without an answer the main thread is frozen: pause it
+ * through CDP, log its stack (and the watchdog's), and fail instead of hanging.
+ */
+async function guarded(h, label, fn) {
+  let frozen = null;
+  let stop = false;
+  const t0 = Date.now();
+  const watch = (async () => {
+    let missed = 0;
+    while (!stop) {
+      await new Promise((r) => setTimeout(r, 15000));
+      if (stop) return;
+      const t = Date.now();
+      const tail = await Promise.race([h.page.evaluate(() => window.__cn?.screen().split('\n').filter((l) => l.trim()).slice(-6).join(' | ').slice(-300) ?? '').catch(() => ''), new Promise((r) => setTimeout(() => r(null), 5000))]);
+      missed = tail !== null ? 0 : missed + 1;
+      if (process.env.BENCH_VERBOSE) h.log(`    [${label} +${Math.round((t - t0) / 1000)} s, ${tail === null ? 'no answer in 5 s' : `answered in ${Date.now() - t} ms`}] ${tail ?? ''}`);
+      if (missed >= 4) {
+        let stack = '(no stack)';
+        try {
+          const within = (p, ms, what) => Promise.race([p, new Promise((_, j) => setTimeout(() => j(new Error(`${what}: no reply in ${ms} ms`)), ms))]);
+          const cdp = await within(h.page.context().newCDPSession(h.page), 10000, 'CDP session');
+          await within(cdp.send('Debugger.enable'), 10000, 'Debugger.enable');
+          const paused = new Promise((r) => cdp.once('Debugger.paused', r));
+          await within(cdp.send('Debugger.pause'), 10000, 'Debugger.pause');
+          const ev = await Promise.race([paused, new Promise((r) => setTimeout(() => r(null), 10000))]);
+          stack = ev ? ev.callFrames.slice(0, 25).map((f) => `  ${f.functionName || '(anon)'} ${f.url.split('/').pop()}:${f.location.lineNumber + 1}:${f.location.columnNumber + 1}`).join('\n') : '(pause did not take: blocked outside JS?)';
+          await cdp.send('Debugger.resume').catch(() => {});
+        } catch (e) { stack = `(pause failed: ${e.message})`; }
+        h.log(`    ${label}: page frozen for 60 s; main thread:\n${stack}`);
+        frozen = new Error(`${label}: the page froze (main thread stack logged)`);
+        return;
+      }
+    }
+  })();
+  try {
+    return await Promise.race([fn(), watch.then(() => { if (frozen) throw frozen; return new Promise(() => {}); })]);
+  } finally { stop = true; }
+}
+
 /** Starts `claude` in ~/w and waits for the first output and the idle prompt. */
-const startClaude = (h, cmd, limitMs) => h.eval(async ([cmd, limitMs, promptSrc]) => {
+const startClaude = (h, cmd, limitMs) => guarded(h, 'claude start', () => h.eval(async ([cmd, limitMs, promptSrc]) => {
   const { until, screen, T } = window.__cn;
   const PROMPT = new RegExp(promptSrc);
   T.input(cmd, true); // the command line without its Enter: the shell echoes it
@@ -94,7 +135,7 @@ const startClaude = (h, cmd, limitMs) => h.eval(async ([cmd, limitMs, promptSrc]
   }, limitMs);
   const r = await p;
   return { firstScreen, prompt: r, screen: screen() };
-}, [cmd, limitMs, PROMPT_RE.source]);
+}, [cmd, limitMs, PROMPT_RE.source]));
 
 /** Types `keys` one at a time, waiting for each echo; [{ parsed, frame }]. */
 const echoKeys = (h, keys, gapMs, limitMs) => h.eval(async ([keys, gapMs, limitMs]) => {
@@ -135,7 +176,8 @@ async function round(h, add, mock, { cold }) {
   const cmd = `cd ~/w && ${ENV(mock.url)} claude --native`;
   const tag = cold ? 'cold' : 'warm';
   const s = await startClaude(h, cmd, 600000);
-  if (!s.prompt) throw new Error(`${tag} start: no prompt in 600 s (mock saw ${mock.calls()} calls: ${mock.paths.slice(-5).join(', ')}): ${s.screen.slice(-800)}`);
+  if (!s.prompt) h.log(`    ${tag} start screen:\n${s.screen.trimEnd()}`);
+  if (!s.prompt) throw new Error(`${tag} start: no prompt in 600 s (mock saw ${mock.calls()} calls: ${mock.paths.slice(-5).join(', ')}): ${s.screen.trimEnd().split('\\n').slice(-12).join(' | ').slice(-1200)}`);
   if (s.firstScreen) add(`start.${tag}.first_screen`, s.firstScreen.parsed);
   add(`start.${tag}.prompt`, s.prompt.parsed); add(`start.${tag}.prompt.frame`, s.prompt.frame);
   await h.page.waitForTimeout(1500); // let startup work (MCP, hooks) settle
@@ -192,6 +234,7 @@ export async function run(h) {
     return;
   }
   if (!h.mockModel) { h.skip('claude_native.start.cold.prompt', 'ms', 'no mock model server (needs a non-loopback address on this machine)'); return; }
+  if (!h.wantsAny('claude_native', 'claude_native.start.cold.prompt', 'claude_native.echo.p50')) return;
   const mock = h.mockModel;
   const rounds = h.quick ? 1 : Math.min(h.runs, 3);
   const R = {};
@@ -201,6 +244,8 @@ export async function run(h) {
       await h.page?.context().close().catch(() => {});
       await h.boot({ path: '/?ui=terminal' });
       await h.page.context().route((u) => u.href.startsWith(mock.url), (r) => r.continue());
+      for (const ev of ['crash', 'close', 'popup', 'dialog']) h.page.on(ev, (x) => h.log(`    page ${ev}${x?.url ? `: ${x.url()}` : ''}${x?.message ? `: ${x.message()}` : ''}`));
+      h.page.on('framenavigated', (f) => { if (f === h.page.mainFrame()) h.log(`    page navigated: ${f.url()}`); });
       await h.eval(async (json) => {
         await window.__bench.fetchInto('/__bench/claude-native', '/home/user/.local/bin/claude');
         await window.__bench.fetchInto('/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1');
@@ -210,7 +255,7 @@ export async function run(h) {
       await install(h);
       await round(h, add, mock, { cold: true });
       await round(h, add, mock, { cold: false });
-    });
+    }, { force: true });
   }
   const S = (key, unit, notes) => { if (R[key]?.length) h.sample(`claude_native.${key}`, R[key], unit, { notes }); };
   const P = (key, notes) => {

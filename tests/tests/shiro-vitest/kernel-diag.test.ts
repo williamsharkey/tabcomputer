@@ -56,6 +56,20 @@ describe('kernel diagnostics', () => {
     expect(p.engineLock).toEqual({ holder: 6, waiters: 1, acquires: 40 });
   });
 
+  it('joins a blocked thread to the state of the fds it waits on', async () => {
+    const pair = new NetStack().socketpair();
+    if (typeof pair === 'number') throw new Error(`socketpair: ${pair}`);
+    const [a, b] = pair;
+    await b.write(new TextEncoder().encode('waiting'));
+    g.__tabcomputerKernel = {
+      procs: new Map([[5, { pid: 5, argv: ['claude'], calls: [], startTime: Date.now(), fds: { entries: () => [[13, a]] } }]]),
+      threadStates: () => [{ tid: 5, state: 'S', nr: 232, args: [3], sinceMs: 9000, waitKind: 'epoll', fd: 3, fds: [13] }, { tid: 6, state: 'R', waitKind: '' }],
+    };
+    const p: any = (kernelDiagnostics() as any).procs[0];
+    expect(p.threads[0].blockedOn).toEqual([expect.objectContaining({ fd: 13, kind: 'socket', rxLen: 7 })]);
+    expect(p.threads[1].blockedOn).toBeUndefined();
+  });
+
   it('is null without a kernel', () => {
     g.__tabcomputerKernel = undefined;
     expect(kernelDiagnostics()).toBeNull();

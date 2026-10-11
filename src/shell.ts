@@ -1391,6 +1391,10 @@ export class Shell {
     // ...and its own options; readonly is not passed on either
     this.options = new Set(DEFAULT_OPTIONS);
     this.shoptopts = new Set(SHOPT_DEFAULTS);
+    // and set -e applies again: the caller being in `CMD && …` or an if condition
+    // doesn't carry over (`true && bash -e s.sh` ran past a failure)
+    this.errexitSuppressed = 0;
+    this.failureIgnored = false;
     this.readonlyVars = new Set();
     // A shell starts with the default IFS, whatever its environment says (POSIX 2.5.3)
     this.env.IFS = ' \t\n';
@@ -6529,7 +6533,10 @@ export class Shell {
         if (ch === '}') {
           // Its } ends a command list (`{ echo }; }`: the first } is an argument)
           const before = current.replace(/[ \t]+$/, '');
-          const closes = /(^|[;&\n{}]|\bdone|\bfi|\besac)$/.test(before) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
+          // After a { or } only when that is a word of its own, apart from this one
+          // (`{ find . -exec echo {} \; ; }`, `-I{}`: the {} is an argument)
+          const afterBrace = /\s/.test(line[i - 1] ?? '') && /(^|[\s;&|()])[{}]$/.test(before);
+          const closes = (afterBrace || /(^|[;&\n]|\bdone|\bfi|\besac)$/.test(before)) && /^($|[\s;&|)<>])/.test(line.slice(i + 1));
           if (braceDepth > 0 && closes) { depth--; braceDepth--; }
           current += ch; i++; continue;
         }
@@ -9332,7 +9339,8 @@ export class Shell {
       }
       const base = interp.slice(interp.lastIndexOf('/') + 1);
       if (base === 'node' || base === 'nodejs') {
-        return this.executeNodeScript(resolvedPath, content, args, ctx, writeStdout, writeStderr);
+        // (node's own options on the line: `#!/usr/bin/env -S node --no-warnings`)
+        return this.executeNodeScript(resolvedPath, content, args, ctx, writeStdout, writeStderr, interpArgs);
       } else if ((base === 'sh' || base === 'bash') && !packageShadows(this.fs).has(base)) {
         return this.executeShellScript(content, args, ctx, writeStdout, writeStderr, filePath);
       }
@@ -9455,6 +9463,7 @@ export class Shell {
     ctx: CommandContext,
     writeStdout: (s: string) => void,
     writeStderr: (s: string) => void,
+    nodeOptions: string[] = [],
   ): Promise<number> {
     // Use the existing 'node' command with the script path
     const nodeCmd = this.commands.get('node');
@@ -9469,7 +9478,7 @@ export class Shell {
 
     // The command's own context, as `node FILE` gets it: its redirects and pipes (stdoutIsTTY,
     // streamStdout…) with it; `./x.js > out` wrote to the terminal while the shell had one
-    ctx.args = [filePath, ...args];
+    ctx.args = [...nodeOptions, filePath, ...args];
     // and its output as it comes, to the writers this command has (a server never ends:
     // vite's dev server under `npm run dev` printed nothing)
     ctx.streamStdout ??= (t) => writeStdout(t.replace(/\r?\n/g, '\r\n'));
@@ -9900,15 +9909,18 @@ function compoundEnd(cmd: string): number {
     while (j < cmd.length && !/[\s;&|()'"\\]/.test(cmd[j])) j++;
     if (j === i) j = i + 1;
     const word = cmd.slice(i, j);
+    let closed = false;
     if (paren === 0 && cmdPos) {
       if (OPEN[word]) blocks.push(OPEN[word]);
       else if (word === '{') blocks.push('}');
       else if (blocks.length && word === blocks[blocks.length - 1]) {
         blocks.pop();
         if (!blocks.length) return j;
+        closed = true;
       }
     }
-    cmdPos = ['do', 'then', 'else', 'elif', '{', '!', 'if', 'while', 'until', 'time'].includes(word);
+    // (after a compound's closing word another can follow: `{ { echo; } }`, `fi }`)
+    cmdPos = closed || ['do', 'then', 'else', 'elif', '{', '!', 'if', 'while', 'until', 'time'].includes(word);
     i = j;
   }
   return -1;

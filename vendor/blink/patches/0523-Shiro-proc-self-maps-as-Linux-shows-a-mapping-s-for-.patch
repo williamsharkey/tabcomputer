@@ -1,0 +1,110 @@
+From e2d5ef9849a5c3f51fdf9c51ae2127f0b5a09f62 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 05:32:58 +0000
+Subject: [PATCH] Shiro: /proc/self/maps as Linux shows a mapping: 's' for
+ MAP_SHARED, split from a private neighbor, and '-w' for PROT_WRITE without
+ PROT_READ (LTP mmap04)
+
+---
+ blink/machine.h      | 6 ++++++
+ blink/memorymalloc.c | 5 ++++-
+ blink/shiro.inc      | 9 ++++++---
+ blink/syscall.c      | 1 +
+ 4 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/blink/machine.h b/blink/machine.h
+index 0d7fdbf..3f77270 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -116,6 +116,12 @@
+ // SharedArrayBuffer; the host page is this instance's shadow of them,
+ // refreshed and written back around each access (shiro.inc)
+ #define PAGE_REMOTE 0x0001000000000000
++// Shiro: a page of a MAP_SHARED mapping (the x86 dirty bit, which Blink
++// doesn't keep): /proc/self/maps prints its mapping with 's'
++#define PAGE_SHRD 0x0000000000000040
++// Shiro: mapped PROT_WRITE without PROT_READ (the x86 accessed bit): x86
++// reads such a page all the same, but /proc/self/maps prints it "-w"
++#define PAGE_WO 0x0000000000000020
+ #define SHIRO_STASH_REMOTE 1  // m->stashaddr: only remote pages to write back
+ 
+ #define SREG_ES 0
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index fc59f82..278e917 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -1023,6 +1023,8 @@ i64 ReserveVirtual(struct System *s, i64 virt, i64 size, u64 flags, int fd,
+   unassert(!(flags & PAGE_RSRV));
+   unassert(s->mode.omode == XED_MODE_LONG);
+ 
++  if (shared) flags |= PAGE_SHRD;
++
+   // determine memory protection
+   prot = GetProtection(flags);
+   sysprot = DetermineHostProtection(prot);
+@@ -1346,6 +1348,7 @@ u64 SetProtection(int prot) {
+   if (prot & PROT_READ) key |= PAGE_U;
+   // (x86 has no write-only pages: PROT_WRITE is readable too, as mmap's Prot2Page)
+   if (prot & PROT_WRITE) key |= PAGE_RW | PAGE_U;
++  if ((prot & (PROT_READ | PROT_WRITE)) == PROT_WRITE) key |= PAGE_WO;
+   if (~prot & PROT_EXEC) key |= PAGE_XD;
+   return key;
+ }
+@@ -1466,7 +1469,7 @@ int ProtectVirtual(struct System *s, i64 virt, i64 size, int prot,
+         }
+         if (!hostonly) {
+           for (;;) {
+-            pt2 = (pt & ~(PAGE_U | PAGE_RW | PAGE_XD)) | key;
++            pt2 = (pt & ~(PAGE_U | PAGE_RW | PAGE_XD | PAGE_WO)) | key;
+             if (pt & PAGE_COW) {  // still shared: writable means copy on write
+               pt2 &= ~(PAGE_RW | PAGE_COWRW);
+               if (key & PAGE_RW) pt2 |= PAGE_COWRW;
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 2389212..446e2fb 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -600,15 +600,18 @@ struct ShiroMaps {
+   int nstarts;
+ };
+ 
++EMSCRIPTEN_KEEPALIVE int blink_shiro_mapsperm(void) { return 1; }
++
+ static void ShiroMapsEnd(struct ShiroMaps *u, i64 end) {
+   int k;
+   if (!u->on) return;
+   u->on = false;
+   if (u->cap - u->n < 400) return;  // the pipe's capacity: drop the rest
+   k = snprintf(u->b + u->n, u->cap - u->n,
+-               "%08" PRIx64 "-%08" PRIx64 " %c%c%cp %08" PRIx64 " 00:00 0",
+-               u->start, end, (u->flags & PAGE_U) ? 'r' : '-',
++               "%08" PRIx64 "-%08" PRIx64 " %c%c%c%c %08" PRIx64 " 00:00 0",
++               u->start, end, (u->flags & (PAGE_U | PAGE_WO)) == PAGE_U ? 'r' : '-',
+                (u->flags & (PAGE_RW | PAGE_COWRW)) ? 'w' : '-', (u->flags & PAGE_XD) ? '-' : 'x',
++               (u->flags & PAGE_SHRD) ? 's' : 'p',
+                u->fm && u->fm->offset > 0 ? u->fm->offset + (u->start - u->fm->virt) : 0);
+   u->n += k;
+   if (u->fm && u->fm->path) {  // Linux pads the name to column 73
+@@ -619,7 +622,7 @@ static void ShiroMapsEnd(struct ShiroMaps *u, i64 end) {
+ }
+ 
+ static void ShiroMapsPage(struct System *s, struct ShiroMaps *u, i64 addr, u64 entry) {
+-  u64 flags = entry & (PAGE_U | PAGE_RW | PAGE_XD | PAGE_COWRW);
++  u64 flags = entry & (PAGE_U | PAGE_RW | PAGE_XD | PAGE_COWRW | PAGE_SHRD | PAGE_WO);
+   int i;
+   if (u->on && (flags != u->flags || addr >= u->limit)) ShiroMapsEnd(u, addr);
+   if (!u->on) {
+diff --git a/blink/syscall.c b/blink/syscall.c
+index fe596f3..9c9afc9 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -1486,6 +1486,7 @@ static u64 Prot2Page(int prot) {
+   if (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) return einval();
+   if (prot & PROT_READ) key |= PAGE_U;
+   if (prot & PROT_WRITE) key |= PAGE_RW | PAGE_U;
++  if ((prot & (PROT_READ | PROT_WRITE)) == PROT_WRITE) key |= PAGE_WO;
+   if (~prot & PROT_EXEC) key |= PAGE_XD;
+   return key;
+ }
+-- 
+2.43.0
+

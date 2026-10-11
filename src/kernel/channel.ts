@@ -787,6 +787,12 @@ export class KernelChannel {
     return false;
   }
 
+  /** Tell an attached profiler which thread the next kernel entry is from */
+  private profTid(p: Process): void {
+    const prof = this.kernel.profiler;
+    if (prof) prof.tid = this.recordFor(p).tid;
+  }
+
   /** The thread record a call on this channel goes to: a hosted child's own (its tid is its pid) */
   private recordFor(p: Process): ThreadInfo {
     return p === this.proc ? this.thread : p.thread(p.pid);
@@ -880,7 +886,8 @@ export class KernelChannel {
     this.busy = true;
     let r: number | undefined;
     try {
-      r = nr === A.SYS_gettid ? (p === this.proc ? this.tid : p.pid) : this.kernel.syscallSync(p, nr, this.loadArgs(), this.data);
+      if (nr === A.SYS_gettid) r = p === this.proc ? this.tid : p.pid;
+      else { this.profTid(p); r = this.kernel.syscallSync(p, nr, this.loadArgs(), this.data); }
     } finally {
       this.busy = false;
     }
@@ -915,6 +922,7 @@ export class KernelChannel {
     let result: number | undefined;
     this.asyncCall = true;
     try {
+      this.profTid(p);
       result = await this.kernel.syscall(p, nr, args, this.data);
     } finally {
       this.asyncCall = false;
@@ -947,7 +955,7 @@ export class KernelChannel {
       let off = () => {};
       // Blocked: the process is in a syscall for /proc (S, syscall, wchan) and its kernel
       // time, as kernel.syscall counts its calls (a fallback goes there and counts itself)
-      let t0 = 0;
+      let t0 = 0, pt0 = 0;
       const call = { nr, args };
       const leave = () => {
         if (!t0) return;
@@ -956,6 +964,7 @@ export class KernelChannel {
         if (ms >= 2) proc.kernelMs += ms;
         const i = proc.calls.indexOf(call);
         if (i >= 0) proc.calls.splice(i, 1);
+        this.kernel.profiler?.blocked(proc, nr, performance.now() - pt0);
         t0 = 0;
       };
       const end = (r: number | undefined, fallback = false) => {
@@ -966,6 +975,7 @@ export class KernelChannel {
         sig.removeEventListener('abort', onAbort);
         if (!fallback) { this.finish(r); resolve(); return; }
         this.asyncCall = true;
+        this.profTid(proc);
         void this.kernel.syscall(proc, nr, args, this.data).then(
           res => { this.asyncCall = false; this.finish(res); },
           () => { this.asyncCall = false; this.finish(undefined); }).finally(resolve);
@@ -981,6 +991,7 @@ export class KernelChannel {
           do {
             again = false;
             if (this.stopped || proc.exiting) { end(undefined); return; }
+            this.profTid(proc);
             const r = this.kernel.syscallSync(proc, nr, args, this.data);
             if (r !== undefined) { end(r); return; }
             // Not ready, or something only the full path handles
@@ -997,6 +1008,7 @@ export class KernelChannel {
       attempt();
       if (!done) {
         t0 = Date.now();
+        pt0 = performance.now();
         if (proc.inSyscall++ === 0) proc.syscallSince = t0;
         proc.calls.push(call);
       }

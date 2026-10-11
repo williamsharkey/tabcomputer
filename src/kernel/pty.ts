@@ -198,6 +198,15 @@ const utf8 = new TextEncoder();
 interface CanonLine { data: number[]; }
 interface Who { caller?: SignalTarget; abort?: AbortSignal }
 
+/** Keystroke timing for the kernel profiler (profiler.ts): input, the slave's reads and writes */
+export interface PtyTrace {
+  input(pty: Pty, n: number): void;
+  read(pty: Pty, n: number): void;
+  write(pty: Pty, n: number): void;
+}
+let ptyTrace: PtyTrace | null = null;
+export function setPtyTrace(t: PtyTrace | null): void { ptyTrace = t; }
+
 export class Pty {
   readonly index = nextPtyIndex++;
   readonly jc: JobControl;
@@ -394,6 +403,7 @@ export class Pty {
   // ── line discipline (input) ──
 
   private receive(bytes: Uint8Array): void {
+    ptyTrace?.input(this, bytes.length);
     const t = this.termios;
     const cc = t.cc;
     const lflag = t.lflag;
@@ -687,6 +697,7 @@ export class Pty {
     if (n === line.data.length) this.lines.shift();
     else line.data = line.data.slice(n);
     this.notifyReady();
+    ptyTrace?.read(this, n);
     return n;
   }
 
@@ -695,6 +706,7 @@ export class Pty {
     for (let i = 0; i < n; i++) buf[i] = this.rawq[i];
     this.rawq.splice(0, n);
     this.notifyReady();
+    ptyTrace?.read(this, n);
     return n;
   }
 
@@ -752,6 +764,7 @@ export class Pty {
     }
     if (this.hungUp) return -EIO;
     this.trackScreenModes(buf);
+    ptyTrace?.write(this, buf.length);
     this.output(buf);
     return buf.length;
   }

@@ -99,12 +99,13 @@ function workerPath(xs: XServer | null): boolean {
 /**
  * The executor in a Worker (worker.ts). Frames come back as ImageBitmaps and
  * go into the window's GL surface (a `bitmaprenderer` canvas over it), so
- * there is no readback; the window's own pixels stay what X drew. The page
+ * there is no readback; the window's own pixels stay what X drew, and
+ * XGetImage reads the frame from the surface when asked. The page
  * tells the Worker each window's size, from its surface.
  */
 function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Backend {
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'glshiro' });
-  const surfaces = new Map<number, { surface: GLSurface; ctx: ImageBitmapRenderingContext | null; unsub: (() => void)[] }>();
+  const surfaces = new Map<number, { surface: GLSurface; unsub: (() => void)[] }>();
   let commands = 0, frames = 0, broken = false;
   /** made current before the window could take a surface (not mapped yet, say): tried again on each batch and frame */
   const pending = new Set<number>();
@@ -113,7 +114,7 @@ function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Bac
     if (surfaces.has(xid)) return null;
     let surface: GLSurface;
     try { surface = xs.glSurface(xid); } catch { return null; } // a pbuffer or pixmap: the Worker sizes it
-    const entry = { surface, ctx: null as ImageBitmapRenderingContext | null, unsub: [] as (() => void)[] };
+    const entry = { surface, unsub: [] as (() => void)[] };
     entry.unsub.push(surface.onChange(() => worker.postMessage({ type: 'sizes', sizes: [[xid, sizeOf(surface)]] })));
     entry.unsub.push(surface.onDestroy(() => { forget(xid); worker.postMessage({ type: 'sizes', sizes: [[xid, null]] }); }));
     surfaces.set(xid, entry);
@@ -132,11 +133,7 @@ function createWorkerBackend(send: (data: Uint8Array) => void, xs: XServer): Bac
       case 'frame': {
         if (pending.has(m.xid!)) { const t = track(m.xid!); if (t) { pending.delete(m.xid!); worker.postMessage({ type: 'sizes', sizes: [t] }); } }
         const e = surfaces.get(m.xid!);
-        const canvas = e?.surface.canvas;
-        if (!e || !canvas) { m.bitmap!.close(); break; }
-        if (canvas.width !== m.bitmap!.width || canvas.height !== m.bitmap!.height) { canvas.width = m.bitmap!.width; canvas.height = m.bitmap!.height; }
-        e.ctx ??= canvas.getContext('bitmaprenderer');
-        if (e.ctx) e.ctx.transferFromImageBitmap(m.bitmap!); else m.bitmap!.close();
+        if (e) e.surface.present(m.bitmap!); else m.bitmap!.close();
         break;
       }
       case 'done': commands = m.commands!; frames = m.frames!; break;

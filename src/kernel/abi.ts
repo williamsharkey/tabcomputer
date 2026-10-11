@@ -42,6 +42,10 @@ export const LOCK_NB = 4;
 export const LOCK_UN = 8;
 export const SYS_fsync = 74;
 export const SYS_ftruncate = 77;
+export const SYS_fallocate = 285;
+export const FALLOC_FL_KEEP_SIZE = 1;
+export const FALLOC_FL_PUNCH_HOLE = 2;
+export const FALLOC_FL_ZERO_RANGE = 0x10;
 export const SYS_getcwd = 79;
 export const SYS_chdir = 80;
 export const SYS_rename = 82;
@@ -224,6 +228,8 @@ export const SYS_shiro_shmobj_unmap = 1021;
 export const SYS_shiro_shmobj_published = 1022;
 /** shiro_shmobj_map kind flag: remote from the first map (no publish round) */
 export const SHMOBJ_EAGER = 0x100;
+/** shiro_shmobj_map kind flag: map nothing, return the id of the fd's object if it has one (else ENOENT) */
+export const SHMOBJ_LOOKUP = 0x400;
 export const SYS_shmget = 29;
 export const SYS_shmat = 30;
 export const SYS_shmctl = 31;
@@ -340,6 +346,8 @@ export const O_CREAT = 0o100;
 export const O_EXCL = 0o200;
 export const O_NOCTTY = 0o400;
 export const O_TRUNC = 0o1000;
+/** Flags that only steer open() itself: Linux doesn't keep them in the description (F_GETFL, /proc/PID/fdinfo) */
+export const O_OPEN_ONLY = O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC;
 export const O_APPEND = 0o2000;
 export const O_NONBLOCK = 0o4000;
 export const O_DSYNC = 0o10000;

@@ -366,12 +366,16 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     const target = as ? kernel.procs.get(as) : proc;
     // A call the kernel can answer from memory (stat, fstat, getpid, pipe and
     // file I/O that needn't wait) skips the async path, as WASI guests' do
+    // (an attached profiler: which engine thread; a hosted child's calls are its own main thread's)
+    const prof = kernel.profiler;
+    if (prof) prof.tid = as ? 0 : tid;
     const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
     let result = fast;
     if (result === undefined) {
       const calls = tid && !as ? engineCalls(proc) : null;
       calls?.set(tid, { nr, since: Date.now(), args });
       try {
+        if (kernel.profiler) kernel.profiler.tid = as ? 0 : tid;
         result = target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
       } finally {
         calls?.delete(tid);

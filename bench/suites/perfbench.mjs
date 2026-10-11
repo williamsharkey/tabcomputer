@@ -12,7 +12,7 @@ export const ownPages = true;
 const ROWS = [
   ['syscall_basic', 'syscall basic -l 2000', 'µs', /([\d.]+) usecs\/op/, 'getppid() round trip'],
   ['sched_pipe', 'sched pipe -l 300', 'µs', /([\d.]+) usecs\/op/, 'two processes ping-ponging over two pipes, per round trip'],
-  ['mem_memcpy', 'mem memcpy -f default -s 32MB -l 4', 'GB/s', /([\d.]+) GB\/sec/, "glibc memcpy (perf's `default` function), 32 MB"],
+  ['mem_memcpy', 'mem memcpy -f default -s 32MB -l 4', 'GB/s', /([\d.]+) ([KMG])B\/sec/, "glibc memcpy (perf's `default` function), 32 MB"],
   ['sched_messaging', 'sched messaging -p -g 1 -l 20', 's', /Total time: ([\d.]+) \[sec\]/, 'hackbench: 1 group of 20 senders × 20 receivers (processes, pipes), 20 loops; total'],
 ];
 
@@ -39,7 +39,8 @@ export async function run(h) {
         const r = await sh(h, `perf bench ${args}`, 300);
         const m = re.exec(r.out);
         if (r.code !== 0 || !m) throw new Error(`${r.code === 124 ? 'timed out' : `exit ${r.code}`}: ${r.out.trim().split('\n').slice(-1)[0]?.slice(0, 160) ?? ''}`);
-        res.push(Number(m[1]));
+        // perf picks the prefix by size (561 MB/sec, 1.25 GB/sec): a second group is it, scaled to GB
+        res.push(Number(m[1]) * (m[2] ? { K: 1e-6, M: 1e-3, G: 1 }[m[2]] : 1));
       }
       h.sample(nm, res, unit, { notes: `\`perf bench ${args}\` (${version}) in Blink: ${what}` });
     });

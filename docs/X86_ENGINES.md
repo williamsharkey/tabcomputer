@@ -995,21 +995,6 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    native output, with the JIT on, with this off, and with the JIT off.
    Profiling harness: tests/tests/shiro-vitest/claude-native-profile.test.ts
    (opt-in, CLAUDE_NATIVE_BIN=...).
-118. Patch 0135: a host page keeps the index it first got in
-   `g_hostpages`; a hash maps page → index.
-   - TrackHostPage used to append a slot for every page allocation,
-     recycled pages included. AllocateAnonymousPage kept the entry
-     (index << 12) in a 32-bit `size_t`.
-   - A same-instance fork child's copies of its parent's file pages are
-     allocated anew for every fork. A process with thousands of mapped
-     file pages that forked often passed 2^20 slots. Entries then lost
-     their address bits, and Blink aborted ("pt & PAGE_V", "impossible
-     memory") or a child hung, its parent waiting forever. Debian's
-     dracut-install, ldconfig and maintainer scripts hit it, at
-     mappings × forks ≈ 1 M pages.
-
-   Test: fixtures/x86/forkmaps.c (250 files of 96 KiB kept mapped, then
-   180 fork+exec).
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each

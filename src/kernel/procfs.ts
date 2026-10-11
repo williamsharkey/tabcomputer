@@ -158,6 +158,11 @@ export class ProcFs {
     return Math.max(0, end - p.startTime - p.kernelMs - Math.max(asleep, blocked));
   }
 
+  /** The system part of cpuMs: what the engine reported, at most the CPU time. */
+  static systemMs(p: Process, now = Date.now()): number {
+    return Math.min(p.systemMs, ProcFs.cpuMs(p, now));
+  }
+
   private live(): Process[] {
     return [...this.kernel.procs.values()].filter((p) => p.pid > 0).sort((a, b) => a.pid - b.pid);
   }
@@ -396,11 +401,11 @@ export class ProcFs {
   private pidStat(p: Process, tid?: number): string {
     const now = Date.now();
     const ticks = (ms: number) => Math.floor(ms / (1000 / HZ));
-    const cpu = ticks(ProcFs.cpuMs(p, now));
+    const cpu = ticks(ProcFs.cpuMs(p, now)), sys = Math.min(cpu, ticks(ProcFs.systemMs(p, now)));
     const { nr, tpgid } = this.ttyOf(p);
     const f = [
       tid ?? p.pid, `(${p.comm.slice(0, 15)})`, tid !== undefined ? this.threadLetter(p, tid) : this.stateLetter(p), p.ppid, p.pgid, p.sid, nr, tpgid,
-      0x400000, 0, 0, 0, 0, cpu, 0, 0, 0, 20, 0, threadIds(p).length, 0, ticks(p.startTime - bootMs),
+      0x400000, 0, 0, 0, 0, cpu - sys, sys, 0, 0, 20, 0, threadIds(p).length, 0, ticks(p.startTime - bootMs),
       0, 0, '18446744073709551615', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     return f.join(' ') + '\n';
@@ -735,7 +740,7 @@ export function syscallText(p: Process): string {
  */
 function fdInfo(f: OpenFile, cloexec: boolean): string {
   const pos = f.seek ? Math.max(0, f.seek(0, A.SEEK_CUR)) : 0;
-  let t = `pos:\t${pos}\nflags:\t0${((f.flags | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
+  let t = `pos:\t${pos}\nflags:\t0${(((f.flags & ~A.O_OPEN_ONLY) | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
   if (f instanceof InotifyFile) {
     for (const w of f.watches.values()) {
       t += `inotify wd:${w.wd} ino:${(fnv(w.path) >>> 0).toString(16)} sdev:1 mask:${(w.mask >>> 0).toString(16)} ignored_mask:0\n`;

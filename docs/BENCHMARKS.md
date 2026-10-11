@@ -47,7 +47,7 @@ back-to-back runs of 5 samples each (one value when they agree, else both) at 7c
 microbenchmarks are `pbench` (`tests/tests/shiro-vitest/fixtures/x86/pbench.c`,
 the x86 suite's `x86.blink.*` / `x86.native.*`). Debian's own `perf bench`
 (linux-perf 6.12) also runs in Blink, so its column lines up with published
-numbers (opt-in suite `perfbench`; one run each). WSL2/WSL3 are the
+numbers (opt-in suite `perfbench`; medians of 5, [run](../bench/results/bench-28-perfbench.json); memcpy from an earlier run). WSL2/WSL3 are the
 published figures that prompted this table (tonym.us, "WSL2 vs WSL3
 benchmarks": i5-8500T, 2 vCPUs, different sizes). They are reference
 points for the method, not same-machine comparisons.
@@ -56,17 +56,30 @@ any Linux, WSL included.
 
 | benchmark | tabcomputer (Blink) | Blink, direct channels | WASI guest | native (this VM) | Blink / native | `perf bench` in Blink | WSL2 / WSL3 (published) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 150 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
-| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 1000 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
-| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 8.1 s total, `-p -g 1 -l 20` (after Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
+| syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 117 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
+| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 775 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
+| messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 7.6 s total, `-p -g 1 -l 20` (Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
 | `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
 | `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
+| native Claude Code 2.1.296: `claude` → idle prompt | 40.6–43.9 s | — | — | 0.54 s | ~80× | — | — |
+| native Claude Code: key → echo on the input line (p50 / p90 / p99) | 189–204 / 231–266 ms / 1.6–1.8 s | — | — | 6.3 / 12.3 / 22–26 ms | ~30× (p50) | — | — |
 
 What each row measures:
 
+- **Native Claude Code** (opt-in suite `claude`, bench/README.md; two runs
+  of one round, [a](../bench/results/bench-27-claude-a.json),
+  [b](../bench/results/bench-27-claude-b.json), at 2e2e3c3). Anthropic's
+  linux-x64-musl build in Blink, typed at the real terminal of a fresh
+  profile, against a local mock Messages API; native is the same binary in a
+  pty on this VM. In the tab the start is 41–44 s whether or not the page has
+  run it before (the warm launch is no faster), the first key after the prompt
+  takes 2.8 s, a key 150 ms after the previous echo takes ~200 ms (a few take
+  1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
+  is 17 s. Native numbers stop at the pty, without a terminal emulator; in
+  the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to
@@ -89,8 +102,11 @@ What each row measures:
   Argument 0 must be convertible to a valid number"): its 40 processes in one
   Blink instance push wasm memory past 2 GiB, and pointers above that arrived
   negative in Blink's JS glue. Blink patch 0129 (unix/perf-blink 191817f4)
-  fixes it; the run then takes 8.1 s (perf-blink's Chromium run, not this
-  table's machine). `-g 2` (80 processes) still fails with fork(): ENOMEM,
+  fixes it; the run then takes 7.6 s on this table's machine (median of 5,
+  p90 7.9 s; [perfbench run](../bench/results/bench-28-perfbench.json) at
+  e02a65d with Blink 0129 from main; perf-blink's own Chromium run had 8.1 s).
+  The same run has `syscall basic` at 117 µs/op and `sched pipe` at
+  775 µs/op. `-g 2` (80 processes) still fails with fork(): ENOMEM,
   because same-instance children fill the 4 GiB wasm memory. That is a
   structural limit, and the reason the WSL figure (20 groups) has no
   tabcomputer counterpart.
@@ -368,6 +384,61 @@ baseline run **on the same machine** (the committed
 untouched kernel metrics differ by up to 2× against it). Kernel/net/x86
 metrics swing ±25% between identical runs here, so a flag on them was re-run
 3× alternating base/new before being called noise.
+
+### unix/perf-kernel, round 11: where native Claude Code spends its time, from the kernel
+
+`node bench/claude-profile.mjs --keys 30` (native Claude Code 2.1.296,
+linux-x64-musl in Blink, headless Chromium in this container; API key,
+onboarding done, a local stand-in for api.anthropic.com). Kernel profiler
+(src/kernel/profiler.ts, the same report as `strace -c`), two runs:
+
+| | run A | run B |
+|---|---:|---:|
+| startup: `claude` → input box | 46.6 s | 46.6 s |
+| kernel CPU during startup | 201 ms | 205 ms |
+| syscalls during startup | 2899 | 2897 |
+| keypress → character drawn (median / p90) | 238 / 446 ms | 337 / 669 ms |
+| per key: pty input → guest's read (median) | 7.1 ms | 44.0 ms |
+| per key: read → first write back (median) | 227 ms | 234 ms |
+| per key: syscalls, kernel time | 17.5, 1.6 ms | 16.0, 1.6 ms |
+
+- The kernel is not where the time goes: under 0.5% of startup is kernel
+  CPU, and about 1.6 ms of each ~240 ms keystroke is kernel time. The
+  page's main thread is 84% idle during startup and 93% idle while typing
+  (CPU profile). The rest is the guest computing in Blink: ~230 ms of
+  compute per keystroke (JSC without its JIT) before the first byte comes back.
+- In-kernel wall time at startup (17.5 s) is mostly 9–10 `poll(1 fd, -1)`
+  calls (one took 10.9 s): helper threads and children waiting, off the
+  critical path. Then 651 `pread64` calls read 508 MB (the 250 MB binary,
+  twice) in 0.45–0.48 s. Their pages are seldom cached, so the new pread64
+  sync path answers only 3% of them.
+- epoll_wait timeouts are Bun's timers (0 ms ×32, 19–530 ms); only one in
+  70 timed out while typing. The guest is woken by the pty input, not
+  by a timer. The pty input → read gap (7–44 ms median, up to 278 ms) is
+  the guest still busy with the previous key, not a missed wakeup.
+- Per key: 2 epoll_wait, 2 epoll_ctl, 3 reads of the pty (2 EAGAIN), 4–6
+  writes (~40 bytes to the pty, the rest 8-byte eventfd wakeups between Bun's threads),
+  openat/newfstatat of `~/.claude.json` and `~/.claude/ide`.
+
+Per engine thread (the profiler's thread table; time between one call's
+result and the thread's next call is the guest computing, or sleeping in
+the engine):
+
+- The main thread computes: 46.2 s of the 47.5 s startup is outside the
+  kernel (its max gap 0.7 s, between two pread64s of the binary). While typing it is
+  outside the kernel for 7.3 s of 8 s, a median 236 ms per keystroke, which is
+  the whole read → first write.
+- Threads 262144 and 262146 wake about once a second (write → openat:
+  the ~/.claude.json watchFile poll and ~/.claude/ide discovery). They do
+  little between calls, but their sleeps aren't reported: Blink's
+  shiro_sleeping (patch 0036) covers only the main thread.
+- ~/.claude.json is not touched per keystroke: newfstatat every ~1.0–1.4 s,
+  ~/.claude/ide openat in pairs every ~1.2 s, both also while idle. For
+  ~4.5 s after the input box appears, Claude saves ~/.claude.json about 6
+  times (lock mkdir/rmdir, backups, rewrite; 588 syscalls).
+
+The hooks cost nothing measurable while no profiler is attached: `node bench/ab.mjs
+a748c014 360b37b4 --suites kernel,x86 --rounds 6 --quick` gives all 32 metrics "same".
 
 ### go_nethttp +30%: patch 0053's emulator, not the kernel (unix/bench)
 

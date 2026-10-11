@@ -5,7 +5,8 @@ import * as esbuild from 'esbuild';
 import { HotswapManager, swapModules, isClass } from '@shiro/hotswap/swap';
 import { registerLive, liveModules, liveLoaders, liveImport, trackInstance, instancesOf } from '@shiro/hotswap/live';
 import { buildSwap, type HotswapFs } from '@shiro/hotswap/build';
-import { parseDuration } from '@shiro/commands/hotswap';
+import { parseDuration, suitesForChanges } from '@shiro/commands/hotswap';
+import { HotswapWatcher } from '@shiro/hotswap/watch';
 import { createTestShell, run } from './helpers';
 
 const repo = path.resolve(__dirname, '../../..');
@@ -230,6 +231,190 @@ function overlayFs(edits: Record<string, string>): HotswapFs {
   };
 }
 
+describe('hotswap watch', () => {
+  // A checkout whose src/greeter.ts and src/other.ts "build" to the source saved last
+  function setup(opts: { ttlMs?: number | null } = {}) {
+    const listeners = new Set<(e: string, p: string, n?: string) => void>();
+    const saved: Record<string, string> = {};
+    const builds: string[][] = [];
+    const fs = { onChange(fn: any) { listeners.add(fn); return () => listeners.delete(fn); } };
+    const save = (p: string, text: string) => { saved[p] = text; for (const fn of listeners) fn('write', p); };
+    const mgr = new HotswapManager();
+    const w = new HotswapWatcher({
+      fs, manager: mgr,
+      async build(files) {
+        builds.push(files.map((f) => f.slice(4)));
+        for (const f of files) if (saved[f]?.includes('SYNTAX')) throw Object.assign(new Error('build failed'), { errors: [{ text: 'Expected ";"', location: { file: `hs-src:${f}`, line: 3, column: 7 } }] });
+        return { code: JSON.stringify(files.map((f) => [f.slice(4), saved[f]])), hash: 'h', keys: files.map((f) => f.slice(4)), copied: [], needs: [], warnings: [] };
+      },
+      async evaluate(code) {
+        const out: Record<string, Record<string, unknown>> = {};
+        for (const [key, text] of JSON.parse(code) as [string, string][]) {
+          // eslint-disable-next-line no-new-func
+          out[key] = {
+            Greeter: new Function(`return class Greeter { greet() { return ${JSON.stringify(text)} + ' ' + this.name; } }`)(),
+            helper: new Function(`return ${JSON.stringify(text)}`),
+          };
+        }
+        return out;
+      },
+    }, { root: '/co', ttlMs: opts.ttlMs === undefined ? 60_000 : opts.ttlMs, debounceMs: 20 });
+    w.start();
+    return { w, mgr, save, builds, listeners };
+  }
+  let mgr: HotswapManager | null = null;
+  afterEach(() => { mgr?.revert(true); liveModules().delete('src/greeter.ts'); liveModules().delete('src/other.ts'); vi.useRealTimers(); });
+
+  it('debounces saves, swaps the module, and squashes each save into one record', async () => {
+    const live = makeLive();
+    registerLive('src/other.ts', { Greeter: class Greeter { greet() { return 'other'; } } });
+    const g = new live.Greeter('ada');
+    const t = setup();
+    mgr = t.mgr;
+    t.save('/co/src/greeter.ts', 'one');
+    t.save('/co/src/greeter.ts', 'two');
+    await t.w.idle();
+    expect(t.builds).toEqual([['src/greeter.ts']]);
+    expect(g.greet()).toBe('two ada');
+    expect(t.w.results[0].line).toMatch(/^✓ #\d+ src\/greeter\.ts \(Greeter \(1 members\)\): live \d+ ms after the save \(build \d+ ms\); reverts in 60s unless 'hotswap confirm'$/);
+
+    // the next save goes on top and is folded in: still one record, and the report names the changed method
+    t.save('/co/src/greeter.ts', 'three');
+    await t.w.idle();
+    expect(g.greet()).toBe('three ada');
+    expect(t.mgr.stack).toHaveLength(1);
+    // (helper is a free function: its importers keep the old one, and the line says so once it changes)
+    expect(t.w.results[0].line).not.toMatch(/helper/);
+    expect(t.w.results[1].line).toMatch(/src\/greeter\.ts \(Greeter\.greet; changed but not swapped \(importers keep the old one\): helper\)/);
+
+    // another file joins the same record
+    t.save('/co/src/other.ts', 'four');
+    await t.w.idle();
+    expect(t.mgr.stack).toHaveLength(1);
+    expect(t.mgr.stack[0].files.sort()).toEqual(['src/greeter.ts', 'src/other.ts']);
+    expect(t.mgr.stack[0].parts!.map((p) => p.files)).toEqual([['src/greeter.ts']]);
+
+    // a build error changes nothing
+    t.save('/co/src/greeter.ts', 'SYNTAX');
+    await t.w.idle();
+    expect(t.w.results[3].ok).toBe(false);
+    expect(t.w.results[3].line).toBe('✗ src/greeter.ts: src/greeter.ts:3:7: Expected ";"; the page keeps the code it had');
+    expect(g.greet()).toBe('three ada');
+
+    // one revert undoes the whole session
+    t.mgr.revert();
+    expect(g.greet()).toBe('hello ada');
+    expect(t.mgr.stack).toHaveLength(0);
+    t.w.stop();
+  });
+
+  it("ignores files a swap can't build, and stops", async () => {
+    const t = setup();
+    mgr = t.mgr;
+    for (const p of ['/co/tests/x.ts', '/co/src/types.d.ts', '/co/src/data.json', '/elsewhere/src/a.ts']) t.save(p, 'x');
+    await t.w.idle();
+    expect(t.builds).toEqual([]);
+    t.w.stop();
+    expect(t.listeners.size).toBe(0);
+    t.save('/co/src/greeter.ts', 'late');
+    await t.w.idle();
+    expect(t.builds).toEqual([]);
+  });
+
+  it('counts the TTL from the last save', async () => {
+    vi.useFakeTimers();
+    const live = makeLive();
+    const g = new live.Greeter('t');
+    const t = setup({ ttlMs: 1000 });
+    mgr = t.mgr;
+    t.save('/co/src/greeter.ts', 'a');
+    await vi.advanceTimersByTimeAsync(800);
+    expect(g.greet()).toBe('a t');
+    t.save('/co/src/greeter.ts', 'b');
+    await vi.advanceTimersByTimeAsync(700);
+    expect(g.greet()).toBe('b t'); // 1.5 s after the first save, 0.7 s after the last
+    await vi.advanceTimersByTimeAsync(400);
+    expect(g.greet()).toBe('hello t');
+    expect(t.mgr.stack).toHaveLength(0);
+    t.w.stop();
+  });
+
+  it('persists a squashed record as its parts, and a wedge reverts unconfirmed swaps', async () => {
+    const live = makeLive();
+    registerLive('src/other.ts', { Greeter: class Greeter { greet() { return 'other'; } } });
+    const g = new live.Greeter('w');
+    const t = setup();
+    mgr = t.mgr;
+    t.save('/co/src/greeter.ts', 'p1'); await t.w.idle();
+    t.save('/co/src/other.ts', 'p2'); await t.w.idle();
+    t.save('/co/src/greeter.ts', 'p3'); await t.w.idle();
+    const rec = t.mgr.stack[0];
+    expect(t.mgr.stack).toHaveLength(1);
+    // greeter's first bundle is replaced by the last: only other.ts's is kept as a part
+    expect(rec.parts!.map((p) => p.files)).toEqual([['src/other.ts']]);
+    expect(rec.bundleFiles).toEqual(['src/greeter.ts']);
+    const { persistSwaps } = await import('@shiro/hotswap/persist');
+    t.mgr.confirm();
+    const saved = await persistSwaps(t.mgr.stack, 'test#1');
+    expect(saved.map((p) => [p.files, JSON.parse(p.code).map((x: string[]) => x[1])])).toEqual([[['src/other.ts'], ['p2']], [['src/greeter.ts'], ['p3']]]);
+    await persistSwaps([], 'test#1');
+    t.mgr.revert(true);
+
+    // the page froze after an unconfirmed swap: revertOnWedge undoes it (not one applied after the freeze began)
+    t.save('/co/src/greeter.ts', 'frozen'); await t.w.idle();
+    expect(g.greet()).toBe('frozen w');
+    const reasons: string[] = [];
+    t.mgr.onAutoRevert = (_r, why) => reasons.push(why);
+    expect(t.mgr.revertOnWedge(4000, t.mgr.stack[0].appliedAt - 1)).toHaveLength(0);
+    // a freeze during hot-swap's own build (esbuild-wasm on the page's thread) doesn't count
+    const { quietDuring } = await import('@shiro/hotswap/swap');
+    const inBuild = await quietDuring(async () => t.mgr.revertOnWedge(4000, Date.now() + 1));
+    expect(inBuild).toHaveLength(0);
+    expect(t.mgr.revertOnWedge(4000, Date.now() - 1)).toHaveLength(0); // (began during that build)
+    expect(t.mgr.revertOnWedge(4000, Date.now() + 60_000)).toHaveLength(1);
+    expect(reasons).toEqual(['wedge']);
+    expect(g.greet()).toBe('hello w');
+    t.w.stop();
+  });
+
+  it('the watchdog tells listeners about a freeze', async () => {
+    const wd = await import('@shiro/watchdog');
+    const seen: number[] = [];
+    const off = wd.onWedge((ms) => seen.push(ms));
+    wd.noteLag(500);
+    wd.noteLag(wd.WEDGE_MS + 10);
+    off();
+    wd.noteLag(wd.WEDGE_MS + 20);
+    expect(seen).toEqual([wd.WEDGE_MS + 10]);
+  });
+});
+
+describe('hotswap test --changed', () => {
+  const suites = [
+    { path: 'tests/tests/shiro-vitest/shell-posix.test.ts', text: `import { Shell } from '@shiro/shell';\nimport { x } from './helpers';\n` },
+    { path: 'tests/tests/shiro-vitest/shell-args.test.ts', text: `import { Shell } from '@shiro/shell';\nimport { execFileSync } from 'node:child_process';\n` },
+    { path: 'tests/tests/shiro-vitest/zed.test.ts', text: `import { Shell } from '../../../src/shell';\n` },
+    { path: 'tests/tests/shiro-vitest/big.test.ts', text: `import { Shell } from '@shiro/shell';\nimport a from '@shiro/a';\nimport b from '@shiro/b';\n` },
+    { path: 'tests/tests/shiro-vitest/awk-conformance.test.ts', text: `import { x } from './helpers';\n` },
+    { path: 'tests/tests/shiro-vitest/hotswap.test.ts', text: `const m = await import('@shiro/hotswap/swap');\n` },
+    { path: 'tests/tests/shiro-vitest/lazy.test.ts', text: `const k = await import('@shiro/kernel/kernel');\n` },
+  ];
+  it('picks the suites that import a changed file or are named for it, focused ones first', () => {
+    // (shell-args needs node:child_process: last, though it's named for shell.ts)
+    expect(suitesForChanges(['src/shell.ts'], suites)).toEqual({
+      all: ['tests/tests/shiro-vitest/shell-posix.test.ts', 'tests/tests/shiro-vitest/shell-args.test.ts', 'tests/tests/shiro-vitest/zed.test.ts', 'tests/tests/shiro-vitest/big.test.ts'],
+      run: ['tests/tests/shiro-vitest/shell-posix.test.ts', 'tests/tests/shiro-vitest/zed.test.ts', 'tests/tests/shiro-vitest/big.test.ts', 'tests/tests/shiro-vitest/shell-args.test.ts'],
+    });
+    expect(suitesForChanges(['src/shell.ts'], suites, 2).run).toEqual(['tests/tests/shiro-vitest/shell-posix.test.ts', 'tests/tests/shiro-vitest/zed.test.ts']);
+    expect(suitesForChanges(['src/commands/awk.ts'], suites).all).toEqual(['tests/tests/shiro-vitest/awk-conformance.test.ts']);
+    expect(suitesForChanges(['src/hotswap/watch.ts'], suites).all).toEqual(['tests/tests/shiro-vitest/hotswap.test.ts']);
+    expect(suitesForChanges(['src/kernel/kernel.ts'], suites).all).toEqual(['tests/tests/shiro-vitest/lazy.test.ts']);
+    expect(suitesForChanges(['tests/tests/shiro-vitest/helpers.ts'], suites).all).toEqual(['tests/tests/shiro-vitest/shell-posix.test.ts', 'tests/tests/shiro-vitest/awk-conformance.test.ts']);
+    expect(suitesForChanges(['tests/tests/shiro-vitest/zed.test.ts'], suites).all).toEqual(['tests/tests/shiro-vitest/zed.test.ts']);
+    expect(suitesForChanges(['src/nothing.ts'], suites).all).toEqual([]);
+  });
+});
+
 describe('hotswap: building a swap bundle', () => {
   afterEach(() => { for (const k of [...liveModules().keys()]) if (k.startsWith('src/hs-fixture')) liveModules().delete(k); });
 
@@ -254,6 +439,28 @@ describe('hotswap: building a swap bundle', () => {
     expect(a.inc()).toBe('copied');
     expect(counter.value).toBe(42);
     expect(a.n).toBe(42);
+  });
+
+  it("doesn't make generated or vendored modules live; a swap copies them in", async () => {
+    const { hotswapLiveModules } = await import('../../../vite-plugin-hotswap');
+    const root = '/co';
+    const plugin: any = hotswapLiveModules(root);
+    const ctx = { resolve: async (spec: string, from: string) => ({ id: path.resolve(path.dirname(from), spec) + '.ts', external: false }) };
+    expect(await plugin.transform.call(ctx, 'export const GL_ONE = 1;\n', '/co/src/gl/gen/enums.ts')).toBeNull();
+    expect(await plugin.transform.call(ctx, 'export const x = 1;\n', '/co/src/browser/vendor/subtls/index.ts')).toBeNull();
+    const out = (await plugin.transform.call(ctx, `export const f = () => import('./gen/enums');\nexport const g = () => import('./mat');\n`, '/co/src/gl/exec.ts')).code;
+    expect(out).toContain('.set("src/gl/exec.ts", __tcLiveSelf)');
+    expect(out).toContain('"src/gl/mat.ts"');
+    expect(out).not.toContain('src/gl/gen/enums.ts');
+
+    const files: Record<string, string> = {
+      '/co/src/hs-fixture/g.ts': `import { ONE } from './gen/t';\nexport const one = (): number => ONE;\n`,
+      '/co/src/hs-fixture/gen/t.ts': 'export const ONE = 1;\n',
+    };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    const built = await buildSwap(fs, { root: '/co', files: ['src/hs-fixture/g.ts'], build: esbuild.build as any });
+    expect(built.copied).toEqual(['src/hs-fixture/gen/t.ts']);
+    expect(built.warnings.join('\n')).toMatch(/gen\/t\.ts is generated or vendored/);
   });
 
   it('loads lazy modules the page way: import() at run time, static imports before the bundle runs', async () => {
@@ -442,6 +649,7 @@ describe('hotswap: the in-tab test runner', () => {
 import { describe, it, test, expect, beforeEach, afterAll, vi } from 'vitest';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { helper } from '@shiro/hs-fixture/util';
 const log = [];
 describe('outer', () => {
@@ -470,7 +678,11 @@ describe('outer', () => {
     expect(localStorage.getItem('k')).toBe('v');
     expect(globalThis.__tcTestEnv.localStorage.getItem('k')).toBe('v');
   });
-  it('node:fs throws when used', () => { expect(() => readFileSync('/x')).toThrow(/node:fs isn't available/); });
+  it('node:fs is the snapshot', () => {
+    expect(readFileSync('/co/tests/fixtures/f.txt', 'utf8')).toBe('fixture');
+    expect(() => readFileSync('/x')).toThrow(/ENOENT/);
+  });
+  it('node:child_process throws when used', () => { expect(() => execSync('true')).toThrow(/node:child_process isn't available/); });
   it('times out', async () => { await new Promise((r) => setTimeout(r, 200)); }, 20);
   afterAll(() => { log.push('afterAll'); });
 });
@@ -487,7 +699,8 @@ describe('outer', () => {
     const out = await buildTest(fs, { root: '/co', file: 'tests/x.test.ts', build: esbuild.build as any });
     expect(out.code).toContain('globalThis.__tcTestEnv.localStorage');
     const seen: string[] = [];
-    const sum = await runTestBundle(out.code, { onResult: (r) => seen.push(`${r.status} ${r.name}`) });
+    const snap = new Map([['/co/tests/fixtures/f.txt', new TextEncoder().encode('fixture')]]);
+    const sum = await runTestBundle(out.code, { files: snap, onResult: (r) => seen.push(`${r.status} ${r.name}`) });
     expect(sum.errors).toEqual([]);
     expect(seen).toEqual([
       'pass outer > passes',
@@ -498,18 +711,109 @@ describe('outer', () => {
       'todo outer > later',
       'pass outer > matchers',
       'pass outer > isolated storage',
-      'pass outer > node:fs throws when used',
+      'pass outer > node:fs is the snapshot',
+      'pass outer > node:child_process throws when used',
       'fail outer > times out',
     ]);
     expect(sum.results.find((r) => r.name === 'outer > fails')!.error).toMatch(/expected \{a: \[1, 2\]\} to deeply equal \{a: \[1, 3\]\}/);
     expect(sum.results.find((r) => r.name === 'outer > times out')!.error).toMatch(/timed out in 20ms/);
-    expect([sum.passed, sum.failed, sum.skipped]).toEqual([6, 2, 2]);
+    expect([sum.passed, sum.failed, sum.skipped]).toEqual([7, 2, 2]);
     // the page's storage was never touched
     expect((globalThis as any).localStorage).toBe(before);
 
     // -t filters by full name
     const only = await runTestBundle(out.code, { filter: /adds/ });
     expect(only.results.map((r) => r.name)).toEqual(['outer > adds 1 + 2', 'outer > adds 2 + 2']);
+  });
+});
+
+describe("hotswap: the in-tab tests' node:fs", () => {
+  it('reads the snapshot, writes in memory, and never changes the snapshot', async () => {
+    const { makeTestNode } = await import('@shiro/hotswap/test-fs');
+    const snap = new Map([['/co/a/b.txt', new TextEncoder().encode('hi')]]);
+    const { fs, 'fs/promises': fsp, url } = makeTestNode(snap, '/co') as any;
+    expect(fs.readFileSync('a/b.txt', 'utf8')).toBe('hi');
+    expect(fs.readFileSync(new URL('file:///co/a/b.txt')).toString()).toBe('hi');
+    expect(fs.readdirSync('/co')).toEqual(['a']);
+    expect(fs.readdirSync('/co', { withFileTypes: true })[0].isDirectory()).toBe(true);
+    expect(fs.statSync('/co/a/b.txt').size).toBe(2);
+    expect(fs.statSync('/nope', { throwIfNoEntry: false })).toBeUndefined();
+    expect(() => fs.readFileSync('/co/a')).toThrow(/EISDIR/);
+    expect(() => fs.readFileSync('/co/a/b.txt/c')).toThrow(/ENOTDIR/);
+    try { fs.readFileSync('/co/none'); } catch (e: any) { expect([e.code, e.errno, e.syscall]).toEqual(['ENOENT', -2, 'open']); }
+
+    const tmp = fs.mkdtempSync('/tmp/x-');
+    expect(tmp).toMatch(/^\/tmp\/x-\w+$/);
+    fs.writeFileSync(`${tmp}/f`, 'one');
+    fs.appendFileSync(`${tmp}/f`, new Uint8Array([0x32]));
+    expect(fs.readFileSync(`${tmp}/f`, 'utf8')).toBe('one2');
+    fs.writeFileSync('/co/a/b.txt', 'changed');
+    expect(fs.readFileSync('/co/a/b.txt', 'utf8')).toBe('changed');
+    expect(new TextDecoder().decode(snap.get('/co/a/b.txt'))).toBe('hi');
+    expect(() => fs.writeFileSync('/no/dir/f', 'x')).toThrow(/ENOENT/);
+    fs.mkdirSync(`${tmp}/d/e`, { recursive: true });
+    expect(() => fs.mkdirSync(`${tmp}/d`)).toThrow(/EEXIST/);
+    fs.renameSync(`${tmp}/d`, `${tmp}/g`);
+    expect(fs.existsSync(`${tmp}/g/e`)).toBe(true);
+    expect(fs.readdirSync(tmp, { recursive: true })).toEqual(['f', 'g', 'g/e']);
+    expect(() => fs.rmdirSync(`${tmp}/g`)).toThrow(/ENOTEMPTY/);
+    fs.rmSync(tmp, { recursive: true });
+    expect(fs.existsSync(tmp)).toBe(false);
+    fs.rmSync('/gone', { force: true });
+
+    await fsp.writeFile('/tmp/p', 'async');
+    expect(await fsp.readFile('/tmp/p', 'utf8')).toBe('async');
+    await expect(fsp.readFile('/tmp/none')).rejects.toThrow(/ENOENT/);
+    expect(await new Promise((r) => fs.readFile('/tmp/p', 'utf8', (_e: unknown, d: string) => r(d)))).toBe('async');
+    expect(url.fileURLToPath('file:///co/a%20b')).toBe('/co/a b');
+    expect(() => fs.createReadStream('/tmp/p')).toThrow(/node:fs in the tab has no createReadStream/);
+  });
+
+  it('snapshots a checkout, skipping .hotswap and node_modules', async () => {
+    const { snapshotTree } = await import('@shiro/hotswap/test-fs');
+    const tree: Record<string, string | null> = { '/co': null, '/co/src': null, '/co/src/a.ts': 'a', '/co/.hotswap': null, '/co/.hotswap/x': 'x', '/co/node_modules': null, '/co/node_modules/y': 'y', '/co/t.bin': 'b' };
+    const fs = {
+      async readdir(p: string) { return Object.keys(tree).filter((k) => k !== p && k.startsWith(p + '/') && !k.slice(p.length + 1).includes('/')).map((k) => k.slice(p.length + 1)); },
+      async stat(p: string) { if (!(p in tree)) throw new Error('ENOENT'); const dir = tree[p] === null; return { isFile: () => !dir, isDirectory: () => dir, size: 1 }; },
+      async readFile(p: string) { return tree[p]!; },
+    };
+    const snap = await snapshotTree(fs, '/co');
+    expect([...snap.keys()].sort()).toEqual(['/co/src/a.ts', '/co/t.bin']);
+    expect(snap.get('/co/src/a.ts')).toEqual(new TextEncoder().encode('a'));
+  });
+
+  it("gives a suite its fixtures by import.meta.url, Buffer, process, node:url and fs/promises", async () => {
+    const suite = `
+import { it, expect } from 'vitest';
+import fs from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
+it('fixtures', async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  expect(here).toBe('/co/tests');
+  expect(here).toBe(__dirname);
+  const bin = fs.readFileSync(new URL('./fixtures/bin', import.meta.url));
+  expect(Buffer.isBuffer(bin)).toBe(true);
+  expect(bin.toString('hex')).toBe('00ff');
+  expect(await readFile(path.join(here, 'fixtures/bin'))).toEqual(Buffer.from([0, 255]));
+  const tmp = fs.mkdtempSync('/tmp/s-');
+  fs.writeFileSync(tmp + '/out', Buffer.from('w'));
+  expect(fs.readFileSync(tmp + '/out', 'utf8')).toBe('w');
+  expect([process.env.HOME, process.cwd(), typeof process.nextTick]).toEqual(['/home/user', '/co', 'function']);
+  expect(fs.readFileSync('tests/fixtures/bin').length).toBe(2);
+});
+`;
+    const files: Record<string, string> = { '/co/tests/f.test.ts': suite };
+    const { buildTest } = await import('@shiro/hotswap/build');
+    const { runTestBundle } = await import('@shiro/hotswap/test-runner');
+    const out = await buildTest({ async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } },
+      { root: '/co', file: 'tests/f.test.ts', build: esbuild.build as any });
+    expect(out.code).toContain('globalThis.__tcTestNode.Buffer');
+    const snap = new Map([['/co/tests/fixtures/bin', new Uint8Array([0, 255])]]);
+    const sum = await runTestBundle(out.code, { files: snap, cwd: '/co' });
+    expect(sum.errors).toEqual([]);
+    expect(sum.results.map((r) => `${r.status} ${r.error ?? ''}`)).toEqual(['pass ']);
   });
 });
 

@@ -1,6 +1,6 @@
 import type { Command } from './index';
 import { quoteArgsForShell, terminalForCommand } from '../shell';
-import { signalNumber, signalName } from '../kernel/signals';
+import { signalNumber, signalName, TIMEOUT_EXPIRED_EVENT } from '../kernel/signals';
 
 /** Seconds after the signal before SIGKILL when there is no -k (GNU timeout waits forever) */
 const DEFAULT_KILL_AFTER = 5;
@@ -79,28 +79,42 @@ export const timeout: Command = {
     // Piped or redirected: programs keep the tty for input, their stdout comes back here
     if (ctx.terminal) child.setTerminal(terminalForCommand(ctx.terminal, ctx) as any);
     child.cwd = ctx.cwd;
-    let out = '';
-    let err = '';
     // A shell running as a kernel process (an agent's `sh -c`) gives COMMAND its
     // live fd 0: reading ctx.stdin would wait for that pipe to close first
     const live = !!ctx.liveStdin && !!ctx.shell.kernelStdio;
-    const sink = (s: string) => { out += s; };
-    const errSink = (s: string) => { err += s; };
+    // (into ctx as it comes: if the shell stops waiting for timeout (Ctrl-C), what
+    // COMMAND wrote before is still timeout's output)
+    const sink = (s: string) => { ctx.stdout += s.replace(/\r\n/g, '\n'); };
+    const errSink = (s: string) => { ctx.stderr += s.replace(/\r\n/g, '\n'); };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired: Promise<'timeout'> | null = null;
+    const arm = () => {
+      expired ??= duration === 0 ? null : new Promise<'timeout'>((resolve) => {
+        timer = (globalThis as any).setTimeout(() => resolve('timeout'), duration * 1000);
+      });
+      return expired;
+    };
+    // Input still to come (`< fifo`): read inside the time allowed, as COMMAND would
+    // (ctx.stdin only off the live path: reading it there waits for the pipe to close)
+    let input: string | undefined;
+    if (!live && ctx.readFifoStdin) {
+      const late = Symbol('timeout');
+      const limit = arm();
+      const got = await (limit ? Promise.race([ctx.readFifoStdin(), limit.then(() => late)]) : ctx.readFifoStdin());
+      if (typeof got !== 'string') {
+        if (verbose) ctx.stderr += `timeout: sending signal ${signalName(sig)} to command '${command[0]}'\n`;
+        return preserveStatus ? 128 + sig : 124;
+      }
+      input = got;
+    }
     const run = live
       ? child.execute(quoteArgsForShell(command), ctx.streamStdout ?? sink, ctx.streamStderr ?? errSink, false, undefined, true)
-      : child.executeWithStdin(quoteArgsForShell(command), ctx.stdin || '', sink, errSink);
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = duration === 0 ? null : new Promise<'timeout'>((resolve) => {
-      timer = (globalThis as any).setTimeout(() => resolve('timeout'), duration * 1000);
-    });
-    const result = await (expired ? Promise.race([run, expired]) : run);
+      // (`> log`: COMMAND's output goes into the file as it's written, #53)
+      : child.executeWithStdin(quoteArgsForShell(command), input ?? (ctx.stdin || ''), ctx.streamStdout ?? sink, ctx.streamStderr ?? errSink);
+    const limit = arm();
+    const result = await (limit ? Promise.race([run, limit]) : run);
     (globalThis as any).clearTimeout(timer);
 
-    const flush = () => {
-      ctx.stdout += out.replace(/\r\n/g, '\n');
-      ctx.stderr += err.replace(/\r\n/g, '\n');
-    };
     if (result === 'timeout') {
       // The signal goes to COMMAND's programs (a TUI in raw mode ignores the
       // SIGINT a plain abort sends), and timeout waits for COMMAND to end, so
@@ -109,13 +123,15 @@ export const timeout: Command = {
       // SIGKILL after DEFAULT_KILL_AFTER rather than holding the tty forever.
       if (verbose) ctx.stderr += `timeout: sending signal ${signalName(sig)} to command '${command[0]}'\n`;
       // (an AbortError still, for fetch and the like; shell-kernel.ts reads signal and killAfter)
-      own.abort(Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: sig, killAfter: (kill ?? DEFAULT_KILL_AFTER) * 1000 }));
+      const reason = Object.assign(new DOMException('The operation was aborted.', 'AbortError'), { signal: sig, killAfter: (kill ?? DEFAULT_KILL_AFTER) * 1000 });
+      // Aborted already (the shell around timeout went away, #53): abort() would do
+      // nothing, so the signal goes to COMMAND's job through the expiry event
+      if (own.signal.aborted) own.signal.dispatchEvent(new CustomEvent(TIMEOUT_EXPIRED_EVENT, { detail: reason }));
+      else own.abort(reason);
       const status = await run;
-      flush();
       if (preserveStatus) return status === 130 ? 128 + sig : status; // (130: an in-page command the abort stopped)
       return 124;
     }
-    flush();
     return result;
   },
 };

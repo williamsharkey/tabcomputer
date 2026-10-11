@@ -81,6 +81,24 @@ function dataBlocks(data: Uint8Array): Uint8Array[] {
   return rest ? [data, new Uint8Array(BLOCK - rest)] : [data];
 }
 
+/** A GNU tar of in-memory entries (paths without the leading /), for a download (the storage-lost banner's Save). */
+export function packTar(entries: Array<{ name: string; type: 'file' | 'dir' | 'symlink'; mode: number; mtime: number; content?: Uint8Array | null; target?: string }>): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (const e of entries) {
+    const data = e.type === 'file' ? e.content ?? new Uint8Array(0) : new Uint8Array(0);
+    parts.push(...headerBlocks({
+      name: e.type === 'dir' ? e.name.replace(/\/?$/, '/') : e.name, mode: e.mode, uid: 1000, gid: 1000, size: data.length,
+      mtime: e.mtime / 1000, type: e.type === 'dir' ? '5' : e.type === 'symlink' ? '2' : '0', linkname: e.target ?? '', uname: 'user', gname: 'user',
+    }));
+    parts.push(...dataBlocks(data));
+  }
+  parts.push(new Uint8Array(BLOCK * 2));
+  const out = new Uint8Array(parts.reduce((n, b) => n + b.length, 0));
+  let off = 0;
+  for (const b of parts) { out.set(b, off); off += b.length; }
+  return out;
+}
+
 function field(b: Uint8Array, off: number, len: number): string {
   const s = b.subarray(off, off + len);
   const z = s.indexOf(0);

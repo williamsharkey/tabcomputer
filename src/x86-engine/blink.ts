@@ -213,18 +213,24 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
  * the same program (or library code it shares) gets its modules without
  * compiling them. A Blink process is its own worker, so without this its
  * modules die with it. Past keepBudget() bytes of modules
- * (TABCOMPUTER_BLINK_WJ_KEEP=0: none) the least recently compiled go
+ * (TABCOMPUTER_BLINK_WJ_KEEP=0: none; =16: 16 MiB for that process's
+ * modules, opt-in: see keepBudget) the least recently compiled go
  * first, but not in favour of a module that keeps coming back
  * (keepCompiledModule), and all go when the page has been
  * hidden for a while. In Chromium a module
- * costs ~5.7x its bytes in renderer memory (its compiled code): vim's
+ * costs ~5-7x its bytes in renderer memory (its compiled code): vim's
  * startup leaves 320 modules, 2.4 MiB of bytes, +13.6 MiB RSS, and its next
  * start takes 0.81 s instead of 1.24 s (docs/BENCHMARKS.md).
  */
 const MIB = 1 << 20;
 const WJ_HIDDEN_DROP_MS = 5 * 60_000;
 let keepBudgetBytes = 0;
-/** 6 MiB of module bytes with 8 GB of memory or more, 2 MiB with 4 GB or less (or on a phone or tablet), else 4 MiB */
+/**
+ * 6 MiB of module bytes with 8 GB of memory or more, 2 MiB with 4 GB or less
+ * (or on a phone or tablet), else 4 MiB. A module costs 5-7x its bytes in
+ * renderer memory: 16 MiB (Debian perl with a dozen modules compiles ~14 MB)
+ * held ~115 MiB more RSS than none, so it's opt-in (TABCOMPUTER_BLINK_WJ_KEEP=16)
+ */
 function keepBudget(): number {
   if (keepBudgetBytes) return keepBudgetBytes;
   const nav = (globalThis as { navigator?: { deviceMemory?: number; userAgent?: string } }).navigator;
@@ -268,9 +274,9 @@ export function keptCompiledModules(key?: string): { count: number; bytes: numbe
   return { count: keptModules.size, bytes: keptBytes, has: key !== undefined && keptModules.has(key) };
 }
 /** (tests) as a Blink process's compiled module arriving; `pressure` as memory pressure would be seen */
-export function keepCompiledModuleForTest(key: string, size: number, underPressure?: boolean): void {
+export function keepCompiledModuleForTest(key: string, size: number, underPressure?: boolean, ownBudget = 0): void {
   if (underPressure !== undefined) { pressure = underPressure; pressureCheckedAt = Infinity; }
-  keepCompiledModule(key, {}, size);
+  keepCompiledModule(key, {}, size, ownBudget);
 }
 /**
  * Least recently compiled go first, with one exception. A program compiles
@@ -284,8 +290,8 @@ export function keepCompiledModuleForTest(key: string, size: number, underPressu
  * halved now and then, so what's no longer run fades.
  */
 /** `module` null: one the page keeps (the process had its key), compiled again */
-function keepCompiledModule(key: unknown, module: unknown, size: number): void {
-  const budget = underMemoryPressure() ? Math.min(keepBudget(), 2 * MIB) : keepBudget();
+function keepCompiledModule(key: unknown, module: unknown, size: number, ownBudget = 0): void {
+  const budget = Math.min(ownBudget || keepBudget(), underMemoryPressure() ? 2 * MIB : Infinity);
   for (const [k, v] of keptModules) {  // (a budget cut by memory pressure)
     if (keptBytes <= budget) break;
     keptModules.delete(k);
@@ -330,7 +336,18 @@ function keepCompiledModule(key: unknown, module: unknown, size: number): void {
  * the process the call is for: the guest's vfork child runs on this
  * worker's thread until it execs (Blink patch 0011), 0 = the guest itself.
  */
-async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayBuffer, as: number, busy: Set<SharedArrayBuffer>): Promise<boolean> {
+/**
+ * A Blink process's guest threads, for the kernel's per-thread state
+ * (/proc/PID/task/TID): proc.data.engineThreads, the tids running (Blink
+ * patch 0127 tells their start and end; the main thread's is the pid), and
+ * proc.data.engineCalls, the kernel call each is in and since when (by the
+ * tid on the call; a call without one isn't listed).
+ */
+export interface EngineCall { nr: number; since: number }
+function engineCalls(proc: Process): Map<number, EngineCall> {
+  return (proc.data.engineCalls ??= new Map<number, EngineCall>()) as Map<number, EngineCall>;
+}
+async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayBuffer, as: number, busy: Set<SharedArrayBuffer>, tid = 0): Promise<boolean> {
   const i32 = new Int32Array(sab, 0, CH_DATA / 4);
   if (busy.has(sab) || Atomics.load(i32, CH_STATE) !== STATE_REQUEST) return false;
   busy.add(sab);
@@ -342,7 +359,16 @@ async function servePoolChannel(kernel: Kernel, proc: Process, sab: SharedArrayB
     // A call the kernel can answer from memory (stat, fstat, getpid, pipe and
     // file I/O that needn't wait) skips the async path, as WASI guests' do
     const fast = target ? kernel.syscallSync(target, nr, args, data) : undefined;
-    let result = fast !== undefined ? fast : target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
+    let result = fast;
+    if (result === undefined) {
+      const calls = tid && !as ? engineCalls(proc) : null;
+      calls?.set(tid, { nr, since: Date.now() });
+      try {
+        result = target ? await kernel.syscall(target, nr, args, data) : -ESRCH;
+      } finally {
+        calls?.delete(tid);
+      }
+    }
     if (!as && proc.exiting) return false;
     if (result > 0x7fffffff || result < -0x80000000) {
       i32[CH_ARGS] = Math.floor(result / 0x100000000);
@@ -438,7 +464,7 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       if (c.data.embryo && c.data.forkParent === proc.pid && !c.exiting) void kernel.exit(c, SIGKILL);
     }
   }, 1000);
-  const terminate = () => { stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
+  const terminate = () => { delete proc.data.engine; stopDirect(); stopPool(); void kernel.engineInstanceGone(instance); end(); sweep(); };
   // The engine crashed (an abort or a wasm trap ends the whole instance): the
   // children it hosted died with it.
   let crashed = false;
@@ -486,7 +512,7 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
     if (m?.type === 'blink-sys') {
       const sab = pool[m.ch];
       if (sab) {
-        const served = servePoolChannel(kernel, proc, sab, m.as | 0, busy);
+        const served = servePoolChannel(kernel, proc, sab, m.as | 0, busy, m.tid | 0);
         // a kick that came first ends the call once it waits (twice: the
         // kernel may await before it starts waiting); an extra EINTR is
         // only a call again for Blink
@@ -509,8 +535,11 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         void ch.watch();
       }
     } else if (m?.type === 'blink-wjmod') {
-      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0' && Array.isArray(m.modules)) {
-        for (const d of m.modules) keepCompiledModule(d?.key, d?.module, d?.size | 0);
+      // TABCOMPUTER_BLINK_WJ_KEEP=0: none; =<MiB> (up to 64): that budget for this process's
+      const keep = proc.env?.TABCOMPUTER_BLINK_WJ_KEEP;
+      const mib = keep ? Math.min(Number(keep) || 0, 64) : 0;
+      if (keep !== '0' && Array.isArray(m.modules)) {
+        for (const d of m.modules) keepCompiledModule(d?.key, d?.module, d?.size | 0, mib > 0 ? mib * MIB : 0);
       }
     } else if (m?.type === 'blink-kick') {
       // A guest thread is in a kernel call with a signal to take (it came
@@ -545,6 +574,19 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       });
     } else if (m?.type === 'blink-exiting') {
       exiting = true;
+      delete proc.data.engine;  // (so the page doesn't hold the wasm memory past the process)
+    } else if (m?.type === 'blink-thread') {
+      const threads = (proc.data.engineThreads ??= new Set<number>([proc.pid])) as Set<number>;
+      if (m.op) threads.add(m.tid | 0);
+      else { threads.delete(m.tid | 0); engineCalls(proc).delete(m.tid | 0); }
+    } else if (m?.type === 'blink-engine') {
+      // Blink's GIL state (patch 0126), for /proc/PID/status's EngineLock line:
+      // Int32Array(memory.buffer, gilAddr, 4) is the holder's tid (0: nobody),
+      // the waiters, and the times it was taken, as of at most 50 ms ago
+      // (host.mjs copies it into this buffer; not Blink's own memory, which
+      // the page would keep alive past the process)
+      if (!exiting && m.gil instanceof SharedArrayBuffer) proc.data.engine = { memory: { buffer: m.gil }, gilAddr: 0 };
+      proc.data.engineThreads ??= new Set<number>([proc.pid]);
     } else if (m?.type === 'blink-quiet') {
       if (exiting && !quiet) {
         quiet = true;

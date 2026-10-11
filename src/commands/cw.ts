@@ -52,6 +52,7 @@ export const cwCmd: Command = {
     const win = createServerWindow({
       mode: 'terminal',
       title: `[${proc.pid}] claude (web)`,
+      appId: 'cw', appName: 'Claude (web)',
       width: '48em',
       height: '28em',
       onClose: () => {

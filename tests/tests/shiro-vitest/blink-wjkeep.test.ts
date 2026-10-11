@@ -36,4 +36,12 @@ describe('Blink: the page keeps compiled modules', () => {
     expect(kept('pressed').has).toBe(true);
     keep('relieved', SIZE, false);
   });
+
+  it('TABCOMPUTER_BLINK_WJ_KEEP=16: a process keeps up to 16 MiB of its modules', () => {
+    for (let i = 0; i < 160; i++) keep(`opt${i}`, SIZE, false, 16 << 20);
+    expect(kept().bytes).toBeGreaterThan(8 << 20);
+    expect(kept().bytes).toBeLessThanOrEqual(16 << 20);
+    keep('default', SIZE, false);  // a process with the default budget trims back to it
+    expect(kept().bytes).toBeLessThanOrEqual(4 << 20);
+  });
 });

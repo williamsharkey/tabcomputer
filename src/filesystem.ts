@@ -1521,10 +1521,16 @@ export class FileSystem {
     this._queue(key, bytes && { path: key, type: 'file', content: bytes, mode: 0, mtime: 0, ctime: 0, size: bytes.length });
   }
 
-  /** Queue `content` as blob `id`'s blocks (copies: IndexedDB clones a view's whole buffer). */
+  /**
+   * Queue `content` as blob `id`'s blocks: views of it, which the commit
+   * copies one at a time as it puts them (storableNode: IndexedDB clones a
+   * view's whole buffer), within its time slices. Copying them here was one
+   * task for the whole file: ~15 ms for a 44 MB tar archive (#19). `content`
+   * is not modified after (file content never is).
+   */
   private _queueBlocks(id: string, content: Uint8Array): void {
     const B = FileSystem.BLOCK;
-    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), copyBytes(content, off, off + B));
+    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), content.subarray(off, off + B));
   }
 
   /**

@@ -1,19 +1,19 @@
 /**
  * How big a clone the built-in git would take on, before it starts (#43).
  *
- * The built-in clone (isomorphic-git) runs on the page's thread with the whole
- * pack in memory: it downloads it, indexes it (pako and SHA-1 over every
- * object, yielding only once per percent) and reads it back for the checkout.
- * Up to ~40 MB that takes seconds; tabcomputer's own repository, ~300 MB of
- * mostly incompressible tarballs, froze the tab for over a minute, where
- * neither `timeout` nor Ctrl-C can reach it. So for GitHub, whose API says how
- * big a branch's files are (or a repository's whole history), a clone above
- * the limit goes to the full git, which runs in its own worker, or stops with
- * a hint instead of freezing the page.
+ * The built-in clone (isomorphic-git) runs on the page with the whole pack in
+ * memory: it downloads it, indexes it and reads it back for the checkout. Since
+ * the #28 fixes it no longer freezes the tab (tabcomputer's own ~300 MB
+ * checkout clones in ~30 s), but its peak memory is about 3-4x the files'
+ * size (that clone: ~840 MiB of JS heap, +1.2 GiB renderer RSS). So for
+ * GitHub, whose API says how big a branch's files are (or a repository's whole
+ * history), a clone above the limit, sized to keep that peak inside V8's
+ * heap, goes to the full git, which runs in its own worker, or stops with a
+ * hint instead of running the page out of memory.
  */
 
 /** Default limit in MB; TABCOMPUTER_GIT_CLONE_MAX_MB changes it, 0 turns the check off. */
-export const PAGE_CLONE_MAX_MB = 100;
+export const PAGE_CLONE_MAX_MB = 800;
 
 export interface CloneSize {
   /** Bytes the clone would bring: the branch's files (shallow) or the repository's history. */
@@ -51,7 +51,7 @@ export async function githubCloneSize(url: string, opts: {
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
   const api = async (path: string) => {
-    const signal = typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(opts.timeoutMs ?? 10_000) : undefined;
+    const signal = typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal ? AbortSignal.timeout(opts.timeoutMs ?? 3_000) : undefined;
     const res = await get(`https://api.github.com/repos/${repo}${path}`, { headers, ...(signal ? { signal } : {}) });
     return res.ok ? res.json() : null;
   };

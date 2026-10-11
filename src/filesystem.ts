@@ -818,7 +818,7 @@ export class FileSystem {
         if (n) out.set(p, n); else out.delete(p);
       }
     }
-    return [...out.values()].filter((n) => n.type !== 'file' || (n.content && !n.lazy && !n.blob));
+    return [...out.values()].filter((n) => n.type !== 'file' || (n.content && !n.lazy));
   }
 
   private _volumeId: string | null = null;

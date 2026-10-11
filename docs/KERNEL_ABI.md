@@ -4,6 +4,13 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-11 (unix/perf-kernel)** — behavior fixes.
+  - F_GETFL and /proc/PID/fdinfo leave out open-only flags (O_CREAT, O_EXCL,
+    O_NOCTTY, O_TRUNC: `O_OPEN_ONLY`), as Linux does. A /dev/tty description
+    (opened O_NOCTTY inside) showed O_NOCTTY.
+  - stat("/dev/tty") finds the node (crw-rw-rw-, gid tty, 5,0) when opening it
+    would fail: ENXIO without a controlling terminal, EIO once the terminal closed.
+
 - **2026-10-11 (unix/perf-kernel)** — additive: the kernel profiler (src/kernel/profiler.ts).
   - `Kernel.startProfile({pids?, follow?, filter?, paths?, bucketMs?, keys?})`
     attaches one (`kernel.profiler`), `Kernel.stopProfile()` detaches it

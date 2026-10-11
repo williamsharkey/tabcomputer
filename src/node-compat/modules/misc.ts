@@ -165,8 +165,19 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
 
     case 'module':
     case 'node:module': {
-      // Provide createRequire that delegates to our require system
-      const modExport: any = {
+      // As node's, the module is the Module class itself, its helpers static on it
+      // (`new (require('module'))(id)`: the esm package's loader); createRequire delegates to our require
+      class Module {
+        id: string;
+        exports: any = {};
+        parent: any;
+        filename: string | null = null;
+        loaded = false;
+        children: any[] = [];
+        paths: string[] = [];
+        constructor(id = '', parent?: any) { this.id = id; this.parent = parent; }
+      }
+      const modExport: any = Object.assign(Module, {
         // A real require for the file (a path or file: URL), resolving from its directory
         createRequire: (from: any) => {
           let f = String(from instanceof URL ? from.href : from);
@@ -211,12 +222,8 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         },
         _cache: (requireModule as any).cache ?? moduleCache,
         _extensions: (requireModule as any).extensions ?? {},
-        Module: class Module {
-          id: string;
-          exports: any = {};
-          constructor(id = '') { this.id = id; }
-        },
-      };
+        Module,
+      });
       return modExport;
     }
 

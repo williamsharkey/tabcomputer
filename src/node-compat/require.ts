@@ -204,7 +204,8 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
         if (parent === lookupDir || !parent) break;
         lookupDir = parent;
       }
-    } else if (modPath.startsWith('./') || modPath.startsWith('../') || modPath.startsWith('/')) {
+    } else if (modPath === '.' || modPath === '..' || modPath.startsWith('./') || modPath.startsWith('../') || modPath.startsWith('/')) {
+      // ('.' and '..' are relative too: uvu's bin.js requires '.', its own package)
       resolved = ctx.fs.resolvePath(modPath, fromDir);
       if (!resolved.endsWith('.js') && !resolved.endsWith('.json') && !resolved.endsWith('.ts') && !resolved.endsWith('.tsx') && !resolved.endsWith('.jsx')) {
         const found = tryResolveExtensions(resolved);

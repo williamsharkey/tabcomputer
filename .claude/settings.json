@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "WebFetch",
+      "WebSearch",
+      "mcp__claude-code-remote__send_message",
+      "mcp__claude-code-remote__list_sessions",
+      "mcp__claude-code-remote__get_session",
+      "mcp__claude-code-remote__add_repo",
+      "mcp__github__add_issue_comment",
+      "mcp__github__issue_read",
+      "mcp__github__list_issues",
+      "mcp__github__search_issues"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --delete:*)",
+      "Bash(git push origin --delete:*)"
+    ]
+  }
+}

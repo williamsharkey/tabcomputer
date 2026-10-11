@@ -229,12 +229,13 @@ function moveCachedTree(fileCache: Map<string, string>, fileMtimes: Map<string, 
 function makeDirent(ctx: CommandContext, parent: string, name: string, isDir: boolean): any {
   const link = typeof ctx.fs.readlinkCached === 'function' ? ctx.fs.readlinkCached(parent + '/' + name) : undefined;
   const isLink = typeof link === 'string';
+  const fifo = !isLink && !isDir && ctx.fs.lookupCached?.(parent + '/' + name, false)?.node?.special === 'fifo';
   return {
     name, parentPath: parent, path: parent,
-    isFile: () => !isLink && !isDir,
+    isFile: () => !isLink && !isDir && !fifo,
     isDirectory: () => !isLink && isDir,
     isSymbolicLink: () => isLink,
-    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false,
+    isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => fifo, isSocket: () => false,
   };
 }
 
@@ -657,7 +658,11 @@ export function createFsModule(deps: FsDeps): any {
       if (ctx.fs.readCached(resolved) !== undefined) return true;
       // Fallback: check Shiro FS cache for directories
       if (fsDirCached(resolved)) return true;
-      return false;
+      // a file whose bytes the cache let go (a large binary, after a while):
+      // its inode is still known (codex's npm wrapper found its own binary
+      // missing after one long run: tabcomputer#27). Only such a node: the
+      // FileSystem's view of a path node just renamed away is behind node's own
+      return ctx.fs.lookupCached?.(resolved)?.node.evicted === true;
     },
     statSync: (p: string, opts?: any) => {
       tickSyncOps();
@@ -1169,7 +1174,7 @@ export function createFsModule(deps: FsDeps): any {
             for (const name of entries) {
               try {
                 const st = await ctx.fs.lstat(resolved + '/' + name);
-                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false });
+                dirents.push({ name, parentPath: resolved, path: resolved, isFile: () => st.isFile(), isDirectory: () => st.isDirectory(), isSymbolicLink: () => st.isSymbolicLink?.() || false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => !!st.isFIFO?.(), isSocket: () => false });
               } catch { dirents.push({ name, isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false }); }
             }
             callback?.(null, dirents);

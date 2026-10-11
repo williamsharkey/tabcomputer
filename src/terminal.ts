@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { installOsc52 } from './utils/osc52';
+import { installTermQueries } from './utils/term-queries';
 import { useUnicode11 } from './utils/term-unicode';
 import { Shell } from './shell';
 import buildNumber from '../build-number.txt?raw';
@@ -9,9 +10,11 @@ import { setActiveTerminal } from './active-terminal';
 import { createHudPanel, HudPanel } from './hud-panel';
 import { spawnInWindow } from './commands/spawn';
 import { TtySession } from './kernel/pty';
+import { needsMoreInput } from './shell-syntax';
 import { activeProfile } from './profile';
 import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
+import * as agentResume from './agent-resume';
 import { frozenLastTimeNotice } from './watchdog';
 
 /**
@@ -57,6 +60,10 @@ export class ShiroTerminal {
   private stdinForceExitCallback: (() => void) | null = null;
   private lastCtrlCTime = 0;
   private pendingStdinInput: string[] = [];
+  /** Lines of a command not yet whole (an open if, quote, here-doc), read with the "> " prompt */
+  private continuation: string | null = null;
+  /** Ctrl-C while a command ran: the type-ahead queued behind it is dropped, as a tty's VINTR flush */
+  private typeAheadDropped = false;
   private iframeContainer: HTMLElement | null = null;
   private displayedRows = 1; // track how many terminal rows the current prompt+input spans
   private resizeCallbacks: ((cols: number, rows: number) => void)[] = [];
@@ -197,6 +204,7 @@ export class ShiroTerminal {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     installOsc52(this.term);
+    installTermQueries(this.term);
     useUnicode11(this.term);
     this.term.open(container);
     this.fitAddon.fit();
@@ -446,6 +454,12 @@ export class ShiroTerminal {
       this.userInputBuffer = '';
       this.userInputCursorPos = 0;
       this.userInputCallback = resolve;
+      // Lines pasted or typed ahead are read first, as from a tty
+      if (this.pendingStdinInput.length) {
+        const pending = this.pendingStdinInput.join('');
+        this.pendingStdinInput = [];
+        this.handleUserInput(pending);
+      }
     });
   }
 
@@ -825,7 +839,41 @@ export class ShiroTerminal {
     return { stdout, stderr, exitCode };
   }
 
+  /** The line the user entered that is still running (session restore offers it again), or null at the prompt. */
+  foregroundLine: string | null = null;
+
+  /** Run a line the user entered; an agent it starts (claude, codex) is tracked for session restore (agent-resume.ts). */
+  private async runLine(line: string): Promise<number> {
+    agentResume.lineStarted(this, line, this.shell.cwd, this.shell.env, this.shell.fs);
+    this.foregroundLine = line;
+    try {
+      return await this.shell.execute(line, (s: string) => this.term.write(s));
+    } finally {
+      this.foregroundLine = null;
+      agentResume.lineEnded(this);
+    }
+  }
+
+  /**
+   * Session restore (src/desktop/session.ts): replace the screen with what the
+   * terminal showed before the reload, a dim separator line, then a fresh
+   * prompt. Only at the prompt (not while something runs).
+   */
+  restoreScreen(scrollback: string, note: string): void {
+    if (this.running) return;
+    this.term.reset();
+    const text = scrollback.replace(/\r?\n/g, '\r\n');
+    if (text) this.term.write(text.endsWith('\r\n') ? text : text + '\r\n');
+    this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
+    this.lineBuffer = '';
+    this.cursorPos = 0;
+    this.showPrompt();
+  }
+
   private async handleInput(data: string) {
+    // (bracketed paste markers, left on by a program that enabled mode 2004: the text is what counts)
+    if (data.includes('\x1b[20')) data = data.replace(/\x1b\[20[01]~/g, '');
+    if (this.running && data.includes('\x03')) this.typeAheadDropped = true;
     // A kernel job owns the terminal: everything goes through the pty line
     // discipline (Ctrl-C/Ctrl-Z become SIGINT/SIGTSTP to its process group)
     if (this.tty.jobInForeground) {
@@ -948,14 +996,43 @@ export class ShiroTerminal {
           return;
         }
 
+        // The rest of a paste, and keys typed while the command runs, are type-ahead:
+        // a command that reads the terminal gets them first, the prompt the rest
+        let ahead = data.slice(i + 1);
+        // An open if/quote/here-doc: read more lines first, with the "> " prompt (bash's PS2)
+        const whole = this.continuation === null ? this.lineBuffer : `${this.continuation}\n${this.lineBuffer}`;
+        if ((this.continuation !== null || this.lineBuffer.trim()) && needsMoreInput(whole)) {
+          this.continuation = whole;
+          this.lineBuffer = '';
+          this.cursorPos = 0;
+          this.term.write('> ');
+          this.displayedRows = 1;
+          if (ch === '\r' && data[i + 1] === '\n') i++;
+          continue;
+        }
+        this.continuation = null;
+        this.lineBuffer = whole;
+        if (ch === '\r' && ahead.startsWith('\n')) ahead = ahead.slice(1);
         if (this.lineBuffer.trim()) {
+          if (ahead) this.pendingStdinInput.push(ahead);
+          this.typeAheadDropped = false;
           this.running = true;
-          await this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s));
-          this.running = false;
+          try {
+            await this.runLine(this.lineBuffer);
+          } finally {
+            this.running = false;
+          }
+          ahead = this.pendingStdinInput.join('');
+          this.pendingStdinInput = [];
+          // (what a job left unread on the tty)
+          const unread = this.tty.pty.takeInput();
+          if (unread.length) ahead += new TextDecoder().decode(unread);
+          if (this.typeAheadDropped) ahead = '';
         }
         this.lineBuffer = '';
         this.cursorPos = 0;
         this.showPrompt();
+        if (ahead) await this.handleInput(ahead);
         return;
       }
 
@@ -1046,6 +1123,7 @@ export class ShiroTerminal {
         this.term.writeln('^C');
         this.lineBuffer = '';
         this.cursorPos = 0;
+        this.continuation = null;
         this.showPrompt();
         return;
       }
@@ -1147,6 +1225,8 @@ export class ShiroTerminal {
         this.userInputCallback = null;
         this.userInputBuffer = '';
         this.userInputCursorPos = 0;
+        // (the rest of a paste is still type-ahead)
+        if (i + 1 < data.length) this.pendingStdinInput.unshift(data.slice(i + 1));
         cb(input);
         return;
       }
@@ -1194,6 +1274,7 @@ export class ShiroTerminal {
   }
 
   private promptVisualLength(): number {
+    if (this.continuation !== null) return 2; // "> "
     const user = this.shell.env['USER'] || 'user';
     const home = this.shell.env['HOME'] || '/home/user';
     const displayCwd = this.shell.cwd.startsWith(home) ? '~' + this.shell.cwd.slice(home.length) : this.shell.cwd;
@@ -1217,7 +1298,7 @@ export class ShiroTerminal {
     const home = this.shell.env['HOME'] || '/home/user';
     const displayCwd = this.shell.cwd.startsWith(home) ? '~' + this.shell.cwd.slice(home.length) : this.shell.cwd;
     const hostDisplay = this.getHostDisplay();
-    output += `\x1b[32m${user}@${hostDisplay}\x1b[0m:\x1b[34m${displayCwd}\x1b[0m$ `;
+    output += this.continuation !== null ? '> ' : `\x1b[32m${user}@${hostDisplay}\x1b[0m:\x1b[34m${displayCwd}\x1b[0m$ `;
 
     // Add input buffer (strip any control chars that leaked from interactive programs)
     const safeBuffer = this.lineBuffer.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
@@ -1331,7 +1412,7 @@ export class ShiroTerminal {
         this.term.writeln('');
         if (this.lineBuffer.trim()) {
           this.running = true;
-          this.shell.execute(this.lineBuffer, (s: string) => this.term.write(s)).then(() => {
+          this.runLine(this.lineBuffer).then(() => {
             this.running = false;
             this.lineBuffer = '';
             this.cursorPos = 0;

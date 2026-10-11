@@ -7,9 +7,16 @@
  */
 
 import { Command, CommandContext } from './index';
-import { createServerWindow } from '../server-window';
+import { createServerWindow, commandLine } from '../server-window';
 
 const CM_CDN = 'https://esm.sh';
+
+/** The part of the desktop's window manager (src/desktop/wm.ts) this uses */
+interface DesktopLike {
+  createWindow(o: { appId: string; title: string; width: number; height: number; minWidth?: number; minHeight?: number; content: { kind: 'iframe'; srcdoc: string } }): {
+    iframe?: HTMLIFrameElement; on(ev: 'close', cb: () => void): () => void;
+  };
+}
 
 function getLanguageForFile(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -33,7 +40,12 @@ function getLanguageForFile(filename: string): string {
   return map[ext] || 'javascript';
 }
 
-function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string): string {
+/** localStorage: the first-open hint was shown */
+export const CODE_HINT_KEY = 'tabcomputer-code-hint';
+/** The hint: what this editor has, where to find it (no command palette here) */
+export const CODE_HINT = 'File ▸ Open… in the menu bar opens a file or folder · Ctrl+S saves · ☰ (bottom left) shows the file list · Ctrl+F finds';
+
+function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string, hint = ''): string {
   const filesJson = JSON.stringify(files);
   const cwdJson = JSON.stringify(cwd);
 
@@ -80,11 +92,17 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
   .cm-editor { height: 100%; font-size: 14px; }
   .cm-editor .cm-scroller { overflow: auto; }
   .cm-editor.cm-focused { outline: none; }
+
+  /* First-open hint */
+  #hint { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #313244; color: #cdd6f4; font-size: 12px; border-bottom: 1px solid #45475a; flex-shrink: 0; }
+  #hint span { flex: 1; }
+  #hint button { background: none; border: 1px solid #585b70; color: #cdd6f4; border-radius: 4px; font: inherit; padding: 1px 8px; cursor: pointer; }
 </style>
 </head>
 <body>
 <div id="sidebar"></div>
 <div id="main">
+  ${hint ? `<div id="hint"><span>${hint.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span><button type="button" onclick="this.parentElement.remove()">Got it</button></div>` : ''}
   <div id="tabs"></div>
   <div id="editor-container"></div>
   <div id="status">
@@ -342,9 +360,11 @@ export const codeEditorCmd: Command = {
     // Collect files to open
     const files: { path: string; content: string; language: string }[] = [];
 
+    let isDir = false;
     try {
       const s = await ctx.fs.stat(resolved);
-      if (s.type === 'dir') {
+      isDir = s.type === 'dir';
+      if (isDir) {
         // Open directory — list files (non-recursive, skip hidden)
         const entries = await ctx.fs.readdir(resolved);
         const fileEntries: string[] = [];
@@ -386,11 +406,47 @@ export const codeEditorCmd: Command = {
       files.push({ path: 'untitled.js', content: '', language: 'javascript' });
     }
 
+    const title = target === '.' ? ctx.cwd.split('/').pop() || 'code' : target;
+    const savePathFor = async (path: string): Promise<string> => {
+      // Resolve relative to the opened target
+      try {
+        const s = await ctx.fs.stat(resolved);
+        if (s.type !== 'dir') return resolved;
+        // Strip leading target prefix if present
+        const cleanPath = path.startsWith(target + '/') ? path.slice(target.length + 1) : path;
+        return resolved === '/' ? `/${cleanPath}` : `${resolved}/${cleanPath}`;
+      } catch {
+        return resolved;
+      }
+    };
+
+    // On the desktop: a desktop window of the Code app, so the menu bar follows it (its File menu)
+    const wm = (globalThis as { __shiroDesktop?: DesktopLike }).__shiroDesktop;
+    if (wm?.createWindow) {
+      let hint = '';
+      try { if (!localStorage.getItem(CODE_HINT_KEY)) { hint = CODE_HINT; localStorage.setItem(CODE_HINT_KEY, String(Date.now())); } } catch {}
+      const dwin = wm.createWindow({
+        appId: 'code', title, width: 960, height: 620, minWidth: 360, minHeight: 220,
+        content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint) },
+      });
+      // session restore opens it again; File ▸ Open… starts in its folder
+      (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };
+      (dwin as { codeDir?: string }).codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
+      // Saves from this window's editor only (another Code window has its own files)
+      const onSave = async (e: MessageEvent) => {
+        if (e.data?.type !== 'shiro-editor-save' || e.source !== dwin.iframe?.contentWindow) return;
+        try { await ctx.fs.writeFile(await savePathFor(e.data.path), e.data.content); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
+      };
+      window.addEventListener('message', onSave);
+      dwin.on('close', () => window.removeEventListener('message', onSave));
+      return 0;
+    }
+
     const html = buildEditorHtml(files, ctx.cwd);
 
     const win = createServerWindow({
       mode: 'iframe',
-      title: target === '.' ? ctx.cwd.split('/').pop() || 'code' : target,
+      title,
       width: '52em',
       height: '32em',
     });
@@ -400,20 +456,7 @@ export const codeEditorCmd: Command = {
     const handler = async (e: MessageEvent) => {
       if (e.data?.type !== 'shiro-editor-save') return;
       const { path, content } = e.data;
-      // Resolve relative to the opened target
-      let savePath: string;
-      try {
-        const s = await ctx.fs.stat(resolved);
-        if (s.type === 'dir') {
-          // Strip leading target prefix if present
-          const cleanPath = path.startsWith(target + '/') ? path.slice(target.length + 1) : path;
-          savePath = resolved === '/' ? `/${cleanPath}` : `${resolved}/${cleanPath}`;
-        } else {
-          savePath = resolved;
-        }
-      } catch {
-        savePath = resolved;
-      }
+      const savePath = await savePathFor(path);
       try {
         await ctx.fs.writeFile(savePath, content);
       } catch (err: any) {

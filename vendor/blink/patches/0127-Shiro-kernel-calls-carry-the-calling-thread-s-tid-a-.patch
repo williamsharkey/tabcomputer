@@ -1,0 +1,76 @@
+From 09a519cf758410a7c4cc860328e41469c40e1ba4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 10 Oct 2026 22:56:17 +0000
+Subject: [PATCH] Shiro: kernel calls carry the calling thread's tid; a
+ thread's start and end reach the kernel
+
+For the kernel's per-thread state (/proc/PID/task/TID, tabcomputer#19):
+shiro_ksys2 takes the tid the calling thread's gettid returns (a vfork
+child's pid when the call is the child's), which host.mjs writes beside
+the pool channel's 'as' word; shiro_thread_note tells host.mjs when a
+guest thread starts and ends.
+---
+ blink/shiro.inc | 11 +++++++++--
+ blink/syscall.c | 10 ++++++++++
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 6edfbde..c879b06 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -38,8 +38,15 @@ static u64 g_shiro_ignored;  // signals ignored at startup (inherited)
+ // One kernel syscall (docs/KERNEL_ABI.md). args: 12 int32 slots; on return
+ // args[0] holds the high word of the result. data: inlen bytes in, up to
+ // outcap bytes out. as: run it as this pid (a vfork child), 0 = ourselves.
+-extern int shiro_ksys(int nr, int *args, int as, void *data, int inlen,
+-                      int outcap);
++// tid: the calling thread's (what its gettid returns), or the vfork child's
++// pid, for the kernel's per-thread state (/proc/PID/task/TID)
++extern int shiro_ksys2(int nr, int *args, int as, void *data, int inlen,
++                       int outcap, int tid);
++#define shiro_ksys(nr, args, as, data, inlen, outcap)                \
++  shiro_ksys2(nr, args, as, data, inlen, outcap,                      \
++              (as) ? (as) : g_machine ? g_machine->tid : 0)
++// a guest thread started (op 1) or ended (0), for the kernel
++extern void shiro_thread_note(int tid, int op);
+ 
+ EMSCRIPTEN_KEEPALIVE void blink_shiro_enable(int pid, int chunk, u32 ign_lo,
+                                              u32 ign_hi) {
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 875c319..33ae0e8 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -441,6 +441,10 @@ static void ClearChildTid(struct Machine *m) {
+ #endif
+ }
+ 
++#ifdef __EMSCRIPTEN__
++void shiro_thread_note(int, int);  // (shiro-kernel.js)
++#endif
++
+ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
+   THR_LOGF("pid=%d tid=%d SysExitGroup", m->system->pid, m->tid);
+   ClearChildTid(m);
+@@ -500,6 +504,9 @@ _Noreturn void SysExit(struct Machine *m, int rc) {
+   if (IsOrphan(m)) {
+     SysExitGroup(m, rc);
+   } else {
++#ifdef __EMSCRIPTEN__
++    shiro_thread_note(m->tid, 0);
++#endif
+     ClearChildTid(m);
+     FreeMachine(m);
+     GilRelease();
+@@ -600,6 +607,9 @@ static void *OnSpawn(void *arg) {
+   int rc;
+   struct Machine *m = (struct Machine *)arg;
+   THR_LOGF("pid=%d tid=%d OnSpawn", m->system->pid, m->tid);
++#ifdef __EMSCRIPTEN__
++  shiro_thread_note(m->tid, 1);
++#endif
+   m->thread = pthread_self();
+   if (!(rc = sigsetjmp(m->onhalt, 1))) {
+     m->canhalt = true;
+-- 
+2.43.0
+

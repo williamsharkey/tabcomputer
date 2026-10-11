@@ -18,6 +18,117 @@ export interface ServerWindowOptions {
   title?: string;
   onClose?: () => void;
   onBecome?: (port: number) => void;
+  /**
+   * On the desktop: the app the window belongs to, so the menu bar names it
+   * while it's focused (`appName`, registered when the desktop doesn't know
+   * the id). Default: one per title.
+   */
+  appId?: string;
+  appName?: string;
+  /** On the desktop: the command line that opens this window again after a reload (session restore), and where */
+  restore?: { cmd: string; cwd: string };
+}
+
+/** A command line that runs `name args` again (session restore): each argument shell-quoted */
+export function commandLine(name: string, args: string[]): string {
+  return [name, ...args].map((a) => (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(a) && !a.startsWith('~') ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
+}
+
+/** The part of the desktop's window manager (src/desktop/wm.ts) a server window uses */
+interface DesktopWM {
+  createWindow(o: Record<string, unknown>): DesktopWin;
+  app(id?: string): unknown;
+  registerApp(a: { id: string; name: string; dock?: boolean; launch: () => DesktopWin | null }): void;
+  visibleOrder(): DesktopWin[];
+}
+interface DesktopWin {
+  readonly element: HTMLElement; readonly appId?: string; readonly titlebarExtra: HTMLElement | null;
+  setTitle(t: string): void; close(force?: boolean): boolean; minimize(): void; zoom(): void; focus(): void;
+  on(ev: 'close', cb: () => void): () => void;
+}
+const desktopWM = (): DesktopWM | null => (globalThis as { __shiroDesktop?: DesktopWM }).__shiroDesktop ?? null;
+
+const emPx = (v: string, dflt: number) => { const m = /^([\d.]+)em$/.exec(v); return m ? Math.round(parseFloat(m[1]) * 16) : dflt; };
+
+/**
+ * A server window as a desktop window (when the desktop is up): the same
+ * content (an iframe, or a terminal div that can split with one), in a window
+ * the window manager stacks and focuses, so the menu bar follows it.
+ */
+function desktopServerWindow(wm: DesktopWM, options: ServerWindowOptions, titleText: string): ServerWindow {
+  const { port, path = '/', width = '32em', height = '22em', mode = 'iframe', onClose } = options;
+  const appId = options.appId ?? 'server-window';
+  if (!wm.app(appId)) {
+    wm.registerApp({ id: appId, name: options.appName ?? titleText, dock: false, launch: () => wm.visibleOrder().find((w) => w.appId === appId) ?? null });
+  }
+  const body = document.createElement('div');
+  body.style.cssText = 'display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;background:#1a1a2e';
+  let contentDiv: HTMLDivElement | null = null;
+  const iframe = document.createElement('iframe');
+  if (mode === 'terminal') {
+    contentDiv = document.createElement('div');
+    contentDiv.style.cssText = 'flex:1;overflow:hidden;display:flex;background:#1a1a2e;min-height:0';
+    iframe.style.cssText = 'display:none;border:none;border-left:1px solid #333;background:#fff';
+    body.appendChild(contentDiv);
+  } else {
+    iframe.style.cssText = 'border:none;width:100%;flex:1;background:#0a0a1a;display:block;min-height:0';
+    if (port != null) iframe.setAttribute('data-virtual-port', String(port));
+    iframe.setAttribute('data-virtual-path', path);
+    body.appendChild(iframe);
+  }
+  const win = wm.createWindow({
+    appId, title: titleText, width: emPx(width, 512), height: emPx(height, 352), minWidth: 300, minHeight: 160,
+    content: { kind: 'dom', element: body },
+  });
+  win.element.setAttribute('data-server-window', port != null ? String(port) : (options.title || 'terminal'));
+  if (options.restore) (win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = options.restore;
+  let closed = false;
+  win.on('close', () => { if (closed) return; closed = true; onClose?.(); });
+  // findServerWindow / closeAllServerWindows close it through the window manager
+  (win.element as any)._close = () => win.close(true);
+  const button = (label: string, act: () => void) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sd-btn';
+    b.textContent = label;
+    b.style.cssText = 'height:22px;padding:0 9px;margin-left:6px;font-size:11px';
+    b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => { e.stopPropagation(); act(); });
+    win.titlebarExtra?.appendChild(b);
+  };
+  if (mode === 'iframe' && port != null && options.onBecome) button('Become', () => options.onBecome!(port!));
+  let split = false;
+  return {
+    element: win.element as HTMLDivElement,
+    iframe,
+    contentDiv,
+    close: () => { win.close(true); },
+    minimize: () => win.minimize(),
+    maximize: () => win.zoom(),
+    setTitle: (t: string) => win.setTitle(t),
+    updateIframe: (html: string) => { iframe.srcdoc = html; },
+    setTerminal: mode === 'terminal' ? (wt) => {
+      button('Paste', async () => {
+        try { const text = await navigator.clipboard.readText(); if (text) wt.term.paste(text); } catch { const text = prompt('Paste text:'); if (text) wt.term.paste(text); }
+      });
+      button('Copy', async () => {
+        const selection = wt.term.getSelection?.();
+        try { await navigator.clipboard.writeText(selection || smartCopyProcess(wt.getBufferContent())); } catch {}
+      });
+    } : undefined,
+    showSplit: mode === 'terminal' ? (html: string, splitPort: number) => {
+      if (split) return;
+      split = true;
+      body.style.flexDirection = 'row';
+      contentDiv!.style.minWidth = '0';
+      iframe.style.display = 'block';
+      iframe.style.flex = '1';
+      iframe.style.minWidth = '0';
+      iframe.setAttribute('data-virtual-port', String(splitPort));
+      iframe.srcdoc = html;
+      body.appendChild(iframe);
+    } : undefined,
+  };
 }
 
 export interface ServerWindow {
@@ -43,6 +154,10 @@ export function createServerWindow(options: ServerWindowOptions): ServerWindow {
     : directory
       ? `${directory}:${port}${path}`
       : port != null ? `localhost:${port}${path}` : 'terminal';
+
+  // On the desktop: a desktop window (the classic UI keeps the floating one below)
+  const wm = desktopWM();
+  if (wm && container === document.body) return desktopServerWindow(wm, options, titleText);
 
   // Calculate responsive positioning
   // If viewport can't contain the window with 10% margin on each side, constrain it
@@ -440,6 +555,7 @@ export function findServerWindow(port: number): ServerWindow | null {
     iframe,
     contentDiv: null,
     close: () => {
+      if ((el as any)._close) { (el as any)._close(); return; }
       (el as any)._cleanup?.();
       el.remove();
     },
@@ -457,6 +573,7 @@ export function findServerWindow(port: number): ServerWindow | null {
  */
 export function closeAllServerWindows(): void {
   document.querySelectorAll('[data-server-window]').forEach(el => {
+    if ((el as any)._close) { (el as any)._close(); return; }
     (el as any)._cleanup?.();
     el.remove();
   });

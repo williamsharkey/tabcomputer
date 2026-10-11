@@ -202,9 +202,10 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   type Live = { out: (s: string) => void; err: (s: string) => void };
   /**
    * `inherit`: which of fds 0/1/2 are this process's own for the child (stdio
-   * 'inherit'): a guest passes its kernel fds; in the page, all three on a
-   * terminal run the child on that terminal (codex's npm launcher runs its
-   * native binary so, which waited for EOF on a stdin that wasn't the tty)
+   * 'inherit'): a guest passes its kernel fds; in the page, all three, with
+   * node's own stdin and stdout on a terminal, run the child on that terminal
+   * (codex's npm launcher runs its native binary so, which waited for EOF on a
+   * stdin that wasn't the tty); otherwise its output is node's (inherited())
    */
   const execAsync = async (cmd: string, env?: Record<string, unknown>, input?: string, live?: Live, inherit?: [boolean, boolean, boolean], abort?: AbortController): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
     let normalized = stripShellPrefix(cmd);
@@ -276,7 +277,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     const exitCode = input !== undefined
       ? await sh.executeWithStdin(normalized, input, (s) => { stdout += s; }, (s) => { stderr += s; })
       : await sh.execute(normalized, (s) => { stdout += s; }, (s) => { stderr += s; }, false,
-        inherit?.every(Boolean) && ctx.terminal ? ctx.terminal : undefined, true);
+        // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
+        inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined, true);
 
     // Refresh fileCache from Shiro FS cache — shell commands may have created,
     // modified, or deleted files that fileCache still has stale entries for.
@@ -534,6 +536,12 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     if (err && r.stderr) { proc?.stderr?.write(r.stderr); r = { ...r, stderr: '' }; }
     return r;
   };
+  /** A fast-path answer (getSyncResponse), its inherited output written now (`echo` with stdio 'inherit' printed nothing) */
+  const syncInherited = <T extends { stdout: string; stderr: string; status: number }>(r: T | null, opts: any): T | null => {
+    if (!r) return r;
+    const { stdout, stderr } = inherited({ stdout: r.stdout, stderr: r.stderr, exitCode: r.status }, opts);
+    return { ...r, stdout, stderr };
+  };
   /** The `input` option as text (a string, Buffer or typed array) */
   const inputOf = (opts: any): string | undefined => {
     const v = opts?.input;
@@ -580,7 +588,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       if (deps.guest) { const g = guestSync(cmd, opts); guestThrow(cmd, g); return g.stdout; }
       // Synchronous fast-path for detection commands
-      const syncResponse = inputOf(opts) === undefined ? getSyncResponse(effectiveCmd) : null;
+      const syncResponse = inputOf(opts) === undefined ? syncInherited(getSyncResponse(effectiveCmd), opts) : null;
       if (syncResponse) {
         // Throw on non-zero exit (bash semantics)
         if (syncResponse.status !== 0) {
@@ -646,7 +654,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const wrap = (s: string) => wantString ? s : FakeBuffer.from(s);
       // Synchronous fast-paths for version/detection checks that the CLI reads
       // without awaiting. Without this, stdout is '' when read synchronously.
-      const syncResponse = inputOf(opts) === undefined ? getSyncResponse(fullCmd) : null;
+      const syncResponse = inputOf(opts) === undefined ? syncInherited(getSyncResponse(fullCmd), opts) : null;
       if (syncResponse) {
         const out = wrap(syncResponse.stdout);
         const err = wrap(syncResponse.stderr);
@@ -945,7 +953,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       if (deps.guest) { const g = guestSync(fullCmd, opts); guestThrow(fullCmd, g); return g.stdout; }
       // Synchronous fast-path for detection commands
-      const syncResponse = inputOf(opts) === undefined ? getSyncResponse(fullCmd) : null;
+      const syncResponse = inputOf(opts) === undefined ? syncInherited(getSyncResponse(fullCmd), opts) : null;
       if (syncResponse) {
         const buf: any = FakeBuffer.from(syncResponse.stdout);
         buf.then = (resolve: any) => resolve(FakeBuffer.from(syncResponse.stdout));

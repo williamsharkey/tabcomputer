@@ -174,7 +174,7 @@ export const rgCmd: Command = {
             const stat = await ctx.fs.stat(childPath);
             if (stat.isDirectory()) {
               await collectFiles(childPath, displayPath, depth + 1);
-            } else if (stat.isFile() && !stat.isFIFO?.()) { // (not a FIFO, device or socket: reading one would wait)
+            } else if (stat.isFile()) { // (not a FIFO: reading one would wait)
               if (matchesFilters(displayPath)) {
                 files.push({ path: displayPath, mtime: stat.mtime?.getTime?.() || 0 });
               }
@@ -371,7 +371,7 @@ export const rgCmd: Command = {
           const stat = await ctx.fs.stat(childPath);
           if (stat.isDirectory()) {
             await searchDir(childPath, displayPath);
-          } else if (stat.isFile() && !stat.isFIFO?.()) { // (not a FIFO, device or socket: reading one would wait)
+          } else if (stat.isFile()) { // (not a FIFO: reading one would wait)
             await searchFile(childPath, displayPath);
           }
         } catch { /* skip */ }

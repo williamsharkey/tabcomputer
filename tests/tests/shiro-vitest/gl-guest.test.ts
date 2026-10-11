@@ -37,7 +37,8 @@ async function setup(root = ROOT!) {
   const { startDisplay } = await import('@shiro/x11/display');
   const { getXSession, configureXSession } = await import('@shiro/x11/session');
   const { installGLX } = await import('@shiro/x11/glx');
-  const { startGLServer } = await import('@shiro/gl/server');
+  const { startGLServer, getGLServer } = await import('@shiro/gl/server');
+  getGLServer()?.stop(); // one per test: the earlier test's server has its own backend
   const { Executor } = await import('@shiro/gl/exec');
   const kernel = new Kernel({ fs, registerWithProcessTable: false });
   registerBlinkLoader(kernel);
@@ -65,7 +66,7 @@ async function setup(root = ROOT!) {
     // as in the page, nothing forces the vendor: libglvnd asks Xshiro's GLX (GLX_VENDOR_NAMES_EXT)
     const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: { DISPLAY: ':0', PATH: '/usr/bin:/bin', HOME: '/root', ...env }, fds: { 0: new BufferFile(''), 1: out, 2: out } });
     const t0 = Date.now();
-    const status = await Promise.race([p.wait(), new Promise<number>((r) => setTimeout(() => { p.kill?.(9); r(-1); }, ms))]);
+    const status = await Promise.race([p.wait(), new Promise<number>((r) => setTimeout(() => { kernel.kill(p.pid, 9); r(-1); }, ms))]);
     return { status, out: out.text(), ms: Date.now() - t0 };
   };
   return { run, mock, frames, execs, logs, fs };
@@ -88,6 +89,20 @@ it.skipIf(!ROOT || !existsSync(LIB))('glxinfo and glxgears through glshiro', asy
   expect(frames.length).toBeGreaterThan(3);
   expect(frames[0]).toMatchObject({ width: 300, height: 300 });
   expect(mock.count('drawElements') + mock.count('drawArrays')).toBeGreaterThan(frames.length);
+}, 200_000);
+
+/** Pbuffers as Qt and Krita use them (scripts/gl/probes/pbuffer.c in the rootfs's /usr/bin) */
+it.skipIf(!ROOT || !existsSync(LIB) || !existsSync(join(ROOT ?? '', 'usr/bin/pbuffer')))('a pbuffer through glvnd and glshiro', async () => {
+  const { run, mock } = await setup();
+  const r = await run(['/usr/bin/pbuffer'], 120_000);
+  console.log(r.out);
+  expect(r.status).toBe(0);
+  expect(r.out).toContain('pbuffer created');
+  expect(r.out).toContain('size 64x32');
+  expect(r.out).toContain('current 1');
+  // the recording WebGL2 reads back 0x80 everywhere
+  expect(r.out).toContain('pixel 128 128 128 128');
+  expect(mock.calls.filter((c) => c.name === 'renderbufferStorage').map((c) => c.args.slice(2))).toContainEqual([64, 32]);
 }, 200_000);
 
 /** Transport numbers (scripts/gl/probes/glbench.c in the rootfs's /usr/bin): round trips, bulk MB/s, small calls/s. */

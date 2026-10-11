@@ -1,0 +1,60 @@
+From 158c842963aa8b81935c9aa07edb04d96279b102 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sat, 10 Oct 2026 23:57:30 +0000
+Subject: [PATCH] Shiro: no GIL while holding the shared mappings' lock (an
+ munmap's write-back and an mmap at once stopped a threaded process for good)
+
+---
+ blink/shiro.inc | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index abac40e..9fa38fa 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -3440,8 +3440,17 @@ static void ShiroWriteBack(struct Machine *m, struct ShiroSharedMap *s, i64 addr
+   free(buf);
+ }
+ 
++// (Without the GIL while it holds g_shiro_maps_lock: a write-back and the
++// fd's close are kernel calls, which let the GIL go and take it back, and a
++// thread holding the GIL may be waiting for the lock in the meantime, an
++// mmap at ShiroMmapFile or a fault at ShiroBusFault. codex's threads did
++// both, an munmap and an mmap at once, and stopped: tabcomputer#27)
++EMSCRIPTEN_KEEPALIVE int blink_shiro_mapsgil(void) { return 1; }
++
+ static void ShiroSyncMaps(struct Machine *m, i64 addr, i64 size, bool drop) {
+   struct ShiroSharedMap **pp, *s;
++  bool held = GilHeld();
++  if (held) GilRelease();
+   LOCK(&g_shiro_maps_lock);
+   for (pp = &g_shiro_maps; (s = *pp);) {
+     if (s->sys == m->system && s->addr < addr + size && addr < s->addr + s->size) {
+@@ -3457,6 +3466,7 @@ static void ShiroSyncMaps(struct Machine *m, i64 addr, i64 size, bool drop) {
+     pp = &s->next;
+   }
+   UNLOCK(&g_shiro_maps_lock);
++  if (held) GilAcquire();
+ }
+ 
+ static void ShiroBusDrop(struct Machine *, i64, i64);
+@@ -3472,13 +3482,16 @@ static i64 ShiroMremapFile(struct Machine *m, i64 old, u64 osz, u64 nsz, int fla
+   i64 off = 0, target, r;
+   int kfd = -1, prot, mflags = 1;  // MAP_SHARED
+   u64 entry;
++  bool held;
+   if (flags & ~3) return SHIRO_NOT_REMOTE;  // (Blink's checks answer)
++  if ((held = GilHeld())) GilRelease();  // (as ShiroSyncMaps: the dup is a kernel call)
+   LOCK(&g_shiro_maps_lock);
+   for (sm = g_shiro_maps; sm; sm = sm->next) {
+     if (sm->sys == m->system && sm->addr == old && (u64)sm->size == ROUNDUP(osz, 4096)) break;
+   }
+   if (sm) kfd = (int)KS(m, 32, A12(sm->fd)), off = sm->off;  // dup: munmap closes its own
+   UNLOCK(&g_shiro_maps_lock);
++  if (held) GilAcquire();
+   if (!sm) return SHIRO_NOT_REMOTE;
+   if (kfd < 0) return kfd;
+   entry = PeekPte(m->system, old);
+-- 
+2.43.0
+

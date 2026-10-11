@@ -89,6 +89,17 @@ describe('GL executor', () => {
     expect(t.ex.frames).toBe(1);
   });
 
+  it('gives a pbuffer its own framebuffer of the size it was created with, and frees it', () => {
+    const t = setup();
+    const PB = 0x600001;
+    t.run(0, [['tcCreatePbuffer', PB, 128, 64], ['tcCreateContext', 1, 0, 2, 1, 0], ['tcMakeCurrent', 1, PB, PB, FBCONFIG]]);
+    expect(t.mock.calls.filter((c) => c.name === 'renderbufferStorage').map((c) => c.args.slice(2))).toEqual([[128, 64], [128, 64]]);
+    expect(t.mock.calls.filter((c) => c.name === 'viewport').at(-1)?.args).toEqual([0, 0, 128, 64]);
+    const deleted = t.mock.count('deleteFramebuffer');
+    t.run(0, [['tcMakeCurrent', 1, 0, 0, FBCONFIG], ['tcDrawableGone', PB]]);
+    expect(t.mock.count('deleteFramebuffer')).toBe(deleted + 1);
+  });
+
   it('follows the window size at swap', () => {
     const t = setup();
     t.start();

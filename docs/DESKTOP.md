@@ -112,19 +112,46 @@ destroyed), and the next Terminal window adopts it again.
   opens an app or file, or runs the command in a new Terminal window; the
   last entry always runs what you typed. Ctrl+Space no longer reaches the
   terminal (Ctrl+@ still sends NUL, e.g. for Emacs' set-mark).
-- **Layout after a reload** (`session.ts`): Terminal (its working
-  directory), Files (its folder), Settings (its pane), Activity and About
-  windows come back where they were, maximized/snapped/minimized as they
-  were (localStorage `tabcomputer-desktop-session`). The main terminal gets its
-  geometry at boot; the others reopen once the page is idle. Program windows
-  (Vim, htop, X11 apps) are not reopened: that would run them again.
+- **Session restore on reload** (`session.ts`, on by default; Settings →
+  Appearance "Restore session on reload"). Windows come back where they
+  were, maximized/snapped/minimized as they were, in their stacking order
+  (the main terminal included), and the window that had the focus gets it
+  back.
+  - Terminal windows: every tab with its working directory, the exported
+    variables it changed (secrets never stored), a program's title and its
+    last 2000 lines of scrollback, then a dim "— restored after reload —".
+    A line still running at the reload is printed ("was running: …") and
+    typed on the prompt, not run. Known-safe servers (`RESTARTABLE`: `serve`,
+    `npm run dev`, `vite`, `python -m http.server`) start again, and Claude
+    Code or Codex resume their own session (`agent-resume.ts`).
+  - Files (its folder), Settings (its pane), Activity, About.
+  - Windows a command opened run that command again in its directory:
+    mdview, html, img, finder, Code, Monaco, a Preview (`serve open`), and a
+    Debian GUI app's main window (`gui APP`, once per app).
+  - Saved small in localStorage `tabcomputer-desktop-session` (on window
+    changes, every 3 s while terminals print, at pagehide), scrollback in
+    IndexedDB `tabcomputer-session`; never a blocking write. Restore runs
+    after the first prompt. Not in safe mode, and not after a load that froze
+    (the watchdog's wedge record; the main terminal says so), so a session
+    that freezes on restore can't loop. `safe-mode reset-layout` forgets it.
+- **New windows open inside the work area**: a window's whole frame starts
+  between the menu bar and the top of the dock (moved up, then shrunk if it
+  has to be), however the cascade or an asked-for position would place it.
 - **First visit**: a welcome card in the corner (`welcome.ts`, Drafting
   style, not modal) with one-click demos that type their command into a
   Terminal: a Debian package (`apt install cowsay`), a Vite + React app
   (its Preview opens when the dev server is up), Python (`toolchain install
   python`), Claude Code, a Linux GUI app (the Apps window) and Settings.
   Dismissed once per browser (localStorage `tabcomputer-desktop-welcome`);
-  after that the module isn't loaded. Help → Welcome shows it again.
+  after that the module isn't loaded. Help → Welcome shows it again. It
+  drags like a window, by any part that isn't a button.
+- **Code** (`code`, the CodeMirror editor in `src/commands/code-editor.ts`)
+  opens as a desktop window of the Code app. While it's focused the menu
+  bar says Code, and its File menu starts with Open… and Open Folder… (a
+  path sheet, `codesheet.ts`, that runs `code PATH`). The first window
+  shows a one-line hint (File ▸ Open…, Ctrl+S, the ☰ file list, Ctrl+F);
+  there is no command palette. In the classic terminal UI it keeps its
+  floating server window.
 - **About This Computer** lists measured status with the document that
   records each number (`STATUS` in `apps/about.ts`: keep it in step with
   DEBIAN_SCORE.md and CONFORMANCE.md), and what is real, emulated and absent.

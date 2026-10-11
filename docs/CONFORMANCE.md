@@ -6,7 +6,7 @@ conformance work started (fc0af54).
 
 | Suite | Before | Now |
 |---|---|---|
-| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2107/2417 (87.2%)** |
+| [Shell: oils spec tests](#shell-oils-spec-tests) | 57/1567 (3.6%) | **2148/2417 (88.9%)** |
 | [Shell: oils spec tests in Chromium](#shell-oils-spec-tests-in-chromium) | — | **2035/2417 (84.2%)** |
 | [Shell: smoosh POSIX tests](#shell-smoosh-posix-tests) | 111/162 (68.5%) | **159/162 (98.1%)** |
 | [Utilities: busybox testsuite](#utilities-busybox-testsuite) | 147/635 (23.1%) | **625/635 (98.4%)** |
@@ -25,16 +25,16 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 |---|---|---|---|
 | smoke | 0/18 | 18/18 | 0 |
 | comments | 0/2 | 2/2 | 0 |
-| quote | 0/33 | 29/33 | 4 |
+| quote | 0/33 | 32/33 | 1 |
 | word-split | 1/53 | 51/53 | 2 |
 | word-eval | 0/8 | 8/8 | 0 |
 | var-sub | 0/6 | 3/6 | 3 |
 | var-sub-quote | 0/41 | 40/41 | 1 |
-| var-op-test | 1/35 | 30/37 | 7 |
-| var-op-strip | 0/28 | 25/28 | 3 |
+| var-op-test | 1/35 | 31/37 | 6 |
+| var-op-strip | 0/28 | 28/28 | 0 |
 | var-op-len | 0/7 | 8/8 | 0 |
-| var-op-patsub | 0/27 | 23/28 | 5 |
-| var-op-slice | 0/21 | 19/22 | 3 |
+| var-op-patsub | 0/27 | 26/28 | 2 |
+| var-op-slice | 0/21 | 21/22 | 1 |
 | var-num | 0/7 | 7/7 | 0 |
 | vars-special | 0/37 | 31/37 | 6 |
 | arith | 2/71 | 74/74 | 0 |
@@ -42,7 +42,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | here-doc | 0/32 | 30/32 | 2 |
 | redirect | 3/39 | 37/39 | 2 |
 | if_ | 0/5 | 5/5 | 0 |
-| loop | 1/28 | 27/29 | 2 |
+| loop | 1/28 | 29/29 | 0 |
 | case_ | 0/13 | 13/13 | 0 |
 | sh-func | 0/11 | 12/12 | 0 |
 | func-parsing | 1/12 | 10/12 | 2 |
@@ -64,12 +64,12 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | array-basic | 0/5 | 5/5 | 0 |
 | array | 2/78 | 77/78 | 1 |
 | array-assoc | 0/38 | 36/38 | 2 |
-| brace-expansion | 0/55 | 51/55 | 4 |
-| tilde | 0/14 | 9/14 | 5 |
+| brace-expansion | 0/55 | 52/55 | 3 |
+| tilde | 0/14 | 13/14 | 1 |
 | glob | 0/23 | 21/23 | 2 |
-| pipeline | 0/25 | 22/26 | 4 |
-| exit-status | 0/11 | 8/11 | 3 |
-| errexit | 0/35 | 34/35 | 1 |
+| pipeline | 0/25 | 24/26 | 2 |
+| exit-status | 0/11 | 11/11 | 0 |
+| errexit | 0/35 | 35/35 | 0 |
 | subshell | 0/2 | 2/2 | 0 |
 | command_ | 2/16 | 14/16 | 2 |
 | posix | 2/15 | 13/15 | 2 |
@@ -82,14 +82,14 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | regex | 1/37 | 35/37 | 2 |
 | temp-binding | 0/4 | 4/4 | 0 |
 | background | 3/27 | 24/27 | 3 |
-| sh-options | 0/32 | 33/37 | 4 |
+| sh-options | 0/32 | 36/37 | 1 |
 | command-parsing | 0/2 | 2/2 | 0 |
 | var-op-bash | — | 25/26 | 1 |
 | nameref | — | 28/32 | 4 |
-| assign-extended | — | 29/34 | 5 |
-| array-literal | — | 7/19 | 12 |
+| assign-extended | — | 30/34 | 4 |
+| array-literal | — | 9/19 | 10 |
 | array-sparse | — | 37/39 | 2 |
-| array-assign | — | 4/11 | 7 |
+| array-assign | — | 5/11 | 6 |
 | array-compat | — | 9/12 | 3 |
 | builtin-trap-bash | — | 8/14 | 6 |
 | builtin-trap-err | — | 8/12 | 4 |
@@ -115,12 +115,12 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | redirect-command | — | 23/23 | 0 |
 | redirect-multi | — | 13/13 | 0 |
 | redir-order | — | 5/5 | 0 |
-| arith-context | — | 12/16 | 4 |
+| arith-context | — | 15/16 | 1 |
 | arith-dynamic | — | 2/4 | 2 |
 | for-expr | — | 7/8 | 1 |
-| bugs | — | 23/29 | 6 |
+| bugs | — | 24/29 | 5 |
 | toysh-posix | — | 17/23 | 6 |
-| toysh | — | 4/8 | 4 |
+| toysh | — | 6/8 | 2 |
 | blog1 | — | 4/9 | 5 |
 | blog2 | — | 4/8 | 4 |
 | blog-other1 | — | 4/4 | 0 |
@@ -128,7 +128,7 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 | ble-idioms | — | 23/26 | 3 |
 | ble-features | — | 4/4 | 0 |
 | ble-unset | — | 0/2 | 2 |
-| nocasematch-match | — | 3/6 | 3 |
+| nocasematch-match | — | 6/6 | 0 |
 | command-sub-ksh | — | 0/0 | 0 |
 | paren-ambiguity | — | 7/9 | 2 |
 | parse-errors | — | 25/25 | 0 |
@@ -143,19 +143,17 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 
 <details><summary>Failing cases</summary>
 
-- **quote**: $'' octal escapes don't have leading 0; $'' octal escapes with fewer than 3 chars; $'' supports \cA escape for Ctrl-A - mask with 0x1f; \c' is an escape, unlike bash
+- **quote**: \c' is an escape, unlike bash
 - **word-split**: IFS and joining arrays by assignments; IFS=x and '' and $@ (#2)
 - **var-sub**: Braced block inside ${}; Descriptor redirect to bad "$@"; Here doc with bad "$@" delimiter
 - **var-sub-quote**: part_value tree on RHS
-- **var-op-test**: Lazy Evaluation of Alternative; Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
-- **var-op-strip**: Remove const suffix is vectorized on $@ array; strip none; Strip Right Brace (#702)
-- **var-op-patsub**: Confusing unquoted slash matches bash (and ash); Synthesized ${x///} bug (similar to above); Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character; Chromium from http://www.oilshell.org/blog/2016/11/07.html
-- **var-op-slice**: ${@:offset} and ${*:offset}; ${@:offset:length} and ${*:offset:length}; ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
+- **var-op-test**: Unquoted with array as default value; Quoted with array as default value; Assign default with array; array and - and +; $* ("" "") and - and + (IFS=); op-test for unquoted ${a[*]:-empty} with IFS=
+- **var-op-patsub**: Replace backslash; When LC_ALL=C, pattern ? doesn't match multibyte character
+- **var-op-slice**: ${array[@]:} vs ${array[@]: }  - bash and zsh inconsistent
 - **vars-special**: $PATH is set if unset at startup; Vars set interactively only: $HISTFILE; Some vars are set, even without startup file, or env: PATH, PWD; $LINENO is the current line, not line of function call; $LINENO in other for loops; $_ with assignments, arrays, etc.
 - **command-sub**: Syntax errors with double quotes within backticks
 - **here-doc**: Here doc with bad comsub delimiter; Function def and execution with here doc
 - **redirect**: 1\>&2- (Bash bug: fail to restore closed fd); \<\> for read/write named pipes (hang/timeout)
-- **loop**: bad arg to break; too many args to continue
 - **func-parsing**: Function name with $; Function name with command sub
 - **builtin-printf**: printf %c unicode - prints the first BYTE of a string - it does not respect UTF-8; bash truncates long strftime string at 128; printf positive integer overflow; printf negative integer overflow
 - **builtin-eval-source**: eval usage; Source with syntax error
@@ -170,12 +168,10 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **assign**: Trying to run keyword 'for'; Test above without 'local' (which is not POSIX); aliased assignment doesn't split; "declare -a arr" and "readonly -a a" creates an empty array (OSH)
 - **array**: array with invalid token
 - **array-assoc**: unset -v and assoc array; bash bug: (( A["$key"] = 1 )) doesn't work
-- **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Two kinds of tilde expansion; Mixed case char expansion is invalid
-- **tilde**: ${undef:-~}; ${x//~/~root}; a[x]=foo:~ has tilde expansion; x=${undef-~:~}; temp assignment x=~ env
+- **brace-expansion**: expansion on RHS of assignment; no expansion with RHS assignment; Mixed case char expansion is invalid
+- **tilde**: x=${undef-~:~}
 - **glob**: \ in unquoted substitutions does not match a backslash; \ in unquoted substitutions escapes globchars
-- **pipeline**: \|&; ! is not a command; Evaluation of argv[0] in pipeline occurs in child; SIGPIPE causes pipeline to die (regression for issue #295)
-- **exit-status**: If subshell false -- exit code is propagated in a weird way (strict_argv prevents); Exit code when command sub evaluates to empty str, e.g. `false` (#2416); More test cases with empty argv
-- **errexit**: pipeline process respects errexit
+- **pipeline**: \|&; SIGPIPE causes pipeline to die (regression for issue #295)
 - **command_**: Permission denied; Non-executable on $PATH
 - **posix**: Empty for loop without in.  Do can be on the same line I guess.; Command substitution in default
 - **alias**: define and use alias on a single line; first and second word are the same alias, with trailing space; Syntax error after expansion; Loop split across alias in another way; Loop split across both iterative and recursive aliases; Alias with a quote in the middle is a syntax error; Alias can be defined and used on a single line; alias with line continuation in the middle; alias for left brace; alias for left paren; Corner case: alias inside LHS array arithmetic expression
@@ -183,13 +179,13 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **process-sub**: Non-linear pipeline with \>()
 - **regex**: Unquoted { is a regex parse error; make a lisp example
 - **background**: wait -n with arguments - arguments are respected; wait with invalid arg; Signal message for killed background job
-- **sh-options**: noclobber on \<\>; set without args lists variables; set without args and array variables; set without args and assoc array variables (not in OSH)
+- **sh-options**: set without args and assoc array variables (not in OSH)
 - **var-op-bash**: Array expansion with nullary var op @Q
 - **nameref**: exported nameref; a[expr] in nameref; a[@] in nameref; bad mutation through nameref: ref[0]= where ref is array[0]
-- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; declare -g (bash-specific; bash-completion uses it); dynamic array parsing is not allowed
-- **array-literal**: Tilde expansions in RHS of [k]=v (BashArray); Tilde expansions in RHS of [k]=v (BashAssoc); append to element (BashArray); append to element (BashAssoc); non-index forms of element (BashAssoc); Evaluation order (2); Evaluation order (3); [k1]=v1 (BashArray); [k1]=v1 looking like brace expansions (BashArray); BashArray cannot be changed to BashAssoc and vice versa; (strict_array) declare -A s+=(); (strict_array) assoc=(key value ...) is not allowed
+- **assign-extended**: declare -F with shopt -s extdebug and main file; Env bindings shouldn't contain array assignments; syntax error in array assignment; dynamic array parsing is not allowed
+- **array-literal**: Tilde expansions in RHS of [k]=v (BashArray); Tilde expansions in RHS of [k]=v (BashAssoc); append to element (BashArray); append to element (BashAssoc); non-index forms of element (BashAssoc); Evaluation order (2); Evaluation order (3); BashArray cannot be changed to BashAssoc and vice versa; (strict_array) declare -A s+=(); (strict_array) assoc=(key value ...) is not allowed
 - **array-sparse**: a[i]=v with BigInt; compgen -F _set_COMPREPLY
-- **array-assign**: Multiple LHS array words; LHS array is protected with shopt -s eval_unsafe_arith, e.g. 'a[$(echo 2)]'; file named a[ is  not executed; Are quotes allowed?; Tricky parsing - a[ a[0]=1 ]=X  a[ a[0]+=1 ]+=X; argv.py a[1 + 2]=; declare builtin doesn't allow spaces
+- **array-assign**: Multiple LHS array words; LHS array is protected with shopt -s eval_unsafe_arith, e.g. 'a[$(echo 2)]'; file named a[ is  not executed; Tricky parsing - a[ a[0]=1 ]=X  a[ a[0]+=1 ]+=X; argv.py a[1 + 2]=; declare builtin doesn't allow spaces
 - **array-compat**: Assignment Causes Array Decay; Array Decay with IFS; User arrays decay
 - **builtin-trap-bash**: trap DEBUG and command sub / subshell; trap DEBUG case; trap DEBUG for expr; trap DEBUG if while; trap RETURN; Combine ERR trap and USR1 trap
 - **builtin-trap-err**: trap ERR pipelines without simple commands; Pipeline group quirk; set -o errtrace: trap ERR runs in subprograms; set -o errtrace: trap ERR with &
@@ -209,18 +205,17 @@ The file set grew from 62 to 117 oils spec files (1567 to 2417 cases) with the b
 - **var-ref**: ${!a[@]-'default'} is legal but fails with more than one element; var ref TO array with arbitrary subscripts; Var Ref Code Injection $(tee PWNED); ${!array_ref:-set} and ${!array_ref:=assign}; Array indirect expansion with suffix operators; Array indirect expansion with replacements; Array indirect expansion with @? conversion
 - **xtrace**: xtrace with unprintable chars
 - **sh-options-bash**: export SHELLOPTS does cross-process tracing; export SHELLOPTS does cross-process tracing with bash; OSH calling bash with SHELLOPTS does not change braceexpand
-- **arith-context**: $[ is a synonym for $((; $[$var is a synonym for $(($var (#2426); $[$undefined] is a synonym for $(($undefined (#2566); Empty expression a[]
+- **arith-context**: Empty expression a[]
 - **arith-dynamic**: Double quotes; Substitutions
 - **for-expr**: Accepts { } syntax too
-- **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution; Crash after changing $[] to be alias of $(( ))
+- **bugs**: assign readonly -- one line; file with NUL byte; autoconf word split (#1449); command execution $(echo 42 \| tee PWNED) not allowed; unset doesn't allow command execution
 - **toysh-posix**: IFS; IFS - http://landley.net/notes.html#05-03-2020; IFS=x and '' and unquoted $@ - reduction of case above - copied into spec/word-split; for loop parsing - http://landley.net/notes.html#04-03-2020; IFS 4; Command Sub Syntax Error
-- **toysh**: char class / extglob; patsub of $* - http://landley.net/notes.html#23-04-2020; Brace Expansion; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
+- **toysh**: char class / extglob; {abc}\<\<\< - http://landley.net/notes-2019.html#09-12-2019
 - **blog1**: ${##}; ${###}; ${####}; ${##2}; ${###2}
 - **blog2**: -a -a -a -a; -a -a -a -a -a; -a -a -a -a -a -a -a; -a -a -a -a -a -a -a -a
 - **nix-idioms**: ${!ref} to undefined string var is fatal, INCONSISTENT with array; export with dynamic var name +=
 - **ble-idioms**: shopt -u expand_aliases and eval; Issue #1069 [53] BUG: a[1 + 1]=2, etc. fails; Issue #1069 [59] - Assigning Str to BashArray/BashAssoc should not remove BashArray/BashAssoc
 - **ble-unset**: [bash_unset] dynamic-unset for nested tempenvs; [bash_unset] local-unset for nested tempenvs
-- **nocasematch-match**: [[ equality matching; [[ regex matching; case matching
 - **paren-ambiguity**: (( closed with ) ) after multiple lines is command - #2337; $(( closed with ) ) after multiple lines is command - #2337
 - **unicode**: OSH source code doesn't have to be valid Unicode (like other shells)
 - **nul-bytes**: printf - literal NUL in format string; printf - NUL byte in value (OSH and zsh agree); NUL bytes with echo $'\0' (OSH and zsh agree); NUL bytes and IFS splitting; NUL bytes with test -n; NUL bytes with test -f; NUL bytes with ${#s} (OSH and zsh agree); Compare \x00 byte versus \x01 byte - command sub; Compare \x00 byte versus \x01 byte - read builtin; Compare \x00 byte versus \x01 byte - read -n; Compare \x00 byte versus \x01 byte - mapfile builtin; Strip ops # ## % %% with NUL bytes; Issue 2269 Reduction; Issue 2269 - Do NUL bytes match ? in ${a#?}

@@ -583,6 +583,14 @@ class WindowImpl implements DesktopWindow {
       height = Math.max(Math.min(height, wa.height - TITLEBAR_H - 12), Math.min(this.minHeight, wa.height - TITLEBAR_H));
     }
     const pos = opts.x !== undefined && opts.y !== undefined ? { x: opts.x, y: opts.y } : wm.placement(width, height);
+    // A new window opens inside the work area, never past the top of the dock (the cascade
+    // offset or an asked-for position can push a tall one down): move it up, then shrink it
+    if (!opts.override) {
+      const chrome = opts.decorations === 'none' ? 0 : TITLEBAR_H;
+      if (pos.y + chrome + height > wa.height) pos.y = Math.max(0, wa.height - chrome - height);
+      if (pos.y + chrome + height > wa.height) height = Math.max(Math.min(this.minHeight, wa.height - chrome), wa.height - chrome - pos.y);
+      if (pos.x + width > wa.width) pos.x = Math.max(0, wa.width - width);
+    }
     this.g = { x: Math.round(pos.x), y: Math.round(pos.y), width, height };
 
     const el = document.createElement('div');

@@ -1,0 +1,735 @@
+{
+ "format": 1,
+ "env": {
+  "date": "2026-10-10T22:51:59.940Z",
+  "git": {
+   "sha": "920a9dfef1742605e78dba3289c874704e3df70c",
+   "short": "920a9df",
+   "branch": "unix/bench",
+   "dirty": false
+  },
+  "node": "v22.22.0",
+  "chromium": "141.0.7390.37",
+  "os": "Linux 6.18.44-fc-v114 x64",
+  "cpu": {
+   "model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+   "count": 4
+  },
+  "memoryGiB": 15.7,
+  "quick": true,
+  "runs": 5,
+  "machine": {
+   "id": "cfad8fbf4994",
+   "label": "4× Intel(R) Xeon(R) Processor @ 2.80GHz, 15.7 GiB, Linux 6.18.44-fc-v114 x64, Chromium 141.0.7390.37"
+  },
+  "durationSec": 1710,
+  "netcache": {
+   "hits": 3,
+   "misses": 304,
+   "failed": 0
+  }
+ },
+ "results": [
+  {
+   "name": "workflow.vite.round",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "",
+   "median": null,
+   "p90": null,
+   "n": 0,
+   "samples": [],
+   "notes": "round 1 failed: frame.waitForFunction: Timeout 300000ms exceeded.",
+   "error": true
+  },
+  {
+   "name": "workflow.vite.create",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 740,
+   "p90": 740,
+   "min": 740,
+   "max": 740,
+   "n": 1,
+   "samples": [
+    740
+   ],
+   "notes": "`npm create vite@7 app -- --template react --no-interactive` typed at the terminal, fresh profile (pinned: @latest moves to new majors)"
+  },
+  {
+   "name": "workflow.vite.npm_i",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 14841,
+   "p90": 14841,
+   "min": 14841,
+   "max": 14841,
+   "n": 1,
+   "samples": [
+    14841
+   ],
+   "notes": "`npm i` in the new app (react, vite, plugins; registry from the bench cache)"
+  },
+  {
+   "name": "workflow.vite.build",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 4874,
+   "p90": 4874,
+   "min": 4874,
+   "max": 4874,
+   "n": 1,
+   "samples": [
+    4874
+   ],
+   "notes": "`npm run build` (vite build of the React template) typed at the terminal"
+  },
+  {
+   "name": "workflow.vite.build.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 8.5,
+   "p90": 8.5,
+   "min": 8.5,
+   "max": 8.5,
+   "n": 1,
+   "samples": [
+    8.5
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `npm run build`"
+  },
+  {
+   "name": "workflow.vite.build.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 2.7,
+   "p90": 2.7,
+   "min": 2.7,
+   "max": 2.7,
+   "n": 1,
+   "samples": [
+    2.7
+   ],
+   "notes": "host sys CPU of the Chromium tree during `npm run build`"
+  },
+  {
+   "name": "workflow.vite.dev_ready",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1887,
+   "p90": 1887,
+   "min": 1887,
+   "max": 1887,
+   "n": 1,
+   "samples": [
+    1887
+   ],
+   "notes": "`npm run dev` until vite prints ready"
+  },
+  {
+   "name": "workflow.peak_rss.vite_npm_i",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 278,
+   "p90": 278,
+   "min": 278,
+   "max": 278,
+   "n": 1,
+   "samples": [
+    278
+   ],
+   "notes": "renderer RSS peak above the pre-run level, npm i"
+  },
+  {
+   "name": "workflow.peak_rss.vite_npm_i_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 227.6,
+   "p90": 227.6,
+   "min": 227.6,
+   "max": 227.6,
+   "n": 1,
+   "samples": [
+    227.6
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.vite_dev_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 75.8,
+   "p90": 75.8,
+   "min": 75.8,
+   "max": 75.8,
+   "n": 1,
+   "samples": [
+    75.8
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.vite_dev",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 76.77,
+   "p90": 76.77,
+   "min": 76.77,
+   "max": 76.77,
+   "n": 1,
+   "samples": [
+    76.77
+   ],
+   "notes": "renderer RSS peak above the pre-run level, npm run dev → ready"
+  },
+  {
+   "name": "workflow.go.toolchain_install",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 4840,
+   "p90": 4840,
+   "min": 4840,
+   "max": 4840,
+   "n": 1,
+   "samples": [
+    4840
+   ],
+   "notes": "`toolchain install go` (layer: placeholders + dpkg database) after `debian install`"
+  },
+  {
+   "name": "workflow.go.run_first",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 33437,
+   "p90": 33437,
+   "min": 33437,
+   "max": 33437,
+   "n": 1,
+   "samples": [
+    33437
+   ],
+   "notes": "first `go run hello.go` (Go 1.24 in Blink: compile + link + run; fetches the toolchain's chunks)"
+  },
+  {
+   "name": "workflow.go.run_warm",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 13525,
+   "p90": 13525,
+   "min": 13525,
+   "max": 13525,
+   "n": 1,
+   "samples": [
+    13525
+   ],
+   "notes": "second `go run hello.go` (build cache warm)"
+  },
+  {
+   "name": "workflow.peak_rss.go_run_first",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 484.4,
+   "p90": 484.4,
+   "min": 484.4,
+   "max": 484.4,
+   "n": 1,
+   "samples": [
+    484.4
+   ],
+   "notes": "renderer RSS peak above the pre-run level"
+  },
+  {
+   "name": "workflow.peak_rss.go_run_first_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 484.4,
+   "p90": 484.4,
+   "min": 484.4,
+   "max": 484.4,
+   "n": 1,
+   "samples": [
+    484.4
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.go_run_warm",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 143.5,
+   "p90": 143.5,
+   "min": 143.5,
+   "max": 143.5,
+   "n": 1,
+   "samples": [
+    143.5
+   ],
+   "notes": "renderer RSS peak above the pre-run level"
+  },
+  {
+   "name": "workflow.go.run_first.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 48.87,
+   "p90": 48.87,
+   "min": 48.87,
+   "max": 48.87,
+   "n": 1,
+   "samples": [
+    48.87
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during the first `go run hello.go`"
+  },
+  {
+   "name": "workflow.go.run_first.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 16.88,
+   "p90": 16.88,
+   "min": 16.88,
+   "max": 16.88,
+   "n": 1,
+   "samples": [
+    16.88
+   ],
+   "notes": "host sys CPU of the Chromium tree during the first `go run hello.go`"
+  },
+  {
+   "name": "workflow.go.run_warm.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 17.8,
+   "p90": 17.8,
+   "min": 17.8,
+   "max": 17.8,
+   "n": 1,
+   "samples": [
+    17.8
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during the second `go run hello.go`"
+  },
+  {
+   "name": "workflow.go.run_warm.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 6.41,
+   "p90": 6.41,
+   "min": 6.41,
+   "max": 6.41,
+   "n": 1,
+   "samples": [
+    6.41
+   ],
+   "notes": "host sys CPU of the Chromium tree during the second `go run hello.go`"
+  },
+  {
+   "name": "workflow.go.build_a",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 1190098,
+   "p90": 1190098,
+   "min": 1190098,
+   "max": 1190098,
+   "n": 1,
+   "samples": [
+    1190098
+   ],
+   "notes": "`go build -a hello.go` (runtime, fmt and their dependencies recompiled) + run, after the two `go run`s"
+  },
+  {
+   "name": "workflow.go.build_a.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 2280,
+   "p90": 2280,
+   "min": 2280,
+   "max": 2280,
+   "n": 1,
+   "samples": [
+    2280
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `go build -a`"
+  },
+  {
+   "name": "workflow.go.build_a.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 734.5,
+   "p90": 734.5,
+   "min": 734.5,
+   "max": 734.5,
+   "n": 1,
+   "samples": [
+    734.5
+   ],
+   "notes": "host sys CPU of the Chromium tree during `go build -a`"
+  },
+  {
+   "name": "workflow.apt.update.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 44.44,
+   "p90": 44.44,
+   "min": 44.44,
+   "max": 44.44,
+   "n": 1,
+   "samples": [
+    44.44
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `apt-get update`"
+  },
+  {
+   "name": "workflow.apt.update.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 8.14,
+   "p90": 8.14,
+   "min": 8.14,
+   "max": 8.14,
+   "n": 1,
+   "samples": [
+    8.14
+   ],
+   "notes": "host sys CPU of the Chromium tree during `apt-get update`"
+  },
+  {
+   "name": "workflow.apt.install_hello.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 22.16,
+   "p90": 22.16,
+   "min": 22.16,
+   "max": 22.16,
+   "n": 1,
+   "samples": [
+    22.16
+   ],
+   "notes": "host user CPU of the Chromium tree (renderer, Workers, GPU, browser) during `apt-get install -y hello`"
+  },
+  {
+   "name": "workflow.apt.install_hello.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 6.28,
+   "p90": 6.28,
+   "min": 6.28,
+   "max": 6.28,
+   "n": 1,
+   "samples": [
+    6.28
+   ],
+   "notes": "host sys CPU of the Chromium tree during `apt-get install -y hello`"
+  },
+  {
+   "name": "workflow.apt.update",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 39090,
+   "p90": 39090,
+   "min": 39090,
+   "max": 39090,
+   "n": 1,
+   "samples": [
+    39090
+   ],
+   "notes": "`apt-get update` from the mirror disk cache (needed before any install on a fresh profile)"
+  },
+  {
+   "name": "workflow.apt.install_hello",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 17800,
+   "p90": 17800,
+   "min": 17800,
+   "max": 17800,
+   "n": 1,
+   "samples": [
+    17800
+   ],
+   "notes": "`apt-get install -y hello` (one small package, no new dependencies) from the warm mirror cache"
+  },
+  {
+   "name": "workflow.apt.hello_run",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 166.5,
+   "p90": 166.5,
+   "min": 166.5,
+   "max": 166.5,
+   "n": 1,
+   "samples": [
+    166.5
+   ],
+   "notes": "then `hello`"
+  },
+  {
+   "name": "workflow.peak_rss.apt_update",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 433.6,
+   "p90": 433.6,
+   "min": 433.6,
+   "max": 433.6,
+   "n": 1,
+   "samples": [
+    433.6
+   ],
+   "notes": "renderer RSS peak above the pre-run level"
+  },
+  {
+   "name": "workflow.peak_rss.apt_update_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 433.6,
+   "p90": 433.6,
+   "min": 433.6,
+   "max": 433.6,
+   "n": 1,
+   "samples": [
+    433.6
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.apt_install_hello_net",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 395.1,
+   "p90": 395.1,
+   "min": 395.1,
+   "max": 395.1,
+   "n": 1,
+   "samples": [
+    395.1
+   ],
+   "notes": "renderer RSS peak above the pre-run level, minus the growth of the renderer's buffer partition (DevTools copies of response bodies)"
+  },
+  {
+   "name": "workflow.peak_rss.apt_install_hello",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "MiB",
+   "median": 395.5,
+   "p90": 395.5,
+   "min": 395.5,
+   "max": 395.5,
+   "n": 1,
+   "samples": [
+    395.5
+   ],
+   "notes": "renderer RSS peak above the pre-run level"
+  },
+  {
+   "name": "workflow.native.go_build_first",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 5539,
+   "p90": 5539,
+   "min": 5539,
+   "max": 5539,
+   "n": 1,
+   "samples": [
+    5539
+   ],
+   "notes": "native reference: `go build hello.go` with an empty build cache (go version go1.24.7 linux/amd64; what the first `go run` compiles) on this machine's Linux"
+  },
+  {
+   "name": "workflow.native.go_build_first.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 11.49,
+   "p90": 11.49,
+   "min": 11.49,
+   "max": 11.49,
+   "n": 1,
+   "samples": [
+    11.49
+   ],
+   "notes": "native: user CPU of `go build hello.go` with an empty build cache (go version go1.24.7 linux/amd64; what the first `go run` compiles) (bash `time`, children included)"
+  },
+  {
+   "name": "workflow.native.go_build_first.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 1.951,
+   "p90": 1.951,
+   "min": 1.951,
+   "max": 1.951,
+   "n": 1,
+   "samples": [
+    1.951
+   ],
+   "notes": "native: sys CPU of `go build hello.go` with an empty build cache (go version go1.24.7 linux/amd64; what the first `go run` compiles)"
+  },
+  {
+   "name": "workflow.native.go_build_a",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 5618,
+   "p90": 5618,
+   "min": 5618,
+   "max": 5618,
+   "n": 1,
+   "samples": [
+    5618
+   ],
+   "notes": "native reference: `go build -a hello.go` + run (go version go1.24.7 linux/amd64) on this machine's Linux"
+  },
+  {
+   "name": "workflow.native.go_build_a.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 11.73,
+   "p90": 11.73,
+   "min": 11.73,
+   "max": 11.73,
+   "n": 1,
+   "samples": [
+    11.73
+   ],
+   "notes": "native: user CPU of `go build -a hello.go` + run (go version go1.24.7 linux/amd64) (bash `time`, children included)"
+  },
+  {
+   "name": "workflow.native.go_build_a.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 2.055,
+   "p90": 2.055,
+   "min": 2.055,
+   "max": 2.055,
+   "n": 1,
+   "samples": [
+    2.055
+   ],
+   "notes": "native: sys CPU of `go build -a hello.go` + run (go version go1.24.7 linux/amd64)"
+  },
+  {
+   "name": "workflow.native.vite_build",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "ms",
+   "median": 2115,
+   "p90": 2115,
+   "min": 2115,
+   "max": 2115,
+   "n": 1,
+   "samples": [
+    2115
+   ],
+   "notes": "native reference: `npm run build` (vite build) of the same React template, Node v22.22.0 on this machine's Linux"
+  },
+  {
+   "name": "workflow.native.vite_build.user",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 2.646,
+   "p90": 2.646,
+   "min": 2.646,
+   "max": 2.646,
+   "n": 1,
+   "samples": [
+    2.646
+   ],
+   "notes": "native: user CPU of `npm run build` (vite build) of the same React template, Node v22.22.0 (bash `time`, children included)"
+  },
+  {
+   "name": "workflow.native.vite_build.sys",
+   "suite": "workflows",
+   "mode": "isolated",
+   "cache": null,
+   "unit": "s",
+   "median": 0.514,
+   "p90": 0.514,
+   "min": 0.514,
+   "max": 0.514,
+   "n": 1,
+   "samples": [
+    0.514
+   ],
+   "notes": "native: sys CPU of `npm run build` (vite build) of the same React template, Node v22.22.0"
+  }
+ ]
+}

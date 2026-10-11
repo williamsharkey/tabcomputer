@@ -194,7 +194,19 @@ describe('git commands', () => {
         .toBe(`${feat.slice(0, 7)} (feat) second\n${main.slice(0, 7)} (HEAD -> main) first\n`);
       expect((await sh('cd /tmp/p && git log --format=%s main..feat')).out).toBe('second\n');
       expect((await sh('cd /tmp/p && git show --name-status --format=%s feat')).out).toBe('second\n\nM\ta.txt\n');
-      expect((await sh('cd /tmp/p && git log -g')).out).toBe(''); // no reflog kept
+      // log -g: the reflog (git-reflog.ts writes it), each commit in full as git shows it; --oneline the short form
+      const entry = (oid: string, n: number, msg: string, subject: string) =>
+        `commit ${oid}\nReflog: HEAD@{${n}} (Ann <ann@x.org>)\nReflog message: ${msg}\nAuthor: Ann <ann@x.org>\nDate:   D\n\n    ${subject}\n`;
+      expect((await sh('cd /tmp/p && git log -g')).out.replace(/^Date:   .*$/gm, 'Date:   D')).toBe([
+        entry(main, 0, 'checkout: moving from feat to main', 'first'),
+        entry(feat, 1, 'commit: second', 'second'),
+        entry(main, 2, 'checkout: moving from main to feat', 'first'),
+        entry(main, 3, 'commit (initial): first', 'first'),
+      ].join('\n'));
+      expect((await sh('cd /tmp/p && git log -g --oneline -2')).out)
+        .toBe(`${main.slice(0, 7)} HEAD@{0}: checkout: moving from feat to main\n${feat.slice(0, 7)} HEAD@{1}: commit: second\n`);
+      expect((await sh('cd /tmp/p && git log -g --oneline feat')).out)
+        .toBe(`${feat.slice(0, 7)} feat@{0}: commit: second\n${main.slice(0, 7)} feat@{1}: branch: Created from HEAD\n`);
     });
 
     it('diff: patch, --cached, --name-status, --numstat, --stat, --quiet', async () => {

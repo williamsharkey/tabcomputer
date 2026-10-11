@@ -228,6 +228,15 @@ export function formatPretty(c: CommitInfo, fmt: string, extra: { decor?: Map<st
   return out;
 }
 
+/** A message as git log shows it: tabs expanded to every 8th column (of the message's own text), then indented 4 */
+function indentBody(msg: string): string {
+  return msg.split('\n').map((l: string) => {
+    let out = '';
+    for (const ch of l) out += ch === '\t' ? ' '.repeat(8 - (out.length % 8)) : ch;
+    return '    ' + out;
+  }).join('\n');
+}
+
 /** The raw text of a commit (cat-file -p, --pretty=raw) */
 function rawPerson(p: any): string { return `${p.name} <${p.email}> ${gitDate(p, 'raw')}`; }
 function rawCommit(c: CommitInfo): string {
@@ -296,7 +305,7 @@ async function fullRef(fs: Fs, dir: string, spec: string): Promise<string> {
 }
 
 /** `git reflog [show] [REF]`, `git log -g`: REF's reflog (HEAD's unless named), newest first (git-reflog.ts writes them) */
-async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[], name = 'HEAD'): Promise<number> {
+async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[], name = 'HEAD', full = false): Promise<number> {
   let ref = name;
   if (name === '@' || name === '') ref = (await git.currentBranch({ fs, dir, fullname: true }).catch(() => undefined)) || 'HEAD';
   else if (name !== 'HEAD') ref = await git.expandRef({ fs, dir, ref: name }).catch(() => name);
@@ -304,20 +313,27 @@ async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[
   try { text = String(await fs.promises.readFile(`${dir === '/' ? '' : dir}/.git/logs/${ref}`, 'utf8')); } catch { return 0; }
   const fmtArg = args.find((a) => a.startsWith('--format=') || a.startsWith('--pretty='));
   const fmt = fmtArg ? fmtArg.slice(fmtArg.indexOf('=') + 1).replace(/^t?format:/, '') : '%h %gd: %gs';
+  // `log -g` without --oneline or a format: each commit in full, after its reflog entry, as git's
+  const medium = full && !fmtArg && !args.includes('--oneline');
   const nAt = args.indexOf('-n');
   const maxArg = nAt >= 0 ? `--max-count=${args[nAt + 1]}` : args.find((a) => /^-\d+$/.test(a) || a.startsWith('--max-count='));
   const max = maxArg ? parseInt(maxArg.replace(/^(--max-count=|-)/, ''), 10) : Infinity;
   const lines = text.split('\n').filter(Boolean).reverse().slice(0, max);
   const out: string[] = [];
   for (let n = 0; n < lines.length; n++) {
-    const m = /^[0-9a-f]+ ([0-9a-f]+) [^\t]*\t(.*)$/.exec(lines[n]);
+    const m = /^[0-9a-f]+ ([0-9a-f]+) ([^\t]*?) \d+ [+-]\d{4}\t(.*)$/.exec(lines[n]);
     if (!m) continue;
     try {
       const { commit } = await git.readCommit({ fs, dir, oid: m[1] });
-      out.push(formatPretty({ oid: m[1], commit } as CommitInfo, fmt, { reflog: { selector: `${name}@{${n}}`, subject: m[2] } }));
+      const selector = `${name}@{${n}}`;
+      if (!medium) { out.push(formatPretty({ oid: m[1], commit } as CommitInfo, fmt, { reflog: { selector, subject: m[3] } })); continue; }
+      let entry = `commit ${m[1]}\nReflog: ${selector} (${m[2]})\nReflog message: ${m[3]}\n`;
+      if (commit.parent.length > 1) entry += `Merge: ${commit.parent.map((p: string) => p.slice(0, 7)).join(' ')}\n`;
+      entry += `Author: ${commit.author.name} <${commit.author.email}>\nDate:   ${gitDate(commit.author)}\n`;
+      out.push(entry + `\n${indentBody(commit.message.replace(/\n+$/, ''))}\n`);
     } catch { /* pruned */ }
   }
-  if (out.length) ctx.stdout += out.join(args.includes('-z') ? '\0' : '\n') + '\n';
+  if (out.length) ctx.stdout += medium ? out.join('\n') : out.join(args.includes('-z') ? '\0' : '\n') + '\n';
   return 0;
 }
 
@@ -1268,7 +1284,11 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
 
     case 'log':
     case 'show': {
-      if (sub === 'log' && (args.includes('-g') || args.includes('--walk-reflogs'))) return reflogLog(ctx, fs, dir, args);
+      if (sub === 'log' && (args.includes('-g') || args.includes('--walk-reflogs'))) {
+        // (`log -g REF`: REF's reflog)
+        const named = args.find((a, i) => !a.startsWith('-') && args[i - 1] !== '-n');
+        return reflogLog(ctx, fs, dir, args, named ?? 'HEAD', true);
+      }
       if (sub === 'show') {
         // `rev:path` is the blob's content; an annotated tag shows itself, then what it points at
         const dd = args.indexOf('--');
@@ -1487,11 +1507,12 @@ async function showCommits(ctx: CommandContext, fs: Fs, dir: string, o: LogOptio
       const d = decor?.get(c.oid);
       text = `commit ${[c.oid, ...(o.parents ? c.commit.parent : [])].join(' ')}${d?.length ? ` (${d.join(', ')})` : ''}\n`;
       if (c.commit.parent.length > 1) text += `Merge: ${c.commit.parent.map((p: string) => p.slice(0, 7)).join(' ')}\n`;
-      text += `Author: ${c.commit.author.name} <${c.commit.author.email}>\n`;
+      text += `${o.style === 'fuller' ? 'Author:    ' : 'Author:'} ${c.commit.author.name} <${c.commit.author.email}>\n`;
       if (o.style === 'fuller') text += `AuthorDate: ${gitDate(c.commit.author, o.date)}\nCommit:     ${(c.commit.committer ?? c.commit.author).name} <${(c.commit.committer ?? c.commit.author).email}>\nCommitDate: ${gitDate(c.commit.committer ?? c.commit.author, o.date)}\n`;
+      else if (o.style === 'full') text += `Commit: ${(c.commit.committer ?? c.commit.author).name} <${(c.commit.committer ?? c.commit.author).email}>\n`;
       else if (o.style !== 'short') text += `Date:   ${gitDate(c.commit.author, o.date)}\n`;
       const msg = o.style === 'short' ? subjectOf(c.commit.message) : c.commit.message.replace(/\n+$/, '');
-      text += `\n${msg.split('\n').map((l: string) => '    ' + l).join('\n')}\n`;
+      text += `\n${indentBody(msg)}\n`;
     }
     // (a merge's changes aren't shown, as git without -m / --cc)
     if (o.changes && c.commit.parent.length < 2) {

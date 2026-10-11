@@ -3,7 +3,7 @@
 // latency and renderer memory, for the native build (Blink) and the npm build.
 //   node bench/claude-tui.mjs [--build native|npm] [--runs N] [--keys N]
 //        [--env 'K=V K2=V2'] [--args '...'] [--tui fullscreen|default]
-//        [--settle S] [--binary FILE] [--prewarm CMD] [--out file.json] [--shot file.png]
+//        [--settle S] [--binary FILE] [--prewarm CMD [--reload]] [--out file.json] [--shot file.png]
 // Each run is a fresh profile booted at /?ui=terminal. ~/.claude.json is
 // preset (onboarding done, the home directory trusted) so the session goes
 // straight to its prompt; there is no sign-in, so nothing reaches the API.
@@ -107,6 +107,8 @@ try {
       }
     }, { build, json: CLAUDE_JSON(home), home, tui, binary: !!binary });
     if (prewarm) { const t0 = Date.now(); const r = await h.sh(prewarm); log(`  prewarm \`${prewarm}\`: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}`); }
+    // --reload: a new page on the same storage, as the user's next session (the prewarm's caches gone)
+    if (prewarm && argv.includes('--reload')) await h.boot({ context: h.context, page: h.page, path: '/?ui=terminal' });
     await h.eval(SETUP);
     const cmd = `${extraEnv ? extraEnv + ' ' : ''}claude --${build}${extraArgs ? ' ' + extraArgs : ''}`;
     const rss0 = await h.rendererRss();

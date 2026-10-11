@@ -75,6 +75,11 @@ export class KernelStdio {
     return typeof r === 'number' ? '' : decodeBytes(r);
   }
 
+  /** The next bytes of fd 0 as they arrive (a read's worth); null at EOF (ctx.stdinStream: head, grep -m, sed Nq) */
+  readChunk(): Promise<Uint8Array | null> {
+    return readFdChunk(this.proc, 0);
+  }
+
   private async readByte(): Promise<number> {
     const f = this.proc.fds.get(0);
     if (!f) return -1;
@@ -117,6 +122,25 @@ export class KernelStdio {
   }
 }
 
+/** One read of `fd` of `proc` (up to 64 KiB, what has arrived); null at EOF or on an error */
+export async function readFdChunk(proc: Process, fd: number): Promise<Uint8Array | null> {
+  const f = proc.fds.get(fd);
+  if (!f) return null;
+  const buf = new Uint8Array(65536);
+  let n = f.tryRead?.(buf);
+  if (n === undefined) n = await f.read(buf, proc.syscallSignal);
+  return n > 0 ? buf.slice(0, n) : null;
+}
+
+/**
+ * Commands that read stdin a chunk at a time when they can stop early
+ * (ctx.stdinStream; src/commands/stdin-stream.ts): head, grep -m/-q/
+ * --line-buffered, sed with a q. They take only what they need, and when
+ * they end their process closes the pipe, so an endless writer gets SIGPIPE
+ * (`while :; do echo y; done | head -1` ends; tabcomputer#72).
+ */
+export const INCREMENTAL_STDIN = new Set(['head', 'grep', 'egrep', 'fgrep', 'sed']);
+
 /** Thrown by ctx.stdin the first time execLazyStdin's command reads it */
 export class NeedStdin extends Error {
   constructor() { super('stdin not read yet'); }
@@ -135,7 +159,8 @@ const EAGER_STDIN = new Set(['node', 'nodejs']);
  * from the first try is dropped. Commands that know about this (sh) see
  * `ctx.liveStdin` and read the stream themselves.
  */
-export async function execLazyStdin(cmd: Command, ctx: CommandContext, readAll: () => Promise<string>): Promise<number> {
+export async function execLazyStdin(cmd: Command, ctx: CommandContext, readAll: () => Promise<string>, readChunk?: () => Promise<Uint8Array | null>): Promise<number> {
+  if (readChunk && INCREMENTAL_STDIN.has(cmd.name)) ctx.stdinStream = { read: readChunk };
   if (EAGER_STDIN.has(cmd.name)) {
     // node runs its program once (no rerun), so it can't use the NeedStdin
     // trick. With a script or -e/-p, process.stdin reads the stream when the

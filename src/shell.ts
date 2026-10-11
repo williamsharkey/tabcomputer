@@ -9115,7 +9115,7 @@ export class Shell {
     const ks = this.kernelStdio!;
     if (stream) { ctx.streamStdout = ks.out; ctx.streamStderr = ks.err; }
     const { execLazyStdin } = await import('./shell-stdio');
-    return this.runCommand({ exec: (c) => execLazyStdin(cmd, c, () => ks.readAll()) }, ctx);
+    return this.runCommand({ exec: (c) => execLazyStdin(cmd, c, () => ks.readAll(), () => ks.readChunk()) }, ctx);
   }
 
   /**

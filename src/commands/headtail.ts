@@ -1,5 +1,6 @@
 import type { CommandContext } from './index';
 import { decodeBytes, encodeText } from '../utils/byte-text';
+import { takeStdinBytes, takeStdinLines } from './stdin-stream';
 
 /**
  * Shared head/tail (GNU coreutils): -n/-c counts with K/M/G suffixes,
@@ -57,7 +58,15 @@ export async function headTail(ctx: CommandContext, which: 'head' | 'tail'): Pro
   let first = true;
   for (const f of files) {
     let text: string;
-    if (f === '-') text = ctx.stdin;
+    if (f === '-') {
+      // A stream: only what head shows is read (`… | head -1` ends an endless writer, #72)
+      if (which === 'head' && sign !== '-' && ctx.stdinStream) {
+        if (n === 0) ctx.stdin = '';
+        else if (bytes) await takeStdinBytes(ctx, n);
+        else { let seen = 0; await takeStdinLines(ctx, (lines) => (seen += lines.length) >= n); }
+      }
+      text = ctx.stdin;
+    }
     else {
       try {
         const p = ctx.fs.resolvePath(f, ctx.cwd);

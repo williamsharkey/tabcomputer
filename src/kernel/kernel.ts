@@ -11,7 +11,7 @@ import { decodeBytes, encodeText } from '../utils/byte-text';
 import { addProcInfoSource, type FileSystem } from '../filesystem';
 import type { Shell } from '../shell';
 import type { Command, CommandContext } from '../commands/index';
-import { KernelStdio, execLazyStdin } from '../shell-stdio';
+import { KernelStdio, execLazyStdin, readFdChunk } from '../shell-stdio';
 import { parseShellArgs } from '../shell-args';
 import { ProcFs, bootMs, engineLock, fdTarget, syscallText, wchanText, type ThreadState } from './procfs';
 import { KernelProfiler, type ProfileOptions, type ProfileReport } from './profiler';
@@ -1692,7 +1692,7 @@ export class Kernel {
     Object.defineProperty(ctx, 'shell', { get: getShell, set: (v: Shell) => { shell = v; }, enumerable: true, configurable: true });
     let code: number;
     try {
-      code = lazy ? await execLazyStdin(cmd, ctx, () => this.stdinText(proc)) : await cmd.exec(ctx);
+      code = lazy ? await execLazyStdin(cmd, ctx, () => this.stdinText(proc), () => this.stdinChunk(proc)) : await cmd.exec(ctx);
     } catch (e: any) {
       ctx.stderr += (e?.message ?? String(e)) + '\n';
       code = 1;
@@ -1911,6 +1911,13 @@ export class Kernel {
     shell.inheritedAbort = abort;
     proc.onTerminate(() => abort.abort(abortReason()));
     return shell;
+  }
+
+  /** One read of fd 0 for a builtin that reads stdin a chunk at a time (stdinText's kinds of fd; a tty is EOF, as there) */
+  private async stdinChunk(proc: Process): Promise<Uint8Array | null> {
+    const f = proc.fds.get(0);
+    if (!f || !(f.kind === 'pipe' || f.kind === 'file' || f.kind === 'socket' || f instanceof BufferFile)) return null;
+    return readFdChunk(proc, 0);
   }
 
   private async stdinText(proc: Process): Promise<string> {

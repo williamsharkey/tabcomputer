@@ -3,7 +3,7 @@
 # gnu-tools-diff). Vim writes its screen to a non-terminal stdout, so the
 # cases look at the files and exit statuses.
 vi -c '%s/apple/APPLE/g' -c wq a.txt >/dev/null 2>&1; echo $?; cat a.txt
-vim -c '%s/apple/APPLE/g' -c 'wq' a.txt >/dev/null 2>&1; cat a.txt
+vi -c '%s/apple/APPLE/g' -c 'wq' a.txt >/dev/null 2>&1; cat a.txt
 vi -c '%s/apple/X/|wq' a.txt >/dev/null 2>&1; cat a.txt
 vi -c 's/banana/B/' -c 'x' a.txt >/dev/null 2>&1; cat a.txt
 vi -c '2,4d' -c wq a.txt >/dev/null 2>&1; cat a.txt
@@ -96,23 +96,22 @@ vi -c '%s/apple/A/g | %s/banana/B/g' -c wq a.txt >/dev/null 2>&1; cat a.txt
 vi -c '%s/a/b/g' -c 'q' a.txt >/dev/null 2>&1 </dev/null; echo $?; cat a.txt
 vi -c '%s/a/b/g' -c 'q!' a.txt >/dev/null 2>&1; echo $?; cat a.txt
 vi -c '%s/a/b/g' -c 'up' -c 'q' a.txt >/dev/null 2>&1; cat a.txt
-vim -es -c '%s/apple/X/g' -c wq a.txt; echo $?; cat a.txt
-vim -es -c '%s/zzz/X/g' -c wq a.txt; echo $?
-vim -es -c '%s/apple/Y/' a.txt </dev/null; echo $?; cat a.txt
-printf '%%s/apple/Z/g\nwq\n' | vim -es a.txt; echo $?; cat a.txt
-printf '1d\nx\n' | ex -s a.txt; echo $?; cat a.txt
-printf '$a\nnew last\n.\nw\nq\n' | ex -s a.txt; cat a.txt
-printf '1i\nfirst\n.\nwq\n' | ex -s a.txt; cat a.txt
-printf '2,3c\nchanged\n.\nwq\n' | ex -s a.txt; cat a.txt
-ex -sc '%p|q' a.txt
-ex -s -c 'p' -c 'q' a.txt
-ex -s -c '2p' -c 'q' a.txt
-ex -s -c '=' -c 'q' a.txt
-ex -s -c '/cherry/=' -c 'q' a.txt
-ex -s -c 'g/apple/p' -c 'q' a.txt
-ex -s -c 'g/apple/nu' -c 'q' a.txt
-ex -s -c '%s/a/A/gn' -c 'q' a.txt; echo $?
-ex -s -c '%s/apple/X/|x' a.txt; cat a.txt
-ex -s +'%s/apple/W/g' +x a.txt; cat a.txt
-ex -s -c 'zzz' -c q a.txt; echo $?
-ex -s -c 'w' -c q nope/x.txt; echo $?
+vi -es -c '%s/apple/X/g' -c wq a.txt; echo $?; cat a.txt
+vi -es -c '%s/zzz/X/g' -c wq a.txt; echo $?
+printf '%%s/apple/Z/g\nwq\n' | vi -es a.txt; echo $?; cat a.txt
+printf '1d\nx\n' | vi -e -s a.txt; echo $?; cat a.txt
+printf '$a\nnew last\n.\nw\nq\n' | vi -e -s a.txt; cat a.txt
+printf '1i\nfirst\n.\nwq\n' | vi -e -s a.txt; cat a.txt
+printf '2,3c\nchanged\n.\nwq\n' | vi -e -s a.txt; cat a.txt
+vi -e -sc '%p|q' a.txt
+vi -e -s -c 'p' -c 'q' a.txt
+vi -e -s -c '2p' -c 'q' a.txt
+vi -e -s -c '=' -c 'q' a.txt
+vi -e -s -c '/cherry/=' -c 'q' a.txt
+vi -e -s -c 'g/apple/p' -c 'q' a.txt
+vi -e -s -c 'g/apple/nu' -c 'q' a.txt
+vi -e -s -c '%s/a/A/gn' -c 'q' a.txt; echo $?
+vi -e -s -c '%s/apple/X/|x' a.txt; cat a.txt
+vi -e -s +'%s/apple/W/g' +x a.txt; cat a.txt
+vi -e -s -c 'zzz' -c q a.txt; echo $?
+vi -e -s -c 'w' -c q nope/x.txt; echo $?

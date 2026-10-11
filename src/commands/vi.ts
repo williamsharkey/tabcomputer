@@ -75,9 +75,11 @@ export const viCmd: Command = {
       if (a === '-u' || a === '-U' || a === '-T' || a === '-i' || a === '-w' || a === '-W' || a === '-S' || a === '-t' || a === '-q') { i++; continue; }
       if (a.startsWith('--')) continue; // --clean, --noplugin, --not-a-term, ...
       if (a.startsWith('-') && a.length > 1) {
-        for (const ch of a.slice(1)) {
+        for (let k = 1; k < a.length; k++) {
+          const ch = a[k];
           if (ch === 'e' || ch === 'E') exMode = true;
           else if (ch === 's') silent = true;
+          else if (ch === 'c') { cmds.push(a.slice(k + 1) || (args[++i] ?? '')); break; } // -sc CMD
         }
         continue;
       }

@@ -1,0 +1,58 @@
+From 7ac769fb61dad76f71fe57c0243d3788ab2616f7 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 09:08:29 +0000
+Subject: [PATCH] Shiro: BLINK_WJIT_BISECT and BLINK_WJIT_DUMP take 64-bit
+ addresses
+
+They were long (32 bits in wasm32) read with strtol, which saturates every
+address above 0x7fffffff, where guest code is (a range there compiled
+nothing, and a dump never matched).
+---
+ blink/wjit.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 6f8dd72..99efc94 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -80,7 +80,7 @@ static int g_wj_thresh = 200;
+ static int g_wj_debug;
+ static int g_wj_off;    // BLINK_WJIT_OFF: bitmask of categories to not inline
+ static long g_wj_max;   // BLINK_WJIT_MAX: stop compiling after this many
+-static long g_wj_dump = -1;
++static i64 g_wj_dump = -1;
+ static int g_wj_maxblk = 64;  // BLINK_WJIT_BLOCKS (at most kMaxBlocks)
+ // Instructions that cross into the next code page are compiled (patch 0041)
+ // when that page can't change either; BLINK_WJIT_STRADDLE=0 sends them to
+@@ -89,7 +89,7 @@ static int g_wj_maxblk = 64;  // BLINK_WJIT_BLOCKS (at most kMaxBlocks)
+ // layout of two) no longer reproduces (20/20); left to the interpreter, a
+ // straddler in a hot loop left compiled code and came back every pass
+ static bool g_wj_straddle;
+-static long g_wj_lo = -1, g_wj_hi = -1;  // BLINK_WJIT_BISECT=lo:hi (pc range)
++static i64 g_wj_lo = -1, g_wj_hi = -1;  // BLINK_WJIT_BISECT=lo:hi (pc range; 64-bit: guest code is above 2 GiB)
+ static _Atomic(unsigned) g_wj_epoch;
+ 
+ // statistics
+@@ -4344,7 +4344,7 @@ void WjInit(void) {
+   g_wj_debug = (s = getenv("BLINK_WJIT_DEBUG")) ? atoi(s) : 0;
+   g_wj_off = (s = getenv("BLINK_WJIT_OFF")) ? strtol(s, 0, 0) : 0;
+   g_wj_max = (s = getenv("BLINK_WJIT_MAX")) ? atol(s) : -1;
+-  g_wj_dump = (s = getenv("BLINK_WJIT_DUMP")) ? strtol(s, 0, 0) : -1;
++  g_wj_dump = (s = getenv("BLINK_WJIT_DUMP")) ? strtoll(s, 0, 0) : -1;
+   if ((s = getenv("BLINK_WJIT_BLOCKS"))) {
+     g_wj_maxblk = atoi(s);
+     if (g_wj_maxblk < 1) g_wj_maxblk = 1;
+@@ -4352,8 +4352,8 @@ void WjInit(void) {
+   }
+   g_wj_straddle = !((s = getenv("BLINK_WJIT_STRADDLE")) && *s == '0');
+   if ((s = getenv("BLINK_WJIT_BISECT"))) {
+-    g_wj_lo = strtol(s, 0, 0);
+-    g_wj_hi = strchr(s, ':') ? strtol(strchr(s, 58) + 1, 0, 0) : -1;
++    g_wj_lo = strtoll(s, 0, 0);
++    g_wj_hi = strchr(s, 58) ? strtoll(strchr(s, 58) + 1, 0, 0) : -1;
+   }
+ }
+ 
+-- 
+2.43.0
+

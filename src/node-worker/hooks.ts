@@ -19,7 +19,7 @@ export interface NodeGuestHooks {
   /** Who hears the worker's unhandled promise rejections (node's process 'unhandledRejection'; null: nobody) */
   onUnhandledRejection?(fn: ((reason: unknown, promise: Promise<unknown>) => void) | null): void;
   /** worker_threads: start `file` (or code, with eval) as a thread of this process, a guest of its own */
-  startThread?(file: string, opts: { threadId: number; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string> }, events: ThreadEvents): ThreadHandle;
+  startThread?(file: string, opts: { threadId: number; eval?: boolean; workerData?: unknown; argv?: string[]; env?: Record<string, string>; stdout?: boolean; stderr?: boolean }, events: ThreadEvents): ThreadHandle;
   /** Set in a worker_threads thread */
   thread?: ThreadSide;
   /** process.stdin on the terminal: fd 0 read as the process on the pty (tty.ts); set when fd 0 is a tty */
@@ -36,6 +36,8 @@ export interface NodeGuestHooks {
    * serialization. Bytes as they arrive, null when the parent closes it.
    */
   ipc?: GuestIpc;
+  /** fork()'s serialization: 'advanced' (structured clone, ipc.ts ipcLine) or 'json' */
+  ipcAdvanced?: boolean;
   /** The kernel's process ids for this node (process.pid, process.ppid) */
   ids?: { pid: number; ppid: number };
   /** kill(2) another process: 0 or -errno */
@@ -55,6 +57,9 @@ export interface ThreadEvents {
   message(value: unknown): void;
   error(err: { message: string; stack?: string }): void;
   exit(code: number): void;
+  /** What it wrote, with `new Worker(f, { stdout: true })` / `{ stderr: true }`: worker.stdout/stderr */
+  stdout?(bytes: Uint8Array): void;
+  stderr?(bytes: Uint8Array): void;
 }
 
 /** In a worker_threads thread: its side of the link to the parent */

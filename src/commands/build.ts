@@ -91,6 +91,16 @@ async function cacheWasm(wasmBinary: ArrayBuffer): Promise<void> {
   }
 }
 
+/**
+ * Run esbuild's Go service in a Worker where there is one: a build then
+ * doesn't block the page (a hot-swap of src/shell.ts was 10 long tasks of up
+ * to 160 ms on the page's thread). Plugins (onResolve/onLoad) still run on
+ * the page, answering the worker by message.
+ */
+function useWorker(): boolean {
+  return typeof Worker === 'function' && typeof window !== 'undefined';
+}
+
 export async function ensureEsbuildInitialized(): Promise<void> {
   if (esbuildInitialized) return;
 
@@ -108,7 +118,7 @@ export async function ensureEsbuildInitialized(): Promise<void> {
         // Use cached WASM binary
         await esbuild.initialize({
           wasmModule: await WebAssembly.compile(wasmBinary),
-          worker: false,
+          worker: useWorker(),
         });
       } else {
         // Download and cache for future sessions
@@ -120,7 +130,7 @@ export async function ensureEsbuildInitialized(): Promise<void> {
         // Initialize with downloaded WASM
         await esbuild.initialize({
           wasmModule: await WebAssembly.compile(wasmBinary),
-          worker: false,
+          worker: useWorker(),
         });
 
         // Cache for next time (fire and forget)

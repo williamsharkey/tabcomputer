@@ -15,6 +15,26 @@ import { Command, CommandContext } from './index';
  */
 
 const WCCFILES_URL = '/wccfiles.zip';
+/** -l libraries that are part of xcc's libc already (the math functions are in it): accepted and dropped */
+export const LIBC_LIBRARIES = new Set(['c', 'm']);
+
+/**
+ * The arguments without the linker's -lNAME / -l NAME and -LDIR / -L DIR (#58),
+ * and the libraries named that xcc doesn't have. -lm and -lc are its libc,
+ * linked anyway; there are no other libraries, so search paths don't matter.
+ */
+export function splitLibraryFlags(args: string[]): { rest: string[]; missing: string[] } {
+  const rest: string[] = [], missing: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-o' && i + 1 < args.length) { rest.push(a, args[++i]); continue; } // (-o's value, whatever it looks like)
+    if (a === '-l' || a === '-L') { const v = args[++i]; if (a === '-l' && v !== undefined && !LIBC_LIBRARIES.has(v)) missing.push(v); continue; }
+    if (a.startsWith('-l')) { if (!LIBC_LIBRARIES.has(a.slice(2))) missing.push(a.slice(2)); continue; }
+    if (a.startsWith('-L')) continue;
+    rest.push(a);
+  }
+  return { rest, missing };
+}
 const FALLBACK_URL = 'https://tyfkda.github.io/xcc/wccfiles.zip';
 const CACHE_DB = 'tabcomputer-cc-cache';
 const CACHE_STORE = 'binaries';
@@ -613,9 +633,11 @@ export const ccCmd: Command = {
     const sourceFiles: string[] = [];
     const extraFlags: string[] = [];
 
-    for (let i = 0; i < args.length; i++) {
-      const a = args[i];
-      if (a === '-o' && i + 1 < args.length) { outputFile = args[++i]; }
+    // -l and -L never reach wcc (its library lookup printed "(null): library not found", #58)
+    const { rest, missing: missingLibs } = splitLibraryFlags(args);
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '-o' && i + 1 < rest.length) { outputFile = rest[++i]; }
       else if (a === '-c') { compileOnly = true; }
       else if (a === '-E' || a === '-S') {
         ctx.stderr += `cc: ${a} not supported (compile to WASM only)\n`;
@@ -628,6 +650,13 @@ export const ccCmd: Command = {
 
     if (sourceFiles.length === 0) {
       ctx.stderr += 'cc: fatal error: no input files\ncompilation terminated.\n';
+      return 1;
+    }
+    // (as a linker would, before compiling anything; -c doesn't link, so its -l's don't matter)
+    if (missingLibs.length && !compileOnly) {
+      for (const lib of missingLibs) {
+        ctx.stderr += `cc: error: cannot find -l${lib}: only libc is available (it includes libm: -lm and -lc are fine)\n`;
+      }
       return 1;
     }
 

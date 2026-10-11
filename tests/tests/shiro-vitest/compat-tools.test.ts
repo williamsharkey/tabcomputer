@@ -476,7 +476,7 @@ describe('fzf', () => {
 });
 
 describe('the built-in git hands what it lacks to the full git', () => {
-  it('git blame, rebase: pkg git installed on first use and run on the same repository', async () => {
+  it('git rebase: pkg git installed on first use and run on the same repository (blame is built in)', async () => {
     await sh('pkg remove git >/dev/null 2>&1; true');
     await sh('mkdir -p /home/user/w/route && cd /home/user/w/route && git init -q && git config user.name A && git config user.email a@b.c'
       + ' && echo one > f && git add f && git commit -qm init && git checkout -qb feat && echo two > g && git add g && git commit -qm two'
@@ -484,10 +484,11 @@ describe('the built-in git hands what it lacks to the full git', () => {
     expect(await fs.exists('/usr/bin/git')).toBe(false);
     const b = await sh('cd /home/user/w/route && git blame -s f');
     expect(b.exitCode).toBe(0);
-    expect(b.out).toMatch(/^[0-9a-f^]{7,8} 1\) one\n$/);
-    expect(b.err).toContain('installed the full git');
-    expect(await fs.exists('/usr/bin/git')).toBe(true);
+    expect(b.out).toMatch(/^\^[0-9a-f]{7} 1\) one\n$/);
+    expect(await fs.exists('/usr/bin/git')).toBe(false);
     const r = await sh('cd /home/user/w/route && git rebase -q main && git log --format=%s');
+    expect(r.err).toContain('installed the full git');
+    expect(await fs.exists('/usr/bin/git')).toBe(true);
     expect(r.out).toBe('two\nh\ninit\n');
     await sh('pkg remove git >/dev/null 2>&1; true');
   }, 300_000);

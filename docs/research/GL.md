@@ -265,7 +265,8 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   (`GLSurface.pixels()`, through the server's `glFrame` hook) and lays it
   over those pixels; frames themselves are never read back.
   A window made current before it can take a surface (not mapped yet) is
-  tried again with each batch and frame.
+  tried again with each batch and frame; pbuffers (whose XIDs the X server
+  never sees, tcCreatePbuffer) are not.
 - Fallback present: read the front FBO back into the window's pixmap, so
   Xshiro composes it like any drawing; asynchronously (a pixel-pack buffer
   and a fence), so the page doesn't wait for the GPU.
@@ -409,6 +410,22 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | Neverball in the page, 640×480: async readback / Worker with GL surfaces (3 runs each) | 8.7–9.2 / 8.7–9.4 frames/s |
 | Neverball in Blink under Node, recording backend (guest and transport only) | 24 FPS |
 | OpenSCAD 2021.01 (Blink 0119) PNG export: OpenCSG preview / full CGAL render | 3.8 s, 1,724 draws / 10.3 s (6.4 s CGAL) |
+| OpenSCAD 2021.01 GUI in the page (Ubuntu noble's, Qt 5.15 xcb_glx, 772×579 window): first preview / frames while the view is dragged (3 runs each) | ~4 s / 3.4–4.1 frames/s |
+| … per dragged frame: GL calls, bytes sent, executor time, guest waiting on replies, guest running | ~11,000 (≈5,000 glVertex3d), 2.0 MB (a 1.7 MB glTexImage2D of the whole window), ~50 ms, ~70 ms, ~190 ms |
+
+OpenSCAD's GUI is guest-bound: of ~260 ms per dragged frame, the guest runs
+~190 ms, and `SHIRO_BLINK_PROFILE` puts 92% of its main thread's samples in
+Blink's interpreter (instructions after a compiled block's exit, "not at a
+branch target"), so Blink's JIT coverage is the lever, not glshiro. Its
+queries (viewport, matrices, framebuffer binding, front face, scissor
+enable, framebuffer status: ~10 per frame) are answered from the
+executor's state; WebGL's checkFramebufferStatus waits for the GPU, so its
+answer is cached until a framebuffer's attachments or their images change
+(+8%, within noise). Qt re-specifies its whole window texture each frame
+(glTexImage2D, not glTexSubImage2D of the damage). Diagnostics:
+`TABCOMPUTER_GL_DEBUG=1` logs MakeCurrent, `=2` how 10 frames' time splits
+into reply waits and the swap throttle, `=3` each query; gl-apps.mjs
+`GL_OPS=1` counts commands per frame.
 
 The page numbers are SwiftShader's (a CPU renderer); a GPU only makes the
 WebGL2 side cheaper. With async readback the page's main thread is about 80%

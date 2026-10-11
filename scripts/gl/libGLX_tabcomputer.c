@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -348,13 +349,18 @@ void tc_unimplemented(const char *name) {
 /* A command whose answer the page sends back: flushes the batch (ending
  * with the command just encoded) and waits for the reply. Returns a malloc'd
  * payload (free it) or NULL. */
+/* TABCOMPUTER_GL_DEBUG=2: where frames' time goes, logged every 10 swaps (3: also each query that waits for a reply) */
+static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static struct { double since, reply_ms, throttle_ms; unsigned replies, swaps; } stat;
 static uint8_t *call_reply(uint32_t *len) {
   uint8_t *p = NULL; uint32_t n = 0;
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   flush_locked();
   int k;
   while ((k = read_message(&p, &n)) != MSG_REPLY) if (k < 0) { pthread_mutex_unlock(&sock_lock); *len = 0; return NULL; }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) { stat.reply_ms += now_ms() - t0; stat.replies++; }
   *len = n;
   return p;
 }
@@ -463,6 +469,7 @@ static int get_values(GLenum op, GLenum pname, const uint32_t *extra, int nextra
     int i = find_limit(c, pname);
     if (i >= 0) { int n = c->limit_n[i] < max ? c->limit_n[i] : max; memcpy(out, c->limit_val[i], (size_t)n * sizeof *out); return n; }
   }
+  if (dbg() >= 3) logf_("query op %u, pname 0x%x", op, pname);
   uint32_t *w = tc_begin(1 + (size_t)nextra, op);
   if (!w) return 0;
   w[0] = pname;
@@ -540,7 +547,7 @@ static uint32_t ask_u32(unsigned op, const uint32_t *args, int nargs) {
   free(p);
   return v;
 }
-#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; return (R)ask_u32(op, &a, 1); }
+#define ASK1(fn, A, R, op) R tc_##fn(A x) { uint32_t a = (uint32_t)x; if (dbg() >= 3) logf_("query op %u, 0x%x", op, a); return (R)ask_u32(op, &a, 1); }
 ASK1(glIsEnabled, GLenum, GLboolean, OP_glIsEnabled)
 ASK1(glIsTexture, GLuint, GLboolean, OP_glIsTexture)
 ASK1(glIsBuffer, GLuint, GLboolean, OP_glIsBuffer)
@@ -1708,6 +1715,8 @@ static Bool make_current(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXCo
     flush();
     if (old != c) { old->bound = 0; T.ctx = NULL; release_context(old); }
   }
+  if (dbg()) logf_("make current: context %u, draw 0x%lx, read 0x%lx (was %u)%s", c ? c->id : 0, (unsigned long)draw, (unsigned long)read, old ? old->id : 0,
+    c && c->bound && old != c ? ": current in another thread" : "");
   if (!c) { T.ctx = NULL; return True; }
   if (c->bound && old != c) return False; /* current in another thread: BadAccess */
   c->bound = 1;
@@ -1728,6 +1737,7 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
   if (w) { w[0] = a[0]; w[1] = a[1]; tc_end(); flush(); }
   else control(0, OP_tcSwapBuffers, a, 2);
   /* throttle: never more than MAX_FRAMES_AHEAD frames ahead of the page */
+  double t0 = dbg() >= 2 ? now_ms() : 0;
   pthread_mutex_lock(&sock_lock);
   while (sock_fd >= 0 && (int32_t)(frames_sent - frames_acked) > MAX_FRAMES_AHEAD) {
     uint8_t *p = NULL; uint32_t len;
@@ -1736,6 +1746,15 @@ static void tc_glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
     free(p);
   }
   pthread_mutex_unlock(&sock_lock);
+  if (t0) {
+    double t1 = now_ms();
+    stat.throttle_ms += t1 - t0;
+    if (!stat.since) stat.since = t1;
+    else if (++stat.swaps == 10) {
+      logf_("10 frames in %.0f ms: %u replies waited %.0f ms, the swap throttle %.0f ms", t1 - stat.since, stat.replies, stat.reply_ms, stat.throttle_ms);
+      memset(&stat, 0, sizeof stat); stat.since = t1;
+    }
+  }
 }
 static Bool tc_glXIsDirect(Display *dpy, GLXContext ctx) { (void)dpy; (void)ctx; return True; }
 static void tc_glXCopyContext(Display *dpy, GLXContext src, GLXContext dst, unsigned long mask) { (void)dpy; (void)src; (void)dst; (void)mask; tc_unimplemented("glXCopyContext"); }

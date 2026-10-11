@@ -2155,7 +2155,9 @@ export class Executor {
       gl.compileShader(s);
       if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
         const log = gl.getShaderInfoLog(s) ?? '';
-        o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${log}\n${errorContext(gl.getShaderSource(s) ?? '', log)}`;
+        const ctx = errorContext(gl.getShaderSource(s) ?? '', log);
+        o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${log}\n${ctx}`;
+        this.log(`glshiro: a ${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader failed to compile: ${log.split('\n')[0]}\n${ctx}`);
       }
       return s;
     };

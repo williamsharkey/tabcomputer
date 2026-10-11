@@ -59,10 +59,11 @@ PORT=5299 STATIC_DIR=$PWD/dist node server.mjs                     # serve a bui
 
 ## Branches and integration
 
-- Work happens on `unix/<area>` branches of williamsharkey/shiro (unix/desktop, unix/debian, unix/gui, unix/conformance, unix/agent-clis, unix/perf-blink, ...). Each merges `origin/unix/integration` into itself before it is merged back.
-- `unix/integration` is the trunk. It is mirrored to the `main` branch of williamsharkey/tabcomputer.
-- Merge, don't rebase, shared branches. Merge `origin/unix/integration` again right before pushing.
-- Shipping: push a commit to the `deploy` branch of the tabcomputer repo (deploy/tabcomputer/README.md). Bump `build-number.txt` with `node increment-build.js` in the commit you ship. shiro.computer is deployed from the Shiro repository.
+- williamsharkey/tabcomputer is the source repository. Work happens on its `unix/<area>` branches (unix/desktop, unix/debian, unix/gui, unix/conformance, unix/agent-clis, unix/perf-blink, ...). Each merges `main` into itself before it is merged back.
+- `main` is the integration branch, moved only by fast-forward, and only by the coordinator. Workers merge it and never push `main` or `deploy`.
+- Merge, don't rebase, shared branches. Merge `main` again right before pushing.
+- Shipping: the coordinator fast-forwards the `deploy` branch to a tested `main` commit (deploy/tabcomputer/README.md), with `build-number.txt` bumped by `node increment-build.js` in that commit, and adds a line to docs/RELEASES.md (build number, commit, date). Git tags aren't used: the git proxy blocks them.
+- williamsharkey/shiro is a separate product: shiro.computer, the lightweight one without the x86-64 emulator, with its own `main` and `deploy.sh`. tabcomputer work doesn't go there.
 
 ## Profiles and internal names
 

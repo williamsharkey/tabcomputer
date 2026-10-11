@@ -43,7 +43,8 @@ The same static x86-64 binary in tabcomputer (Blink, isolated Chromium
 back-to-back runs of 5 samples each (one value when they agree, else both) at 7cdc95f
 ([a](../bench/results/bench-26-pbench-a.json),
 [b](../bench/results/bench-26-pbench-b.json); workflows:
-[quick](../bench/results/bench-26-workflows-quick.json) at 920a9df, 1 round). The
+[quick](../bench/results/bench-26-workflows-quick.json) at 920a9df, 1 round;
+`vite build`: [3 rounds](../bench/results/bench-29-vite.json) of Build 973). The
 microbenchmarks are `pbench` (`tests/tests/shiro-vitest/fixtures/x86/pbench.c`,
 the x86 suite's `x86.blink.*` / `x86.native.*`). Debian's own `perf bench`
 (linux-perf 6.12) also runs in Blink, so its column lines up with published
@@ -57,12 +58,12 @@ any Linux, WSL included.
 | benchmark | tabcomputer (Blink) | Blink, direct channels | WASI guest | native (this VM) | Blink / native | `perf bench` in Blink | WSL2 / WSL3 (published) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | syscall round trip (getppid) | 157 µs | 1.5 µs | 3.2–4.1 µs (fstat) | 0.099 µs | ~1600× | 117 µs/op (`syscall basic`) | 0.678 / 0.652 µs |
-| pipe ping-pong (round trip) | 391 µs | 653–717 µs | — | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 775 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
+| pipe ping-pong (round trip) | 391 µs | 653–717 µs | 7.7 µs (22 µs without isolation) | 36–41 µs idle, 3.0 µs one CPU | ~10× (130× vs one CPU) | 775 µs/op (`sched pipe`) | 20.6 / 18.3 µs |
 | messaging, 10×10 processes (per message) | 577 µs | 589 µs | — | 0.78–0.85 µs | ~700× | 7.6 s total, `-p -g 1 -l 20` (Blink 0129; below) | 14.5 / 13.0 s (20 groups) |
 | memcpy, 32 MiB (glibc) | 542–598 MB/s | — | 9.2–9.6 GB/s (memory.copy) | 8.9 GB/s | ~16× slower | 1.25 GB/s (perf's unrolled copy) | 7.84 / 12.64 GB/s (1 GB) |
 | fork + exec + wait (870 KB static glibc) | 90 ms | 86–97 ms | 0.9–1.1 ms (spawn, no fork) | 1.35–1.46 ms | ~65× | — | — |
 | `go build -a hello.go` (wall / user / sys) | 1190 s / 2280 s / 735 s | — | — | 5.6 s / 11.7 s / 2.1 s | ~210× wall | — | GoReleaser: 191/299/57 s / 184/289/48 s |
-| `vite build` (React template; wall / user / sys) | 4.9 s / 8.5 s / 2.7 s | — | — | 2.1 s / 2.6 s / 0.5 s | 2.3× wall | — | — |
+| `vite build` (React template; wall / user / sys) | 3.0 s / 4.4 s / 0.8 s | — | — | 1.9 s / 2.6 s / 0.3 s | 1.6× wall | — | — |
 | `apt-get install -y hello` (wall / user / sys) | 17.8 s / 22.2 s / 6.3 s | — | — | — (would change this machine) | — | — | — |
 | native Claude Code 2.1.296: `claude` → idle prompt | 40.6–43.9 s | — | — | 0.54 s | ~80× | — | — |
 | native Claude Code: key → echo on the input line (p50 / p90 / p99) | 189–204 / 231–266 ms / 1.6–1.8 s | — | — | 6.3 / 12.3 / 22–26 ms | ~30× (p50) | — | — |
@@ -80,6 +81,16 @@ What each row measures:
   1.6–1.8 s), and the renderer holds 1.4 GiB at the prompt. One mocked turn
   is 17 s. Native numbers stop at the pty, without a terminal emulator; in
   the tab the painted frame (`.frame`) adds ~4 ms to the buffer time.
+  The kernel's pty trace (Build 975, [run](../bench/results/bench-29-claude-stages.json))
+  splits a key's 222 ms: 1 ms until Claude reads it, 215 ms of Claude's
+  own work in Blink until its first write back (no syscalls in between),
+  0.4 ms for xterm. The 1.8 s outliers are keys whose first write was not
+  the echo: the echo came in a later write.
+  `/exit` returns the shell in 3.4 s (10 s on a launch with no turn). For
+  comparison the npm build (`claude_npm.*`, [c](../bench/results/bench-27-claude-c.json))
+  starts in 1.2 s, echoes a key in ~19 ms (p99 ~25 ms), answers the mocked
+  turn in 0.22 s and holds 426 MiB; it doesn't exit on `/exit` at Build 973
+  (its node process stays running; reported to agent-clis).
 - **Syscall round trip.** One kernel call from a Blink process to the
   TypeScript kernel and back. This is the floor under every syscall-heavy
   workload. By default the call goes through emscripten's proxy to
@@ -94,6 +105,11 @@ What each row measures:
   it slower (650–720 µs). Natively on this VM, ~35 µs of the 39 µs is an
   idle vCPU waking up: the same loop pinned to one CPU, or on a busy
   machine, is 3 µs.
+  Two WASM (WASI) processes doing the same over two kernel pipes
+  (`kernel.pipe_pingpong`, kbench `ping` ↔ `pong`; median of 5 runs of 2000
+  round trips, [run](../bench/results/bench-29-pingpong.json) at Build 975)
+  take 7.7 µs with SAB channels and 22 µs on the JSPI fallback: the kernel's
+  pipe and wake-up path costs ~50× less than Blink's round trip to it.
 - **Messaging** (hackbench, `perf bench sched messaging -p` shape). Scheduler
   and channel contention across 20 Worker-backed processes passing 100-byte
   messages through pipes. ~580 µs per message, so per-message cost is the
@@ -128,8 +144,8 @@ What each row measures:
   where Blink's time goes beyond the guest's own work. The first `go run` is
   not comparable to a native empty-cache build: the go layer ships a warm
   `~/.cache/go-build`. `go build -a` is in full runs only, at about 20 minutes.
-- **`vite build`.** Node-in-the-page (no x86) on the same template: 2.3× native
-  wall time and 3.3× its user CPU.
+- **`vite build`.** Node-in-the-page (no x86) on the same template: 1.6× native
+  wall time and 1.7× its user CPU (it was 2.3× and 3.3× in the 920a9df run).
 - **`apt-get install`.** dpkg and apt in Blink from the mirror cache. There is
   no native row, since installing would change this machine.
 

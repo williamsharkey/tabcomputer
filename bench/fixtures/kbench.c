@@ -11,6 +11,9 @@
  *   kbench fread PATH          read PATH to EOF (64 KiB reads)
  *   kbench cpu N               N rounds of an integer hash loop
  *   kbench memcpy MB N         N copies of an MB MiB buffer (memory.copy: bulk memory)
+ *   kbench ping N              N one-byte round trips: write stdout, read stdin (the other end
+ *                              is `kbench pong`, wired back by two pipes); results on stderr
+ *   kbench pong                echo stdin to stdout a byte at a time until EOF
  */
 typedef unsigned int u32;
 typedef unsigned long long u64;
@@ -40,7 +43,8 @@ static int writeb(int fd, const void *p, size_t n) { ciovec v = { p, n }; size_t
 static int readb(int fd, void *p, size_t n) { iovec v = { p, n }; size_t r = 0; u16 e = fd_read(fd, &v, 1, &r); return e ? -(int)e : (int)r; }
 static void puts1(const char *s) { writeb(1, s, slen(s)); }
 static char *u64toa(u64 v, char *end) { *end = 0; char *p = end; do { *--p = '0' + v % 10; v /= 10; } while (v); return p; }
-static void kv(const char *k, u64 v) { char b[32]; puts1(k); puts1("="); puts1(u64toa(v, b + 31)); puts1("\n"); }
+static void kvfd(int fd, const char *k, u64 v) { char b[32]; writeb(fd, k, slen(k)); writeb(fd, "=", 1); char *n = u64toa(v, b + 31); writeb(fd, n, slen(n)); writeb(fd, "\n", 1); }
+static void kv(const char *k, u64 v) { kvfd(1, k, v); }
 static u64 atou(const char *s) { u64 v = 0; while (*s >= '0' && *s <= '9') v = v * 10 + (u64)(*s++ - '0'); return v; }
 static int streq(const char *a, const char *b) { while (*a && *a == *b) a++, b++; return *a == *b; }
 static u64 now(void) { u64 t = 0; clock_time_get(1, 1, &t); return t; }
@@ -72,6 +76,22 @@ void _start(void) {
   args_get(argvv, argbuf);
   const char *mode = argc > 1 ? argvv[1] : "nop";
   if (streq(mode, "nop")) proc_exit(0);
+  if (streq(mode, "ping")) {
+    u64 n = argc > 2 ? atou(argvv[2]) : 1000;
+    u8 b = 'x';
+    for (int i = 0; i < 20; i++) { if (writeb(1, &b, 1) != 1 || readb(0, &b, 1) != 1) proc_exit(1); } /* warm-up */
+    u64 t0 = now();
+    for (u64 i = 0; i < n; i++) { if (writeb(1, &b, 1) != 1 || readb(0, &b, 1) != 1) proc_exit(1); }
+    u64 dt = now() - t0;
+    fd_close(1); /* pong sees EOF */
+    kvfd(2, "rounds", n); kvfd(2, "ns", dt);
+    proc_exit(0);
+  }
+  if (streq(mode, "pong")) {
+    u8 b;
+    while (readb(0, &b, 1) == 1) if (writeb(1, &b, 1) != 1) proc_exit(1);
+    proc_exit(0);
+  }
   if (streq(mode, "sys")) {
     u64 n = argc > 2 ? atou(argvv[2]) : 1000;
     u8 st[24];

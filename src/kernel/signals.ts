@@ -836,7 +836,11 @@ function kernelTarget(kernel: Kernel, proc: Process, jc: JobControl): SignalTarg
       const t = jc.get(proc.pid);
       if (t) t.signals.pending = sigset.del(t.signals.pending, sig);
       const info = proc.data.sigInFlight as SigInfo | undefined;
-      proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      // (the pending setter queued this instance already when the signal was
+      // pending before it: another real-time instance, not taken yet)
+      if (!(info?.signo === sig && proc.siginfo.get(sig)?.includes(info))) {
+        proc.queueSiginfo(info?.signo === sig ? info : { signo: sig, code: SI_USER });
+      }
       proc.pendingSignals.add(sig);
       proc.interruptSyscalls();
       (proc.data.onSignal as ((s: number) => void) | undefined)?.(sig);

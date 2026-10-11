@@ -646,9 +646,15 @@ describe('Blink engine: kernel processes', () => {
     expect(holder).toBe(0);           // blocked reading stdin: the lock is free
     expect(waiters).toBe(0);
     expect(acquires).toBeGreaterThan(0);
-    // and the kernel call it's in, by its tid (patch 0127): read (0) on the main thread
-    const calls = p.data.engineCalls as Map<number, { nr: number; since: number }> | undefined;
-    expect(calls?.get(p.pid)?.nr).toBe(0);
+    // and the kernel call it's in, by its tid: read (0) on the main thread, on its
+    // own kernel channel (0128/0129), or on the pool's (patch 0127)
+    const direct = (p.data.engineDirect as Map<number, { sab: SharedArrayBuffer; serving: boolean }> | undefined)?.get(p.pid);
+    if (direct) {
+      expect(direct.serving).toBe(true);
+      expect(new Int32Array(direct.sab)[1]).toBe(0);
+    } else {
+      expect((p.data.engineCalls as Map<number, { nr: number }> | undefined)?.get(p.pid)?.nr).toBe(0);
+    }
     expect((p.data.engineThreads as Set<number>).has(p.pid)).toBe(true);
     await w.write(new TextEncoder().encode('x\n'));
     await w.close();

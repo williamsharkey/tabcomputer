@@ -30,10 +30,17 @@ var ShiroKernelLibrary = {
   },
 
   // a guest thread started (op 1) or ended (0): the kernel's list of the process's threads
-  shiro_thread_note__proxy: 'async',
+  // Runs on the thread itself: host.mjs adds the kernel channel it gave this
+  // thread's Worker (0128), so the page knows whose channel is whose
   shiro_thread_note: (tid, op) => {
+    if (ENVIRONMENT_IS_PTHREAD) {
+      try {
+        postMessage({ shiroThread: { tid: tid, op: op } });
+      } catch (e) {}
+      return;
+    }
     var K = Module['shiroKernel'];
-    if (K && K.threadNote) K.threadNote(tid, op);
+    if (K && K.threadNote) K.threadNote(tid, op, null);
   },
 
   // fork(): hand the process snapshot (blink/shiro.inc) to the page, which
@@ -63,6 +70,14 @@ var ShiroKernelLibrary = {
   // their bytes are a SharedArrayBuffer the kernel gave this thread
   // (host.mjs keeps them in shiroKernel.shm: id -> buffer), whose last page
   // is control words (the object's lock). Guest threads reach it here.
+  // a shared object's buffer has reached this thread (host.mjs): a mapping's
+  // reply on a thread's own channel can come before the message that brings it
+  shiro_shm_ready__proxy: 'sync',
+  shiro_shm_ready__async: 'auto',
+  shiro_shm_ready: (id) => {
+    var K = Module['shiroKernel'];
+    return K && K.shmReady ? K.shmReady(id) : 1;
+  },
   shiro_shm_io__proxy: 'sync',
   shiro_shm_io: (id, off, ptr, n, dir) => {
     var sab = Module['shiroKernel']?.shm?.get(id);
@@ -173,10 +188,26 @@ var ShiroKernelLibrary = {
       };
       PThread.getNewWorker = function () {
         var worker = shiroGetNewWorker.call(PThread);
+        // its own kernel channel, before its thread runs (shiro.inc: direct
+        // channels); the Worker keeps it for the threads it runs later
+        var K = Module['shiroKernel'];
+        if (worker && !worker.shiroDch && K && K.takeDch) {
+          var dch = K.takeDch();
+          if (dch) {
+            worker.shiroDch = dch;
+            worker.postMessage({ shiroDch: dch });
+          }
+        }
         if (worker && !worker.shiroKeep) {
           worker.shiroKeep = true;
-          if (worker.addEventListener) worker.addEventListener('message', function (e) { shiroKeep(e.data); });
-          else if (worker.on) worker.on('message', shiroKeep);  // (Node's worker_threads)
+          var onMessage = function (d) {
+            shiroKeep(d);
+            var K2 = Module['shiroKernel'];
+            // a thread started or ended on this Worker, which has kernel channel shiroDch
+            if (d && d.shiroThread && K2 && K2.threadNote) K2.threadNote(d.shiroThread.tid, d.shiroThread.op, worker.shiroDch || null);
+          };
+          if (worker.addEventListener) worker.addEventListener('message', function (e) { onMessage(e.data); });
+          else if (worker.on) worker.on('message', onMessage);  // (Node's worker_threads)
         }
         if (PThread.unusedWorkers.length == 0) {
           setTimeout(function () {
@@ -185,8 +216,53 @@ var ShiroKernelLibrary = {
         }
         return worker;
       };
+    } else {
+      // a thread Worker: the kernel channel host.mjs gives it (above), for
+      // shiro_dch_* (messages before its thread runs reach it here)
+      var shiroTakeDch = function (d) {
+        if (d && d.shiroDch) {
+          globalThis.shiroDch = d.shiroDch;
+          globalThis.shiroDchI32 = new Int32Array(d.shiroDch);
+        }
+      };
+      var shiroPort = typeof process == 'object' && process.getBuiltinModule ? process.getBuiltinModule('worker_threads').parentPort : null;
+      if (shiroPort) shiroPort.on('message', shiroTakeDch);
+      else self.addEventListener('message', function (e) { shiroTakeDch(e.data); });
     }`,
   shiro_pool_init: () => {},
+
+  // This thread's own kernel channel (shiro.inc's direct channels): a
+  // SharedArrayBuffer the page serves, in the WASI guest channel's layout
+  // (state, nr, result, signal, args, data at 64). Not proxied: they run on
+  // the calling thread, which waits on the channel itself.
+  shiro_dch_size: () => {
+    var s = globalThis.shiroDch;
+    return s ? s.byteLength - 64 : 0;
+  },
+  shiro_dch_post: (nr, args, data, inlen) => {
+    var s = globalThis.shiroDch, w = globalThis.shiroDchI32;
+    if (inlen) new Uint8Array(s, 64, inlen).set(HEAPU8.subarray(data, data + inlen));
+    w[1] = nr;
+    for (var i = 0; i < 12; i++) w[4 + i] = HEAP32[(args >> 2) + i];
+    if (Atomics.compareExchange(w, 0, 0, 3) !== 0) return 0;  // closed (4)
+    Atomics.notify(w, 0);  // the page's watch() waits on it
+    return 1;
+  },
+  shiro_dch_state: () => Atomics.load(globalThis.shiroDchI32, 0),
+  shiro_dch_cas: (o, n) => (Atomics.compareExchange(globalThis.shiroDchI32, 0, o, n) === o ? 1 : 0),
+  shiro_dch_wait: (v, ms) => {
+    Atomics.wait(globalThis.shiroDchI32, 0, v, ms);
+  },
+  // the reply: returns the result, the high word into args[0], the signal
+  // that rode on it into *sig, outcap bytes of data
+  shiro_dch_finish: (args, data, outcap, sig) => {
+    var s = globalThis.shiroDch, w = globalThis.shiroDchI32, r = w[2];
+    HEAP32[args >> 2] = w[4];
+    Atomics.compareExchange(w, 0, 2, 0);
+    HEAP32[sig >> 2] = Atomics.exchange(w, 3, 0);
+    if (outcap) HEAPU8.set(new Uint8Array(s, 64, outcap), data);
+    return r;
+  },
 };
 
 addToLibrary(ShiroKernelLibrary);

@@ -784,6 +784,14 @@ export class KernelChannel {
     return s === A.STATE_REQUEST || s === A.STATE_REQUEST_SPIN;
   }
 
+  /**
+   * The kernel is running this channel's call: a signal that interrupts the
+   * process now ends it (or it ends anyway), and its reply carries the
+   * signal. (A call only posted isn't: it can start after the interruption
+   * and sleep through it.)
+   */
+  get serving(): boolean { return this.busy; }
+
   /** A request is waiting and nothing is serving it yet. */
   get ready(): boolean { return !this.busy && !this.stopped && this.pending; }
 

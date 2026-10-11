@@ -162,6 +162,8 @@ async function main() {
   if (canBlock() !== 'sab') void fs.holdSmallContent();
   await fs.init();
   setActiveFileSystem(fs);
+  // The banner (and Save) if the browser deletes the filesystem's IndexedDB under the page (tabcomputer#71)
+  void import('./storage-lost').then(m => m.watchStorageLost(fs)).catch(e => console.warn('[fs]', e));
   // Persistent storage (no eviction under storage pressure) once the machine
   // holds a lot: Firefox asks the user, so not for a page that stores little
   fs.onBigWrite(PERSIST_AFTER_BYTES, () => void requestPersistentStorage('large write'));
@@ -653,6 +655,9 @@ async function main() {
     terminal.term.writeln(full
       ? '\r\n\x1b[31mshiro: browser storage is full: writes fail with "No space left on device" until files are deleted (apt clean, rm).\x1b[0m'
       : '\r\n\x1b[32mshiro: storage is no longer full; pending writes are saved.\x1b[0m');
+  });
+  fs.onStorageLost((lost) => {
+    terminal.term.writeln(`\r\n\x1b[31mtabcomputer: browser storage was deleted (${lost.reason}). Files not in memory read as "Input/output error"; new writes stay in memory only. Save files with the banner's button (or copy them out) before reloading. doctor shows it.\x1b[0m`);
   });
   desktop?.attachMainTerminal(terminal);
   // The profile's banner: the desktop sets its compact welcome; 'hud' keeps the full one

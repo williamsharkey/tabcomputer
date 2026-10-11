@@ -80,6 +80,8 @@ export const toolchainCmd: Command = {
       const all = await listToolchains(ctx.fs);
       for (const id of ids) if (!all.some((t) => t.id === id)) { err(`toolchain: no toolchain named ${id} (toolchain list)\n`); return 1; }
 
+      // Hundreds of MB in browser storage: keep it from eviction (tabcomputer#71)
+      void import('../storage').then(m => m.requestPersistentStorage('toolchain install', true));
       const rootfs = await import('../debian/rootfs');
       if (!await rootfs.installedRootfs(ctx.fs)) {
         out('Installing Debian first (debian install)...\n');

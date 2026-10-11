@@ -83,6 +83,21 @@ const ORPHAN_KEY = '\u0001o/';
  */
 const INODE_KEY = '\u0001i/';
 const LINK_MAP_KEY = '\u0001links';
+/**
+ * The volume sentinel (tabcomputer#71): { id, created, build }, a random id
+ * written at the first boot (or added to an install made before it). A
+ * reopen of the database after init() must find the same id: when the
+ * browser deletes the origin's storage (eviction, "Clear site data", another
+ * tab's deleteDatabase) the reopen used to create a new empty database and
+ * accept it, and each read of a file whose bytes had left memory then
+ * cached "doesn't exist".
+ */
+const VOLUME_KEY = '\u0001volume';
+/** localStorage hint of the volume id: present without the sentinel, the previous storage was lost (a best guess: both usually go together). */
+const VOLUME_HINT = 'tabcomputer-fs-volume';
+
+/** Why and when the filesystem's IndexedDB went away under it (FileSystem.storageLost). */
+export interface StorageLost { at: number; reason: string }
 const inodeKey = (ino: number) => INODE_KEY + ino;
 const isInternalKey = (k: string) => k.charCodeAt(0) === 1;
 const blockKey = (id: string, i: number) => BLOCK_KEY + id + '/' + i.toString(16).padStart(8, '0');
@@ -259,6 +274,7 @@ function fsError(code: string, message: string): Error {
     ENOTDIR: -20,
     EEXIST: -17,
     ENOTEMPTY: -39,
+    EIO: -5,
   };
   err.errno = errnos[code] || -1;
   return err;
@@ -770,6 +786,86 @@ export class FileSystem {
     return () => { this._fullListeners.delete(fn); };
   }
 
+  /** The database was deleted under this page (tabcomputer#71): set once, never cleared until a reload. */
+  get storageLost(): StorageLost | null { return this._lost; }
+
+  /** The id of the volume this page loaded (the sentinel's), null before init(). */
+  get volumeId(): string | null { return this._volumeId; }
+
+  /** init() found no filesystem but a hint of an earlier one in localStorage: that storage was lost before this load. */
+  get previousVolumeLost(): string | null { return this._previousLost; }
+
+  /** Called once when storage is lost (immediately if it already is). */
+  onStorageLost(fn: (lost: StorageLost) => void): () => void {
+    if (this._lost) { try { fn(this._lost); } catch {} }
+    else this._lostListeners.add(fn);
+    return () => { this._lostListeners.delete(fn); };
+  }
+
+  /** What memory still holds of the filesystem, to save after storage is lost: file nodes with content (written-but-uncommitted ones included). */
+  inMemoryFiles(): FSNode[] {
+    const out = new Map<string, FSNode>();
+    for (const [p, n] of this.cache) if (n && !isInternalKey(p)) out.set(p, n);
+    for (const batch of [this._inflight, this._dirty]) {
+      if (!batch) continue;
+      for (const [p, n] of batch) {
+        if (isInternalKey(p) || p.startsWith(RANGE)) continue;
+        if (n) out.set(p, n); else out.delete(p);
+      }
+    }
+    return [...out.values()].filter((n) => n.type !== 'file' || (n.content && !n.lazy && !n.blob));
+  }
+
+  private _volumeId: string | null = null;
+  private _previousLost: string | null = null;
+  private _lost: StorageLost | null = null;
+  private _lostListeners: Set<(lost: StorageLost) => void> = new Set();
+
+  private _eio(path?: string): Error {
+    return fsError('EIO', `EIO: input/output error (browser storage was deleted: ${this._lost?.reason ?? 'unknown'})${path ? `, '${path}'` : ''}`);
+  }
+
+  /**
+   * The database this page loaded is gone. From now on every read that needs
+   * IndexedDB fails with EIO (nothing is cached as missing), writes stay in
+   * memory (_dirty is kept, never committed into a new database) and the
+   * listeners (doctor, the page's banner) hear of it once.
+   */
+  private _markLost(reason: string): void {
+    if (this._lost) return;
+    this._lost = { at: Date.now(), reason };
+    if (this.db) { try { this.db.close(); } catch {} }
+    this.db = null;
+    console.error(`[fs] browser storage was deleted under this page (${reason}); reads that need it fail with EIO, writes stay in memory until reload (tabcomputer#71)`);
+    void import('./kernel/klog').then(({ klog, LOG_ERR }) => klog.log(LOG_ERR, `tabcomputer-fs: browser storage was deleted (${reason}); files not in memory are lost, writes are kept in memory only`)).catch(() => {});
+    for (const fn of this._lostListeners) { try { fn(this._lost); } catch {} }
+    this._lostListeners.clear();
+  }
+
+  /** Read the volume sentinel, writing one at a first boot or on an install from before it. */
+  private async _initVolume(): Promise<void> {
+    const vol = await this._request('readonly', store => store.get(VOLUME_KEY) as IDBRequest<{ id?: unknown } | undefined>);
+    let hint: string | null = null;
+    try { hint = globalThis.localStorage?.getItem(VOLUME_HINT) ?? null; } catch {}
+    if (typeof vol?.id === 'string') {
+      this._volumeId = vol.id;
+    } else {
+      const fresh = !(await this._request('readonly', store => store.count('/')));
+      if (fresh && hint) {
+        this._previousLost = hint;
+        console.error(`[fs] the filesystem this browser held (volume ${hint}) is gone: browser storage was cleared or evicted before this load (tabcomputer#71)`);
+      }
+      const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+      await this._request('readwrite', store => store.put(this._volumeRecord(id)));
+      this._volumeId = id;
+    }
+    if (hint !== this._volumeId) { try { globalThis.localStorage?.setItem(VOLUME_HINT, this._volumeId); } catch {} }
+  }
+
+  private _volumeRecord(id: string): FSNode {
+    return { path: VOLUME_KEY, type: 'file', content: null, mode: 0, mtime: 0, ctime: 0, size: 0, id, created: Date.now() } as FSNode;
+  }
+
   /** Call `fn` once, when this page load has written `bytes` (asking for persistent storage). */
   onBigWrite(bytes: number, fn: () => void): void { this._bigWrite = { bytes, fn }; }
 
@@ -817,6 +913,7 @@ export class FileSystem {
     this._installLifecycleFlush();
     await this._loadInternal('blob map', () => this._loadBlobMap());
     if (!(await this._loadInternal('link map', () => this._loadLinkMap()))) void this._rebuildLinkMap();
+    await this._initVolume();
 
     // Ensure root directory exists
     const root = await this._get('/');
@@ -950,8 +1047,18 @@ export class FileSystem {
   private _openDb(): Promise<IDBDatabase> {
     if (this._opening) return this._opening;
     this._opening = new Promise<IDBDatabase>((resolve, reject) => {
+      // A reopen: the page loaded a volume, and this connection must be to it
+      const volume = this._volumeId;
+      if (this._lost) { reject(this._eio()); return; }
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (ev) => {
+        if (volume && ev.oldVersion === 0) {
+          // The database is new: the one this page loaded was deleted. Aborting
+          // the upgrade leaves no empty database behind to be accepted.
+          this._markLost('the database was deleted; a reopen found none');
+          req.transaction?.abort();
+          return;
+        }
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: 'path' });
@@ -963,17 +1070,40 @@ export class FileSystem {
         // another tab upgrading, devtools "clear storage"). Drop the handle so
         // the next operation reopens instead of failing with "The database
         // connection is closing" forever.
-        db.onclose = () => { if (this.db === db) this.db = null; };
-        db.onversionchange = () => { db.close(); if (this.db === db) this.db = null; };
-        resolve(db);
+        // Either can mean the origin's storage was cleared (deleteDatabase
+        // fires versionchange; eviction, close): reopen soon, so a loss is
+        // noticed (and shown) without waiting for the next file operation.
+        const dropped = () => {
+          if (this.db !== db) return;
+          this.db = null;
+          if (this._volumeId) setTimeout(() => { if (!this.db && !this._lost) void this._getDb().catch(() => {}); }, 100);
+        };
+        db.onclose = dropped;
+        db.onversionchange = () => { db.close(); dropped(); };
+        if (!volume) { resolve(db); return; }
+        let tx: IDBTransaction;
+        try { tx = db.transaction(STORE_NAME, 'readonly'); } catch (e) { db.close(); reject(e); return; }
+        const get = tx.objectStore(STORE_NAME).get(VOLUME_KEY) as IDBRequest<{ id?: unknown } | undefined>;
+        get.onsuccess = () => {
+          const id = get.result?.id;
+          if (id === volume) { resolve(db); return; }
+          // Deleted and made again (another tab booted a new one, or a write
+          // reached an empty database before this check existed)
+          db.onclose = null; db.onversionchange = null;
+          db.close();
+          this._markLost(id === undefined ? 'the database was replaced by one without this volume' : `the database was replaced by another volume (${String(id)})`);
+          reject(this._eio());
+        };
+        get.onerror = () => { db.close(); reject(get.error); };
       };
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(this._lost ? this._eio() : req.error);
       req.onblocked = () => console.warn('[fs] IndexedDB open blocked by another connection');
     }).finally(() => { this._opening = null; });
     return this._opening;
   }
 
   private async _getDb(): Promise<IDBDatabase> {
+    if (this._lost) throw this._eio();
     if (!this.db) this.db = await this._openDb();
     return this.db;
   }
@@ -990,6 +1120,7 @@ export class FileSystem {
   private async _request<T>(mode: IDBTransactionMode, make: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
+        if (this._lost) throw this._eio();
         const db = this.db ?? await this._getDb();
         return await new Promise<T>((resolve, reject) => {
           const tx = db.transaction(STORE_NAME, mode);
@@ -1002,6 +1133,7 @@ export class FileSystem {
           tx.onabort = () => reject(tx.error || new DOMException('Transaction aborted', 'AbortError'));
         });
       } catch (e) {
+        if (this._lost) throw this._eio();
         if (attempt > 0 || !FileSystem._isClosedError(e)) throw e;
         console.warn('[fs] IndexedDB connection lost, reopening:', (e as any)?.message);
         if (this.db) { try { this.db.close(); } catch {} }
@@ -1044,6 +1176,7 @@ export class FileSystem {
   }
 
   private _scheduleFlush(): void {
+    if (this._lost) return;
     if (this._full) {
       // Retry the failed batch once a burst of deletes has freed something,
       // not after every write (each retry clones the whole batch)
@@ -1117,6 +1250,15 @@ export class FileSystem {
             for (const p of batch.keys()) if (p.startsWith(RANGE) && !this._dirty.has(p)) this._ranges.delete(p.slice(RANGE.length));
           }
         } catch (e) {
+          if (this._lost) {
+            // Nothing to commit to: keep every write in memory (newer wins), for
+            // reads and for saving before a reload, and stop flushing
+            for (const [p, n] of this._dirty) { batch.delete(p); batch.set(p, n); }
+            this._dirty = batch;
+            this._dirtyBytes = 0;
+            for (const n of batch.values()) this._dirtyBytes += storedBytes(n);
+            break;
+          }
           if (FileSystem._isQuotaError(e)) {
             // Requeue it under the writes made meanwhile (newer wins) and
             // stop: the next flush is a retry, after the user frees space
@@ -1146,6 +1288,7 @@ export class FileSystem {
   private async _commit(batch: Map<string, FSNode | null>, durability: 'default' | 'strict' | 'relaxed'): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       try {
+        if (this._lost) throw this._eio();
         const db = this.db ?? await this._getDb();
         await new Promise<void>((resolve, reject) => {
           let tx: IDBTransaction;
@@ -1182,6 +1325,7 @@ export class FileSystem {
         });
         return;
       } catch (e) {
+        if (this._lost) throw this._eio();
         if (attempt > 0 || !FileSystem._isClosedError(e)) throw e;
         console.warn('[fs] IndexedDB connection lost, reopening:', (e as any)?.message);
         if (this.db) { try { this.db.close(); } catch {} }
@@ -1193,7 +1337,7 @@ export class FileSystem {
   /** Start committing queued writes now; resolves when the queue is empty
    *  (relaxed durability). For writers that pace themselves by the commits. */
   flushed(): Promise<void> {
-    return this._flush().then(() => { if (this._full) throw this._enospc(); });
+    return this._flush().then(() => { if (this._lost) throw this._eio(); if (this._full) throw this._enospc(); });
   }
 
   /**
@@ -1203,6 +1347,7 @@ export class FileSystem {
    */
   async sync(): Promise<void> {
     while (this._flushing || this._dirty.size > 0) {
+      if (this._lost && !this._flushing) throw this._eio();
       if (this._flushing) await this._flushing;
       else await this._flush('strict');
       if (this._full && !this._flushing) throw this._enospc();
@@ -2419,6 +2564,7 @@ export class FileSystem {
     const tx = (await this._getDb()).transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
     store.clear();
+    if (this._volumeId) store.put(this._volumeRecord(this._volumeId));
     for (const node of nodes) {
       if (isInternalKey(node.path)) continue;
       // Plain nodes: a big file's bytes are in `content`, links are separate files (exportAll)

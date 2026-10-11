@@ -229,7 +229,16 @@ export async function packagesCheck(ctx: CommandContext): Promise<Check> {
   };
 }
 
-async function storageCheck(): Promise<Check> {
+async function storageCheck(ctx: CommandContext): Promise<Check> {
+  // The filesystem's IndexedDB was deleted under this page (tabcomputer#71)
+  const lost = ctx.fs.storageLost;
+  if (lost) {
+    const at = new Date(lost.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return {
+      label: 'storage', status: 'FAIL',
+      detail: `browser storage was deleted at ${at} (${lost.reason}): files not in memory read as EIO, ${ctx.fs.pendingWrites} writes held in memory only; save what you need before reloading (tabcomputer#71)`,
+    };
+  }
   const st = g.navigator?.storage;
   if (!st?.estimate) return { label: 'storage', status: 'INFO', detail: 'StorageManager unavailable' };
   const [est, persisted] = await Promise.all([st.estimate(), st.persisted?.().catch(() => false) ?? false]);
@@ -239,7 +248,7 @@ async function storageCheck(): Promise<Check> {
   return {
     label: 'storage',
     status: frac > 0.9 ? 'FAIL' : frac > 0.75 || !persisted ? 'WARN' : 'OK',
-    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%) · ${persisted ? 'persisted' : 'not persisted: the browser may evict it under storage pressure'}`,
+    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%) · ${persisted ? 'persisted' : 'not persisted: the browser may evict it under storage pressure, deleting every file'}${ctx.fs.previousVolumeLost ? ' · the filesystem before this load was lost' : ''}`,
   };
 }
 
@@ -266,7 +275,7 @@ export async function runDoctorChecks(ctx: CommandContext): Promise<Check[]> {
     guard('sign-in', () => signInChecks(ctx)),
     guard('debian', () => debianCheck(ctx)),
     guard('packages', () => packagesCheck(ctx)),
-    guard('storage', storageCheck),
+    guard('storage', () => storageCheck(ctx)),
     guard('kernel', () => kernelCheck(ctx)),
     guard('agents', async () => {
       const { agentChecks, agentSummary } = await import('./doctor-agents');

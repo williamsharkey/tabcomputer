@@ -156,6 +156,8 @@ export const claudeCmd: Command = {
       // `claude install [version]` and `claude update` download the native build (never the binary's own installer)
       if (install || args[0] === 'update' || args[0] === 'upgrade') {
         const version = install ? args.slice(1).find((a) => !a.startsWith('-')) : undefined;
+        // About 240 MB in browser storage: keep it from eviction (tabcomputer#71)
+        void import('../storage').then(m => m.requestPersistentStorage('claude install', true));
         const { installNativeClaude } = await import('./claude-native');
         return installNativeClaude(ctx, nativeClaudePath(ctx.env), version);
       }

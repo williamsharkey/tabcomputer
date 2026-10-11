@@ -30,14 +30,23 @@ export function reloadAfterFlush(go: () => void = () => location.reload()): void
   void flushStorage().then(go, go);
 }
 
-/** Ask once per page load for persistent storage; resolves to whether it is granted. */
-export function requestPersistentStorage(reason: string): Promise<boolean> {
-  if (!requested) {
+let granted = false;
+
+/**
+ * Ask once per page load for persistent storage; resolves to whether it is granted.
+ * `again` asks again after a refusal (a big install: Chrome grants by site
+ * engagement, which grows during a session; tabcomputer#71 lost a whole install
+ * to eviction).
+ */
+export function requestPersistentStorage(reason: string, again = false): Promise<boolean> {
+  if (!requested || (again && !granted)) {
+    const prev = requested;
     const s = typeof navigator !== 'undefined' ? navigator.storage : undefined;
     requested = (async () => {
+      if (prev && await prev) return true;
       if (!s?.persist) return false;
-      if (await s.persisted?.().catch(() => false)) return true;
-      const granted = await s.persist().catch(() => false);
+      if (await s.persisted?.().catch(() => false)) return (granted = true);
+      granted = await s.persist().catch(() => false);
       console.log(`[tabcomputer] persistent storage ${granted ? 'granted' : 'not granted'} (${reason})`);
       return granted;
     })();

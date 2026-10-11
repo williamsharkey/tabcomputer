@@ -1,6 +1,7 @@
 /**
  * Command-line front end shared by the decompress-only tools (xz, zstd):
- * flags, stdin/stdout, output names, keeping or removing the input.
+ * flags, stdin/stdout, output names, keeping or removing the input. A tool
+ * with `encode` also compresses (zstd, in stored blocks).
  */
 
 import type { CommandContext } from '../index';
@@ -14,6 +15,8 @@ export interface DecoderCli {
   /** zstd keeps its input unless --rm; xz removes it unless -k */
   keepByDefault: boolean;
   decode(input: Uint8Array): { data: Uint8Array; warning?: string };
+  /** Compression, when the tool has it: to `suffixes[0][0]` */
+  encode?(input: Uint8Array): Uint8Array;
   /** Message for a decode error, or null when it is not one */
   describe(e: unknown): string | null;
   /** Long options the tool accepts and ignores (they only matter for compression or threads) */
@@ -87,15 +90,20 @@ export async function runDecompressor(ctx: CommandContext, cli: DecoderCli, defa
     }
   }
 
-  if (!decompress) {
+  if (!decompress && !cli.encode) {
     ctx.stderr += `${prog}: compression not implemented (decompress only, use -d)\n`;
     return 1;
   }
+  const compress = !decompress && !test;
 
   const useStdin = files.length === 0;
   if (useStdin) files.push('-');
-  if (useStdin && !ctx.stdin && ctx.stdoutIsTTY && !force) {
+  if (useStdin && !compress && !ctx.stdin && ctx.stdoutIsTTY && !force) {
     ctx.stderr += `${prog}: Compressed data cannot be read from a terminal\n`;
+    return 1;
+  }
+  if (useStdin && compress && ctx.stdoutIsTTY && !force) {
+    ctx.stderr += `${prog}: stdout is a console, aborting\n`;
     return 1;
   }
 
@@ -133,6 +141,7 @@ export async function runDecompressor(ctx: CommandContext, cli: DecoderCli, defa
     let outPath = '';
     if (!writesStdout) {
       if (outFile) outPath = ctx.fs.resolvePath(outFile, ctx.cwd);
+      else if (compress) outPath = resolved + cli.suffixes[0][0];
       else {
         const suf = cli.suffixes.find(([s]) => file.endsWith(s) && file.length > s.length);
         if (!suf) {
@@ -150,7 +159,8 @@ export async function runDecompressor(ctx: CommandContext, cli: DecoderCli, defa
     }
 
     let result: { data: Uint8Array; warning?: string };
-    try {
+    if (compress) result = { data: cli.encode!(input) };
+    else try {
       try {
         result = cli.decode(input);
       } catch (e) {

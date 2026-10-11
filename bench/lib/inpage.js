@@ -178,6 +178,25 @@
     return { ms, out: text, codes };
   };
 
+  /**
+   * Two kernel processes joined both ways by pipes: `ping` (argv) writes a byte to `pong`
+   * (argvPong) and reads it back. Returns ping's stderr (key=value lines) and exit codes.
+   */
+  B.pingPong = async (argvPing, argvPong, { cwd = '/home/user' } = {}) => {
+    const k = window.__tabcomputer.kernel, lab = B.lab();
+    const there = await B.pipe(), back = await B.pipe(), err = await B.pipe();
+    const nul = await B.devnull();
+    const ping = k.spawn({ path: argvPing[0], argv: argvPing, parent: lab, cwd, fds: { 0: back.r, 1: there.w, 2: err.w } });
+    const pong = k.spawn({ path: argvPong[0], argv: argvPong, parent: lab, cwd, fds: { 0: there.r, 1: back.w, 2: nul } });
+    for (const p of [there, back]) { await B.sys(SYS.close, [p.rfd]); await B.sys(SYS.close, [p.wfd]); }
+    await B.sys(SYS.close, [err.wfd]);
+    const text = await B.readAllFd(err.rfd);
+    await B.sys(SYS.close, [err.rfd]);
+    const codes = [];
+    for (const p of [ping, pong]) { const w = await k.waitpid(p.pid, 0, lab); codes.push((w.status >> 8) & 0xff | (w.status & 0x7f ? 128 + (w.status & 0x7f) : 0)); }
+    return { out: text, codes };
+  };
+
   /** Keystroke → echo latency on the main terminal: until parsed into the buffer, and until the next frame. */
   B.echoLatency = async (count) => {
     const t = window.__tabcomputer.terminal.term;

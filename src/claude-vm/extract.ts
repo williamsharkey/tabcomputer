@@ -17,7 +17,7 @@ import { zstdDecodeAll } from '../commands/compress/zstd-codec';
 
 export const VM_CACHE = '.cache/tabcomputer/claude-vm';
 /** Bumped when the layout written here changes: an older extraction is redone */
-export const VM_LAYOUT = 5;
+export const VM_LAYOUT = 6;
 
 export interface VmFs {
   readFile(path: string, enc?: string): Promise<any>;
@@ -62,7 +62,7 @@ export function launcherSource(): string {
     '// tabcomputer: claude --vm (src/claude-vm/extract.ts)',
     "const { createBun } = await require('tabcomputer:claude-vm').load();",
     "const assets = JSON.parse(require('fs').readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
-    'globalThis.Bun = createBun({ process: process, require: require, Buffer: Buffer, assets: assets, root: __dirname });',
+    "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js' });",
     "await import('./cli.js');",
     '',
   ].join('\n');

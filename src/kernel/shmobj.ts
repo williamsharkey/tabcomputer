@@ -127,6 +127,9 @@ export class SharedObjects {
     return { id: o.id, remote: true };
   }
 
+  /** The id of the object named `key`, if it exists */
+  idOf(key: string): number | undefined { return this.byKey.get(key)?.id; }
+
   private giveSab(o: SharedObject, instance: number): void {
     if (!o.sab || o.hasSab.has(instance)) return;
     o.hasSab.add(instance);

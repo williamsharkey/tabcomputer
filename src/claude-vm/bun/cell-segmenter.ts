@@ -20,7 +20,10 @@
  *     writes the cells into a screen row (two ints per cell: char id, then
  *     runWord | width code) and returns endX + firstCol·2^20 + endCol·2^36.
  */
-import { graphemes as splitGraphemes, graphemeWidth } from './text';
+import { stringWidth } from './text';
+
+let segmenter: Intl.Segmenter | null = null;
+const splitGraphemes = (s: string) => Array.from((segmenter ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })).segment(s), (x) => x.segment);
 
 interface ScreenOpts {
   widthMask: number; narrow: number; wide: number; spacerTail: number; spacerHead: number;
@@ -146,8 +149,7 @@ export class CellSegmenter {
         for (const ch of g) if (!this.dropped(ch.codePointAt(0)!)) keep += ch;
         if (!keep) continue;
         g = keep;
-        let w = graphemeWidth(g);
-        if (!this.ambiguousIsNarrow && w === 1 && isAmbiguous(g.codePointAt(0)!)) w = 2;
+        const w = Math.min(2, stringWidth(g, { ambiguousIsNarrow: this.ambiguousIsNarrow }));
         if (w === 0) continue;
         if (style !== curStyle || link !== curLink) { outRuns[2 * runCount] = style; outRuns[2 * runCount + 1] = link; runCount++; curStyle = style; curLink = link; }
         out[2 * count] = this.graphemeId(g);
@@ -223,12 +225,4 @@ export class CellSegmenter {
     if (first < 0) first = end = 0;
     return col + first * 2 ** 20 + end * 2 ** 36;
   }
-}
-
-/** East Asian Ambiguous width (the common ranges): wide when ambiguousIsNarrow is false */
-function isAmbiguous(cp: number): boolean {
-  return (cp >= 0xa1 && cp <= 0xff && [0xa1, 0xa4, 0xa7, 0xa8, 0xaa, 0xad, 0xae, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbc, 0xbd, 0xbe, 0xbf, 0xc6, 0xd0, 0xd7, 0xd8, 0xde, 0xdf, 0xe0, 0xe1, 0xe6, 0xe8, 0xe9, 0xea, 0xec, 0xed, 0xf0, 0xf2, 0xf3, 0xf7, 0xf8, 0xf9, 0xfa, 0xfc, 0xfe].includes(cp))
-    || (cp >= 0x2010 && cp <= 0x2027) || (cp >= 0x2190 && cp <= 0x21ff) || (cp >= 0x2460 && cp <= 0x24ff)
-    || (cp >= 0x2500 && cp <= 0x257f) || (cp >= 0x25a0 && cp <= 0x25ff) || (cp >= 0x2600 && cp <= 0x266f)
-    || (cp >= 0x0391 && cp <= 0x03c9) || (cp >= 0x0401 && cp <= 0x0451);
 }

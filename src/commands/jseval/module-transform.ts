@@ -1,4 +1,4 @@
-import { isEsbuildChunk, liveEsbuildChunk } from './esm-live';
+import { isEsbuildChunk, liveEsbuildChunk, liveModule } from './esm-live';
 // ES module ↔ CommonJS transform utilities (pure string transforms, no side effects)
 
 // ── TypeScript type stripping ──────────────────────────────────────────────
@@ -1055,11 +1055,15 @@ export function rewriteFunctionImport(src: string): string {
  * `pass`: run on the result with its code mask, where the transform has one
  * (carryAsyncContext: a second scan of Claude Code's 13 MB cli.js cost each
  * launch ~150 ms and 13 MB)
+ * `live`: any ES module's named imports and exports are live bindings
+ * (tabcomputer#35), for a process with TABCOMPUTER_ESM_LIVE=1 (esmLive). Off by
+ * default: it made astro dev ~0.8 s slower to start and astro build ~0.9 s slower.
  */
-export function transformESModules(src: string, pass?: MaskedPass): string {
+export function transformESModules(src: string, pass?: MaskedPass, live = false): string {
   src = rewriteFunctionImport(src);
   // esbuild code-split chunks need live import bindings (see esm-live.ts)
   if (isEsbuildChunk(src)) src = liveEsbuildChunk(stripShebang(src));
+  else if (live && src.length <= 500000 && LIVE_CANDIDATE.test(src)) src = liveModule(stripShebang(src));
   // Fast path for large bundled files (>500KB)
   if (src.length > 500000) {
     const cache = pass ? passedBundleCache : bundleCache;
@@ -1231,8 +1235,16 @@ export function transformESModules(src: string, pass?: MaskedPass): string {
       depthAt[i] = d;
       if (fm[i]) { const c = src.charCodeAt(i); if (c === 123) d++; else if (c === 125) d--; }
     }
+    // (declarations: a statement's start, not a named function expression's value, as in
+    // vitest's `const assertType = function assertType() {}`, read before its const was set)
+    const statementStart = (at: number) => {
+      const back = (j: number) => { while (j >= 0 && (!fm[j] || /\s/.test(src[j]))) j--; return j; };
+      let j = back(at - 1);
+      if (j >= 5 && src.slice(j - 5, j + 1) === 'export' && !/[\w$]/.test(src[j - 6] ?? '')) j = back(j - 6);
+      return j < 0 || src[j] === ';' || src[j] === '{' || src[j] === '}';
+    };
     for (const m of src.matchAll(/(?<![\w$.])(?:async\s+)?function\s*\*?\s*([\w$]+)\s*\(/g)) {
-      if (fm[m.index!] && depthAt[m.index!] === 0) declared.add(m[1]);
+      if (fm[m.index!] && depthAt[m.index!] === 0 && statementStart(m.index!)) declared.add(m[1]);
     }
     const hoist = [
       ...functionExports.map((n) => `__shiro_module.exports.${n} = ${n};`),
@@ -1287,3 +1299,9 @@ export function transformESModules(src: string, pass?: MaskedPass): string {
 
   return pass ? pass(src) : src;
 }
+
+/** A module with a named import, an export list or an exported declaration (what liveModule changes) */
+/** Whether a process with this environment loads ES modules with live bindings (transformESModules' `live`) */
+export const esmLive = (env: Record<string, string | undefined> | undefined): boolean => env?.TABCOMPUTER_ESM_LIVE === '1';
+
+const LIVE_CANDIDATE = /(?<![\w$.])(?:import\s*\{[^}]*\}\s*from\s*['"]|export\s*(?:\{|(?:async\s+)?(?:function|class|let|const|var)\b))/;

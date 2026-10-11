@@ -1,0 +1,57 @@
+From 2da62eb2ec68b7c014dc3917df789fddc19fb774 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 06:02:43 +0000
+Subject: [PATCH] Shiro: tkill/tgkill of a real-time signal to this process
+ past RLIMIT_SIGPENDING is EAGAIN (LTP tgkill02)
+
+---
+ blink/shiro.inc | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index e0407eb..cdcd192 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2728,6 +2728,28 @@ static void ShiroSetSubreaper(struct Machine *m, bool on) {
+   if (g_shiro_pid) KS(m, 157, A12(36, on));
+ }
+ 
++// RLIMIT_SIGPENDING: a real-time signal tkill/tgkill would queue for one of
++// this process's threads past it is EAGAIN. Linux counts the user's queued
++// signals; here, those pending in this process's threads (LTP tgkill02)
++EMSCRIPTEN_KEEPALIVE int blink_shiro_sigpending(void) { return 1; }
++
++static bool ShiroSigpendingFull(struct Machine *m) {
++  struct System *s = m->system;
++  u64 lim = Read64(s->rlim[RLIMIT_SIGPENDING_LINUX].cur), n = 0;
++  struct Dll *e;
++  bool held;
++  if (lim >= 65536) return false;  // (the default and RLIM_INFINITY)
++  if (!lim) return true;
++  if ((held = GilHeld())) GilRelease();
++  LOCK(&s->machines_lock);
++  for (e = dll_first(s->machines); e; e = dll_next(s->machines, e)) {
++    n += __builtin_popcountll(MACHINE_CONTAINER(e)->signals);
++  }
++  UNLOCK(&s->machines_lock);
++  if (held) GilAcquire();
++  return n >= lim;
++}
++
+ // Whether tid is one of this process's threads
+ static bool ShiroOwnTid(struct Machine *m, int tid) {
+   struct Dll *e;
+@@ -4335,6 +4357,10 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+         r = nr == 0x0C8 ? KS(m, 200, A12(tid, sig)) : KS(m, 234, A12((int)a, tid, sig));
+         break;
+       }
++      if ((nr == 0x0C8 || (int)a == m->system->pid) && sig >= 32 && sig <= 64 && ShiroSigpendingFull(m)) {
++        r = -EAGAIN_LINUX;
++        break;
++      }
+       if (tid != m->tid || (nr == 0x0EA && (int)a != m->system->pid)) return false;
+       if (sig == 9 || sig == 19) {
+         r = KS(m, 62, A12(m->system->pid, sig));                     // kill
+-- 
+2.43.0
+

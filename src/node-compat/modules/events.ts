@@ -96,5 +96,31 @@ export function createEventsModule(): any {
   mod.setMaxListeners = (n: number, ...emitters: any[]) => { emitters.forEach(e => e.setMaxListeners?.(n)); };
   mod.defaultMaxListeners = 10;
   mod.listenerCount = (emitter: any, event: string) => emitter.listenerCount?.(event) || 0;
+  // An EventEmitter with an async resource (tinypool, vitest's worker pool, extends it: without it
+  // vitest failed at start with "Class extends value undefined"). Its resource runs listeners
+  // in place: async context isn't carried here, as AsyncLocalStorage carries it across awaits
+  let nextAsyncId = 1;
+  class EventEmitterAsyncResource extends (EventEmitter as any) {
+    #resource: any;
+    constructor(options?: string | { name?: string; triggerAsyncId?: number; requireManualDestroy?: boolean; captureRejections?: boolean }) {
+      const name = typeof options === 'string' ? options : options?.name ?? new.target.name;
+      super(typeof options === 'string' ? undefined : options);
+      const id = nextAsyncId++, trigger = (typeof options === 'object' && options?.triggerAsyncId) || 0;
+      const emitter = this;
+      this.#resource = {
+        type: name, eventEmitter: emitter,
+        asyncId: () => id, triggerAsyncId: () => trigger,
+        emitDestroy() { return this; },
+        runInAsyncScope: (fn: Function, thisArg?: unknown, ...args: unknown[]) => fn.apply(thisArg, args),
+        bind: (fn: Function) => fn,
+      };
+    }
+    emit(event: string | symbol, ...args: unknown[]): boolean { return this.#resource.runInAsyncScope(super.emit, this, event, ...args); }
+    emitDestroy(): void { this.#resource.emitDestroy(); }
+    get asyncId(): number { return this.#resource.asyncId(); }
+    get triggerAsyncId(): number { return this.#resource.triggerAsyncId(); }
+    get asyncResource(): any { return this.#resource; }
+  }
+  mod.EventEmitterAsyncResource = EventEmitterAsyncResource;
   return mod;
 }

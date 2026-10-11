@@ -93,6 +93,10 @@ describe('background jobs outlive the agent shell that started them (#63)', () =
     expect(pid).toBeGreaterThan(0);
     await sleep(300); // (its sh -c is running)
     expect(inPageJobForPid(pid)?.status).toBe('running');
+    // (the kill builtin's registry, kernel/signals.ts jobControl, sees the job's group from any shell)
+    const { jobControl } = await import('@shiro/kernel/signals');
+    expect(jobControl.kill(-pid, 0)).toBe(0);
+    // from a new agent call, as every Bash-tool call is a new sh -c
     const k = await agentSh(`kill -TERM -- -${pid}; echo "kill=$?"`);
     expect(k.out).toContain('kill=0');
     await sleep(2500);

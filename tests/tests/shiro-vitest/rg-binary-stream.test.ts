@@ -21,6 +21,9 @@ const enc = new TextEncoder();
 
 beforeEach(async () => {
   ({ shell, fs } = await createTestShell());
+  // The test FileSystem is shared between tests (one IndexedDB): start each in an empty directory,
+  // or `rg -l doctor .` also finds the files earlier tests left there
+  await fs.rm('/tmp/rg44b', { recursive: true }).catch(() => {});
   await fs.mkdir('/tmp/rg44b', { recursive: true } as any);
   await sh('cd /tmp/rg44b');
   wholeReads = [];

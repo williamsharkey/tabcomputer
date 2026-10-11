@@ -6,6 +6,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { installOsc52 } from './utils/osc52';
+import { installTermQueries } from './utils/term-queries';
 import { useUnicode11 } from './utils/term-unicode';
 import type { TerminalLike } from './commands/index';
 import { bufferToString } from './utils/copy-utils';
@@ -86,6 +87,7 @@ export class WindowTerminal implements TerminalLike {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     installOsc52(this.term);
+    installTermQueries(this.term);
     useUnicode11(this.term);
     this.term.open(container);
 

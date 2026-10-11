@@ -9,6 +9,7 @@
  */
 
 import type { Terminal } from '@xterm/xterm';
+import { pipeBytes } from './utils/stream-bytes';
 
 export interface SeedData {
   version: string;
@@ -388,25 +389,7 @@ function readSubBlocks(data: Uint8Array, pos: number): Uint8Array {
 }
 
 async function decompressGzip(compressed: Uint8Array): Promise<string> {
-  const ds = new DecompressionStream('gzip');
-  const writer = ds.writable.getWriter();
-  writer.write(compressed as unknown as BufferSource);
-  writer.close();
-  const reader = ds.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return new TextDecoder().decode(result);
+  return new TextDecoder().decode(await pipeBytes(compressed, new DecompressionStream('gzip')));
 }
 
 export async function extractShiroSeed(gif: Uint8Array): Promise<SeedData | null> {

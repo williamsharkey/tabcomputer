@@ -106,6 +106,58 @@ page.on('console', (m) => { if (/glshiro|GL|worker/i.test(m.text())) errors.push
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failed++; };
 const result = {};
+/**
+ * GL_WORKER_PROFILE=PREFIX: V8 CPU profiles of the page's dedicated workers (Blink's among them) while the
+ * view is dragged: PREFIX-<n>.cpuprofile each (Chrome DevTools format), and each worker's top functions by
+ * self time printed.
+ */
+async function startWorkerProfiles(prefix) {
+  const cdp = await browser.newBrowserCDPSession();
+  const pending = new Map();
+  let id = 0;
+  cdp.on('Target.receivedMessageFromTarget', ({ message }) => {
+    const m = JSON.parse(message);
+    const p = pending.get(m.id);
+    if (p) { pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); }
+  });
+  const call = (sessionId, method, params = {}) => new Promise((resolve, reject) => {
+    const mid = ++id;
+    pending.set(mid, { resolve, reject });
+    cdp.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id: mid, method, params }) }).catch(reject);
+  });
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  const sessions = [];
+  for (const t of targetInfos.filter((x) => x.type === 'worker')) {
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: t.targetId, flatten: false });
+    try {
+      await call(sessionId, 'Profiler.enable');
+      await call(sessionId, 'Profiler.setSamplingInterval', { interval: 500 });
+      await call(sessionId, 'Profiler.start');
+      sessions.push({ t, sessionId });
+    } catch (e) { console.log(`worker profile ${t.title}: ${e.message}`); }
+  }
+  return async () => {
+    let n = 0;
+    for (const { t, sessionId } of sessions) {
+      const { profile } = await call(sessionId, 'Profiler.stop');
+      const file = `${prefix}-${n++}.cpuprofile`;
+      writeFileSync(file, JSON.stringify(profile));
+      const self = new Map();
+      const byId = new Map(profile.nodes.map((x) => [x.id, x]));
+      profile.samples.forEach((sid, i) => {
+        const f = byId.get(sid).callFrame;
+        const key = `${f.functionName || '(anonymous)'} ${f.url.split('/').pop()}:${f.lineNumber + 1}`;
+        self.set(key, (self.get(key) ?? 0) + (profile.timeDeltas[i] ?? 0));
+      });
+      const total = [...self.values()].reduce((a, b) => a + b, 0);
+      const idle = (self.get('(idle) :0') ?? 0) / total;
+      if (idle > 0.95) continue;
+      console.log(`worker ${t.title || t.url} → ${file} (self time %, ${(100 * idle).toFixed(0)}% idle):\n${[...self].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, us]) => `  ${(100 * us / total).toFixed(1)}%  ${k}`).join('\n')}`);
+    }
+    await cdp.detach();
+  };
+}
+
 /** CPU profile of the page's main thread: start now, report the busiest functions (self time) when the returned function is called. */
 async function startProfile() {
   const cdp = await page.context().newCDPSession(page);
@@ -189,6 +241,7 @@ try {
     const x0 = box.x + box.w * app.drag[0], y0 = box.y + box.h * app.drag[1];
     await page.evaluate(() => { window.__glOpsOn = true; });
     const stopProfile = profileSeconds ? await startProfile() : null;
+    const stopWorkers = process.env.GL_WORKER_PROFILE ? await startWorkerProfiles(process.env.GL_WORKER_PROFILE) : null;
     const d0 = await stats();
     await page.mouse.move(x0, y0);
     await page.mouse.down();
@@ -198,6 +251,7 @@ try {
     await page.waitForTimeout(500);
     const d1 = await stats();
     await stopProfile?.();
+    await stopWorkers?.();
     result.dragFps = (d1.frames - d0.frames) / ((d1.t - d0.t) / 1000);
     result.dragFrames = d1.frames - d0.frames;
     const per = (k) => Math.round((d1[k] - d0[k]) / Math.max(1, result.dragFrames));

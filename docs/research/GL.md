@@ -401,7 +401,7 @@ it covers it), a core context `3.3`, GLSL `1.20`/`3.30`; renderer
 | glxgears in Blink under Node, recording backend (guest and transport only) | 200–229 FPS |
 | glxinfo in Blink under Node | 0.7 s |
 | Round trip (glFinish) through the socket, Blink under Node | 2,964/s (337 µs) |
-| Bulk upload (glBufferSubData) | 210 MB/s |
+| Bulk upload (glBufferSubData) | 210 MB/s (300–321 MB/s since big arrays are sent from the caller's memory) |
 | Small calls (glVertex3f) | 0.43 M/s |
 | Frames rendered in 3 s without animation frames (a hidden tab) | 0 |
 | Neverball title screen in the page, 640×480: synchronous readback / async readback (3 runs each, alternating) | 6.4–7.2 / 7.9–8.5 frames/s (+20%) |
@@ -421,8 +421,19 @@ queries (viewport, matrices, framebuffer binding, front face, scissor
 enable, framebuffer status: ~10 per frame) are answered from the
 executor's state; WebGL's checkFramebufferStatus waits for the GPU, so its
 answer is cached until a framebuffer's attachments or their images change
-(+8%, within noise). Qt re-specifies its whole window texture each frame
-(glTexImage2D, not glTexSubImage2D of the damage). Diagnostics:
+(+8%, within noise). Qt re-specifies its whole window texture each frame:
+without MIT-SHM its xcb backing store still has a graphics buffer, and
+composeAndFlush binds it with `QPlatformGraphicsBufferHelper::lockAndBindToTexture`
+and no rect, which is a glTexImage2D of the whole window (Qt 5.15's design,
+not ours). In the guest that costs 9–15 ms of a ~210 ms frame at 772×579,
+and scales with the window (a 1920×1080 Qt GL window sends 8 MB per
+repaint). Most of it is the write: the kernel's AF_UNIX send buffer is
+256 KB, so 1.7 MB goes in ~7 handoffs to glshiro. The vendor library sends
+an array of 64 KB or more in a command too big for a batch straight from
+the caller's memory, and keeps that buffer between commands (it was a
+malloc, i.e. an mmap with fresh pages, each time): bulk upload in Blink
+under Node went from 230–275 to 300–321 MB/s (glbench, 3 runs each,
+alternating). Diagnostics:
 `TABCOMPUTER_GL_DEBUG=1` logs MakeCurrent, `=2` how 10 frames' time splits
 into reply waits and the swap throttle, `=3` each query; gl-apps.mjs
 `GL_OPS=1` counts commands per frame.

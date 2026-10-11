@@ -26,8 +26,11 @@ export interface NodeGuestHooks {
   ttyStdin?(on: { data(text: string): void; end(): void; signal(sig: number): void }): {
     readonly reading: boolean; start(): void; pause(): void; setRaw(on: boolean): void; close(): void;
   };
-  /** What only the page can do: the clipboard, a server's preview pane */
-  page?: { clipboard(text: string): void; preview(port: number): void };
+  /**
+   * What only the page can do: the clipboard, a server's preview pane, and calls
+   * with results and events (claude --vm's addon stand-ins: src/claude-vm/addons/bridge.ts)
+   */
+  page?: { clipboard(text: string): void; preview(port: number): void; call?: import('../claude-vm/addons/bridge').PageBridge['call'] };
   /**
    * fs.readFileSync(0): read piped stdin into buf, blocking until bytes come (as node's sync
    * read of a pipe); 0 at EOF, -errno on an error. Not set when fd 0 is a terminal.

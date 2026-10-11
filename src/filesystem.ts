@@ -533,9 +533,14 @@ class ProcProvider implements VirtualFSProvider {
     '/proc/sys/fs/inotify/max_user_instances': () => '128\n',
     '/proc/sys/fs/inotify/max_user_watches': () => '65536\n',
     '/proc/mounts': () => 'rootfs / rootfs rw 0 0\n',
+    // The page's microphone (getUserMedia) as a sound card: claude --vm's voice input
+    // checks for one before it uses audio-capture.node (src/claude-vm/addons/). No /dev/snd.
+    '/proc/asound/cards': () => (typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function'
+      ? ' 0 [Browser        ]: tabcomputer - tabcomputer Browser Audio\n                      the page\'s microphone (getUserMedia)\n'
+      : '--- no soundcards ---\n'),
   };
 
-  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs', '/proc/sys/fs/inotify'];
+  private dirs = ['/proc', '/proc/sys', '/proc/sys/kernel', '/proc/sys/fs', '/proc/sys/fs/inotify', '/proc/asound'];
 
   handles(path: string): boolean {
     return path === '/proc' || path.startsWith('/proc/')
@@ -602,7 +607,7 @@ class ProcProvider implements VirtualFSProvider {
         const rest = key.slice('/proc/'.length);
         if (!rest.includes('/')) entries.push(rest);
       }
-      entries.push('self', 'sys');
+      entries.push('self', 'sys', 'asound');
       // (the kernel's own files: stat, uptime, vmstat, sysvipc …)
       for (const n of SYSTEM_NAMES) if (this.systemNode(`/proc/${n}`)) entries.push(n);
       return [...new Set(entries)].sort().concat(procPids().map(String));

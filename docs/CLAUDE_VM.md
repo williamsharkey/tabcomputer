@@ -67,7 +67,7 @@ Loaders seen: 1 = js (2345 modules, ESM), 5 = file (143 assets), 13 = text
   `Bun.zstdDecompress(Sync)`; markdown and text files (skills, READMEs); two
   fonts (`*.woff2.asset`).
 - **Native addons:** `clipboard-napi.node` and `audio-capture.node` (voice
-  input). No wasm, no embedded ripgrep module (the native build runs itself as
+  input); `--vm` loads browser-backed stand-ins (below). No wasm, no embedded ripgrep module (the native build runs itself as
   `rg`; tabcomputer's launch already points its search at the builtin `rg`).
 - **Syntax:** `using` declarations (explicit resource management), which
   Chromium's V8 runs; the page needs no lowering, a Node 22 host does.
@@ -205,6 +205,41 @@ Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-
   fetch already drops the Datadog, Sentry and event-logging hosts; the switch
   also stops the feature-flag fetches and the API probes it doesn't.
 
+## Native addons (`src/claude-vm/addons/`)
+
+The bundle requires each addon by its embedded path (`import.meta.require`,
+loader napi); `Bun.__require` gives a stand-in with the same exports instead,
+one per process (`addons/index.ts`). Their browser work runs in the page: from
+node's Worker a call goes there as a message (`node-guest-page-call`, answered
+by `node-guest-page-reply`, with `node-guest-page-ev` events; `bridge.ts`,
+`node-worker/host.ts`, `guest.ts`), and node in the page calls it directly.
+What 2.1.296 calls, from its own code:
+
+- **clipboard-napi.node**, on Linux only when `DISPLAY` or `WAYLAND_DISPLAY`
+  is set and none of wl-copy, xclip and xsel is on PATH (tabcomputer's xclip
+  and xsel builtins are, so this is the fallback for a PATH without them):
+  `setLinuxClipboardText(text)` → true (false makes Claude Code stop using
+  the addon) and `getLinuxClipboardText(primary, timeoutMs)`
+  → a promise of the text or null. Both use `utils/clipboard.ts`: a write the
+  browser refuses is kept, read back, and written on focus, so it returns
+  true; the browser has no PRIMARY selection. Image paste doesn't use the
+  addon: Claude Code runs `xclip -t TARGETS` / `-t image/png` (or wl-paste),
+  and the xclip builtin is text only.
+- **audio-capture.node**, used on Linux when it loads and `/proc/asound/cards`
+  names a card, else arecord, else SoX's rec. `/proc/asound/cards` lists the
+  page's microphone when it has getUserMedia (no `/dev/snd`).
+  `startRecording(onData, onEnd)` → true at once; `onData` gets signed 16-bit
+  little-endian PCM, 16 kHz, mono, in 2048-byte chunks (getUserMedia, an
+  AudioWorklet or ScriptProcessor, resampled in `mic.ts`). The browser's
+  permission prompt answers later: a refusal ends the recording and is
+  remembered, and a start with the permission already denied returns false,
+  which `/voice` reports as "Microphone access is denied". `stopRecording`,
+  `isRecording`, `microphoneAuthorizationStatus` (macOS numbers; unused on
+  Linux). Playback (`startPlayback`, `writePlaybackData`, ...) has no caller in
+  2.1.296 and returns false. A recording stops with its process.
+
+Tests: `claude-vm-addons.test.ts`.
+
 ## Results
 
 Local Chromium, `bench/claude-tui.mjs` (2 runs × 30 keys; `--vm` warm, after
@@ -229,5 +264,10 @@ API), a Bash tool call, and the session resumed after a reload.
 
 - The page's memory: ~1.2 GB renderer RSS at the prompt.
 - Sign-in against claude.ai (the OAuth callback server runs on
-  `Bun.serve`; the browser's redirect to it is untried), background tasks (`Bun.Terminal`), the
-  voice and clipboard addons (they fail to load, as Claude Code allows).
+  `Bun.serve`; the browser's redirect to it is untried), background tasks (`Bun.Terminal`).
+- Voice input end to end: the microphone is there, but the voice stream is a
+  `ws` WebSocket to `wss://api.anthropic.com/api/ws/speech_to_text/voice_stream`
+  with an `Authorization: Bearer` header, and `--vm`'s `ws` is the page's
+  WebSocket, which can't send headers. It needs a `ws` over the TCP relay
+  (node-compat's tls) or a server route that adds the header.
+- Image paste: the xclip builtin answers image targets with an error.

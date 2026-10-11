@@ -13,6 +13,7 @@ import { setShiroOrigin } from '../utils/shiro-origin';
 import { runChild, runChildSync } from './child';
 import { GuestNetStack, installGuestPorts } from './net';
 import { GuestTtyStdin } from './tty';
+import { guestBridge } from '../claude-vm/addons/bridge';
 import type { GuestIpc, NodeGuestHooks, ThreadEvents } from './hooks';
 import { WasiGuest, runSync, ProcExit } from '../wasi/wasi-guest';
 import { programFromStdin } from '../commands/jseval/node-args';
@@ -82,6 +83,8 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
   parentMessages = null;
   earlyMessages.length = 0;
   threadEvents.clear();
+  const pageCalls = guestBridge(post);
+  pageReplies = pageCalls.receive;
   setShiroOrigin((start as any).pageOrigin ?? null); // (ANTHROPIC_BASE_URL and the like: the page's origin, not the Worker's)
   try {
     const fs = new SyscallFs(sys);
@@ -137,6 +140,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
       page: {
         clipboard: (text) => post({ type: 'node-guest-clipboard', text }),
         preview: (port) => { if (stdoutTTY) post({ type: 'node-guest-listen', port }); },
+        call: pageCalls.call,
       },
       ...(stdinTTY ? { ttyStdin: (on: ConstructorParameters<typeof GuestTtyStdin>[1]) => new GuestTtyStdin(sys, on) } : {
         readStdinSync: (buf: Uint8Array) => (stdin ??= pipeStdin(sys)).readSync(buf),
@@ -396,6 +400,8 @@ let fsEvents: ((m: { event: string; path: string; newPath?: string; detail?: { c
 let lastThread = 0;
 const threadEvents = new Map<number, ThreadEvents>();
 let parentMessages: ((value: unknown) => void) | null = null;
+/** The page's replies to this guest's page calls (hooks.page.call) */
+let pageReplies: ((m: unknown) => boolean) | null = null;
 /** The parent's messages that came before the thread's script was listening */
 const earlyMessages: unknown[] = [];
 
@@ -418,6 +424,7 @@ export function nodeGuestMain(on: (handler: (m: unknown) => void) => void, post:
   on((m) => {
     const t = (m as any)?.type;
     if (started && t === 'node-guest-fs') { fsEvents?.(m as any); return; }
+    if (started && pageReplies?.(m)) return;
     if (started && t === 'node-guest-parent-msg') { if (parentMessages) parentMessages((m as any).value); else earlyMessages.push((m as any).value); return; }
     if (started && t === 'node-guest-thread-ev') {
       const { id, kind, value } = m as any;

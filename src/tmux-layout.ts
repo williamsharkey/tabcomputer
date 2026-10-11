@@ -43,22 +43,38 @@ export class ScreenBuffer {
     this.cursorCol = Math.min(this.cursorCol, width - 1);
   }
 
+  /** An escape sequence cut off at the end of the last write (pty output comes in chunks) */
+  private pending = '';
+  /** ESC 7 / CSI s */
+  private saved: [number, number] = [0, 0];
+  /** The main screen while the alternate one (CSI ?1049h: vi, less, htop) is up */
+  private mainScreen: { cells: string[][]; row: number; col: number } | null = null;
+
+  /**
+   * Output to the screen: printable text, CR/LF/BS/TAB, and the escape
+   * sequences programs on a terminal use (cursor movement, erasing,
+   * inserting and deleting, the alternate screen); colors and modes are
+   * read and dropped. What tmux's capture-pane shows of a REPL or a TUI.
+   */
   write(text: string): void {
+    if (this.pending) { text = this.pending + text; this.pending = ''; }
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
 
       // Handle control characters
-      if (ch === '\n') {
+      if (ch === '\n' || ch === '\v' || ch === '\f') {
+        // (a newline is CR LF here: callers write '\n' for both, and a pty's output has ONLCR)
         this.cursorCol = 0;
-        this.cursorRow++;
-        if (this.cursorRow >= this.height) {
-          this.scrollUp();
-          this.cursorRow = this.height - 1;
-        }
+        this.lineFeed();
         continue;
       }
       if (ch === '\r') {
         this.cursorCol = 0;
+        continue;
+      }
+      if (ch === '\b') {
+        if (this.cursorCol >= this.width) this.cursorCol = this.width - 1;
+        this.cursorCol = Math.max(0, this.cursorCol - 1);
         continue;
       }
       if (ch === '\t') {
@@ -67,30 +83,125 @@ export class ScreenBuffer {
         continue;
       }
       if (ch === '\x1b') {
-        // Skip ANSI escape sequences (simplified)
-        i++;
-        if (i < text.length && text[i] === '[') {
-          i++;
-          while (i < text.length && text[i] >= '0' && text[i] <= '?') i++;
-          while (i < text.length && text[i] >= ' ' && text[i] <= '/') i++;
-          // Final character consumed by loop increment
-        }
+        const end = this.escape(text, i);
+        if (end < 0) { this.pending = text.slice(i, i + 256); return; } // (incomplete: wait for the rest)
+        i = end;
         continue;
       }
-      if (ch.charCodeAt(0) < 32) continue; // Skip other control chars
+      if (ch.charCodeAt(0) < 32 || ch === '\x7f') continue; // Skip other control chars
 
       // Write printable character
       if (this.cursorCol >= this.width) {
         this.cursorCol = 0;
-        this.cursorRow++;
-        if (this.cursorRow >= this.height) {
-          this.scrollUp();
-          this.cursorRow = this.height - 1;
-        }
+        this.lineFeed();
       }
 
       this.cells[this.cursorRow][this.cursorCol] = ch;
       this.cursorCol++;
+    }
+  }
+
+  private lineFeed(): void {
+    this.cursorRow++;
+    if (this.cursorRow >= this.height) {
+      this.scrollUp();
+      this.cursorRow = this.height - 1;
+    }
+  }
+
+  private blankRow(): string[] { return Array.from({ length: this.width }, () => ' '); }
+
+  /** The escape sequence at text[i] (ESC): handle it; the index of its last character, or -1 if it isn't complete yet */
+  private escape(text: string, i: number): number {
+    if (i + 1 >= text.length) return -1;
+    const kind = text[i + 1];
+    if (kind === '[') {
+      let j = i + 2;
+      while (j < text.length && (text.charCodeAt(j) < 0x40 || text.charCodeAt(j) > 0x7e)) j++;
+      if (j >= text.length) return -1;
+      this.csi(text.slice(i + 2, j), text[j]);
+      return j;
+    }
+    if (kind === ']' || kind === 'P' || kind === '_' || kind === '^') {
+      // OSC (title), DCS, APC, PM: up to BEL or ST
+      for (let j = i + 2; j < text.length; j++) {
+        if (text[j] === '\x07') return j;
+        if (text[j] === '\x1b' && text[j + 1] === '\\') return j + 1;
+        if (text[j] === '\x1b' && j + 1 >= text.length) return -1;
+      }
+      return text.length - i > 4096 ? text.length - 1 : -1;
+    }
+    if (kind === '(' || kind === ')' || kind === '*' || kind === '+' || kind === '#' || kind === '%') return i + 2 < text.length ? i + 2 : -1;
+    switch (kind) {
+      case '7': this.saved = [this.cursorRow, this.cursorCol]; break;
+      case '8': [this.cursorRow, this.cursorCol] = this.saved; break;
+      case 'D': this.lineFeed(); break;
+      case 'E': this.cursorCol = 0; this.lineFeed(); break;
+      case 'M': // reverse index: up, scrolling the screen down at the top
+        if (this.cursorRow > 0) this.cursorRow--;
+        else { this.cells.pop(); this.cells.unshift(this.blankRow()); }
+        break;
+      case 'c': this.clear(); break;
+    }
+    return i + 1;
+  }
+
+  private csi(params: string, final: string): void {
+    const priv = params.startsWith('?');
+    const nums = (priv ? params.slice(1) : params).split(';').map((x) => parseInt(x, 10));
+    const n = (k = 0, dflt = 1) => (Number.isFinite(nums[k]) && nums[k] > 0 ? nums[k] : dflt);
+    const clampRow = (r: number) => Math.max(0, Math.min(this.height - 1, r));
+    const clampCol = (c: number) => Math.max(0, Math.min(this.width - 1, c));
+    const row = this.cells[this.cursorRow];
+    const col = Math.min(this.cursorCol, this.width - 1);
+    switch (final) {
+      case 'A': this.cursorRow = clampRow(this.cursorRow - n()); break;
+      case 'B': case 'e': this.cursorRow = clampRow(this.cursorRow + n()); break;
+      case 'C': case 'a': this.cursorCol = clampCol(this.cursorCol + n()); break;
+      case 'D': this.cursorCol = clampCol(Math.min(this.cursorCol, this.width - 1) - n()); break;
+      case 'E': this.cursorRow = clampRow(this.cursorRow + n()); this.cursorCol = 0; break;
+      case 'F': this.cursorRow = clampRow(this.cursorRow - n()); this.cursorCol = 0; break;
+      case 'G': case '`': this.cursorCol = clampCol(n() - 1); break;
+      case 'd': this.cursorRow = clampRow(n() - 1); break;
+      case 'H': case 'f': this.cursorRow = clampRow(n(0) - 1); this.cursorCol = clampCol(n(1) - 1); break;
+      case 'J': {
+        const mode = nums[0] || 0;
+        if (mode === 2 || mode === 3) { for (let r = 0; r < this.height; r++) this.cells[r] = this.blankRow(); break; }
+        if (mode === 0) { row.fill(' ', col); for (let r = this.cursorRow + 1; r < this.height; r++) this.cells[r] = this.blankRow(); }
+        else { row.fill(' ', 0, col + 1); for (let r = 0; r < this.cursorRow; r++) this.cells[r] = this.blankRow(); }
+        break;
+      }
+      case 'K': {
+        const mode = nums[0] || 0;
+        if (mode === 0) row.fill(' ', col);
+        else if (mode === 1) row.fill(' ', 0, col + 1);
+        else row.fill(' ');
+        break;
+      }
+      case 'X': row.fill(' ', col, Math.min(this.width, col + n())); break;
+      case 'P': row.splice(col, Math.min(n(), this.width - col)); while (row.length < this.width) row.push(' '); break;
+      case '@': row.splice(col, 0, ...Array.from({ length: Math.min(n(), this.width - col) }, () => ' ')); row.length = this.width; break;
+      case 'L': for (let k = 0; k < n() && this.cursorRow < this.height; k++) { this.cells.splice(this.cursorRow, 0, this.blankRow()); this.cells.length = this.height; } break;
+      case 'M': for (let k = 0; k < n(); k++) { this.cells.splice(this.cursorRow, 1); this.cells.push(this.blankRow()); } break;
+      case 'S': for (let k = 0; k < n(); k++) this.scrollUp(); break;
+      case 'T': for (let k = 0; k < n(); k++) { this.cells.pop(); this.cells.unshift(this.blankRow()); } break;
+      case 's': if (!priv) this.saved = [this.cursorRow, this.cursorCol]; break;
+      case 'u': if (!priv) [this.cursorRow, this.cursorCol] = this.saved; break;
+      case 'h': case 'l':
+        if (priv && (nums.includes(1049) || nums.includes(1047) || nums.includes(47))) {
+          if (final === 'h' && !this.mainScreen) {
+            this.mainScreen = { cells: this.cells, row: this.cursorRow, col: this.cursorCol };
+            this.cells = Array.from({ length: this.height }, () => this.blankRow());
+          } else if (final === 'l' && this.mainScreen) {
+            const m = this.mainScreen;
+            this.mainScreen = null;
+            this.cells = m.cells.length === this.height && m.cells[0]?.length === this.width ? m.cells
+              : Array.from({ length: this.height }, (_, r) => Array.from({ length: this.width }, (_, c) => m.cells[r]?.[c] ?? ' '));
+            this.cursorRow = clampRow(m.row); this.cursorCol = clampCol(m.col);
+          }
+        }
+        break;
+      // m (colors), r (scroll region), n (reports), t, q ...: nothing on a text screen
     }
   }
 

@@ -11,11 +11,12 @@
  *   claude login             # Sign in, or switch accounts (`claude auth login`)
  *
  * Which build plain `claude` runs is the profile's `shims.claude`: tabcomputer
- * runs Anthropic's native binary in the x86-64 emulator, shiro the pinned npm
- * build. Either way:
- *   claude --native ... / claude --npm ...   # pick one for this run (CLAUDE_NATIVE=1/0 too)
- *   claude --vm ...                          # the native build's JavaScript on this page's engine (experimental)
- *   claude install [--native|--npm] [ver]    # install that build (native: claude-native.ts)
+ * runs Anthropic's native build's JavaScript on this page's engine (`--vm`,
+ * docs/CLAUDE_VM.md), shiro the pinned npm build. Either way:
+ *   claude --vm ...                          # the native build's JavaScript on this page's engine (tabcomputer's default)
+ *   claude --x86 ...                         # the native binary in the x86-64 emulator (--native is the same; CLAUDE_X86=1)
+ *   claude --npm ...                         # the pinned npm build (CLAUDE_NATIVE=0)
+ *   claude install [--native|--npm] [ver]    # install that build (native: claude-native.ts; --vm runs it too)
  */
 
 import { Command } from './index';
@@ -165,9 +166,12 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
     return runNative(ctx, args);
   }
   args = loginArgs(args);
+  // Sessions skip permission prompts, as runNative's and the npm build's do (#40)
+  const bypass = needsSession(args) && !args.some(a => a === '--dangerously-skip-permissions' || a === '--permission-mode');
+  if (bypass) args.unshift('--dangerously-skip-permissions');
   try {
     const { ensureClaudeBootstrap } = await import('../claude-config');
-    await ensureClaudeBootstrap(ctx.fs, { homeDir: home, projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true });
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: home, projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true, acceptBypassPermissions: bypass });
   } catch { /* settings are Claude's own business; never block the run */ }
   const nodeCmd = ctx.shell.commands.get('node');
   if (!nodeCmd) { ctx.stderr += 'claude: node command not available\n'; return 127; }
@@ -218,13 +222,21 @@ export const claudeCmd: Command = {
   description: 'Run Claude Code (installed automatically; it signs itself in)',
   async exec(ctx) {
     const args = [...ctx.args];
-    // The build: --npm/--native first (or after `install`), then CLAUDE_NATIVE=0/1, then the profile
+    // The build: --npm/--native/--x86/--vm first (or after `install`), then CLAUDE_X86=1 /
+    // CLAUDE_NATIVE=0/1, then the profile. The native build runs as --vm (its JavaScript
+    // on this page's engine) unless --x86/--native or CLAUDE_X86=1 asks for the emulator.
     const install = args[0] === 'install';
     const flagAt = install ? 1 : 0;
     let pick: 'npm' | 'native' | null = null;
-    while (args[flagAt] === '--npm' || args[flagAt] === '--native') pick = args.splice(flagAt, 1)[0] === '--npm' ? 'npm' : 'native';
-    // --vm: the native build's JavaScript on this page's engine (experimental)
-    if (!install && args[0] === '--vm') { args.shift(); return runVm(ctx, args); }
+    let x86 = !install && ctx.env.CLAUDE_X86 === '1';
+    let vm = false;
+    while (['--npm', '--native', '--x86', '--vm'].includes(args[flagAt])) {
+      const f = args.splice(flagAt, 1)[0];
+      pick = f === '--npm' ? 'npm' : 'native';
+      if (f === '--native' || f === '--x86') { x86 = true; vm = false; }
+      if (f === '--vm') { vm = true; x86 = false; }
+    }
+    if (!install && pick === 'native' && vm) return runVm(ctx, args);
     if (install && !pick) {
       const i = args.findIndex((a) => a === '--npm' || a === '--native');
       if (i > 0) pick = args.splice(i, 1)[0] === '--npm' ? 'npm' : 'native';
@@ -242,7 +254,10 @@ export const claudeCmd: Command = {
         const { installNativeClaude } = await import('./claude-native');
         return installNativeClaude(ctx, nativeClaudePath(ctx.env), version);
       }
-      return runNative(ctx, args);
+      // Plain `claude` (and --vm, CLAUDE_NATIVE=1): the native build's JavaScript on this
+      // page's engine, about 15x faster to start and 7x faster to type into than the
+      // emulator (docs/CLAUDE_VM.md); --x86/--native or CLAUDE_X86=1 keep the emulator
+      return x86 ? runNative(ctx, args) : runVm(ctx, args);
     }
     const write = (s: string) => {
       if (ctx.terminal) ctx.terminal.writeOutput(s.replace(/\n/g, '\r\n'));

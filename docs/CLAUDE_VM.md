@@ -2,7 +2,7 @@
 
 Native Claude Code is a Bun single-file executable: Bun (with JavaScriptCore)
 plus Claude Code's bundled JavaScript. Under Blink, the whole of Bun and JSC
-runs as emulated x86-64 code. `claude --vm` (in progress) takes the
+runs as emulated x86-64 code. `claude --vm` takes the
 JavaScript out of the binary the user installed and runs it on tabcomputer's
 Node runtime in the page's own JS engine, the way `claude --npm` runs the
 pinned 2.1.112 npm build, with a shim for the Bun APIs it uses.
@@ -13,6 +13,10 @@ Anthropic's manifest) and cached there, keyed by the binary's sha256.
 tabcomputer never serves it.
 
 Everything below was read from 2.1.296 (linux-x64-musl, sha256 `94a1ccc6…417f`).
+
+**Default since Build 985:** plain `claude` on tabcomputer runs `--vm`; `claude --x86`
+(or `--native`, or `CLAUDE_X86=1`) runs the binary in the emulator instead. A build whose
+JavaScript can't be read still falls back to the emulator.
 
 ## Where the bundle is
 

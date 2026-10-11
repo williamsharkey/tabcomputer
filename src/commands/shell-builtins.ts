@@ -293,10 +293,11 @@ Install software
   gui                    Linux desktop apps (X11) that open in windows
 
 Claude Code
-  claude                 run Claude Code (the profile picks the native or npm build;
-                         a missing native build says how to install it)
+  claude                 run Claude Code (on tabcomputer: the native build's JavaScript
+                         on this page's engine; a missing build says how to install it)
   claude install --native
-                         download the native build (about 240 MB; slow in the emulator)
+                         download the native build (about 240 MB)
+  claude --x86           the native build in the x86-64 emulator (slow)
   claude --npm           the pinned JavaScript build: installed at boot, starts fast
   claude --continue      resume the last conversation in this directory
   claude-window          run it in a new window

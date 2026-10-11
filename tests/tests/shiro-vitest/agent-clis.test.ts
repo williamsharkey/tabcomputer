@@ -210,7 +210,7 @@ describe('claude --native', () => {
     expect(r.output).toContain('linux-x64-musl');
   });
 
-  it('runs the ELF at CLAUDE_NATIVE_PATH in Blink, with --native or CLAUDE_NATIVE=1', async () => {
+  it('runs the ELF at CLAUDE_NATIVE_PATH in Blink, with --native or CLAUDE_X86=1', async () => {
     const { fs, shell } = await createTestShell();
     shell.commands.register(claudeCmd);
     await fs.mkdir('/opt/n', { recursive: true });
@@ -222,8 +222,24 @@ describe('claude --native', () => {
     // its search tools opt-in comes first (tabcomputer#42), then the user's arguments
     expect(r.output.replace(/\r\n/g, '\n')).toContain('arg1=--allowedTools=Grep,Glob\narg2=a\narg3=b c\n');
     // (the user's own --tools: nothing added, so the fixture's argv[1] is "fail")
-    r = await run(shell, 'CLAUDE_NATIVE=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail --tools=Bash < /dev/null; echo "status=$?"');
+    r = await run(shell, 'CLAUDE_X86=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail --tools=Bash < /dev/null; echo "status=$?"');
     expect(r.output).toContain('status=7');
+  }, 60_000);
+
+  // Plain claude on tabcomputer is --vm (the native build's JavaScript on the page's engine);
+  // --x86/--native and CLAUDE_X86=1 run the binary in the emulator
+  it('plain claude runs --vm; --x86, --native and CLAUDE_X86=1 run the emulator', async () => {
+    const { fs, shell } = await createTestShell();
+    shell.commands.register(claudeCmd);
+    await fs.mkdir('/opt/n', { recursive: true });
+    await fs.writeFile('/opt/n/claude', readFileSync(resolve(__dirname, 'fixtures/x86/hello-musl')), { mode: 0o755 });
+    await run(shell, 'cd /home/user');
+    // (the fixture is no Claude Code build: --vm says so, the emulator runs it)
+    expect((await run(shell, 'CLAUDE_NATIVE_PATH=/opt/n/claude claude < /dev/null')).output).toContain('claude --vm');
+    expect((await run(shell, 'CLAUDE_NATIVE_PATH=/opt/n/claude claude --vm < /dev/null')).output).toContain('claude --vm');
+    for (const cmd of ['claude --x86', 'claude --native', 'CLAUDE_X86=1 claude']) {
+      expect((await run(shell, `CLAUDE_NATIVE_PATH=/opt/n/claude ${cmd} < /dev/null`)).output).toContain('hello from c');
+    }
   }, 60_000);
 
   // tabcomputer#40: sessions skip permission prompts as the npm build's do; auto mode's

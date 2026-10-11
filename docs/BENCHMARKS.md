@@ -369,6 +369,61 @@ untouched kernel metrics differ by up to 2× against it). Kernel/net/x86
 metrics swing ±25% between identical runs here, so a flag on them was re-run
 3× alternating base/new before being called noise.
 
+### unix/perf-kernel, round 11: where native Claude Code spends its time, from the kernel
+
+`node bench/claude-profile.mjs --keys 30` (native Claude Code 2.1.296,
+linux-x64-musl in Blink, headless Chromium in this container; API key,
+onboarding done, a local stand-in for api.anthropic.com). Kernel profiler
+(src/kernel/profiler.ts, the same report as `strace -c`), two runs:
+
+| | run A | run B |
+|---|---:|---:|
+| startup: `claude` → input box | 46.6 s | 46.6 s |
+| kernel CPU during startup | 201 ms | 205 ms |
+| syscalls during startup | 2899 | 2897 |
+| keypress → character drawn (median / p90) | 238 / 446 ms | 337 / 669 ms |
+| per key: pty input → guest's read (median) | 7.1 ms | 44.0 ms |
+| per key: read → first write back (median) | 227 ms | 234 ms |
+| per key: syscalls, kernel time | 17.5, 1.6 ms | 16.0, 1.6 ms |
+
+- The kernel is not where the time goes: under 0.5% of startup is kernel
+  CPU, and about 1.6 ms of each ~240 ms keystroke is kernel time. The
+  page's main thread is 84% idle during startup and 93% idle while typing
+  (CPU profile). The rest is the guest computing in Blink: ~230 ms of
+  compute per keystroke (JSC without its JIT) before the first byte comes back.
+- In-kernel wall time at startup (17.5 s) is mostly 9–10 `poll(1 fd, -1)`
+  calls (one took 10.9 s): helper threads and children waiting, off the
+  critical path. Then 651 `pread64` calls read 508 MB (the 250 MB binary,
+  twice) in 0.45–0.48 s. Their pages are seldom cached, so the new pread64
+  sync path answers only 3% of them.
+- epoll_wait timeouts are Bun's timers (0 ms ×32, 19–530 ms); only one in
+  70 timed out while typing. The guest is woken by the pty input, not
+  by a timer. The pty input → read gap (7–44 ms median, up to 278 ms) is
+  the guest still busy with the previous key, not a missed wakeup.
+- Per key: 2 epoll_wait, 2 epoll_ctl, 3 reads of the pty (2 EAGAIN), 4–6
+  writes (~40 bytes to the pty, the rest 8-byte eventfd wakeups between Bun's threads),
+  openat/newfstatat of `~/.claude.json` and `~/.claude/ide`.
+
+Per engine thread (the profiler's thread table; time between one call's
+result and the thread's next call is the guest computing, or sleeping in
+the engine):
+
+- The main thread computes: 46.2 s of the 47.5 s startup is outside the
+  kernel (its max gap 0.7 s, between two pread64s of the binary). While typing it is
+  outside the kernel for 7.3 s of 8 s, a median 236 ms per keystroke, which is
+  the whole read → first write.
+- Threads 262144 and 262146 wake about once a second (write → openat:
+  the ~/.claude.json watchFile poll and ~/.claude/ide discovery). They do
+  little between calls, but their sleeps aren't reported: Blink's
+  shiro_sleeping (patch 0036) covers only the main thread.
+- ~/.claude.json is not touched per keystroke: newfstatat every ~1.0–1.4 s,
+  ~/.claude/ide openat in pairs every ~1.2 s, both also while idle. For
+  ~4.5 s after the input box appears, Claude saves ~/.claude.json about 6
+  times (lock mkdir/rmdir, backups, rewrite; 588 syscalls).
+
+The hooks cost nothing measurable while no profiler is attached: `node bench/ab.mjs
+a748c014 360b37b4 --suites kernel,x86 --rounds 6 --quick` gives all 32 metrics "same".
+
 ### go_nethttp +30%: patch 0053's emulator, not the kernel (unix/bench)
 
 Measured on machine `cfad8fbf4994`, which this session moved to: Xeon

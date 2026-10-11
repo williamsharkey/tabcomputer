@@ -735,7 +735,7 @@ export function syscallText(p: Process): string {
  */
 function fdInfo(f: OpenFile, cloexec: boolean): string {
   const pos = f.seek ? Math.max(0, f.seek(0, A.SEEK_CUR)) : 0;
-  let t = `pos:\t${pos}\nflags:\t0${((f.flags | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
+  let t = `pos:\t${pos}\nflags:\t0${(((f.flags & ~A.O_OPEN_ONLY) | (cloexec ? A.O_CLOEXEC : 0)) >>> 0).toString(8)}\nmnt_id:\t1\nino:\t0\n`;
   if (f instanceof InotifyFile) {
     for (const w of f.watches.values()) {
       t += `inotify wd:${w.wd} ino:${(fnv(w.path) >>> 0).toString(16)} sdev:1 mask:${(w.mask >>> 0).toString(16)} ignored_mask:0\n`;

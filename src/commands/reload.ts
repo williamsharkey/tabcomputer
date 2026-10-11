@@ -1,6 +1,5 @@
 import { Command, CommandContext } from './index';
 import { registry } from '../registry';
-import { withEsbuild } from './build';
 
 /**
  * reload: Hot-reload modules from the virtual filesystem
@@ -19,53 +18,25 @@ import { withEsbuild } from './build';
 
 
 /**
- * Compile a TypeScript/JavaScript file from VFS to executable code
+ * Build a module from the VFS and load it. Relative imports resolve to the
+ * page's live modules through hotswap's builder (src/hotswap/build.ts), so a
+ * command that imports '../utils/x' or './index' gets the running page's.
+ * The checkout root is the directory above the file's src/ (else its own
+ * directory).
  */
-async function compileFromVFS(
-  ctx: CommandContext,
-  sourcePath: string
-): Promise<string> {
-
-  // Read source from VFS
-  const source = await ctx.fs.readFile(sourcePath, 'utf8') as string;
-
-  // Determine loader from extension
-  let loader: 'ts' | 'tsx' | 'js' | 'jsx' = 'ts';
-  if (sourcePath.endsWith('.tsx')) loader = 'tsx';
-  else if (sourcePath.endsWith('.js')) loader = 'js';
-  else if (sourcePath.endsWith('.jsx')) loader = 'jsx';
-
-  // Transform to executable JavaScript
-  const result = await withEsbuild((esbuild) => esbuild.transform(source, {
-    loader,
-    format: 'esm',
-    target: 'es2020',
-  }));
-
-  if (result.warnings.length > 0) {
-    for (const warning of result.warnings) {
-      console.warn(`[reload] Warning in ${sourcePath}: ${warning.text}`);
-    }
-  }
-
-  return result.code;
-}
-
-/**
- * Execute compiled code and extract the module export
- */
-async function loadCompiledModule(code: string, moduleName: string): Promise<unknown> {
-  // Create a blob URL for the compiled code
-  const blob = new Blob([code], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-
-  try {
-    // Dynamic import from blob URL
-    const module = await import(/* @vite-ignore */ url);
-    return module.default || module;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+async function loadFromVFS(ctx: CommandContext, sourcePath: string): Promise<unknown> {
+  const { buildSwap } = await import('../hotswap/build');
+  const { evaluateBundle, isCommand } = await import('../hotswap/swap');
+  const abs = ctx.fs.resolvePath(sourcePath, ctx.cwd);
+  const at = abs.lastIndexOf('/src/');
+  const root = at >= 0 ? abs.slice(0, at) || '/' : abs.slice(0, abs.lastIndexOf('/')) || '/';
+  const built = await buildSwap({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root, files: [abs] });
+  for (const w of built.warnings) console.warn(`[reload] ${sourcePath}: ${w}`);
+  const ns = Object.values(await evaluateBundle(built.code))[0] as Record<string, unknown>;
+  if (ns.default) return ns.default;
+  // A command module exports its command object (gitCmd): reload that, not the namespace
+  const cmds = Object.entries(ns).filter(([k, v]) => !k.startsWith('__') && isCommand(v));
+  return cmds.length === 1 ? cmds[0][1] : ns;
 }
 
 export const reloadCmd: Command = {
@@ -124,8 +95,7 @@ export const reloadCmd: Command = {
         if (meta?.source) {
           try {
             ctx.stdout += `Reloading ${name} from ${meta.source}...\n`;
-            const code = await compileFromVFS(ctx, meta.source);
-            const newModule = await loadCompiledModule(code, name);
+            const newModule = await loadFromVFS(ctx, meta.source);
             const result = registry.replace(name, newModule as any, meta.source);
             if (result.migrated) {
               ctx.stdout += `  ✓ Reloaded with state migration\n`;
@@ -167,7 +137,8 @@ export const reloadCmd: Command = {
 
     // Reload specific module
     const moduleName = arg;
-    const sourcePath = ctx.args[1] || registry.getMetadata(moduleName)?.source;
+    const given = ctx.args[1] || registry.getMetadata(moduleName)?.source;
+    const sourcePath = given && ctx.fs.resolvePath(given, ctx.cwd);
 
     if (!sourcePath) {
       ctx.stderr += `reload: no source path for '${moduleName}'\n`;
@@ -186,10 +157,7 @@ export const reloadCmd: Command = {
     ctx.stdout += `Compiling ${sourcePath}...\n`;
 
     try {
-      const code = await compileFromVFS(ctx, sourcePath);
-      ctx.stdout += `Loading module...\n`;
-
-      const newModule = await loadCompiledModule(code, moduleName);
+      const newModule = await loadFromVFS(ctx, sourcePath);
 
       if (registry.has(moduleName)) {
         const result = registry.replace(moduleName, newModule as any, sourcePath);

@@ -34,11 +34,22 @@ export interface ClassReport {
   errors: string[];
 }
 
+export interface CommandReport {
+  /** The export's name */
+  name: string;
+  /** The command's name (what you type) */
+  command: string;
+  /** Properties replaced on the live command object (exec, description, ...) */
+  changed: string[];
+}
+
 export interface ModuleReport {
   module: string;
   /** The live module is loaded (otherwise nothing of it was swapped) */
   live: boolean;
   classes: ClassReport[];
+  /** Registry commands (plain objects with name and exec) patched in place */
+  commands: CommandReport[];
   /** Exports that aren't swappable classes: importers outside the swap keep the old ones */
   fixed: string[];
   /** Module state the new copy took from the live module (state.ts) */
@@ -196,6 +207,31 @@ export function swapClass(live: Function, next: Function, undo: (() => void)[], 
   return report;
 }
 
+/** A registry command: { name, exec, ... } (src/commands/index.ts) */
+export function isCommand(v: unknown): v is { name: string; exec: Function } & Record<string, unknown> {
+  return !!v && typeof v === 'object' && typeof (v as any).name === 'string' && typeof (v as any).exec === 'function';
+}
+
+/**
+ * Patch a live command object in place with the new one's properties, so
+ * every holder of it (the command registry, a lazy command's cache, the
+ * ModuleRegistry) runs the new code. Undo restores each property.
+ */
+export function swapCommand(live: Record<string, unknown>, next: Record<string, unknown>, undo: (() => void)[], exportName: string): CommandReport {
+  const report: CommandReport = { name: exportName, command: String(live.name), changed: [] };
+  for (const k of Reflect.ownKeys(next)) {
+    if (k === 'name') continue;
+    const nd = Object.getOwnPropertyDescriptor(next, k)!;
+    const od = Object.getOwnPropertyDescriptor(live, k);
+    if (od && !od.configurable) continue;
+    if (od && 'value' in od && 'value' in nd && od.value === nd.value) continue;
+    Object.defineProperty(live, k, { ...nd, configurable: true });
+    report.changed.push(keyName(k));
+    undo.push(() => { if (od) Object.defineProperty(live, k, od); else delete live[k as any]; });
+  }
+  return report;
+}
+
 export interface HookContext {
   /** The module's path ('src/shell.ts') */
   key: string;
@@ -217,7 +253,7 @@ export function swapModules(modules: Record<string, Record<string, unknown>>, un
   try {
     for (const [key, ns] of Object.entries(modules)) {
       const liveNs = liveModule(key);
-      const rep: ModuleReport = { module: key, live: !!liveNs, classes: [], fixed: [], state: [], hook: false };
+      const rep: ModuleReport = { module: key, live: !!liveNs, classes: [], commands: [], fixed: [], state: [], hook: false };
       reports.push(rep);
       if (!liveNs) continue;
       for (const name of Object.keys(ns)) {
@@ -225,6 +261,8 @@ export function swapModules(modules: Record<string, Record<string, unknown>>, un
         const v = ns[name], lv = liveNs[name];
         if (isClass(v) && isClass(lv)) {
           if (v !== lv) rep.classes.push(swapClass(lv, v, undo, name));
+        } else if (isCommand(v) && isCommand(lv) && v.name === lv.name) {
+          if (v !== lv) rep.commands.push(swapCommand(lv, v, undo, name));
         } else if (v !== lv) {
           rep.fixed.push(name);
         }

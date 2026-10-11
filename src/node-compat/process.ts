@@ -72,6 +72,8 @@ export function createFakeProcess(
     processEnv.GEMINI_CLI_NO_RELAUNCH = 'true';
   }
 
+  /** process.exitCode as the script set it (undefined until it does, as in node) */
+  let exitCodeSet: number | undefined;
   const fp: any = {
     env: processEnv,
     cwd: () => ctx.shell.cwd,
@@ -90,7 +92,9 @@ export function createFakeProcess(
     },
     exit: (c?: number) => {
       if (_st.exitCalled) throw new ProcessExitError(_st.exitCode); // Prevent re-entrant exit
-      _st.exitCode = c ?? 0;
+      // (no code: process.exitCode, as node; vitest ends a failed start with
+      // `process.exitCode ??= 1; process.exit()`, which exited 0)
+      _st.exitCode = c ?? exitCodeSet ?? 0;
       _st.exitCalled = true;
       // Fire 'exit' event handlers (CLI registers cleanup here)
       try { (processEvents['exit'] || []).forEach(fn => fn(_st.exitCode)); } catch (_) {}
@@ -245,8 +249,13 @@ export function createFakeProcess(
 
   // Add exitCode as a getter/setter (CLI reads and writes process.exitCode)
   Object.defineProperty(fp, 'exitCode', {
-    get: () => _st.exitCalled ? _st.exitCode : undefined,
-    set: (v: number | undefined) => { if (v !== undefined && !_st.outputClosed) _st.exitCode = v; },
+    // What was set reads back (node's `if (process.exitCode == null) process.exitCode = 1` works)
+    get: () => _st.exitCalled ? _st.exitCode : exitCodeSet,
+    set: (v: number | undefined) => {
+      if (_st.outputClosed) return;
+      exitCodeSet = v == null ? undefined : Number(v);
+      _st.exitCode = exitCodeSet ?? 0;
+    },
     configurable: true,
     enumerable: true,
   });

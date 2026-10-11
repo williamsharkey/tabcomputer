@@ -607,15 +607,29 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
     } else if (m?.type === 'blink-hosted') {
       const child = kernel.procs.get(m.pid);
       if (!child || hosted.has(m.pid)) return;
-      hosted.add(m.pid);
-      child.data.engineInstance = instance; // same wasm memory: same instance
-      const off = child.addSignalListener((sig: number) => { if (sig > 0) w.postMessage({ type: 'blink-signal', sig, pid: m.pid }); });
-      child.onTerminate(() => {
-        off();
+      // Once it execs it runs elsewhere (a vfork child's exec starts it in its
+      // own worker without ending this runner's hold on it), and a listener
+      // here would race its own for its signals and queue them in the System
+      // it left (nvim's SIGCHLD from its :terminal shell was lost so). Its
+      // calls take a direct channel, so the exec can even come before this.
+      let gone = false;
+      const leave = () => {
+        if (gone) return;
+        gone = true;
+        off?.();
         hosted.delete(m.pid);
         w.postMessage({ type: 'blink-reap', pid: m.pid });
         if (ownGone && !hosted.size) terminateWhenQuiet();
+      };
+      let off: (() => void) | undefined;
+      if (child.data.execed) return leave();
+      hosted.add(m.pid);
+      child.data.engineInstance = instance; // same wasm memory: same instance
+      off = child.addSignalListener((sig: number) => {
+        if (child.data.execed) leave();
+        else if (sig > 0) w.postMessage({ type: 'blink-signal', sig, pid: m.pid });
       });
+      child.onTerminate(leave);
     } else if (m?.type === 'blink-exiting') {
       exiting = true;
       delete proc.data.engine;  // (so the page doesn't hold the wasm memory past the process)

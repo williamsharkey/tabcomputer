@@ -213,6 +213,24 @@ export function formatStatRows(rows: { name: string; add: number; del: number; b
 
 // --- Revision helpers ---
 
+/**
+ * `REF@{N}`: the new value of REF's Nth newest reflog entry (.git/logs/REF, as
+ * git-reflog.ts writes them). REF '' or '@' is the current branch (HEAD when
+ * detached), as git's `@{N}`. null when `spec` isn't that form.
+ */
+async function reflogEntry(fs: any, dir: string, spec: string): Promise<string | null> {
+  const m = /^(.*)@\{(\d+)\}$/.exec(spec);
+  if (!m) return null;
+  let ref = m[1];
+  if (ref === '' || ref === '@') ref = (await git.currentBranch({ fs, dir, fullname: true }).catch(() => undefined)) || 'HEAD';
+  else if (ref !== 'HEAD') ref = await git.expandRef({ fs, dir, ref }).catch(() => ref);
+  const text = String(await fs.promises.readFile(`${dir === '/' ? '' : dir}/.git/logs/${ref}`, 'utf8').catch(() => ''));
+  const lines = text.split('\n').filter(Boolean);
+  const n = Number(m[2]);
+  if (n >= lines.length) throw new Error(lines.length ? `log for '${m[1] || ref}' only has ${lines.length} entries` : `log for '${m[1] || ref}' is empty`);
+  return lines[lines.length - 1 - n].split(' ')[1];
+}
+
 /** Resolve a revision string like HEAD, HEAD~3, HEAD^2, short SHA, branch name */
 export async function resolveRevision(fs: any, dir: string, ref: string): Promise<string> {
   const ops: { type: string; n: number }[] = [];
@@ -229,7 +247,9 @@ export async function resolveRevision(fs: any, dir: string, ref: string): Promis
   }
 
   let oid: string;
-  try {
+  const logged = await reflogEntry(fs, dir, base);
+  if (logged) oid = logged;
+  else try {
     oid = await git.resolveRef({ fs, dir, ref: base });
   } catch {
     try {

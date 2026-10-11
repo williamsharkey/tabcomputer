@@ -70,7 +70,7 @@ export const SPECS: Record<string, Spec> = {
   'cherry-pick': { flags: 'x', long: 'no-edit edit' },
   revert: { long: 'no-edit edit' },
   rebase: { flags: 'q', long: 'quiet' },
-  reflog: {},
+  reflog: { values: 'n', numeric: true, long: 'max-count= format= oneline' },
   'rev-parse': { any: true },
   'symbolic-ref': { flags: 'qd', long: 'short quiet delete no-recurse recurse' },
   'show-ref': { flags: 'dsq', long: 'heads tags head dereference hash? verify quiet abbrev? exists' },
@@ -127,6 +127,8 @@ export function unknownOption(sub: string, args: string[]): string | null {
   if (!spec) return sub;
   if (spec.any) return null;
   if (sub === 'worktree' && args[0] !== 'list') return `worktree ${args[0] ?? ''}`.trim();
+  // (`reflog REF` shows REF's: only these words are subcommands)
+  if (sub === 'reflog' && ['expire', 'delete', 'exists', 'drop', 'list'].includes(args[0])) return `reflog ${args[0]}`;
   if (spec.subcommands && args[0] && !args[0].startsWith('-') && !spec.subcommands.includes(args[0])) {
     if (sub === 'remote' || sub === 'stash') return `${sub} ${args[0]}`;
   }

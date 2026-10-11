@@ -7,6 +7,7 @@ import { gitRm, gitMv, gitRestore, gitClean, gitReset } from './git-worktree';
 import { gitBlame } from './git-blame';
 import { gitTagHandler } from './git-tag';
 import { resolveRevision } from './git-utils';
+import { startReflog } from './git-reflog';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import { activeProfile } from '../profile';
 import { gitPlumbing, changeSummary, stagedCount, statusText, gitDate, unmergedPaths, pathEntries, changesBetweenTrees } from './git-plumbing';
@@ -26,12 +27,20 @@ export const gitCmd: Command = {
   name: 'git',
   description: 'Version control system',
   // one isomorphic-git cache per command (see git-cached.ts)
-  exec: (ctx: CommandContext) => withGitCache(() => gitMain(ctx)),
+  exec: (ctx: CommandContext) => withGitCache(async () => {
+    const reflog: ReflogHook = {};
+    const code = await gitMain(ctx, reflog);
+    await reflog.finish?.(code);
+    return code;
+  }),
   keepOverPackage: builtinCloneHandles,
 };
 
 
-async function gitMain(ctx: CommandContext): Promise<number> {
+/** Set by gitMain once the repository is known: writes the reflog entries for what the command moved */
+interface ReflogHook { finish?: (code: number) => Promise<void> }
+
+async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<number> {
     // Global options before the subcommand (git -C /path -c k=v --no-pager subcmd ...)
     const argv = ctx.args, cwd0 = ctx.cwd; // as given, for the real git
     let workDir = ctx.cwd;
@@ -118,6 +127,15 @@ async function gitMain(ctx: CommandContext): Promise<number> {
         return 128;
       }
       dir = root;
+      // What this moves of HEAD and the branches goes in their reflogs (git-reflog.ts)
+      const logAllRefUpdates = async (): Promise<string | undefined> => {
+        const k = 'core.logallrefupdates';
+        const set = configOverrides.find(([name]) => name.toLowerCase() === k)?.[1]
+          ?? await git.getConfig({ fs, dir, path: k }).catch(() => undefined)
+          ?? Object.entries(await readGlobalConfig(ctx)).find(([name]) => name.toLowerCase() === k)?.[1];
+        return set === undefined ? undefined : String(set);
+      };
+      reflog.finish = (await startReflog(ctx, fs, dir, subcommand, ctx.args.slice(1), logAllRefUpdates, () => resolveCommitter(ctx, fs, dir))) ?? undefined;
     }
 
     try {
@@ -760,7 +778,8 @@ async function gitMain(ctx: CommandContext): Promise<number> {
           if (!theirOid) { ctx.stderr = `merge: ${theirs} - not something we can merge\n`; return 1; }
           const ours = await git.currentBranch({ fs, dir }) || 'main';
           const before = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-          const msg = message ?? `Merge branch '${theirs}'`;
+          // (" into B" unless B is main or master: git's merge.suppressDest default)
+          const msg = message ?? `Merge branch '${theirs}'${ours === 'main' || ours === 'master' ? '' : ` into ${ours}`}`;
           // what the work tree had before: a conflict's cleanly merged files are staged, these aren't
           const local = new Set((await pathEntries(fs, dir, true)).filter((e) => !e.stage || e.work?.oid !== e.stage.oid).map((e) => e.path));
           let mergeResult;
@@ -980,13 +999,6 @@ async function gitMain(ctx: CommandContext): Promise<number> {
 
         case 'ls-remote':
           return lsRemote(ctx, fs, dir, dir);
-
-        case 'reflog': {
-          // isomorphic-git has no reflog; show current HEAD as single entry
-          const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-          ctx.stdout = `${headOid.slice(0, 7)} HEAD@{0}: current state\n`;
-          return 0;
-        }
 
         default:
           ctx.stderr = `git: '${subcommand}' is not a git command\n`;

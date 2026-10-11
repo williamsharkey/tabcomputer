@@ -295,14 +295,18 @@ async function fullRef(fs: Fs, dir: string, spec: string): Promise<string> {
   return full ?? '';
 }
 
-/** `git log -g`: the HEAD reflog, newest first (isomorphic-git writes none, so usually nothing) */
-async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[]): Promise<number> {
+/** `git reflog [show] [REF]`, `git log -g`: REF's reflog (HEAD's unless named), newest first (git-reflog.ts writes them) */
+async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[], name = 'HEAD'): Promise<number> {
+  let ref = name;
+  if (name === '@' || name === '') ref = (await git.currentBranch({ fs, dir, fullname: true }).catch(() => undefined)) || 'HEAD';
+  else if (name !== 'HEAD') ref = await git.expandRef({ fs, dir, ref: name }).catch(() => name);
   let text = '';
-  try { text = String(await fs.promises.readFile(`${dir}/.git/logs/HEAD`, 'utf8')); } catch { return 0; }
+  try { text = String(await fs.promises.readFile(`${dir === '/' ? '' : dir}/.git/logs/${ref}`, 'utf8')); } catch { return 0; }
   const fmtArg = args.find((a) => a.startsWith('--format=') || a.startsWith('--pretty='));
   const fmt = fmtArg ? fmtArg.slice(fmtArg.indexOf('=') + 1).replace(/^t?format:/, '') : '%h %gd: %gs';
-  const maxArg = args.find((a) => /^-\d+$/.test(a) || a.startsWith('--max-count='));
-  const max = maxArg ? parseInt(maxArg.replace(/^-|--max-count=/g, ''), 10) : Infinity;
+  const nAt = args.indexOf('-n');
+  const maxArg = nAt >= 0 ? `--max-count=${args[nAt + 1]}` : args.find((a) => /^-\d+$/.test(a) || a.startsWith('--max-count='));
+  const max = maxArg ? parseInt(maxArg.replace(/^(--max-count=|-)/, ''), 10) : Infinity;
   const lines = text.split('\n').filter(Boolean).reverse().slice(0, max);
   const out: string[] = [];
   for (let n = 0; n < lines.length; n++) {
@@ -310,7 +314,7 @@ async function reflogLog(ctx: CommandContext, fs: Fs, dir: string, args: string[
     if (!m) continue;
     try {
       const { commit } = await git.readCommit({ fs, dir, oid: m[1] });
-      out.push(formatPretty({ oid: m[1], commit } as CommitInfo, fmt, { reflog: { selector: `HEAD@{${n}}`, subject: m[2] } }));
+      out.push(formatPretty({ oid: m[1], commit } as CommitInfo, fmt, { reflog: { selector: `${name}@{${n}}`, subject: m[2] } }));
     } catch { /* pruned */ }
   }
   if (out.length) ctx.stdout += out.join(args.includes('-z') ? '\0' : '\n') + '\n';
@@ -1129,6 +1133,19 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         } else if (others && e.work && !(await ignored(fs, dir, e.path))) ctx.stdout += show(e.path) + sep;
       }
       return 0;
+    }
+
+    case 'reflog': {
+      // git reflog [show] [REF] [-n N | -N | --max-count=N] [--format=F] (expire, delete, exists: the full git's)
+      const words: string[] = [];
+      const opts: string[] = [];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '-n') { opts.push('-n', args[++i] ?? ''); continue; }
+        if (args[i].startsWith('-')) opts.push(args[i]);
+        else words.push(args[i]);
+      }
+      if (words[0] === 'show') words.shift();
+      return reflogLog(ctx, fs, dir, opts, words[0] ?? 'HEAD');
     }
 
     case 'worktree': {

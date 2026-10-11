@@ -40,6 +40,37 @@ in §6 are for reference only (the user may archive them).
 
 ---
 
+## 0b. Coordination after the cloud coordinator ran out of tokens (2026-10-11 ~16:00 UTC)
+
+The cloud coordinator (session 013P1en67hyUPbJ9yiVdf5NM) and the workers remote-debug, compat-dev,
+perf-fs-shell, agent-clis, debian, bench, gui, conformance, shell-stdio, gl, compat-tools and
+perf-blink stopped at their weekly limit. **The outside agent** (a local Claude Code session on the
+owner's Mac, which drives a native Claude Code in a tab at perf2.tabcomputer.com through
+`shiro-mcp/probe.mjs`) took over coordination.
+
+- **Build 979 (f2c33f9a) is live**: `unix/integration` = tab `main` = tab `deploy`. It added, on top of
+  dc61ab8b (which had 64 merged-but-undeployed commits): agent-clis, bench, gui, perf-blink (Blink
+  0144-0145), native-claude-bypass, node-exitcode, node-vitest-pool, npm-local-bins, node-jest,
+  node-server-handle, pip-editable, git-linked-worktree, and two outdated test expectations
+  (npm's `^` save, the #71 volume hint in safe-mode).
+- **Gate used:** full `vitest.config.ts` (4947 tests) and `vitest.worker.config.ts`, compared with
+  dc61ab8b run the same way. Failing on dc61ab8b already (fix candidates): `pkg` x2 and `wasi` x1
+  (environment), `python-cpython` (live certificate), `claude-vm-bun-process` (`Bun.which` returns
+  /bin/ls before /usr/bin/ls), `compat-tools` ripgrep (timeout), `node-stdin-blocking` repro 4
+  (process.exit in a data listener hangs with main's #66 code). `node-fetch-exit` listens on
+  127.0.0.2, which macOS lacks (passes on Linux).
+- **Held back:** `unix/tab-node-fork-ipc` (#78: the child exits 1 instead of 0); `perf-blink-fin`,
+  `perf-blink-wip*`, `perf-kernel-wip`, `gl-wip` (unvalidated); `kernel`/`x86-engine`'s old syslog
+  patch (its number 0055 is now another patch's).
+- **Field-agent fixes** arrive as `unix/tab-*` branches, each with an off-tab vitest run posted on
+  its issue. Branches marked "superseded" on their issues (main fixed the same thing) must not be
+  merged.
+- **Unfinished worker items to re-assign** (from the coordinator's last messages): bench's
+  measurement of zlib/xz/memcpy's share of apt-get update, dpkg -i, git clone and native Claude's
+  start (it decides whether perf-blink builds a zlib/xz thunk; it needs blinkprof to write one file
+  per process, which bench's 0eab68a4 does); perf-blink's #52 (compile what Bun/JSC's interpreter
+  runs).
+
 ## 0a. Final state from the old coordinator (2026-10-10 ~11:50 UTC)
 
 > **Historical.** This section records the handoff on 2026-10-10. It is not the current state. Since then the

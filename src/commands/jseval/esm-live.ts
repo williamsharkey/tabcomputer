@@ -87,11 +87,15 @@ function liveBindings(src: string, general: boolean): string {
   const locals = new Map<string, [number, string]>();
   const skip: [number, number][] = [];
   // (general: each import statement's items, to write it again without the live names)
-  const imports: { items: [string, string][]; raw: string[]; quote: string; spec: string }[] = [];
+  const imports: { items: [string, string][]; raw: string[]; quote: string; spec: string; untouched?: boolean }[] = [];
   for (const m of src.matchAll(NAMED_IMPORT)) {
     if (!inCode(m.index!)) continue;
-    // (a node builtin's exports don't change under it: its imports stay copies)
-    if (general && m[3].startsWith('node:')) continue;
+    // (a node builtin's exports don't change under it: its imports stay copies, the statement untouched)
+    if (general && m[3].startsWith('node:')) {
+      imports.push({ items: [], raw: [], quote: m[2], spec: m[3], untouched: true });
+      skip.push([m.index!, m.index! + m[0].length]);
+      continue;
+    }
     const idx = modules.push(m[3]) - 1;
     const rec = { items: [] as [string, string][], raw: [] as string[], quote: m[2], spec: m[3] };
     for (const item of m[1].split(',')) {
@@ -216,7 +220,7 @@ function liveBindings(src: string, general: boolean): string {
   while (i < len) {
     if (skipI < skip.length && i === skip[skipI][0]) {
       // (general: the statement keeps only the names read as copies; the module is loaded above)
-      if (general) {
+      if (general && !imports[skipI].untouched) {
         const rec = imports[skipI];
         const kept = rec.raw.filter((t) => !rec.items.some(([local, text]) => text === t && locals.has(local)));
         emit(i, skip[skipI][1], kept.length ? `import { ${kept.join(', ')} } from ${rec.quote}${rec.spec}${rec.quote};` : '');

@@ -1,7 +1,11 @@
 /**
  * The instructions a coding agent finds in the home directory: one file,
- * ~/AGENTS.md, describing the machine it is actually on, and ~/CLAUDE.md,
- * which imports it (`@AGENTS.md`), so Claude Code reads it with no extra hop.
+ * ~/AGENTS.md, describing the machine it is actually on, and Claude Code's
+ * user memory ~/.claude/CLAUDE.md, which imports it (`@~/AGENTS.md`), so
+ * Claude Code reads it in every directory. Earlier builds seeded ~/CLAUDE.md
+ * (`@AGENTS.md`) instead: in a directory below home that import is outside
+ * the project, and Claude Code stopped at "Allow external CLAUDE.md file
+ * imports?" in every new project. It is removed while it is still as written.
  *
  * Seeded on every boot, but never over a file the user changed: the hashes of
  * what was seeded are kept in /var/lib/tabcomputer/seeded.json, and a file is
@@ -15,7 +19,9 @@ import { activeProfile } from './profile';
 import { type ShiroRuntimeContext, parseRuntimeContext } from './seed-runtime-context';
 
 export const AGENTS_PATH = '/home/user/AGENTS.md';
-export const CLAUDE_PATH = '/home/user/CLAUDE.md';
+export const CLAUDE_PATH = '/home/user/.claude/CLAUDE.md';
+/** Where earlier builds put the import (retired, see above). */
+export const OLD_CLAUDE_PATH = '/home/user/CLAUDE.md';
 export const MANIFEST_PATH = '/var/lib/tabcomputer/seeded.json';
 const OLD_NEO_PATH = '/home/user/NEO.md';
 const OLD_CONTEXT_PATH = '/home/user/.shiro-context.json';
@@ -253,8 +259,10 @@ ${claude}
 `;
 }
 
-/** ~/CLAUDE.md: Claude Code imports AGENTS.md from it. */
-export const CLAUDE_MD = '@AGENTS.md\n';
+/** ~/.claude/CLAUDE.md: Claude Code imports AGENTS.md from it. */
+export const CLAUDE_MD = '@~/AGENTS.md\n';
+/** What earlier builds wrote to ~/CLAUDE.md. */
+const OLD_CLAUDE_MD = '@AGENTS.md\n';
 
 async function sha256(text: string): Promise<string> {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -297,9 +305,10 @@ async function readText(fs: SeedFS, path: string): Promise<string | null> {
 }
 
 /**
- * Write AGENTS.md and CLAUDE.md, replacing earlier seeded versions but never a
- * file the user edited; remove the retired NEO.md/.shiro-context.json the same
- * way. Returns what it did, one line per file it touched or left alone.
+ * Write AGENTS.md and ~/.claude/CLAUDE.md, replacing earlier seeded versions
+ * but never a file the user edited; remove the retired ~/CLAUDE.md, NEO.md and
+ * .shiro-context.json the same way. Returns what it did, one line per file it
+ * touched or left alone.
  */
 export async function seedAgentDocs(fs: SeedFS, ctx: ShiroRuntimeContext): Promise<string[]> {
   const log: string[] = [];
@@ -328,7 +337,7 @@ export async function seedAgentDocs(fs: SeedFS, ctx: ShiroRuntimeContext): Promi
     else log.push(`kept ${OLD_CONTEXT_PATH} (edited)`);
   }
 
-  await fs.mkdir('/home/user', { recursive: true });
+  await fs.mkdir('/home/user/.claude', { recursive: true });
   for (const [path, text] of [[AGENTS_PATH, buildAgentsMd(ctx)], [CLAUDE_PATH, CLAUDE_MD]] as const) {
     const have = await readText(fs, path);
     if (have === text) { manifest[path] = await sha256(text); continue; }
@@ -337,6 +346,17 @@ export async function seedAgentDocs(fs: SeedFS, ctx: ShiroRuntimeContext): Promi
     manifest[path] = await sha256(text);
     log.push(`${have === null ? 'wrote' : 'updated'} ${path}`);
   }
+  // The old ~/CLAUDE.md goes once the user memory imports AGENTS.md (with a
+  // ~/.claude/CLAUDE.md of the user's own, it stays: home still reads AGENTS.md)
+  const old = await readText(fs, OLD_CLAUDE_PATH);
+  if (old !== null) {
+    if (await readText(fs, CLAUDE_PATH) !== CLAUDE_MD) log.push(`kept ${OLD_CLAUDE_PATH} (${CLAUDE_PATH} is the user's own)`);
+    else if (old === OLD_CLAUDE_MD || await seededByUs(OLD_CLAUDE_PATH, old)) {
+      await fs.unlink(OLD_CLAUDE_PATH);
+      log.push(`removed ${OLD_CLAUDE_PATH} (now ${CLAUDE_PATH})`);
+    } else log.push(`kept ${OLD_CLAUDE_PATH} (edited)`);
+  }
+  delete manifest[OLD_CLAUDE_PATH];
   await fs.mkdir('/var/lib/tabcomputer', { recursive: true });
   await fs.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n');
   return log;

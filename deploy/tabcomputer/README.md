@@ -19,7 +19,8 @@ droplet are not involved.
   (git tags are blocked by the proxy). Workers never push `main` or `deploy`. Within about 2
   minutes the droplet notices, runs `npm ci && npm run build`, and switches
   `/opt/tabcomputer/current` to the new release; building takes several
-  minutes on this size. `https://tabcomputer.com/deployed.txt` shows the live
+  minutes on this size (with a 1.5 GB node heap and a 2 GB swapfile, which
+  release.sh sets up). The build log is at `/_deploy/log`. `https://tabcomputer.com/deployed.txt` shows the live
   commit. A commit whose build fails is recorded in `/opt/tabcomputer/FAILED_SHA`
   and skipped; the previous release keeps serving. The last 3 releases are kept.
 - **Disk caches:** `/claude-releases/` (server.mjs, `claude install`) keeps

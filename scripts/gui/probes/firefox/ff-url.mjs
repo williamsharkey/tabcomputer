@@ -36,7 +36,7 @@ if (process.env.MAPS) { // where libxul is mapped in the parent (for BLINK_WJIT_
   log('maps\n' + (await sh("for p in $(pgrep -f 'firefox-esr/firefox-esr'); do echo pid $p; grep libxul /proc/$p/maps; done")).out);
 }
 const isFx = () => page.evaluate(() => window.__tabcomputer.desktop.windows().some((w) => w.surface && /Firefox/.test(w.title)));
-const alive = async () => Number((await sh('ps 2>&1 | grep -v grep | grep -c /usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
+const alive = async () => Number((await sh('ps -eo args 2>&1 | grep -v grep | grep -c ^/usr/lib/firefox-esr/firefox-esr')).out.trim()) > 0;
 for (let i = 0; i < 200 && !(await isFx()); i++) { if (i > 6 && !(await alive())) { log('firefox exited'); break; } await page.waitForTimeout(5000); }
 log(`window: ${await isFx()}`);
 if (await isFx()) { await page.waitForTimeout(90000); } if (false) {

@@ -360,6 +360,10 @@ const haveSigpending = readFileSync(resolve(__dirname, '../../../public/engines/
 const overrunBin = join(out, 'overrun');
 const haveOverrun = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_overrun') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', overrunBin, 'overrun.c', '-lrt']);
+// Blink 0530: system time is the time in quick kernel calls
+const systimeBin = join(out, 'systime');
+const haveSystime = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_systime') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', systimeBin, 'systime.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1129,6 +1133,12 @@ it.skipIf(!haveOverrun)('timer_getoverrun in the handler is that signal\'s overr
   const { shell } = await setup(readFileSync(overrunBin));
   const r = await run(shell, './prog');
   expect(r.output.replace(/\r\n/g, '\n')).toBe('overrun max 1 si_overrun max 1 after settime 0\n');
+}, 60_000);
+
+it.skipIf(!haveSystime)('system calls count as system time: tms_stime, ru_stime, and a reaped child\'s tms_cstime (LTP times03)', async () => {
+  const { shell } = await setup(readFileSync(systimeBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('stime 1 rusage 1 cstime 1\n');
 }, 60_000);
 
 it.skipIf(!haveClonevm)('clone(CLONE_VM | CLONE_PARENT_SETTID) on its own stack: a process sharing its parent\'s memory, ptid set first, reaped by its parent (LTP clone08)', async () => {

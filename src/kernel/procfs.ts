@@ -158,6 +158,11 @@ export class ProcFs {
     return Math.max(0, end - p.startTime - p.kernelMs - Math.max(asleep, blocked));
   }
 
+  /** The system part of cpuMs: what the engine reported, at most the CPU time. */
+  static systemMs(p: Process, now = Date.now()): number {
+    return Math.min(p.systemMs, ProcFs.cpuMs(p, now));
+  }
+
   private live(): Process[] {
     return [...this.kernel.procs.values()].filter((p) => p.pid > 0).sort((a, b) => a.pid - b.pid);
   }
@@ -396,11 +401,11 @@ export class ProcFs {
   private pidStat(p: Process, tid?: number): string {
     const now = Date.now();
     const ticks = (ms: number) => Math.floor(ms / (1000 / HZ));
-    const cpu = ticks(ProcFs.cpuMs(p, now));
+    const cpu = ticks(ProcFs.cpuMs(p, now)), sys = Math.min(cpu, ticks(ProcFs.systemMs(p, now)));
     const { nr, tpgid } = this.ttyOf(p);
     const f = [
       tid ?? p.pid, `(${p.comm.slice(0, 15)})`, tid !== undefined ? this.threadLetter(p, tid) : this.stateLetter(p), p.ppid, p.pgid, p.sid, nr, tpgid,
-      0x400000, 0, 0, 0, 0, cpu, 0, 0, 0, 20, 0, threadIds(p).length, 0, ticks(p.startTime - bootMs),
+      0x400000, 0, 0, 0, 0, cpu - sys, sys, 0, 0, 20, 0, threadIds(p).length, 0, ticks(p.startTime - bootMs),
       0, 0, '18446744073709551615', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     return f.join(' ') + '\n';

@@ -842,6 +842,7 @@ export class Kernel {
           if (!(options & A.WNOWAIT)) {
             this.procs.delete(k.pid);
             caller.childCpuMs += cpuMs;
+            caller.childSystemMs += ProcFs.systemMs(k) + k.childSystemMs;
             this.notify();
           }
           return { pid: k.pid, status: k.exitStatus!, cpuMs };
@@ -3162,11 +3163,19 @@ export class Kernel {
           return 0;
         }
         case A.SYS_shiro_cputimes: {
-          // the caller's CPU time and its reaped children's, in µs (times, getrusage)
-          if (data.length < 16) return -A.EINVAL;
-          const dv = new DataView(data.buffer, data.byteOffset, 16);
+          // The caller's CPU time and its reaped children's, in µs (times,
+          // getrusage), then the system time of each when there is room for
+          // it. args[1] & 1: the engine tells its system time, µs in
+          // args[2..3] (the time in quick kernel calls; part of the CPU time)
+          if (args[1] & 1) proc.systemMs = ((args[2] >>> 0) + (args[3] >>> 0) * 0x100000000) / 1000;
+          if (data.length < 16) return args[1] & 1 ? 0 : -A.EINVAL;
+          const dv = new DataView(data.buffer, data.byteOffset, data.length >= 32 ? 32 : 16);
           dv.setBigInt64(0, BigInt(Math.round(ProcFs.cpuMs(proc) * 1000)), true);
           dv.setBigInt64(8, BigInt(Math.round(proc.childCpuMs * 1000)), true);
+          if (data.length >= 32) {
+            dv.setBigInt64(16, BigInt(Math.round(ProcFs.systemMs(proc) * 1000)), true);
+            dv.setBigInt64(24, BigInt(Math.round(proc.childSystemMs * 1000)), true);
+          }
           return 0;
         }
         case A.SYS_getenv: {

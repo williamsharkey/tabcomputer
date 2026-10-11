@@ -53,21 +53,26 @@ describe('a kernel job and an abort that came first (#53)', () => {
   });
 
   it("timeout's expiry event reaches a job that outlived the first abort, with -k's SIGKILL after it", async () => {
-    // The outer abort came first (SIGINT, which this job ignores), then timeout's time ran out
+    // The program is up and ignores SIGINT; then the outer shell's abort (SIGINT)
+    // comes, which it survives; then timeout's time runs out on the aborted signal.
+    // (An abort before the program is up kills it at once, by default action: the first test.)
     const abort = new AbortController();
-    abort.abort();
     shell.abortController = abort;
     const term = runJob([SIGINT]);
+    await tick(50); // its ignore is installed
+    abort.abort();
     await tick(50);
     expect(await within(term, 0)).toBe('still running');
     abort.signal.dispatchEvent(new CustomEvent(TIMEOUT_EXPIRED_EVENT, { detail: { signal: SIGTERM, killAfter: 5000 } }));
     expect(((await within(term, 3000)) as any).exitCode).toBe(128 + SIGTERM);
 
     const abort2 = new AbortController();
-    abort2.abort();
     shell.abortController = abort2;
     const stubborn = runJob([SIGINT, SIGTERM]);
     await tick(50);
+    abort2.abort();
+    await tick(50);
+    expect(await within(stubborn, 0)).toBe('still running');
     abort2.signal.dispatchEvent(new CustomEvent(TIMEOUT_EXPIRED_EVENT, { detail: { signal: SIGTERM, killAfter: 100 } }));
     expect(((await within(stubborn, 3000)) as any).exitCode).toBe(128 + SIGKILL);
   });

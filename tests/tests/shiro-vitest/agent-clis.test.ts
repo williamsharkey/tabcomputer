@@ -198,9 +198,10 @@ describe('claude --native', () => {
     await run(shell, 'cd /home/user');
     let r = await run(shell, "CLAUDE_NATIVE_PATH=/opt/n/claude claude --native a 'b c' < /dev/null");
     expect(r.output).toContain('hello from c');
-    expect(r.output).toContain('arg1=a');
-    expect(r.output).toContain('arg2=b c');
-    r = await run(shell, 'CLAUDE_NATIVE=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail < /dev/null; echo "status=$?"');
+    // its search tools opt-in comes first (tabcomputer#42), then the user's arguments
+    expect(r.output.replace(/\r\n/g, '\n')).toContain('arg1=--allowedTools=Grep,Glob\narg2=a\narg3=b c\n');
+    // (the user's own --tools: nothing added, so the fixture's argv[1] is "fail")
+    r = await run(shell, 'CLAUDE_NATIVE=1 CLAUDE_NATIVE_PATH=/opt/n/claude claude fail --tools=Bash < /dev/null; echo "status=$?"');
     expect(r.output).toContain('status=7');
   }, 60_000);
 });

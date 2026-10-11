@@ -204,8 +204,11 @@ async function smoke(m, pkg) {
       // A client of a system daemon (udisksctl: udisksd on the system bus) or of hardware's
       // X extension (vmwarectrl: VMWARE_CTRL) runs but has nothing to talk to, as in a
       // Debian container or on other hardware; a GUI program without the display it needs
-      const absent = /Error connecting to the \S+ daemon|Failed to connect to (?:the )?bus|Could not connect to (?:D-Bus|the system bus)|Cannot connect to the \S+ daemon|extension "\S+" missing on display|X Server does not support \S+|(?:cannot|can't|could not|unable to|couldn't) (?:open|connect to) (?:the )?(?:default )?(?:X )?(?:display|X server)|Gtk-WARNING \*\*: [^\n]*cannot open display|Could not connect to any X display/i.exec(r.out);
-      if (absent && !crashed) return { ok: true, how: `${bin} ${flagArg} (ran; "${absent[0]}")${who(bin)}`, ms: r.ms };
+      const absent = /Error connecting to the \S+ daemon|Failed to connect to (?:the )?bus|Could not connect to (?:D-Bus|the system bus)|Cannot connect to the \S+ daemon|extension "\S+" missing on display|X Server does not support \S+|(?:cannot|can't|could not|unable to|couldn't) (?:open|connect to) (?:the )?(?:default )?(?:X )?(?:display|X server)|Gtk-WARNING \*\*: [^\n]*cannot open display|Could not connect to any X display|Cannot autolaunch D-Bus without X11 \$DISPLAY/i.exec(r.out);
+      // GLib's g_error() stops the program with SIGTRAP (exit 133) on purpose: gnome-calendar
+      // without a display ("GcalContext-ERROR **: … Cannot autolaunch D-Bus"), as on Debian
+      const gError = r.code === 133 && /-ERROR \*\*:/.test(r.out);
+      if (absent && (!crashed || gError)) return { ok: true, how: `${bin} ${flagArg} (ran; "${absent[0]}")${who(bin)}`, ms: r.ms };
       // Answered the flag, then stayed in its event loop (ptked: "Unknown option: version", then its window)
       const answered = /unknown option|unrecognized option|invalid option|usage:/i.exec(r.out);
       if (r.code === 124 && answered && !crashSig && !broken) return { ok: true, how: `${bin} ${flagArg} (ran: "${r.out.trim().split('\n')[0].slice(0, 60)}", then kept running, as an interactive program does)${who(bin)}`, ms: r.ms };

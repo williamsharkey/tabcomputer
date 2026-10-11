@@ -3,6 +3,7 @@ import { executeNodeScript } from '../../node-compat/execution';
 import { NODE_REPL } from './node-repl';
 import { CLAUDE_CODE_CLI_JS } from '../../claude-code-version';
 import { readClaudeTransform, saveClaudeTransform } from '../../claude-transform-cache';
+import { parseNodeArgs, parseEnvFile } from './node-args';
 
 /**
  * node (node-cmd.ts runs it here, or in a Worker as a kernel guest): executes JS files from the virtual filesystem.
@@ -19,49 +20,56 @@ import { readClaudeTransform, saveClaudeTransform } from '../../claude-transform
  */
 /** `node ARGS` in this JS realm (the page, or a node-worker guest): arguments, the script, then node-compat */
 export async function runNode(ctx: CommandContext): Promise<number> {
-  let code = '';
-  let printResult = false;
-
-  // Parse args — once we see a script file, everything after is script args
-  const fileArgs: string[] = [];
-  let foundScript = false;
-  for (let i = 0; i < ctx.args.length; i++) {
-    if (foundScript) {
-      fileArgs.push(ctx.args[i]);
-    } else if (ctx.args[i] === '-e' || ctx.args[i] === '--eval') {
-      code = ctx.args[++i] || '';
-    } else if (ctx.args[i] === '-p' || ctx.args[i] === '--print') {
-      code = ctx.args[++i] || '';
-      printResult = true;
-    } else if (ctx.args[i] === '--version' || ctx.args[i] === '-v') {
-      // The version the runtime reports (process.version), as node prints it
-      ctx.stdout += 'v22.12.0\n';
-      return 0;
-    } else if (ctx.args[i] === '--help' || ctx.args[i] === '-h') {
-      ctx.stdout += 'Usage: node [options] [script.js] [arguments]\n';
-      ctx.stdout += '  -e, --eval <code>   Evaluate code\n';
-      ctx.stdout += '  -p, --print <code>  Evaluate and print result\n';
-      ctx.stdout += '\nNote: Runs in browser JS VM, not real Node.js.\n';
-      ctx.stdout += 'Full DOM/browser API access available.\n';
-      return 0;
-    } else {
-      fileArgs.push(ctx.args[i]);
-      foundScript = true;
+  const node = parseNodeArgs(ctx.args, ctx.env?.NODE_OPTIONS);
+  if (node.error) {
+    ctx.stderr += node.error + '\n';
+    return 9;
+  }
+  for (const w of node.warnings) ctx.stderr += w + '\n';
+  if (node.version) {
+    // The version the runtime reports (process.version), as node prints it
+    ctx.stdout += 'v22.12.0\n';
+    return 0;
+  }
+  if (node.help) {
+    ctx.stdout += NODE_HELP;
+    return 0;
+  }
+  // --env-file: its variables, under the environment's own (as node)
+  for (const f of node.envFiles) {
+    let text: string;
+    try { text = await ctx.fs.readFile(ctx.fs.resolvePath(f.path, ctx.cwd), 'utf8') as string; } catch {
+      if (f.optional) continue;
+      ctx.stderr += `node: ${f.path}: not found\n`;
+      return 9;
     }
+    ctx.env = { ...parseEnvFile(text), ...ctx.env };
   }
 
-  // If no -e flag, read from file
+  let code = node.eval ?? '';
+  const printResult = node.print;
+  const run = (src: string, path: string, args: string[], more: Parameters<typeof executeNodeScript>[5] = {}) =>
+    executeNodeScript(ctx, src, path, args, printResult, { node, ...more });
+  // process.argv after 'node': the script and its arguments (with -e/-p, the arguments)
+  const fileArgs = node.script !== undefined ? [node.script, ...node.scriptArgs] : node.scriptArgs;
+  if (node.script === '-') {
+    code = ctx.stdin;
+    if (node.check) return checkSyntax(ctx, code, '[stdin]');
+    return run(code, '', fileArgs);
+  }
+
+  // A script: read from the filesystem
   let scriptPath = '';
-  if (!code && fileArgs.length > 0) {
+  if (node.eval === undefined && node.script !== undefined) {
     scriptPath = ctx.fs.resolvePath(fileArgs[0], ctx.cwd);
     // Claude Code's npm build: its transformed text, when the page has written it
     if (scriptPath === CLAUDE_CODE_CLI_JS) {
       const cache = await readClaudeTransform(ctx.fs as any);
-      if (cache.text) return executeNodeScript(ctx, cache.text, scriptPath, fileArgs, printResult, { pretransformed: true });
+      if (cache.text && !node.check) return run(cache.text, scriptPath, fileArgs, { pretransformed: true });
       // none: this run transforms it, and saves the text once its program has ended
-      if (cache.path) {
+      if (cache.path && !node.check) {
         let text: string | undefined;
-        const code = await executeNodeScript(ctx, await ctx.fs.readFile(scriptPath, 'utf8') as string, scriptPath, fileArgs, printResult, { onTransformed: (t) => { text = t; } });
+        const code = await run(await ctx.fs.readFile(scriptPath, 'utf8') as string, scriptPath, fileArgs, { onTransformed: (t) => { text = t; } });
         if (text) await saveClaudeTransform(ctx.fs as any, cache.path, text).catch(() => {});
         return code;
       }
@@ -89,18 +97,60 @@ export async function runNode(ctx: CommandContext): Promise<number> {
     }
   }
 
-  // Neither: the REPL on a terminal, else the program is stdin
-  if (!code && !fileArgs.length && !ctx.stdin && ctx.terminal && (ctx.stdinIsTTY ?? true)) {
-    return executeNodeScript(ctx, NODE_REPL, '', [], false);
+  if (node.check) return scriptPath ? checkSyntax(ctx, code, scriptPath) : 0;
+
+  // Neither: the REPL on a terminal (or with -i), else the program is stdin
+  const noProgram = node.eval === undefined && node.script === undefined;
+  if (noProgram && (node.interactive || (!ctx.stdin && ctx.terminal && (ctx.stdinIsTTY ?? true)))) {
+    return executeNodeScript(ctx, NODE_REPL, '', [], false, { node });
   }
-  if (!code && ctx.stdin) {
+  if (noProgram && ctx.stdin) {
     code = ctx.stdin;
   }
 
-  if (!code) {
+  if (!code && node.eval === undefined) {
     ctx.stderr += 'node: no input provided\n';
     return 1;
   }
 
-  return executeNodeScript(ctx, code, scriptPath, fileArgs, printResult);
+  return run(code, scriptPath, fileArgs);
 }
+
+/** node --check: the script parses (as node-compat transforms it), nothing runs */
+async function checkSyntax(ctx: CommandContext, code: string, name: string): Promise<number> {
+  const { transformESModules, transformTS } = await import('./module-transform');
+  let src = code.replace(/^#!.*/, '');
+  if (/\.tsx?$/.test(name)) src = transformTS(src);
+  try {
+    new (Object.getPrototypeOf(async function () { /* */ }).constructor)(transformESModules(src));
+    return 0;
+  } catch (e: any) {
+    ctx.stderr += `${name}\n${e?.name ?? 'SyntaxError'}: ${e?.message ?? e}\n`;
+    return 1;
+  }
+}
+
+const NODE_HELP = `Usage: node [options] [ script.js ] [arguments]
+       node [options] -e <code> [arguments]
+
+Options:
+  -e, --eval <code>           evaluate the code
+  -p, --print <code>          evaluate the code and print the result
+  -c, --check                 check the script's syntax without running it
+  -i, --interactive           the REPL, even if stdin isn't a terminal
+  -r, --require <module>      require the module before the script
+  --import <module>           import the module before the script
+  --env-file <file>           set environment variables from the file
+  --no-warnings               don't print process warnings
+  --no-deprecation            don't print deprecation warnings
+  -v, --version               print node's version
+  -h, --help                  print this help
+  -                           the script is stdin
+  --                          the end of node's options
+
+NODE_OPTIONS: options read before the command line's.
+Options that change nothing in a browser tab (--max-old-space-size,
+--enable-source-maps, --experimental-*, ...) are taken quietly; --inspect,
+--watch, --test and options this node doesn't know are taken with a warning.
+This node runs in the browser's JavaScript engine (node-compat), not V8 under libuv.
+`;

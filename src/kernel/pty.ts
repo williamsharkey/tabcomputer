@@ -225,7 +225,8 @@ export class Pty {
   private waiters = new Set<() => void>();
   private slaveCount = 0;
   private slaveEverOpened = false;
-  private masterClosed = false;
+  /** @internal read by the /dev/tty opener */
+  masterClosed = false;
   private hungUp = false;
 
   constructor(opts: { jc?: JobControl; winsize?: Partial<Winsize> } = {}) {
@@ -1236,10 +1237,15 @@ export function attachKernelTty(kernel: Kernel, jc: JobControl = jobControl): vo
   // /dev/tty: the process's controlling terminal. Besides the one a session
   // was spawned with (proc.ctty), a session leader acquires a pty by opening
   // its slave without O_NOCTTY or with TIOCSCTTY (xterm, script, ssh do this).
-  kernel.registerDevice('/dev/tty', (proc) => {
+  // Each open is a description of its own with the caller's flags, as on
+  // Linux: Claude Code drains stdin with open("/dev/tty", O_RDONLY|O_NONBLOCK)
+  // and reads until EAGAIN (tabcomputer#41), which blocked on the shared one.
+  kernel.registerDevice('/dev/tty', (proc, flags) => {
+    const own = (proc.ctty as PtyFile | undefined)?.pty;
+    if (own instanceof Pty) return own.masterClosed ? -EIO : own.openSlave(flags | O_NOCTTY);
     if (proc.ctty) return proc.ctty;
     const pty = controllingTtys.get(proc.sid);
-    return pty ? pty.openSlave(O_RDWR | O_NOCTTY) : -6 /* ENXIO */;
+    return pty ? pty.openSlave(flags | O_NOCTTY) : -6 /* ENXIO */;
   });
   for (const p of livePtys) p.registerDevice(kernel);
 }

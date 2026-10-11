@@ -9353,7 +9353,8 @@ export class Shell {
       }
       const base = interp.slice(interp.lastIndexOf('/') + 1);
       if (base === 'node' || base === 'nodejs') {
-        return this.executeNodeScript(resolvedPath, content, args, ctx, writeStdout, writeStderr);
+        // (node's own options on the line: `#!/usr/bin/env -S node --no-warnings`)
+        return this.executeNodeScript(resolvedPath, content, args, ctx, writeStdout, writeStderr, interpArgs);
       } else if ((base === 'sh' || base === 'bash') && !packageShadows(this.fs).has(base)) {
         return this.executeShellScript(content, args, ctx, writeStdout, writeStderr, filePath);
       }
@@ -9476,6 +9477,7 @@ export class Shell {
     ctx: CommandContext,
     writeStdout: (s: string) => void,
     writeStderr: (s: string) => void,
+    nodeOptions: string[] = [],
   ): Promise<number> {
     // Use the existing 'node' command with the script path
     const nodeCmd = this.commands.get('node');
@@ -9490,7 +9492,7 @@ export class Shell {
 
     // The command's own context, as `node FILE` gets it: its redirects and pipes (stdoutIsTTY,
     // streamStdout…) with it; `./x.js > out` wrote to the terminal while the shell had one
-    ctx.args = [filePath, ...args];
+    ctx.args = [...nodeOptions, filePath, ...args];
     // and its output as it comes, to the writers this command has (a server never ends:
     // vite's dev server under `npm run dev` printed nothing)
     ctx.streamStdout ??= (t) => writeStdout(t.replace(/\r?\n/g, '\r\n'));

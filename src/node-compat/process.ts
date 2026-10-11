@@ -192,6 +192,9 @@ export function createFakeProcess(
       const msg = warning instanceof Error ? warning.message : String(warning);
       if (name === 'DeprecationWarning' && (fp as any).noDeprecation) return;
       try { (processEvents['warning'] || []).forEach(fn => fn(Object.assign(new Error(msg), { name, code: opts.code }))); } catch (_) {}
+      // --no-warnings / --disable-warning=CODE|TYPE: the event, not the line
+      const filter = (fp as any).warningFilter as { all: boolean; disabled: string[] } | undefined;
+      if (filter && (filter.all || filter.disabled.includes(name) || (opts.code && filter.disabled.includes(opts.code)))) return;
       stderrBuf.push(`(node:${fp.pid}) ${opts.code ? `[${opts.code}] ` : ''}${name}: ${msg}\n`);
     },
     title: 'node',

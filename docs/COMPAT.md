@@ -17,7 +17,7 @@ Blink engine.
 | --- | --- | --- |
 | python3, venv | `pkg install python3` (CPython 3.13.7 WASI) | works |
 | pip | builtin (PyPI over fetch) / Debian `python3-pip` | works for pure-Python wheels / works with the TCP relay |
-| node, npm, npx | builtin | works (commander, mocha, tsc 5, prettier); runs as a kernel process in a Worker where the page is cross-origin isolated (real pid, blocking `*Sync` child_process, fork() IPC, a server stays in the foreground: background it with `&`; `TABCOMPUTER_NODE_WORKER=0` runs it in the page); `node` alone is the REPL on a terminal (`let`/`const` persist, `...` continuation lines, `await`, .help/.exit, ^C/^D as node) and reads its program from a pipe; on a terminal process.stdin reads the pty as the foreground job (cooked lines with echo and ^D, `setRawMode` sets its termios, ^C is SIGINT) |
+| node, npm, npx | builtin | works (commander, mocha, tsc 5, prettier); runs as a kernel process in a Worker where the page is cross-origin isolated (real pid, blocking `*Sync` child_process, fork() IPC, a server stays in the foreground: background it with `&`; `TABCOMPUTER_NODE_WORKER=0` runs it in the page); `node` alone is the REPL on a terminal (`let`/`const` persist, `...` continuation lines, `await`, .help/.exit, ^C/^D as node) and reads its program from a pipe; on a terminal process.stdin reads the pty as the foreground job (cooked lines with echo and ^D, `setRawMode` sets its termios, ^C is SIGINT); node's options before the script and in `NODE_OPTIONS` (`src/commands/jseval/node-args.ts`): `process.execArgv`, `-r`/`--require` and `--import` preloads, `--env-file`, `-c`/`--check`, `-i`, `-pe`, `-` and `--`, `--no-warnings`/`--disable-warning`/`--no-deprecation`; the ones that change nothing in a tab (`--max-old-space-size`, `--enable-source-maps`, `--conditions`, `--experimental-*`) are taken quietly, `--inspect`, `--watch`, `--test` and unknown ones with a warning; `fork(…, { execArgv })` passes them on; a child's `stdout`/`stderr` `pipe()`/`unpipe()`/`pause()`/`resume()` |
 | pnpm 9 | `npm install pnpm` | works (add, store, symlinks, run, exec, bins) |
 | yarn 1 | `npm install yarn` | works (add, lockfile, run, bins, offline) |
 | Next.js 16 (App Router, webpack) | `npx create-next-app`, then `next dev --webpack` / `next build` / `next start` (node in a Worker, the default) | dev server with HMR, builds (static pages prerendered) and serves; see "Next.js 16" below |
@@ -964,6 +964,15 @@ described here:
   the shell's ELF path (Blink, with the terminal's pty). In Chromium:
   `--version` 2.7 s; `-p "say hi"` to the API's answer 139 s, 105 s with
   `BUN_JSC_useJIT=0`.
+- Known (low priority, not yet investigated): without the full git, the
+  auto-install of Claude's official plugin marketplace logs
+  `spawn ENOENT /usr/local/bin/git` in `~/.claude/debug` (that path is the
+  builtin git's `#!/bin/sh` wrapper); nothing else is affected.
+  `pkg install git` removes the wrapper (git is then `/usr/bin/git`), which
+  likely avoids it; unverified.
+- The "Try the new fullscreen renderer?" offer works since the kernel's
+  `/dev/tty` honours `O_NONBLOCK` (tabcomputer#41: Claude drains stdin through
+  a non-blocking `/dev/tty` before it relaunches, and the read blocked).
 
 What the official native installer (`claude.ai/install.sh`) installs, as of
 2.1.295 (`downloads.claude.ai/claude-code-releases/<version>/<platform>/claude`,

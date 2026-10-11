@@ -671,10 +671,20 @@ const scheduleMacrotask: (fn: () => void) => void = (() => {
 
 /** The node as IndexedDB should store it: a view into a larger buffer is
  *  copied out, since IndexedDB clones the whole ArrayBuffer behind it. */
+/**
+ * A copy of `bytes` (or of [start, end) of it). Not `bytes.slice()`: a Node
+ * Buffer (isomorphic-git's, npm's) slices to a view, and IndexedDB clones a
+ * view's whole buffer: each 1 MiB block of a 265 MB pack from git clone was
+ * stored as 265 MB (a 16 s freeze, then "storage full", tabcomputer#28).
+ */
+function copyBytes(bytes: Uint8Array, start?: number, end?: number): Uint8Array {
+  return Uint8Array.prototype.slice.call(bytes, start, end);
+}
+
 function storableNode(node: FSNode): FSNode {
   if (node.blob) return node.content ? { ...node, content: null } : node;
   const c = node.content;
-  if (c && (c.byteOffset !== 0 || c.byteLength !== c.buffer.byteLength)) return { ...node, content: c.slice() };
+  if (c && (c.byteOffset !== 0 || c.byteLength !== c.buffer.byteLength)) return { ...node, content: copyBytes(c) };
   return node;
 }
 
@@ -1044,27 +1054,37 @@ export class FileSystem {
   }
 
   /**
-   * Answered from memory, stat, readdir and readFile settle as microtasks, so
-   * a walk (find, grep -r, du, isomorphic-git's) over a big tree was one task:
+   * Answered from memory, stat, readdir, readFile and the writes settle as
+   * microtasks, so a walk (find, grep -r, du, isomorphic-git's) over a big tree,
+   * or a checkout of thousands of files, was one task:
    * find over 30,000 files held the page 150 ms. Once YIELD_MS have passed
    * since the last turn, the next call waits a macrotask first.
    */
   static YIELD_MS = 20;
   /**
-   * The clock is read every 32nd call (each read cost ls -la of 1000 files
-   * 0.6 ms): when this run of calls began, and the last reading (50 ms
-   * between two readings is a pause, which starts a new run).
+   * The clock is read every 8th call (a read per call cost ls -la of 1000
+   * files 0.6 ms). A reading arms a macrotask: if it ran by the next reading,
+   * the page had a turn since and a new run starts; if not, the calls (and
+   * whatever runs between them: a checkout inflating objects) are still one
+   * task, and past YIELD_MS the next call waits a macrotask.
    */
   private _calls = 0;
   private _runStart = 0;
-  private _lastCheck = 0;
+  private _hadTurn = true;
+  private _probe = false;
 
   private _turn(): Promise<void> | undefined {
-    if (++this._calls & 31) return undefined;
+    if (++this._calls & 7) return undefined;
     const now = performance.now();
-    const gap = now - this._lastCheck;
-    this._lastCheck = now;
-    if (gap > 50) { this._runStart = now; return undefined; }
+    if (this._hadTurn) {
+      this._hadTurn = false;
+      this._runStart = now;
+      if (!this._probe) {
+        this._probe = true;
+        scheduleMacrotask(() => { this._probe = false; this._hadTurn = true; });
+      }
+      return undefined;
+    }
     if (now - this._runStart < FileSystem.YIELD_MS) return undefined;
     this._runStart = now;
     return new Promise((resolve) => scheduleMacrotask(resolve));
@@ -1498,7 +1518,7 @@ export class FileSystem {
   /** Queue `content` as blob `id`'s blocks (copies: IndexedDB clones a view's whole buffer). */
   private _queueBlocks(id: string, content: Uint8Array): void {
     const B = FileSystem.BLOCK;
-    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), content.slice(off, off + B));
+    for (let i = 0, off = 0; off < content.length; i++, off += B) this._queueBlock(blockKey(id, i), copyBytes(content, off, off + B));
   }
 
   /**
@@ -1653,7 +1673,7 @@ export class FileSystem {
           small = [];
           return this.writeFile(path, all, options?.mode !== undefined ? { mode: options.mode } : undefined);
         }
-        if (block) this._queueBlock(blockKey(id, index), (block as Uint8Array).slice(0, blockLen));
+        if (block) this._queueBlock(blockKey(id, index), copyBytes(block as Uint8Array, 0, blockLen));
         block = null;
         const existing = await this._get(path);
         if (existing?.type === 'dir') { this._noteBlob(WRITING_KEY + id, null); throw fsError('EISDIR', `EISDIR: illegal operation on a directory, write '${path}'`); }
@@ -2502,6 +2522,7 @@ export class FileSystem {
     /** Made through an open file (the kernel's O_CREAT): its change event says so (FSChangeDetail.fd) */
     fd?: boolean;
   }): Promise<void> {
+    const turn = this._turn(); if (turn) await turn;
     for (const vp of this.virtualProviders) {
       if (vp.writeFile(path, data)) return;
     }
@@ -2516,7 +2537,7 @@ export class FileSystem {
     // whole ArrayBuffer behind a typed array (a WebC volume file would carry
     // its entire container)
     const content = typeof data === 'string' ? encodeText(data)
-      : data.byteOffset !== 0 || data.byteLength !== data.buffer.byteLength ? data.slice() : data;
+      : data.byteOffset !== 0 || data.byteLength !== data.buffer.byteLength ? copyBytes(data) : data;
     // (its type, number and mode: an idle file's old bytes aren't read to replace them)
     const existing = await this._getMeta(path);
     const created = this._createdNow.delete(path) || !existing;
@@ -2610,6 +2631,7 @@ export class FileSystem {
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    const turn = this._turn(); if (turn) await turn;
     if (options?.recursive) {
       const parts = path.split('/').filter(Boolean);
       let current = '';
@@ -2750,6 +2772,7 @@ export class FileSystem {
   }
 
   async unlink(path: string): Promise<void> {
+    const turn = this._turn(); if (turn) await turn;
     path = await this._canon(path, false);
     return this._unlinkNode(path, await this._getMeta(path)); // (an idle file's bytes aren't read to delete it)
   }
@@ -2859,6 +2882,7 @@ export class FileSystem {
   }
 
   async rename(oldPath: string, newPath: string): Promise<void> {
+    const turn = this._turn(); if (turn) await turn;
     oldPath = await this._canon(oldPath, false);
     newPath = await this._canon(newPath, false);
     const node = await this._get(oldPath);
@@ -2934,6 +2958,7 @@ export class FileSystem {
   }
 
   async chmod(path: string, mode: number): Promise<void> {
+    const turn = this._turn(); if (turn) await turn;
     path = await this._canon(path, true);
     const node = await this._get(path);
     if (!node) throw fsError('ENOENT', `ENOENT: no such file or directory, chmod '${path}'`);

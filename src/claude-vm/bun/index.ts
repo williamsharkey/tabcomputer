@@ -14,11 +14,16 @@ import { which } from './which';
 import { sleepSync } from './sleep';
 import { spawn, BunFile, stdinOf, type SpawnEnv, type SpawnOptions } from './spawn';
 import { CellSegmenter } from './cell-segmenter';
+import { serve } from './serve';
+import { listen, connect } from './sockets';
 
 export interface BunEnv extends SpawnEnv {
   /** Bun.version, Bun.main */
   version?: string;
   main?: string;
+  /** The process's net and http, for Bun.listen/connect and Bun.serve */
+  net?: any;
+  http?: any;
   /** The extracted bundle's embedded assets by path: Bun's loader number (bun-graph.ts BunLoader) */
   assets?: Record<string, number>;
 }
@@ -67,6 +72,9 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     spawn: (cmd: string[] | SpawnOptions, opts?: SpawnOptions) => spawn(env, cmd, opts),
     file: (target: string | number | URL, o?: { type?: string }) => new BunFile(env, target, o?.type),
     get stdin() { return stdinOf(env); },
+    serve: (opts: any) => serve(env, opts),
+    listen: (opts: any) => listen(env, opts),
+    connect: (opts: any) => connect(env, opts),
     gc() {},
     unsafe: { setJITPolicy() {} },
     generateHeapSnapshot: () => ({}),

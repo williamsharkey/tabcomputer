@@ -125,6 +125,8 @@ a module, tested against what Bun 1.4.2 returns for the same calls
 | `zstd.ts` | `zstdDecompress(Sync)` | fzstd (decode only) |
 | `which.ts`, `sleep.ts` | `which`, `sleepSync` | PATH on the process's fs (a regular file counts: the tab's files rarely carry execute bits); Atomics.wait, or a spin on the page's main thread |
 | `spawn.ts` | `spawn`, `file`, `stdin` | child_process: Bun's stdio defaults, web streams, FileSink stdin, `exited`/`exitCode`/`signalCode`/`kill`/`onExit`, ENOENT thrown at once, `Bun.file(fd\|path)` as stdio |
+| `serve.ts` | `serve` | the process's `http`: `fetch(req, server)` and `routes` (exact, `:param`, `*`, per method), `error()`, a thrown handler a 500; `port`, `url`, `stop()` (a promise), `reload`, `fetch` without the network, `requestIP` |
+| `sockets.ts` | `listen`, `connect` | the process's `net`: Bun's handlers (open, data as a Buffer, drain, end, close, error, timeout, connectError), `write` returning the bytes taken, `readyState`; a refused connect rejects with "Failed to connect" and the system's code. On node-compat a listener's port is known when `listen`/`serve` returns, as in Bun |
 
 Not yet: `serve`, `listen`, `connect`; `CellSegmenter` and the loader are agent-clis'.
 
@@ -174,6 +176,6 @@ API), a Bash tool call, and the session resumed after a reload.
 ## Not done yet
 
 - The page's memory: ~1.2 GB renderer RSS at the prompt.
-- Sign-in against claude.ai, `Bun.serve`/`listen`/`connect` (the OAuth
-  callback server, previews), background tasks (`Bun.Terminal`), the
+- Sign-in against claude.ai (the OAuth callback server runs on
+  `Bun.serve`; the browser's redirect to it is untried), background tasks (`Bun.Terminal`), the
   voice and clipboard addons (they fail to load, as Claude Code allows).

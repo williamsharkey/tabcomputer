@@ -140,6 +140,8 @@ const flagfuseBin = join(out, 'flagfuse');
 const haveFlagfuse = tryBuild('gcc', ['-static', '-O1', '-o', flagfuseBin, 'flagfuse.c']);
 const spinhandoffBin = join(out, 'spinhandoff');
 const haveSpinhandoff = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', spinhandoffBin, 'spinhandoff.c']);
+const ntstoreBin = join(out, 'ntstore');
+const haveNtstore = tryBuild('gcc', ['-static', '-O2', '-o', ntstoreBin, 'ntstore.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1615,6 +1617,17 @@ describe('Blink engine: CPU and syscall fixes', () => {
     expect(r.output.replace(/\r\n/g, '\n')).toBe('ZZZZZZ\n');
     expect(Date.now() - t0).toBeLessThan(15_000);
   }, 60_000);
+
+  // non-temporal stores (glibc's large memcpy/memset), compiled inline as aligned
+  // stores (patch 0140); a misaligned movntdq still faults
+  it.skipIf(!haveNtstore)('movntps and movntdq copy, and fault when misaligned, as native, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(ntstoreBin));
+    const native = 'movntps 40a150ff03fd0383\nmovntdq 40a150ff03fd0383\nmemset d1790b7b799d0383\nmemcpy fed8a3bb674c9713\n';
+    for (const env of ['', 'BLINK_WJIT=0 ']) {
+      const r = await run(shell, `${env}./prog`);
+      expect(r.output.replace(/\r\n/g, '\n')).toBe(native.repeat(3) + 'misaligned movntdq faults 300 of 300\n');
+    }
+  }, 120_000);
 
   // a fused cmp+setcc across an instruction that writes no flags: movd/movq and
   // scalar SSE arithmetic used the producer's locals as scratch (Firefox's

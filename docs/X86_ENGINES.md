@@ -1016,6 +1016,11 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    took `++i` for a pre-decrement (GeneralParser::unaryExpr; gui's bisect
    with BLINK_WJIT_BISECT, which 0136 made work above 2 GiB).
    fixtures/x86/flagfuse.c: 10 shapes, 0 wrong (JIT on and off, native).
+120. Patch 0140: compiled code does movntps/movntpd/movntdq itself, as an
+   aligned 16-byte store (non-temporal is a cache hint), with movaps's
+   alignment exit. glibc's memcpy and memset use them past the cache
+   size, and each 16 bytes went to Blink's handler. pbench `memcpy 16 20`
+   under Node: 306 → 2260 MB/s. Test: fixtures/x86/ntstore.c.
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each

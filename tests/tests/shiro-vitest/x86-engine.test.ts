@@ -144,6 +144,8 @@ const ntstoreBin = join(out, 'ntstore');
 const haveNtstore = tryBuild('gcc', ['-static', '-O2', '-o', ntstoreBin, 'ntstore.c']);
 const ssebitsBin = join(out, 'ssebits');
 const haveSsebits = tryBuild('gcc', ['-static', '-O2', '-o', ssebitsBin, 'ssebits.c']);
+const atomicsBin = join(out, 'atomics');
+const haveAtomics = tryBuild('gcc', ['-static', '-O2', '-pthread', '-o', atomicsBin, 'atomics.c']);
 const callretBin = join(out, 'callret');
 const haveCallret = tryBuild('gcc', ['-static', '-O2', '-o', callretBin, 'callret.c']);
 const forkmanyBin = join(out, 'forkmaps-many');
@@ -1631,6 +1633,23 @@ describe('Blink engine: CPU and syscall fixes', () => {
     expect(on.split('\n')[0]).toBe('ssebits bbebdb0582b4e9e3');
     expect(on).toBe(off);
   }, 60_000);
+
+  // lock add/or/and/sub/xor, lock inc/dec, xadd and cmpxchg to memory, compiled
+  // as wasm atomics (0144): values and flags at every width, four threads on
+  // shared counters, and misaligned operands (left to the interpreter)
+  it.skipIf(!haveAtomics)('locked read-modify-writes, xadd and cmpxchg match native, JIT on and off', async () => {
+    const { shell } = await setup(readFileSync(atomicsBin));
+    const native =
+      'atomics 45b12359227f4863\n' +
+      'add 240000 inc 80000 w 14464 b 128 xadd 80000 cas 160000 or f\n' +
+      'misaligned 7269478152845915301 d3d1e0e0f71a7a9e\n';
+    const on = (await run(shell, './prog')).output.replace(/\r\n/g, '\n');
+    const off = (await run(shell, 'BLINK_WJIT=0 ./prog')).output.replace(/\r\n/g, '\n');
+    const handlers = (await run(shell, 'BLINK_WJIT_OFF=0x400000 ./prog')).output.replace(/\r\n/g, '\n');
+    expect(on).toContain(native);
+    expect(off).toContain(native);
+    expect(handlers).toContain(native);
+  }, 120_000);
 
   // non-temporal stores (glibc's large memcpy/memset), compiled inline as aligned
   // stores (patch 0140); a misaligned movntdq still faults

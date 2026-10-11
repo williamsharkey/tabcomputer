@@ -1036,6 +1036,23 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    process that inherits it writes its own file (git's index-pack, the xz
    under dpkg-deb). `SHIRO_BLINK_PROFILE_TOP=n` (default 40) sets the rows
    of the address tables.
+124. Patch 0144: Blink's interpreter set AF wrongly for inc (never: its
+   Inc* compared with a y that is always 0) and for neg (whenever the
+   operand was nonzero, not when its low nibble is). Compiled code had
+   them right, so pushf after an inc differed with the JIT on and off.
+125. Patch 0145: compiled code does lock add/or/and/sub/xor (register or
+   constant into memory), lock inc/dec, and xadd and cmpxchg to memory
+   (with or without lock) as one wasm atomic read-modify-write, with the
+   flags from the old value, fused with a following jcc/setcc like the
+   plain forms. Analyze had sent every lock-prefixed instruction to the
+   handlers, and xadd/cmpxchg weren't compiled at all: per native Claude
+   start, 8.8 M cmpxchg and 4.4 M OpAluwiReg calls from compiled code,
+   now none. An operand that isn't naturally aligned (a wasm atomic
+   traps) exits to the interpreter, as do lock adc/sbb and the register
+   forms. `BLINK_WJIT_OFF` bit 22 turns it off. Native Claude `-p` under
+   Node, 4 interleaved rounds: 64.1 → 60.9 s mean. Test:
+   fixtures/x86/atomics.c (every width's values and flags, four threads
+   on shared counters, misaligned operands).
 0500. unix/conformance's mlock/munlock/mlockall and mmap argument errors
    (Open POSIX mlock_8-1, munlock_10-1, mlockall_13-1, mmap_21-1, 23-1,
    24-2). Numbered from 0500 so the two branches never renumber each

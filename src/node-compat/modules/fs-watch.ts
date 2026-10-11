@@ -122,10 +122,18 @@ export function createWatchApi(deps: WatchDeps) {
     // hands a directory's events to its files' watchers) and reported a 'change' (Astro
     // took it for a settings edit and restarted)
     const since = Date.now();
+    let lastEvent = '', lastPath = '', lastHeard = 0;
     if (!dirWatch) fileWatchSince.set(target, Math.max(fileWatchSince.get(target) ?? 0, since));
     const off = ctx.fs.onChange((event, path, newPath, detail) => {
       const at = detail?.at;
       if (at !== undefined && at < since) return;
+      // A change made before the same one to the same file reached us is in what that one's
+      // reader will read: one, as inotify merges an event with the one before it while that
+      // isn't read yet. A guest hears them late and apart (writeFileSync's truncate, then its
+      // write: Astro took the second 'change' of its .astro/settings.json, after the one its
+      // preferences.set() expected, for a settings edit, and restarted)
+      if (at !== undefined && event === lastEvent && path === lastPath && at <= lastHeard) return;
+      lastEvent = event; lastPath = path; lastHeard = Date.now();
       for (const [p, gone] of [[path, event === 'delete' || event === 'rename'], [newPath, false]] as [string | undefined, boolean][]) {
         if (!p) continue;
         const name = nameFor(p);

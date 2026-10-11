@@ -30,6 +30,17 @@ describe('fs.watch and changes relayed late', () => {
     fire('write', '/d/f.json'); // (no time: the page's own, in order)
     await new Promise((r) => setTimeout(r, 5));
     expect(seen).toEqual(['dir change f.json', 'file change f.json', 'dir change f.json', 'file change f.json']);
+    // A change made before the same one reached us is one with it, as inotify merges an unread
+    // event with the next (Astro restarted on writeFileSync's second 'change' of
+    // .astro/settings.json); one made after that counts
+    seen.length = 0;
+    const t = Date.now();
+    fire('write', '/d/f.json', t);
+    fire('write', '/d/f.json', t);
+    await new Promise((r) => setTimeout(r, 10));
+    fire('write', '/d/f.json', Date.now());
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual(['dir change f.json', 'file change f.json', 'dir change f.json', 'file change f.json']);
     dir.close(); file.close();
   });
 });

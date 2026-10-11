@@ -42,6 +42,7 @@ describe('agent docs', () => {
     expect(md).toContain('hotswap checkout');
     expect(md).toContain('hotswap watch -d');
     expect(md).toContain('hotswap test --changed');
+    expect(md).toContain('Co-Authored-By: Claude <noreply@anthropic.com>');
     expect(md).toContain("runs on its own page");
     expect(md).not.toMatch(/NEO\.md|shiro-context|src\/main\.ts/);
     expect(CLAUDE_MD).toBe('@AGENTS.md\n');

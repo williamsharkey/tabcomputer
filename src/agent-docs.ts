@@ -268,6 +268,9 @@ reload would end your session). The loop:
   imported it; \`--wait\` says so. ~/tabcomputer/docs/HOTSWAP.md has the details.
 - \`hotswap test\` runs vitest suites in this tab; their node:fs is an
   in-memory copy of the checkout. \`hotswap push\` uses your own \`gh auth login\`.
+- Commits to ${name}'s repository end with the plain trailer
+  \`Co-Authored-By: Claude <noreply@anthropic.com>\`: no model names or versions
+  in commit messages, branch names or code.
 
 ## Known issues
 

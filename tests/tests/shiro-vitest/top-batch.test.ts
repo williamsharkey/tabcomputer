@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestShell, run } from './helpers';
 import { topCmd } from '@shiro/commands/top';
 import type { Shell } from '@shiro/shell';
+import type { FileSystem } from '@shiro/filesystem';
 
 const ESC = '\x1b';
 
@@ -27,14 +28,30 @@ function fakeTerminal() {
 
 describe('top output (#62)', () => {
   let shell: Shell;
-  beforeEach(async () => { ({ shell } = await createTestShell()); });
+  let fs: FileSystem;
+  beforeEach(async () => { ({ shell, fs } = await createTestShell()); });
 
   it('top -b prints plain text: no escape sequences', async () => {
     const r = await run(shell, 'top -b -n 1');
     expect(r.exitCode).toBe(0);
-    expect(r.output).toMatch(/^top - \d\d:\d\d:\d\d up /);
-    expect(r.output).toContain('  PID  STATUS     TIME  COMMAND\n');
-    expect(r.output).not.toContain(ESC);
+    // (what reaches the terminal has \r\n, as a tty's onlcr makes of every program's \n)
+    const out = r.output.replace(/\r\n/g, '\n');
+    expect(out).toMatch(/^top - \d\d:\d\d:\d\d up /);
+    expect(out).toContain('  PID  STATUS     TIME  COMMAND\n');
+    expect(out).not.toContain(ESC);
+  });
+
+  it('into a file or a pipe, top -b writes plain \\n lines: no \\r, no escapes', async () => {
+    await fs.mkdir('/tmp/top62', { recursive: true } as any);
+    await run(shell, 'top -b -n 1 > /tmp/top62/file.txt; top -b -n 1 | cat > /tmp/top62/pipe.txt');
+    for (const p of ['/tmp/top62/file.txt', '/tmp/top62/pipe.txt']) {
+      const text = (await fs.readFile(p, 'utf8')) as string;
+      expect(text, p).toMatch(/^top - .*\nTasks: .*\n/);
+      expect(text, p).toContain('\n  PID  STATUS     TIME  COMMAND\n');
+      expect(text, p).not.toContain('\r');
+      expect(text, p).not.toContain(ESC);
+    }
+    await fs.rm('/tmp/top62', { recursive: true } as any).catch(() => {});
   });
 
   it('in a pipe too (top -b | head, top | head)', async () => {

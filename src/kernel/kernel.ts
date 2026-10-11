@@ -880,6 +880,17 @@ export class Kernel {
     else if (pid === -1) targets = [...this.procs.values()].filter(p => p.pid !== 1 && p.pid !== sender.pid);
     else targets = [...this.procs.values()].filter(p => p.pgid === -pid);
     targets = targets.filter(p => p.state !== 'zombie' || pid > 0);
+    // An in-page background job leads the group its kernel programs run in
+    // (shell.ts executeBackground, #63): `kill -TERM -- -$!` reaches it too
+    const inPageLeader = pid < -1 && !this.procs.has(-pid) ? processTable.get(-pid) : undefined;
+    if (inPageLeader && inPageLeader.status === 'running') {
+      if (sig !== 0) {
+        for (const p of targets.filter(p => this.maySignal(sender, p, sig))) this.deliver(p, sig, { signo: sig, code: A.SI_USER, pid: sender.pid, uid: sender.uid });
+        // (its programs have it now: the job only ends, it doesn't signal them again)
+        processTable.kill(-pid, sig, { group: true });
+      }
+      return 0;
+    }
     if (targets.length === 0) return -A.ESRCH;
     // the ones the sender may signal; none of several is EPERM as for one
     targets = targets.filter(p => this.maySignal(sender, p, sig));

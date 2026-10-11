@@ -1,0 +1,114 @@
+From 43e16b8acf91f3cd05d2a5772e61b912ea594ac4 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Sun, 11 Oct 2026 12:32:03 +0000
+Subject: [PATCH] Shiro: compiled code does bswap r32/r64 and 16-bit rotates
+ and shifts by a constant
+
+zlib's and xz's big-endian loads (bswap) and rolw $8 went to Blink's
+handlers (8.4 M calls decoding and checksumming 4 MiB). 16-bit shifts by
+%cl or by 16-31, and 16-bit bswap (undefined), still do.
+---
+ blink/wjit.c | 60 ++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 58 insertions(+), 2 deletions(-)
+
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 78164be..58b0319 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -1850,14 +1850,15 @@ static void Analyze(struct Ins *in) {
+     case 0x0D3:
+       if (ShiftKind(ModrmReg(rde)) < 0) {
+         // rol/ror by a constant (SHA-1's rounds, hashes): CF and OF only
+-        if (ModrmReg(rde) > 1 || op == 0x0D3 || ((op & 1) && w == 2)) goto Call;
++        if (ModrmReg(rde) > 1 || op == 0x0D3) goto Call;
+         in->fw = (op == 0x0D0 || op == 0x0D1 ||
+                   (in->uimm0 & ((op & 1) && w == 8 ? 63 : 31)))
+                      ? CF | OF
+                      : 0;
+         return;
+       }
+-      if ((op & 1) && w == 2) goto Call;
++      // 16-bit: by a constant below 16 (by %cl, or 16-31, the handler's)
++      if ((op & 1) && w == 2 && (op == 0x0D3 || (op == 0x0C1 && (in->uimm0 & 31) >= 16))) goto Call;
+       in->fw = kAllFlags;  // conditionally, when the count is nonzero
+       in->fr = op == 0x0D3 ? kAllFlags : 0;
+       if ((op == 0x0C0 || op == 0x0C1) && !(in->uimm0 & ((op & 1) && w == 8 ? 63 : 31))) {
+@@ -1983,6 +1984,16 @@ static void Analyze(struct Ins *in) {
+       if (Rep(rde) == 2) goto Call;
+       in->fw = Rep(rde) == 3 ? CF | ZF : ZF;
+       return;
++    case 0x1C8:  // bswap r32/r64 (16-bit is undefined: the handler's)
++    case 0x1C9:
++    case 0x1CA:
++    case 0x1CB:
++    case 0x1CC:
++    case 0x1CD:
++    case 0x1CE:
++    case 0x1CF:
++      if (Osz(rde)) goto Call;
++      return;
+     case 0x157:  // xorps/xorpd (register form)
+       if (Rep(rde) || !IsModrmRegister(rde)) goto Call;
+       return;
+@@ -2766,6 +2777,41 @@ static void TranslateRotate(struct Cg *g, struct Ins *in) {
+   PutRm(g, in, w, true);
+ }
+ 
++// x = (x & m) << k | (x >> k) & m, through L_X
++static void SwapStep(struct Cg *g, u64 m, int k) {
++  Set(g, L_X);
++  Get(g, L_X);
++  I64(g, m);
++  Op(g, W_I64_AND);
++  I64(g, k);
++  Op(g, W_I64_SHL);
++  Get(g, L_X);
++  I64(g, k);
++  Op(g, W_I64_SHR_U);
++  I64(g, m);
++  Op(g, W_I64_AND);
++  Op(g, W_I64_OR);
++}
++
++// bswap r32/r64 (zlib's and xz's big-endian loads, crc32's tables)
++static void TranslateBswap(struct Cg *g, struct Ins *in) {
++  int r = RexbSrm(in->rde);
++  bool q = Rexw(in->rde);
++  UseReg(g, r);
++  Get(g, L_R(r));
++  if (!q) {
++    I64(g, 0xffffffff);
++    Op(g, W_I64_AND);
++  }
++  SwapStep(g, 0x00ff00ff00ff00ffull, 8);
++  SwapStep(g, 0x0000ffff0000ffffull, 16);
++  if (q) {
++    I64(g, 32);
++    Op(g, W_I64_ROTL);
++  }
++  PutReg(g, r, q ? 8 : 4);
++}
++
+ static void TranslateImul(struct Cg *g, struct Ins *in) {
+   u64 rde = in->rde;
+   int op = Mopcode(rde);
+@@ -3725,6 +3771,16 @@ static void Translate(struct Cg *g, struct Ins *in) {
+       }
+       return;
+     }
++    case 0x1C8:  // bswap (no flags; L_X, not the fused producer's locals)
++    case 0x1C9:
++    case 0x1CA:
++    case 0x1CB:
++    case 0x1CC:
++    case 0x1CD:
++    case 0x1CE:
++    case 0x1CF:
++      TranslateBswap(g, in);
++      return;
+     case 0x12B:  // movntps/movntpd/movntdq: glibc's memcpy and memset past the
+     case 0x1E7:  // cache size (each went to Blink's handler: 300 MB/s copies)
+       Ea(g, in, true);
+-- 
+2.43.0
+

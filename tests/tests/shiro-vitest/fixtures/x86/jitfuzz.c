@@ -124,6 +124,17 @@ OP2(xchg, "xchgq %2, %0")
 OP2(bswap, "bswapq %0")
 OP2(bsf, "bsfq %2, %0")
 OP2(rol, "rolq $5, %0")
+// 16-bit rotates and shifts by a constant (zlib's and xz's rolw $8)
+OP2(rolw8, "rolw $8, %w0")
+OP2(rorw3, "rorw $3, %w0")
+OP2(rolw16, "rolw $16, %w0")
+OP2(rolw1, "rolw $1, %w0")
+OP2(rorw1, "rorw $1, %w0")
+OP2(shlw5, "shlw $5, %w0")
+OP2(shrw9, "shrw $9, %w0")
+OP2(sarw15, "sarw $15, %w0")
+OP2(shlw1, "shlw $1, %w0")
+OP2(shlw20, "shlw $20, %w0")
 OP2(btq, "btq %2, %0\n\tsetc %b0")
 // 16-bit forms
 OP2(and16, "andw %w2, %w0")
@@ -398,6 +409,8 @@ static const struct {
     E(bsf32),  E(bsr16),   E(tzcnt64), E(tzcnt32), E(lzcnt64), E(lzcnt32),
     E(lzcnt16), E(div64),  E(idiv64), E(div32),  E(idiv32),  E(divmem),
     E(btmem),  E(cmpcross),
+    E(rolw8),  E(rorw3),   E(rolw16), E(rolw1),  E(rorw1),   E(shlw5),
+    E(shrw9),  E(sarw15),  E(shlw1),  E(shlw20),
     E(set_o),  E(set_no),  E(set_b),  E(set_ae), E(set_e),   E(set_ne),
     E(set_be), E(set_a),   E(set_s),  E(set_ns), E(set_p),   E(set_np),
     E(set_l),  E(set_ge),  E(set_le), E(set_g),  E(j_o),     E(j_no),

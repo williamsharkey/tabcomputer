@@ -3771,7 +3771,9 @@ export function getKernel(): Kernel {
   const w = typeof window !== 'undefined' ? (window as any) : undefined;
   if (w?.__tabcomputerKernel) return w.__tabcomputerKernel;
   if (!singleton) singleton = new Kernel();
-  if (w) w.__tabcomputerKernel = singleton;
+  // (not published here: main.ts publishes the page's kernel as window.__tabcomputerKernel.
+  // A copy of this module, as a `hotswap test` suite runs, that found the global unset
+  // would have made its own kernel the page's: every terminal's node ran the suite's copy, #47)
   return singleton;
 }
 

@@ -580,15 +580,20 @@ async function main() {
   shell.bootGate = bootStep('Debian boot', () => debianBoot, 30000);
   // Kernel processes (worker guests, spawned builtins) run against this fs and fork this shell
   const kernel = getKernel();
+  // The page's kernel, for everything that looks it up (getKernel, kernel-diag, watchdog);
+  // only the page publishes it (kernel.ts getKernel, #47)
+  (window as any).__tabcomputerKernel = kernel;
   kernel.attach(fs, shell);
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)
-  void import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
+  const blinkLoader = import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
   // TABCOMPUTER_NODE_WORKER=1: node the kernel starts (sh -c, #! scripts) runs as a guest
   // (src/node-worker; the rest of it loads only for a process with the flag)
   installNodeWorkerBoot(kernel);
   // Signals and job control for kernel processes; /dev/ptmx and /dev/pts/N
   attachKernelTty(kernel);
+  // The kernel's own program hooks, so `hotswap status` can tell later additions (#47)
+  void blinkLoader.catch(() => {}).then(() => import('./hotswap/leftovers')).then((m) => m.markKernelBaseline(kernel)).catch(() => {});
   // X11 display :0 (src/x11, docs/GUI.md): `Xshiro :0` listens on /tmp/.X11-unix/X0 now;
   // the server and its fonts load on the first client, windows open on the desktop
   shell.env['DISPLAY'] ??= ':0';

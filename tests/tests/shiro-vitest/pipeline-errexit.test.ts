@@ -57,3 +57,18 @@ describe('negation', () => {
     expect((await sh('! false; echo $?')).out).toBe('0\n');
   });
 });
+
+describe('set -e in a new shell process', () => {
+  // Claude Code's Bash tool runs `… && eval 'CMD' && pwd`: the caller's && list
+  // suppressed set -e in every script it started
+  it('applies though the caller is in an && list or a condition', async () => {
+    await sh("printf 'set -e\\nfalse\\necho BAD\\n' > /tmp/errexit-child.sh");
+    expect((await sh('true && bash /tmp/errexit-child.sh; echo rc=$?')).out).toBe('rc=1\n');
+    expect((await sh('if bash /tmp/errexit-child.sh; then echo T; else echo F; fi')).out).toBe('F\n');
+    expect((await sh("true && bash -c 'set -e; false; echo BAD'; echo rc=$?")).out).toBe('rc=1\n');
+  });
+
+  it('a subshell in a condition still ignores it', async () => {
+    expect((await sh('set -e; if (false; echo in); then echo T; fi; echo after')).out).toBe('in\nT\nafter\n');
+  });
+});

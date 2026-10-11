@@ -1390,6 +1390,10 @@ export class Shell {
     // ...and its own options; readonly is not passed on either
     this.options = new Set(DEFAULT_OPTIONS);
     this.shoptopts = new Set(SHOPT_DEFAULTS);
+    // and set -e applies again: the caller being in `CMD && …` or an if condition
+    // doesn't carry over (`true && bash -e s.sh` ran past a failure)
+    this.errexitSuppressed = 0;
+    this.failureIgnored = false;
     this.readonlyVars = new Set();
     // A shell starts with the default IFS, whatever its environment says (POSIX 2.5.3)
     this.env.IFS = ' \t\n';

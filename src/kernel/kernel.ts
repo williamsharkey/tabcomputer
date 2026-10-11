@@ -3368,8 +3368,12 @@ export class Kernel {
       case A.F_GETFD: return fds.getCloexec(fd) ? A.FD_CLOEXEC : 0;
       case A.F_SETFD: return fds.setCloexec(fd, !!(arg & A.FD_CLOEXEC));
       // a socket is open for reading and writing (Linux reports O_RDWR)
-      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux)
-      case A.F_GETFL: return f.kind === 'socket' ? (f.flags & ~A.O_ACCMODE & ~A.O_OPEN_ONLY) | A.O_RDWR : f.flags & ~A.O_OPEN_ONLY;
+      // (open-only flags such as O_NOCTTY aren't the description's, as on Linux, and
+      // O_CLOEXEC is the fd's: a device keeps the open flags as given)
+      case A.F_GETFL: {
+        const fl = f.flags & ~A.O_OPEN_ONLY & ~A.O_CLOEXEC;
+        return f.kind === 'socket' ? (fl & ~A.O_ACCMODE) | A.O_RDWR : fl;
+      }
       case A.F_SETFL: {
         const mask = A.O_NONBLOCK | A.O_APPEND;
         f.flags = (f.flags & ~mask) | (arg & mask);

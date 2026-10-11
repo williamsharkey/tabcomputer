@@ -38,6 +38,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 | [X86_ENGINES.md](X86_ENGINES.md) | Why Blink, its patches (fork, signals, the wasm JIT, SSE4, `/proc/self/maps`), speed |
 | [UNIX_COMPAT.md](UNIX_COMPAT.md) | The plan toward full Unix compatibility, phase by phase (written 2026-10-07) |
 | [DOM-RENDERING.md](DOM-RENDERING.md) | Design note: X11 and GTK text as DOM text |
+| [CLAUDE_VM.md](CLAUDE_VM.md) | Native Claude Code's embedded bundle (Bun's `.bun` section), the Bun APIs it uses, and `claude --vm` |
 
 ## Research and drafts
 

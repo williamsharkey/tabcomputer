@@ -174,7 +174,7 @@ async function main() {
       return defaultRuntimeContext();
     }
   })();
-  // ~/AGENTS.md and ~/CLAUDE.md for coding agents (src/agent-docs.ts): kept
+  // ~/AGENTS.md and ~/.claude/CLAUDE.md for coding agents (src/agent-docs.ts): kept
   // current, except where the user edited them
   for (const line of await bootStep('agent docs', () => seedAgentDocs(fs, runtimeContext)) ?? []) console.log(`[agent-docs] ${line}`);
   console.log('[tabcomputer] Filesystem initialized');

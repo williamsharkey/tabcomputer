@@ -179,6 +179,27 @@ describe('curl -o', () => {
   });
 });
 
+describe('claude --vm', () => {
+  it('without the native build says to install it', async () => {
+    const { shell } = await createTestShell();
+    shell.commands.register(claudeCmd);
+    const r = await run(shell, 'CLAUDE_NATIVE_PATH=/nowhere/claude claude --vm --version');
+    expect(r.exitCode).toBe(1);
+    expect(r.output).toContain('claude --vm: native Claude Code is not installed');
+  });
+
+  it("falls back to the emulator when the build's JavaScript can't be read", async () => {
+    const { fs, shell } = await createTestShell();
+    shell.commands.register(claudeCmd);
+    await fs.mkdir('/opt/v', { recursive: true });
+    await fs.writeFile('/opt/v/claude', new Uint8Array(1_100_000)); // big enough, but no Bun graph (nor an ELF)
+    const r = await run(shell, 'CLAUDE_NATIVE_PATH=/opt/v/claude claude --vm --version');
+    expect(r.output).toContain("could not read the native build's JavaScript");
+    expect(r.output).toContain('running it in the emulator instead');
+    expect(r.output).toContain('no binary at /opt/v/claude'); // the native path's own check
+  });
+});
+
 describe('claude --native', () => {
   it('explains where the binary goes when there is none', async () => {
     const { shell } = await createTestShell();

@@ -138,8 +138,9 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
     const { ensureClaudeVm } = await import('../claude-vm/extract');
     layout = await ensureClaudeVm(ctx.fs as any, path, home, say);
   } catch (e: any) {
-    ctx.stderr += `claude --vm: could not read the native build's JavaScript: ${e?.message || e}\n`;
-    return 1;
+    // (what --vm can't run yet, the native build in the emulator can)
+    say(`claude --vm: could not read the native build's JavaScript (${e?.message || e}); running it in the emulator instead\n`);
+    return runNative(ctx, args);
   }
   args = loginArgs(args);
   try {

@@ -32,6 +32,26 @@ describe('spawn with an fs/promises output fd (Claude Bash tool)', () => {
   });
 });
 
+describe('FileHandle.readFile (Claude Edit tool, tabcomputer#94)', () => {
+  it('is a Buffer without an encoding, a string with one', async () => {
+    const { shell, fs } = await createTestShell();
+    await fs.writeFile('/tmp/fh-read.txt', 'héllo\n');
+    await fs.writeFile('/tmp/fh-read.mjs', `
+      import { open } from 'fs/promises';
+      const h = await open('/tmp/fh-read.txt', 'r');
+      const b = await h.readFile();
+      console.log('BUF:' + Buffer.isBuffer(b) + ':' + b.subarray(0, 4).length + ':' + b.length);
+      await h.close();
+      const h2 = await open('/tmp/fh-read.txt');
+      console.log('STR:' + JSON.stringify(await h2.readFile({ encoding: 'utf8' })));
+      await h2.close();
+    `);
+    const { output } = await run(shell, 'node /tmp/fh-read.mjs');
+    expect(output).toContain('BUF:true:4:7');
+    expect(output).toContain('STR:"héllo\\n"');
+  });
+});
+
 describe('fs.rmdir on directories (proper-lockfile release)', () => {
   it('callback and promise rmdir remove an empty directory', async () => {
     const { shell } = await createTestShell();

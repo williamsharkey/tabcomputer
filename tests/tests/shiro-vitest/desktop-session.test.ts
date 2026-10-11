@@ -27,7 +27,7 @@ beforeEach(() => {
 
 /** A terminal window's content as session.ts sees it (TerminalView's session methods) */
 function fakeView(tabs: any[], fixedTitle = '') {
-  const restored: { tabs: any[]; notes: string[]; typed: string[] } = { tabs: [], notes: [], typed: [] };
+  const restored: { tabs: any[]; notes: string[]; typed: string[]; history: string[] } = { tabs: [], notes: [], typed: [], history: [] };
   return {
     restored,
     view: {
@@ -39,7 +39,7 @@ function fakeView(tabs: any[], fixedTitle = '') {
         saved.forEach((st, i) => {
           restored.tabs.push(st);
           restored.notes.push(noteFor(i));
-          onReady(i, { injectInput: (s: string) => restored.typed.push(s) });
+          onReady(i, { injectInput: (s: string) => restored.typed.push(s), rememberCommand: (s: string) => restored.history.push(s) });
         });
       },
     },
@@ -78,6 +78,8 @@ describe('session restore: the pieces', () => {
     const resumed = followUp({ cwd: '/home/user/p', running: 'claude' }, agent);
     expect(resumed.run).toBe('claude --resume abc');
     expect(resumed.note).toContain('resuming Claude Code');
+    // each also goes on the shell's history: Up brings it back after an exit
+    expect([offered.history, resumed.history, followUp({ cwd: '/' }, null).history]).toEqual(['rm -rf build && make', 'claude --resume abc', undefined]);
   });
 
   it('the preference turns restoring off (saving goes on)', async () => {
@@ -139,6 +141,7 @@ describe('session restore: save and restore', () => {
     expect(mainView.restored.notes[0]).toContain('was running: make test');
     // the agent's session resumes once; the second tab had the same session (dedupe): its line is only offered
     expect(claudeView!.restored.typed).toEqual(['claude --resume S1\r', 'claude']);
+    expect([mainView.restored.history, claudeView!.restored.history]).toEqual([['make test'], ['claude --resume S1', 'claude']]);
     expect(ran).toEqual(['mdview n.md', 'gui gimp']);
     const mdWin = wm.windows().find((w) => w.appId === 'mdview')!;
     expect(mdWin.geometry()).toMatchObject({ x: 120, y: 80, width: 400, height: 300 });

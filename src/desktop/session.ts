@@ -33,8 +33,8 @@ export const SESSION_KEY = 'tabcomputer-desktop-session';
 /** '0': don't restore the session on reload (Settings → Desktop) */
 export const RESTORE_KEY = 'tabcomputer-restore-session';
 const RESTORABLE = new Set(['terminal', 'files', 'settings', 'activity', 'about']);
-/** The line printed under a restored terminal's scrollback */
-export const RESTORED_NOTE = '— restored after reload —';
+/** The line printed under a restored terminal's scrollback (as a dim shell comment, terminal.ts restoreScreen) */
+export const RESTORED_NOTE = '── the output above is from before the page reloaded ──';
 /**
  * Long-running commands that run again by themselves after a reload (servers
  * that only serve files): anything else that was running is only offered.
@@ -162,12 +162,13 @@ export function place(w: DesktopWindow, s: SavedWindow, wa: Geometry): void {
 }
 
 /** What to do with a restored tab's command: resume the agent, run a known-safe server again, or offer the line */
-export function followUp(st: TabState, agent: ResumeCommand | null): { note: string; run?: string; offer?: string } {
-  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}: ${agent.line}`, run: agent.line };
+export function followUp(st: TabState, agent: ResumeCommand | null): { note: string; run?: string; offer?: string; history?: string } {
+  // (history: the line also goes on the shell's history, so Up brings it back after an exit)
+  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}: ${agent.line}`, run: agent.line, history: agent.line };
   if (!st.running) return { note: RESTORED_NOTE };
   const line = st.running.trim();
-  if (RESTARTABLE.some((r) => r.test(line))) return { note: `${RESTORED_NOTE}\r\nwas running, started again: ${line}`, run: line };
-  return { note: `${RESTORED_NOTE}\r\nwas running: ${line}  (Enter runs it again)`, offer: line };
+  if (RESTARTABLE.some((r) => r.test(line))) return { note: `${RESTORED_NOTE}\r\nwas running, started again: ${line}`, run: line, history: line };
+  return { note: `${RESTORED_NOTE}\r\nwas running: ${line}  (Enter runs it again)`, offer: line, history: line };
 }
 
 export interface RestoreDeps {
@@ -198,6 +199,7 @@ export async function restoreSession(wm: WindowManager, saved: SavedWindow[], de
           const tabs = await Promise.all((s.tabs ?? []).map(async (t, j) => ({ ...t, screen: (await store.get(screenKey(wi, j))) ?? '' })));
           const f = follow[wi];
           view.restoreTabs(tabs, (j) => f[j]?.note ?? RESTORED_NOTE, (j, term) => {
+            if (f[j]?.history) term.rememberCommand?.(f[j].history!);
             if (f[j]?.run) term.injectInput(f[j].run + '\r');
             else if (f[j]?.offer) term.injectInput(f[j].offer!);
           }, s.id !== 'terminal');

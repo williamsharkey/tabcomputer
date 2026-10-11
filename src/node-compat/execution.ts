@@ -320,7 +320,11 @@ export async function executeNodeScript(
         case 'os':
         case 'node:os': return createOsModule(ctx);
         case 'util':
-        case 'node:util': return createUtilModule();
+        case 'node:util': return createUtilModule(() => {
+          // As node's getMainArgs: after node with -e/-p (or no script file), else after the script
+          const evalMode = fakeProcess.execArgv.some((a: string) => /^(?:-e|--eval|-p|--print)(?:=|$)/.test(a)) || !scriptPath;
+          return fakeProcess.argv.slice(evalMode ? 1 : 2);
+        });
         case 'events':
         case 'node:events': return createEventsModule();
         case 'url':

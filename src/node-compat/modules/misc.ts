@@ -1,3 +1,4 @@
+import { encodeClone, decodeClone } from '../ipc';
 import { createReadline } from './readline';
 import { asyncContext } from '../async-context';
 import { createQuerystringModule } from './querystring';
@@ -573,8 +574,14 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
 
     case 'v8':
     case 'node:v8': return {
-      serialize: (v: any) => new Uint8Array(new TextEncoder().encode(JSON.stringify(v))),
-      deserialize: (b: any) => JSON.parse(new TextDecoder().decode(b)),
+      // Structured clone, as node's (Map, Set, Date, BigInt, typed arrays, cycles: ipc.ts's encoding),
+      // after a "V" (plain JSON, the old form, still reads back). jest's haste-map cache holds
+      // Maps: as JSON they came back as objects, and every run after the first failed
+      serialize: (v: any) => new Uint8Array(new TextEncoder().encode('V' + JSON.stringify(encodeClone(v)))),
+      deserialize: (b: any) => {
+        const t = new TextDecoder().decode(b);
+        return t.startsWith('V') ? decodeClone(JSON.parse(t.slice(1))) : JSON.parse(t);
+      },
       getHeapStatistics: () => ({ total_heap_size: 0, used_heap_size: 0, heap_size_limit: 0 }),
       setFlagsFromString: () => {},
     };
@@ -661,13 +668,23 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
           // Names resolve on the context first (reads and writes of its
           // properties, globalThis included), then the page's globals; the
           // value is the last expression's, as node's
+          // The with-scope is the context's names except `eval` and this function's own: a context
+          // with an `eval` of its own (jest's environment copies the host's globals onto it, and
+          // node-compat's globalThis.eval isn't the intrinsic) made the eval below indirect, so the
+          // code ran outside the context: `process is not defined` in every jest test file
+          const ctx = context;
+          const scope = new Proxy(ctx, {
+            has: (t, p) => p !== 'eval' && p !== '__shiro_ctx' && p !== '__shiro_code' && Reflect.has(t, p),
+            get: (t, p) => Reflect.get(t, p),
+            set: (t, p, v) => Reflect.set(t, p, v),
+          });
           const run = new Function('__shiro_ctx', '__shiro_code', 'with (__shiro_ctx) { return eval(__shiro_code); }');
           try {
-            return run.call(context, context, this._code);
+            return run.call(ctx, scope, this._code);
           } catch (e) {
             // (a top-level `return`, which node refuses, has run as a function body here)
             if (!(e instanceof SyntaxError) || !/Illegal return/.test(e.message)) throw e;
-            return new Function('__shiro_ctx', `with (__shiro_ctx) { return (function () {\n${this._code}\n}).call(this); }`).call(context, context);
+            return new Function('__shiro_ctx', `with (__shiro_ctx) { return (function () {\n${this._code}\n}).call(this); }`).call(ctx, scope);
           }
         }
       }

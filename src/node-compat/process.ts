@@ -215,7 +215,9 @@ export function createFakeProcess(
     getegid: () => 1000,
     setuid: () => {},
     setgid: () => {},
-    features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: true, tls_sni: true, tls_ocsp: true, tls: true },
+    // typescript: node's type stripping, as node 22.18+/23.6+ (node-compat runs .ts files): jest 30
+    // loads jest.config.ts natively when it's set, and asked for ts-node otherwise
+    features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: true, tls_sni: true, tls_ocsp: true, tls: true, typescript: 'strip' },
     release: { name: 'node', sourceUrl: '', headersUrl: '', libUrl: '' },
     report: { getReport: () => ({}), directory: '', filename: '' },
     // The legacy internal bindings old tools still read (yarn 1: natives,

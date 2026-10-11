@@ -93,7 +93,7 @@ describe('Vi demo sequence', () => {
     // Verify intermediate file content after :w
     const saved = await fs.readFile('/tmp/vi-site/index.html', 'utf8') as string;
     expect(saved).toBe(
-      '<!DOCTYPE html>\n<html><body>\n<h1>Built with vi</h1>\n<p>In a browser.</p>\n</body></html>'
+      '<!DOCTYPE html>\n<html><body>\n<h1>Built with vi</h1>\n<p>In a browser.</p>\n</body></html>\n' // (Vim ends the file with a newline)
     );
 
     // Step 5: /Built — search for "Built"
@@ -126,7 +126,7 @@ describe('Vi demo sequence', () => {
 
     // Verify final file content
     const content = await fs.readFile('/tmp/vi-site/index.html', 'utf8') as string;
-    const lines = content.split('\n');
+    const lines = content.replace(/\n$/, '').split('\n');
 
     expect(lines).toEqual([
       '<!DOCTYPE html>',
@@ -172,6 +172,6 @@ describe('Vi demo sequence', () => {
 
     const content = await fs.readFile('/tmp/vi-site/fresh.html', 'utf8') as string;
     // Should only contain what we typed — no leftover content from other demos
-    expect(content).toBe('hello');
+    expect(content).toBe('hello\n');
   });
 });

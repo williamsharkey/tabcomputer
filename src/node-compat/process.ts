@@ -529,13 +529,14 @@ function createStdin(ctx: CommandContext, _st: SharedState, processEvents: Recor
     if (stdinTTY || stdinEnded) return;
     stdinEnded = true;
     if (ctx.stdinStream && fd0) {
-      fd0.flow((b) => {
+      // (process.exit() in a handler ends the script, already recorded: not an error)
+      fd0.flow((b) => { try {
         if (b) { if (b.length) emitData(b); return; }
         const t = decoder?.decode() ?? '';
         if (t) emitData(t);
         (stdinEvents['end'] || []).forEach(f => f());
         (stdinEvents['close'] || []).forEach(f => f());
-      });
+      } catch (e) { if (!(e instanceof ProcessExitError)) throw e; } });
       return;
     }
     void loadStdin().then(() => {

@@ -268,6 +268,25 @@ export async function runNodeInWorker(ctx: CommandContext): Promise<number> {
     });
     return r.exitCode;
   }
+  // A shell that is itself a kernel process on a pty (`sh -i` in a tmux pane,
+  // tabcomputer#69): node runs on that pty as the shell's foreground job, so it
+  // sees a terminal (its REPL, isTTY, raw mode) as any program there does
+  const ks = ctx.shell?.kernelStdio;
+  if (!term && ks && ctx.shell && ctx.stdinIsTTY && ks.file(0)?.kind === 'pty' && ctx.stdoutIsTTY !== false && !ctx.stdin) {
+    const { runKernelPipeline } = await import('../shell-kernel');
+    const r = await runKernelPipeline(ctx.shell, [{ argv, run: nodeWorkerRunner() }], {
+      captureStdout: false,
+      captureStderr: false,
+      stderrSink: ctx.stderrIsTTY === false ? (ctx.streamStderr ?? ((t) => { ctx.stderr += t; })) : undefined,
+      writeStdout: (t) => { ctx.stdout += t; },
+      writeStderr: (t) => { ctx.stderr += t; },
+      fds: { 0: ks.file(0)!, 1: ks.file(1)!, ...(ctx.stderrIsTTY === false ? {} : { 2: ks.file(2)! }) },
+      command: argv.join(' '),
+      cwd: ctx.cwd,
+      env,
+    });
+    return r.exitCode;
+  }
   const { SinkFile } = await import('../wasi/stdio');
   const kernel = kernelForContext(ctx);
   const fds: Record<number, OpenFile> = {

@@ -48,7 +48,9 @@ describe('npm integration', () => {
       expect(pkg.version).toBe('1.0.0');
       expect(pkg.main).toBe('index.js');
       expect(pkg.scripts).toBeDefined();
-      expect(pkg.dependencies).toBeDefined();
+      // (npm 10's: no "type", no empty "dependencies")
+      expect(pkg).toMatchObject({ keywords: [], author: '', license: 'ISC', description: '' });
+      expect(pkg.type).toBeUndefined();
     });
   });
 
@@ -238,13 +240,12 @@ describe('npm integration', () => {
   // ─── npm info/view ───────────────────────────────────────────
 
   describe('npm info/view', () => {
-    it('should treat info as an unknown command', async () => {
-      // Shiro npm does not implement info/view — should return error
-      const { exitCode, output } = await run(shell, 'npm info lodash');
+    it('npm info (view) of a package the registry lacks fails', async () => {
+      const { exitCode } = await run(shell, 'npm info nonexistent-pkg-12345');
       expect(exitCode).toBe(1);
     });
 
-    it('should treat view as an unknown command', async () => {
+    it('npm view of a package the registry lacks fails', async () => {
       const { exitCode } = await run(shell, 'npm view nonexistent-pkg-12345');
       expect(exitCode).toBe(1);
     });

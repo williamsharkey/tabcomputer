@@ -8,7 +8,7 @@
  * isolated storage: IndexedDB database names get a per-run prefix, and
  * localStorage/sessionStorage live in memory. Tests run one at a time.
  */
-import { importCode } from './swap';
+import { importCode, quietDuring } from './swap';
 import { makeTestNode, type Snapshot } from './test-fs';
 
 type Fn = () => unknown;
@@ -467,7 +467,7 @@ let running: Promise<unknown> = Promise.resolve();
 
 /** Evaluate a bundle from buildTest and run its tests (one run at a time per page) */
 export function runTestBundle(code: string, opts: RunOptions = {}): Promise<RunSummary> {
-  const run = running.then(() => runNow(code, opts));
+  const run = running.then(() => quietDuring(() => runNow(code, opts)));
   running = run.catch(() => {});
   return run;
 }

@@ -7,6 +7,15 @@ An agent in a tab (Claude Code, or you at the prompt) can change tabcomputer's o
 ```sh
 hotswap checkout                         # this build's own source, in ~/tabcomputer
 cd ~/tabcomputer
+hotswap watch -d                         # the save loop (below): each save is swapped in
+vi src/shell.ts                          # edit
+hotswap watch --wait                     # what the save did
+hotswap test --changed                   # the suites that import what changed
+```
+
+or one step at a time:
+
+```sh
 vi src/shell.ts                          # edit
 hotswap build src/shell.ts               # optional: build only and report
 hotswap apply src/shell.ts               # swap it in; reverts by itself in 90 s
@@ -28,12 +37,32 @@ hotswap push fix/my-change -m 'shell: ...'   # a branch on GitHub, on the build'
 - `hotswap revert [--all]` undoes the newest swap, or all of them. `hotswap status` lists what's applied, what each swap changed, and the time left on its TTL.
 - `hotswap confirm --persist` also saves the confirmed swaps in IndexedDB, and boot re-applies them before `~/.profile` runs. That happens only on the same build (`__BUILD_SHA__` plus the build number): a new deploy discards them. Safe mode (`?safe=1`, or the automatic one) and `?hotswap=0` skip them, a load after a freeze drops them, and `hotswap persisted [clear]` shows or drops them. A swap you never confirmed is never persisted, so a reload always gets rid of it.
 - Out of band: `window.__tabcomputer.hotswap.revert(true)` from devtools, or the shiro-mcp `eval` of a remote session.
-- A swap that freezes the page (a loop that never yields) stops the TTL timer too. The watchdog's abort (`watchdog abort`, shiro-mcp `abort`) breaks loops that pass the shell's yield points. Otherwise reload: an unconfirmed swap is gone after a reload, though the reload also ends the agent's session. If the watchdog records that a load froze (a wedge), the next load drops the persisted swaps instead of applying them. If a persisted swap freezes the boot before the watchdog sees it, the tab goes into safe mode by itself after two loads that never reach the prompt, and safe mode skips persisted swaps.
+- A swap that freezes the page (a loop that never yields) stops the TTL timer too. If the page comes back from a freeze of 3 s or more, the unconfirmed swaps applied before it are reverted at once (a wedge revert, below). The watchdog's abort (`watchdog abort`, shiro-mcp `abort`) breaks loops that pass the shell's yield points. Otherwise reload: an unconfirmed swap is gone after a reload, though the reload also ends the agent's session. If the watchdog records that a load froze (a wedge), the next load drops the persisted swaps instead of applying them. If a persisted swap freezes the boot before the watchdog sees it, the tab goes into safe mode by itself after two loads that never reach the prompt, and safe mode skips persisted swaps.
+
+## The save loop: `hotswap watch`
+
+`hotswap watch [--root DIR] [--ttl 90s | --no-ttl] [--debounce 150ms] [-d] [PATH...]` (`src/hotswap/watch.ts`) swaps each module under the checkout's `src/` into the page as it's saved. PATHs narrow what it watches (default: `src/`).
+
+- In the foreground it prints one line per save until Ctrl-C. With `-d` it runs in the background of the page. `hotswap watch --wait` then waits for a save in progress and prints the lines since the last `--wait`; it exits 1 if the last one failed. `hotswap watch --stop` stops it. That's the loop for an agent, whose Bash tool can't sit on a foreground command: save with its own tools, then `hotswap watch --wait`.
+- A line says what changed: the methods the save changed (`Shell.expandVars`), the commands patched, a module that isn't loaded, and a free function that changed but that importers outside the swap keep the old copy of. A build error gives its file, line and column, and changes nothing: the page keeps the last good save.
+- Each save goes on top of the watcher's previous swap and is folded into it (`squash` in `swap.ts`), so one editing session is one record in `hotswap status`. Its TTL counts from the latest save, `hotswap confirm` keeps all of it, and `hotswap revert` undoes all of it. `confirm --persist` saves the session's bundles in order, leaving out the ones later saves rebuilt.
+- Saves within the debounce (150 ms) build together, and a save during a build is picked up after it. Only `.ts`, `.tsx`, `.js` and `.mjs` files under `src/` trigger a swap (not `.d.ts`); edits to suites are for `hotswap test`.
+- Latency, edit to live in the main shell, on build 974 with this change in headless Chromium: about 1.9 s for the first save (esbuild-wasm warming up), then 470–640 ms for `src/shell.ts`. Of that, 150 ms is the debounce, 330–460 ms the build, and the rest the swap.
+
+### When a swap breaks things
+
+- The TTL reverts a swap nobody confirmed.
+- A wedge reverts it too. When the page runs again after freezing for 3 s or more (the watchdog's `onWedge`, `src/watchdog.ts`), every unconfirmed swap applied before the freeze began is reverted, as if its TTL had run out (`revertOnWedge` in `swap.ts`). A freeze during hot-swap's own builds and test runs doesn't count (`quietDuring`), since esbuild-wasm builds on the page's thread. A loop that passes the shell's yield points can be broken with `watchdog abort`; one that never yields needs a reload, which drops unconfirmed swaps anyway.
+- `hotswap watch --wait` and the foreground watcher report either revert.
 
 ## Testing in the tab
 
-`hotswap test [--root DIR] [-t RE] [-v] SUITE...` runs vitest suites from the checkout in the tab. A SUITE is a path, or a name under `tests/tests/shiro-vitest/` (`shell-posix`). Use it to check a fix before you propose it. All 15 shell suites build and run this way (`shell-*.test.ts`, `shell.test.ts`). On build 972 plus the node:fs below, 702 of their tests passed in Chromium, in about a minute. The two that don't are node-only: shell-args spawns a real `node` with `child_process`, and shell-stdio's setup builds a `worker_threads` worker with node's esbuild. Suites that read fixtures run too: x86 (88 of 89), wasi (64 of 69; the rest download packages), shell-conformance, base-utils, agent-docs, ssh-openssh.
+`hotswap test [--root DIR] [-t RE] [-v] [--changed [--max N]] [SUITE...]` runs vitest suites from the checkout in the tab. A SUITE is a path, or a name under `tests/tests/shiro-vitest/` (`shell-posix`). Use it to check a fix before you propose it. All 15 shell suites build and run this way (`shell-*.test.ts`, `shell.test.ts`). On build 972 plus the node:fs below, 702 of their tests passed in Chromium, in about a minute. The two that don't are node-only: shell-args spawns a real `node` with `child_process`, and shell-stdio's setup builds a `worker_threads` worker with node's esbuild. Suites that read fixtures run too: x86 (88 of 89), wasi (64 of 69; the rest download packages), shell-conformance, base-utils, agent-docs, ssh-openssh.
 
+- `--changed` picks the suites for what `hotswap diff` lists:
+  - Which suites: those that import a changed file directly (`@shiro/x` or a relative path), and those named for it or its directory (`src/commands/awk.ts`: `awk-conformance`; `src/hotswap/watch.ts`: `hotswap`).
+  - The cap: it runs at most `--max` of them (20; 0 for all). Suites that need what the tab doesn't have (`node:child_process`, `worker_threads`, node's esbuild) go last. Then the named ones come first, then the ones with the fewest imports.
+  - Scale: `src/shell.ts` is imported directly by 113 of 242 suites, so a shell change runs the 20 most focused ones, the shell suites first.
 - The suite is built with `buildTest` (`src/hotswap/build.ts`). Unlike a swap, every module comes from the checkout, so the suite tests the source as edited, in fresh module instances, whether or not it's swapped in. `@shiro/x` is `src/x`.
 - Storage is isolated. The bundle's references to `indexedDB`, `localStorage` and `sessionStorage` go to the runner's stand-ins: IndexedDB names get a per-run `tabcomputer-test-` prefix (deleted afterwards), and the two storages live in memory. The tab's own files are never touched.
 - Shared: singletons the page publishes on `window` (the kernel, `__tabcomputerKernel`, and the kernel log) are the page's, and so is the DOM.
@@ -105,4 +134,4 @@ The live map keeps the exports and state bindings of `src/` modules from being t
 
 ## Tests
 
-`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, the test runner, checkout/diff/push (with a fake GitHub), and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it runs `hotswap checkout`, edits `src/shell.ts` with sed, checks `hotswap diff`, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts. Last, it runs three shell suites with `hotswap test`, a suite that runs a wasm fixture, and one that writes with `node:fs`, and checks that the tab's own file, the checkout and the localStorage key are unchanged.
+`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, the watcher (debounce, squash, TTL from the last save, build errors, persisting a squashed session, the wedge revert), `--changed`'s suite choice, the test runner, checkout/diff/push (with a fake GitHub), and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it runs `hotswap checkout`, edits `src/shell.ts` with sed, checks `hotswap diff`, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts. Last, it runs three shell suites with `hotswap test`, a suite that runs a wasm fixture, and one that writes with `node:fs`, and checks that the tab's own file, the checkout and the localStorage key are unchanged. Then it runs the save loop: `hotswap watch -d`, three saves of `src/shell.ts` each seen live in the main shell (it prints the edit-to-live times), `--wait`, a broken save and its fix, `hotswap test --changed --max 1`, one revert for the session, and the foreground watcher stopped by Ctrl-C.

@@ -14,6 +14,7 @@
 import type * as esbuild from 'esbuild-wasm';
 import { liveLoaders, liveModules, NOT_LIVE, type LiveLoaders, type LiveMap } from './live';
 import { carryState } from './state';
+import { quietDuring } from './swap';
 
 export interface HotswapFs {
   /** A file's text; throws if it doesn't exist or is a directory */
@@ -231,7 +232,7 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
     },
   };
 
-  const result = await (opts.build ?? pageBuild)({
+  const result = await quietDuring(() => (opts.build ?? pageBuild)({
     entryPoints: ['entry'],
     bundle: true,
     write: false,
@@ -253,7 +254,7 @@ async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null
       ...opts.define,
     },
     plugins: [plugin],
-  });
+  }));
   for (const w of result.warnings) warnings.push(w.text);
   if (testPath) return { code: result.outputFiles![0].text, hash: '', keys: [], copied: [], needs: [], warnings };
   for (const k of copied) {

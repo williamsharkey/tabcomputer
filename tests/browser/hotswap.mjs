@@ -9,6 +9,7 @@
 // 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
 // 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage;
 //    their node:fs reads the checkout (fixtures included) and writes only in memory.
+// 7. `hotswap watch -d`: each save of src/shell.ts is live in the main shell; --wait reports; a broken save changes nothing.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let chromium;
@@ -144,6 +145,60 @@ const kept = await page.evaluate(async () => ({
   dbs: (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith('tabcomputer-test-')).length,
 }));
 check(kept.file === 'mine' && kept.ls === 'mine', "the tab's own files and localStorage are untouched", JSON.stringify(kept));
+
+// 7. The save loop: `hotswap watch -d`, edit, `hotswap watch --wait`
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap revert --all >/dev/null; hotswap watch -d --ttl 20s');
+check(r.code === 0 && /watching \/home\/user\/tabcomputer\/src/.test(r.out), 'hotswap watch -d', r.out);
+const latencies = [];
+for (const v of ['8.8.1', '8.8.2', '8.8.3']) {
+  latencies.push(await page.evaluate(async (v) => {
+    const fs = window.__tabcomputer.fs, p = '/home/user/tabcomputer/src/shell.ts';
+    const next = (await fs.readFile(p, 'utf8')).replace(/result \+= '[^']*'/, `result += '${v}'`);
+    const t0 = performance.now();
+    await fs.writeFile(p, next);
+    for (;;) {
+      let out = '';
+      await window.__tabcomputer.shell.execute('echo $BASH_VERSION', (x) => { out += x; }, () => {});
+      if (out.trim() === v) return Math.round(performance.now() - t0);
+      if (performance.now() - t0 > 30000) return -1;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+  }, v));
+}
+check(latencies.every((ms) => ms > 0), `each save is live in the main shell (edit->live ms: ${latencies.join(', ')})`);
+r = await sh(page, 'hotswap watch --wait');
+check(r.code === 0 && (r.out.match(/^✓ #\d+ src\/shell\.ts \(Shell/gm) ?? []).length === 3 && /live \d+ ms after the save/.test(r.out), 'hotswap watch --wait prints one line per save', r.out);
+r = await sh(page, 'hotswap status');
+check((r.out.match(/^#\d+ src\/shell\.ts/gm) ?? []).length === 1, 'the saves are one swap record', r.out);
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '8.8.3'/result += '8.8.3' BROKEN/" src/shell.ts && hotswap watch --wait`);
+check(r.code === 1 && /^✗ src\/shell\.ts: src\/shell\.ts:\d+:\d+: .*the page keeps the code it had/m.test(r.out), 'a broken save reports where, and changes nothing', r.out);
+check((await mainEcho(page)) === '8.8.3', 'the page still runs the last good save');
+r = await sh(page, `cd /home/user/tabcomputer && sed -i "s/result += '8.8.3' BROKEN/result += '8.8.4'/" src/shell.ts && hotswap watch --wait && hotswap test --changed --max 1`);
+check(/8\.8\.4/.test(await mainEcho(page)) && /\d+ suite\(s\) import .*src\/shell\.ts; running 1 \(--max 1/.test(r.out) && /PASS tests\/tests\/shiro-vitest\/shell-/.test(r.out), 'fixed, then hotswap test --changed runs a suite for it', r.out);
+r = await sh(page, 'hotswap watch --stop && hotswap revert --all');
+check(/stopped watching/.test(r.out) && (await mainEcho(page)) === '5.0.0', 'stop, and one revert undoes all the saves', r.out);
+// In the foreground it prints each save until Ctrl-C (the shell's abort)
+r = await page.evaluate(async () => {
+  let out = '';
+  const s = Object.assign(window.__tabcomputer.shell.fork(), { terminal: null });
+  const done = s.execute('cd /home/user/tabcomputer && hotswap watch --ttl 10s', (x) => { out += x; }, (x) => { out += x; });
+  await new Promise((res) => setTimeout(res, 300));
+  const fs = window.__tabcomputer.fs, p = '/home/user/tabcomputer/src/shell.ts';
+  await fs.writeFile(p, (await fs.readFile(p, 'utf8')).replace(/result \+= '[^']*'/, "result += '8.8.5'"));
+  // (output captured by a callback arrives when the command ends; the main shell shows the swap now)
+  let live = '';
+  for (let i = 0; i < 200 && live !== '8.8.5'; i++) {
+    live = '';
+    await window.__tabcomputer.shell.execute('echo $BASH_VERSION', (x) => { live += x; }, () => {});
+    live = live.trim();
+    await new Promise((res) => setTimeout(res, 50));
+  }
+  s.abortController?.abort();
+  const code = await done;
+  return { code, out, live };
+});
+check(r.live === '8.8.5' && /^✓ #\d+ src\/shell\.ts/m.test(r.out) && /stopped watching/.test(r.out) && !/reverted/.test(r.out) && r.code === 130, 'hotswap watch in the foreground, stopped by Ctrl-C', JSON.stringify(r));
+await sh(page, 'hotswap revert --all');
 
 await browser.close();
 console.log(failures ? `${failures} failure(s)` : 'all ok');

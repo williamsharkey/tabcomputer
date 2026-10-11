@@ -74,7 +74,9 @@ import { spiritCmd } from './commands/spirit';
 // wasi and pkg are lazy-loaded (pulls in ~960-line wasi-runtime.ts)
 import { processTable } from './process-table';
 import { createPathShims, installAlwaysShims } from './path-shims';
-import { getKernel } from './kernel/kernel';
+import { getKernel, Kernel } from './kernel/kernel';
+import { hotswap } from './hotswap/swap';
+import { liveModule, trackInstance } from './hotswap/live';
 import { startDisplay } from './x11/display';
 import { startGLServer, getGLServer } from './gl/server';
 import { installNet } from './kernel/net';
@@ -318,6 +320,8 @@ async function main() {
   registerCommand(commands, testCmd, 'src/commands/test.ts');
   registerCommand(commands, lazyCommand('reload', 'Hot-reload modules from virtual filesystem',
     () => import('./commands/reload').then(m => m.reloadCmd)), 'src/commands/reload.ts');
+  registerCommand(commands, lazyCommand('hotswap', 'Swap core modules built from a source checkout into this tab',
+    () => import('./commands/hotswap').then(m => m.hotswapCmd)), 'src/commands/hotswap.ts');
   registerCommand(commands, lazyCommand('termcast', 'Record terminal sessions in asciicast format',
     () => import('./commands/termcast').then(m => m.termcastCmd)), 'src/commands/termcast.ts');
   registerCommand(commands, serveCmd, 'src/commands/serve.ts');
@@ -609,6 +613,7 @@ async function main() {
   // Extra terminals (panes, desktop windows) get fresh shells with this one's env and cwd
   const makeShell = () => {
     const s = new Shell(fs, commands);
+    trackInstance(s);
     Object.assign(s.env, shell.env);
     s.cwd = shell.cwd;
     return s;
@@ -689,7 +694,14 @@ async function main() {
     unbecome: deactivateBecomeMode, // Exit app mode from browser console
     closeSplit: closeSplitView, // Close split pane from browser console
     lastSeedGif: null as Uint8Array | null, // Last generated seed GIF bytes (for demos/drag)
+    // Stable handles for hot-swap patches (docs/HOTSWAP.md): never depend on minified names
+    hotswap, // applied swaps: .stack, .revert(all?), .confirm(id?)
+    live: liveModule, // a live module's namespace by path: live('src/shell.ts')
+    esbuild: <T>(fn: (e: typeof import('esbuild-wasm')) => Promise<T>) => import('./commands/build').then(m => m.withEsbuild(fn)),
+    Shell, ShiroTerminal, Kernel, FileSystem,
   };
+  // (migrateFrom in a swap runs on tracked instances)
+  for (const o of [shell, terminal, kernel, fs]) trackInstance(o);
 
   // OAuth callback bridge: receive auth codes from /oauth/callback popup
   const onOAuthCallback = (event: MessageEvent) => {
@@ -755,6 +767,16 @@ async function main() {
 
   // Tiling panes: drag a corner triangle of any pane to split it (the desktop has windows and tabs instead)
   if (!desktop && !safe) initPanes(terminal, makeShell);
+
+  // Persisted hot-swaps for this build (src/hotswap/persist.ts), before ~/.profile runs
+  let hasPersistedSwaps = false;
+  try { hasPersistedSwaps = !!localStorage.getItem('tabcomputer-hotswap-persisted'); } catch { /* no storage */ }
+  if (hasPersistedSwaps && !safe && new URLSearchParams(location.search).get('hotswap') !== '0') {
+    await bootStep('hotswap', async () => {
+      const { restorePersisted } = await import('./hotswap/persist');
+      for (const l of await restorePersisted()) console.warn(l);
+    });
+  }
 
   await terminal.start();
   fs.releaseKeyIndex();

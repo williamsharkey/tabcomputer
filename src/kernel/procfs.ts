@@ -641,12 +641,15 @@ export function threadWchanText(p: Process, tid: number): string {
 
 /**
  * The engine's lock word (Blink's GIL, perf-blink's patch 0126): the engine
- * hands the kernel `proc.data.engine = { memory, gilAddr }` and the lock's
- * state is four i32 at gilAddr: holder tid (0: nobody), waiters, acquires.
+ * hands the kernel `proc.data.engine = { memory: { buffer }, gilAddr }` and
+ * the lock's state is four i32 at gilAddr: holder tid (0: nobody), waiters,
+ * acquires. (Blink copies it every 50 ms into a 16-byte SAB, gilAddr 0, so
+ * the page doesn't keep the process's wasm memory alive.)
  */
 export function engineLock(p: Process): { holder: number; waiters: number; acquires: number; heldMs: number } | null {
   const e = p.data.engine as { memory?: { buffer: ArrayBufferLike }; gilAddr?: number } | undefined;
-  if (!e?.memory || !e.gilAddr) return null;
+  // (gilAddr 0 is fine: the engine may copy the struct into a small buffer of its own)
+  if (!e?.memory?.buffer || typeof e.gilAddr !== 'number') return null;
   let l: { holder: number; waiters: number; acquires: number };
   try {
     // (the buffer changes when the memory grows: take it each time)

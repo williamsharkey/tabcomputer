@@ -112,6 +112,8 @@ const blockedkidsBin = join(out, 'blockedkids');
 const haveBlockedkids = tryBuild('gcc', ['-static', '-O1', '-o', blockedkidsBin, 'blockedkids.c']);
 const pingpongBin = join(out, 'futexpingpong');
 const havePingpong = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', pingpongBin, 'futexpingpong.c']);
+const pbenchBin = join(out, 'pbench');
+const havePbench = tryBuild('gcc', ['-static', '-O2', '-o', pbenchBin, 'pbench.c']);
 const sockaddrsBin = join(out, 'sockaddrs');
 const haveSockaddrs = tryBuild('gcc', ['-static', '-O1', '-o', sockaddrsBin, 'sockaddrs.c']);
 const sleepintrBin = join(out, 'sleepintr');
@@ -317,6 +319,14 @@ const haveProcbits = readFileSync(resolve(__dirname, '../../../public/engines/bl
 const inotifyBin = join(out, 'inotifywatch');
 const haveInotify = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_inotify') &&
   tryBuild('gcc', ['-static', '-O1', '-w', '-o', inotifyBin, 'inotifywatch.c']);
+// Blink 0518: whole reads of regular files, mremap of a file's shared mapping, write-back to the file's end
+const mapfileBin = join(out, 'mapfile');
+const haveMapfile = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mapfile') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mapfileBin, 'mapfile.c']);
+// Blink 0519: mmap's argument checks, MAP_32BIT below 2 GiB
+const mmapargsBin = join(out, 'mmapargs');
+const haveMmapargs = readFileSync(resolve(__dirname, '../../../public/engines/blink/blink.mjs'), 'utf8').includes('blink_shiro_mmapargs') &&
+  tryBuild('gcc', ['-static', '-O1', '-w', '-o', mmapargsBin, 'mmapargs.c']);
 // a named semaphore's count survives sem_close (the kernel writes a /dev/shm object back to its linked names)
 const semreopenBin = join(out, 'semreopen');
 const haveSemreopen = tryBuild('gcc', ['-static', '-O1', '-w', '-o', semreopenBin, 'semreopen.c', '-lpthread']);
@@ -1034,6 +1044,18 @@ it.skipIf(!haveInotify)('inotify: a guest hears its own changes and, blocked in 
   ].join('\n'));
 }, 60_000);
 
+it.skipIf(!haveMapfile)('a 6 MiB read of a file is whole; a shared mapping grown by mremap writes the file back; a page past the file\'s end stays in the mapping (LTP mmap21, mremap01, mmap01)', async () => {
+  const { shell } = await setup(readFileSync(mapfileBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('read 6291456 of 6291456, first wrong -1\nsize 12\n');
+}, 60_000);
+
+it.skipIf(!haveMmapargs)('mmap checks in Linux\'s order: a bad fd, no length, access, a fixed address past user space, MAP_SHARED_VALIDATE\'s unknown flags; MAP_32BIT below 2 GiB (LTP mmap06, 08, 15, 20, 23, 24)', async () => {
+  const { shell } = await setup(readFileSync(mmapargsBin));
+  const r = await run(shell, './prog');
+  expect(r.output.replace(/\r\n/g, '\n')).toBe('bad fd no length 9\nno length 22\nread-only shared write 13\nhigh fixed 12\nvalidate 95\n32bit below 2G 1\n32bit 2G 12\n');
+}, 60_000);
+
 it.skipIf(!haveLease)('fcntl leases: a read lease on a file open for writing is EAGAIN; on a read-only open it is granted and F_GETLEASE reports it (LTP fcntl27)', async () => {
   const { shell } = await setup(readFileSync(leaseBin));
   const r = await run(shell, './prog');
@@ -1230,6 +1252,16 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const { shell } = await setup(readFileSync(pingpongBin));
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe('fork: parent bad 0 child bad 0\nthreads: main bad 0 thread bad 0\n');
+  }, 120_000);
+
+  // bench/suites/x86.mjs's perf-bench-style rows: every mode finishes (messaging's 20 processes start together)
+  it.skipIf(!havePbench)('pbench: syscall, pipe ping-pong, messaging, memcpy, fork+exec finish', async () => {
+    const { shell } = await setup(readFileSync(pbenchBin));
+    const r = await run(shell, './prog syscall 200 && ./prog pipe 20 && ./prog messaging 1 4 5 && ./prog memcpy 4 2 && ./prog forkexec 2');
+    const out = r.output.replace(/\r\n/g, '\n');
+    expect([...out.matchAll(/^mode=(\w+)$/gm)].map((m) => m[1])).toEqual(['syscall', 'pipe', 'messaging', 'memcpy', 'forkexec']);
+    expect(out).toMatch(/^procs=8$/m);
+    expect(out).toMatch(/^MBps=\d/m);
   }, 120_000);
 
   // LTP bind04 (abstract names), nft/getifaddrs (netlink), uv venvs ($ORIGIN), go link (fallocate)

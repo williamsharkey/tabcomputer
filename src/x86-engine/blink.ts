@@ -198,6 +198,8 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
         // bash/dpkg in a 6-round A/B (docs/BENCHMARKS.md, perf-kernel round 10)
         poolWake: canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_POOL_WAKE === 'atomics' ? 'atomics' : 'message',
         restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1',
+        // the compiled modules the page has: the process doesn't post them again
+        wjKept: proc.env?.TABCOMPUTER_BLINK_WJ_KEEP === '0' ? [] : [...keptModules.keys()],
       },
     });
     return runner(proc, kernel);
@@ -210,9 +212,11 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
  * generates the same bytes for the same code, so the next process running
  * the same program (or library code it shares) gets its modules without
  * compiling them. A Blink process is its own worker, so without this its
- * modules die with it. Least recently compiled go first past
- * keepBudget() bytes of modules (TABCOMPUTER_BLINK_WJ_KEEP=0: none), and
- * all go when the page has been hidden for a while. In Chromium a module
+ * modules die with it. Past keepBudget() bytes of modules
+ * (TABCOMPUTER_BLINK_WJ_KEEP=0: none) the least recently compiled go
+ * first, but not in favour of a module that keeps coming back
+ * (keepCompiledModule), and all go when the page has been
+ * hidden for a while. In Chromium a module
  * costs ~5.7x its bytes in renderer memory (its compiled code): vim's
  * startup leaves 320 modules, 2.4 MiB of bytes, +13.6 MiB RSS, and its next
  * start takes 0.81 s instead of 1.24 s (docs/BENCHMARKS.md).
@@ -233,29 +237,92 @@ function keepBudget(): number {
     let timer: ReturnType<typeof setTimeout> | null = null;
     doc.addEventListener('visibilitychange', () => {
       if (timer) { clearTimeout(timer); timer = null; }
-      if (doc.visibilityState === 'hidden') timer = setTimeout(() => { keptModules.clear(); keptBytes = 0; }, WJ_HIDDEN_DROP_MS);
+      if (doc.visibilityState === 'hidden') timer = setTimeout(() => { keptModules.clear(); keptBytes = 0; compiledCounts.clear(); }, WJ_HIDDEN_DROP_MS);
     });
   }
   return keepBudgetBytes;
 }
+/**
+ * The page's JavaScript heap past 60% of its limit (Chromium's
+ * performance.memory, looked at once a second at most): the kept modules
+ * shrink to the smallest tier's 2 MiB, rather than add to the pressure.
+ */
+let pressureCheckedAt = -Infinity;
+let pressure = false;
+function underMemoryPressure(): boolean {
+  const now = Date.now();
+  if (now - pressureCheckedAt < 1000) return pressure;
+  pressureCheckedAt = now;
+  const mem = (globalThis as { performance?: { memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number } } }).performance?.memory;
+  pressure = !!(mem?.usedJSHeapSize && mem.jsHeapSizeLimit && mem.usedJSHeapSize > 0.6 * mem.jsHeapSizeLimit);
+  return pressure;
+}
 const keptModules = new Map<string, { module: unknown; size: number }>();
 let keptBytes = 0;
-/** (tests) how many compiled modules the page keeps, and their bytes */
-export function keptCompiledModules(): { count: number; bytes: number } {
-  return { count: keptModules.size, bytes: keptBytes };
+/** how often each module (by key) was compiled lately, halved every WJ_AGE_EVERY */
+const compiledCounts = new Map<string, number>();
+const WJ_AGE_EVERY = 8192;
+let compiledSinceAging = 0;
+/** (tests) how many compiled modules the page keeps, their bytes, and whether it keeps `key`'s */
+export function keptCompiledModules(key?: string): { count: number; bytes: number; has: boolean } {
+  return { count: keptModules.size, bytes: keptBytes, has: key !== undefined && keptModules.has(key) };
 }
+/** (tests) as a Blink process's compiled module arriving; `pressure` as memory pressure would be seen */
+export function keepCompiledModuleForTest(key: string, size: number, underPressure?: boolean): void {
+  if (underPressure !== undefined) { pressure = underPressure; pressureCheckedAt = Infinity; }
+  keepCompiledModule(key, {}, size);
+}
+/**
+ * Least recently compiled go first, with one exception. A program compiles
+ * its modules in the same order every run, so when they outgrow the budget,
+ * keeping the most recent ones evicts each just before the next run asks
+ * for it again (perl's 14 MB against 6 MiB kept nothing). So a module that
+ * was compiled before (and evicted since) displaces the least recent ones
+ * only if it was compiled more often than each of them: part of a big
+ * program stays across its runs. A module never seen before goes in as
+ * usual, so a new program's next run finds its modules. The counts are
+ * halved now and then, so what's no longer run fades.
+ */
+/** `module` null: one the page keeps (the process had its key), compiled again */
 function keepCompiledModule(key: unknown, module: unknown, size: number): void {
-  const budget = keepBudget();
-  if (typeof key !== 'string' || !module || size <= 0 || size > budget / 4) return;
-  const old = keptModules.get(key);
-  if (old) { keptModules.delete(key); keptBytes -= old.size; }
-  keptModules.set(key, { module, size });
-  keptBytes += size;
-  for (const [k, v] of keptModules) {
+  const budget = underMemoryPressure() ? Math.min(keepBudget(), 2 * MIB) : keepBudget();
+  for (const [k, v] of keptModules) {  // (a budget cut by memory pressure)
     if (keptBytes <= budget) break;
     keptModules.delete(k);
     keptBytes -= v.size;
   }
+  if (typeof key !== 'string' || size <= 0 || size > budget / 4) return;
+  if (++compiledSinceAging >= WJ_AGE_EVERY || compiledCounts.size >= WJ_AGE_EVERY) {
+    compiledSinceAging = 0;
+    for (const [k, n] of compiledCounts) {
+      if (n > 1) compiledCounts.set(k, n >> 1);
+      else compiledCounts.delete(k);
+    }
+  }
+  const count = Math.min((compiledCounts.get(key) ?? 0) + 1, 255);
+  compiledCounts.set(key, count);
+  const old = keptModules.get(key);
+  if (old) {  // the same code again (V8 handed back the module it caches): now the most recent
+    keptModules.delete(key);
+    keptModules.set(key, old);
+    return;
+  }
+  if (!module) return;
+  let free = budget - keptBytes;
+  const victims: string[] = [];
+  for (const [k, v] of keptModules) {
+    if (free >= size) break;
+    // a module seen before (so evicted since) displaces only what's compiled less
+    if (count > 1 && (compiledCounts.get(k) ?? 0) >= count) return;
+    victims.push(k);
+    free += v.size;
+  }
+  for (const k of victims) {
+    keptBytes -= keptModules.get(k)!.size;
+    keptModules.delete(k);
+  }
+  keptModules.set(key, { module, size });
+  keptBytes += size;
 }
 
 /**
@@ -442,7 +509,9 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
         void ch.watch();
       }
     } else if (m?.type === 'blink-wjmod') {
-      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0') keepCompiledModule(m.key, m.module, m.size | 0);
+      if (proc.env?.TABCOMPUTER_BLINK_WJ_KEEP !== '0' && Array.isArray(m.modules)) {
+        for (const d of m.modules) keepCompiledModule(d?.key, d?.module, d?.size | 0);
+      }
     } else if (m?.type === 'blink-kick') {
       // A guest thread is in a kernel call with a signal to take (it came
       // between the call's start and the kernel's interrupt, or another

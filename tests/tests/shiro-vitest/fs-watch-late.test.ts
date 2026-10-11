@@ -33,3 +33,39 @@ describe('fs.watch and changes relayed late', () => {
     dir.close(); file.close();
   });
 });
+
+// A storm (rm -rf node_modules under a recursive watcher) mustn't run every
+// callback in one turn of the event loop: delivery goes on in later tasks.
+describe('fs.watch event storms', () => {
+  it('delivers a small burst in a microtask, and a storm in chunks with the page running between them', async () => {
+    const listeners = new Set<(event: string, path: string) => void>();
+    const ctx: any = {
+      cwd: '/', fs: {
+        resolvePath: (p: string) => p,
+        isDirCached: (p: string) => p === '/d',
+        readdirCached: () => [],
+        onChange: (fn: any) => { listeners.add(fn); return () => listeners.delete(fn); },
+      },
+    };
+    const api = createWatchApi({ ctx, fileCache: new Map(), getBuiltinModule: (n: string) => (n === 'fs' ? { existsSync: () => true } : n === 'events' ? { EventEmitter } : { Buffer }) });
+    const fire = (event: string, path: string) => { for (const fn of [...listeners]) fn(event, path); };
+    const seen: string[] = [];
+    const busy = (ms: number) => { const t = performance.now(); while (performance.now() - t < ms) { /* a listener's work */ } };
+    const w = api.watch('/d', { recursive: true }, (_t: string, n: string) => { seen.push(n); busy(0.2); });
+
+    fire('delete', '/d/a');
+    await Promise.resolve(); await Promise.resolve();
+    expect(seen).toEqual(['a']); // small bursts: same timing as before
+    seen.length = 0;
+
+    let ticks = 0;
+    const iv = setInterval(() => ticks++, 0);
+    for (let i = 0; i < 2000; i++) fire('delete', `/d/node_modules/f${i}`);
+    const t0 = performance.now();
+    while (seen.length < 2000 && performance.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 1));
+    clearInterval(iv);
+    expect(seen).toEqual(Array.from({ length: 2000 }, (_, i) => `node_modules/f${i}`)); // all, in order
+    expect(ticks).toBeGreaterThan(5); // the page had turns while ~400 ms of callbacks ran
+    w.close();
+  });
+});

@@ -953,6 +953,11 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    - A ret whose address is one of the region's return points (the
      instruction after one of its calls) branches there.
    - `BLINK_WJIT_OFF=0x200000` turns this off.
+   - `BLINK_WJIT_TLB=n` (1–4096) and `BLINK_TLB=n` (1–1024), powers of
+     two, use only the first n entries of the two caches below (patch
+     0137), for A/B of their sizes: 256 and 32 are the sizes before 0134.
+     On Chrome for Apple Silicon, startup got slower with 0134 while it
+     got faster on x86 (Node −11%, Chromium −6%).
 
    The JIT's translation caches grow from 256 to 4096 pages, and
    FindPageTableEntry's TLB from 32 to 1024. A hit is one compare: the

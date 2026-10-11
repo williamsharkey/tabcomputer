@@ -21,6 +21,7 @@ import { CommandRegistry, Command } from './commands/index';
 import { registry } from './registry';
 import { builtinCloneHandles } from './commands/git-clone-route';
 import { lazyCommand } from './utils/lazy-command';
+import { pipeBytes } from './utils/stream-bytes';
 import { shellBuiltins } from './commands/shell-builtins';
 import { shiroCmds } from './commands/shiro-cmds';
 import { grepCmd } from './commands/grep';
@@ -173,7 +174,7 @@ async function main() {
       return defaultRuntimeContext();
     }
   })();
-  // ~/AGENTS.md and ~/CLAUDE.md for coding agents (src/agent-docs.ts): kept
+  // ~/AGENTS.md and ~/.claude/CLAUDE.md for coding agents (src/agent-docs.ts): kept
   // current, except where the user edited them
   for (const line of await bootStep('agent docs', () => seedAgentDocs(fs, runtimeContext)) ?? []) console.log(`[agent-docs] ${line}`);
   console.log('[tabcomputer] Filesystem initialized');
@@ -833,22 +834,7 @@ async function main() {
       const res = await fetch(`/api/seed/${seedId}`);
       if (res.ok) {
         const compressed = new Uint8Array(await res.arrayBuffer());
-        // Decompress
-        const ds = new DecompressionStream('gzip');
-        const writer = ds.writable.getWriter();
-        writer.write(compressed);
-        writer.close();
-        const reader = ds.readable.getReader();
-        const chunks: Uint8Array[] = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const total = chunks.reduce((s, c) => s + c.length, 0);
-        const full = new Uint8Array(total);
-        let offset = 0;
-        for (const c of chunks) { full.set(c, offset); offset += c.length; }
+        const full = await pipeBytes(compressed, new DecompressionStream('gzip'));
         const envelope = JSON.parse(new TextDecoder().decode(full));
 
         // Hydrate filesystem

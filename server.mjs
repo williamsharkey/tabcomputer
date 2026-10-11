@@ -5,13 +5,13 @@
  */
 
 import { createServer } from 'node:http';
-import { readFile, writeFile, stat, readdir, unlink, mkdir, rename } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, unlink, mkdir, rename, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { randomBytes, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { realpathSync, readFileSync, readdirSync } from 'node:fs';
+import { realpathSync, readFileSync, readdirSync, createReadStream } from 'node:fs';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import https from 'node:https';
@@ -570,6 +570,182 @@ async function handleDebianMirror(req, res, rest) {
   headers['content-length'] = r.body.length;
   res.writeHead(r.status, headers);
   res.end(req.method === 'HEAD' ? undefined : r.body);
+}
+
+// --- Claude Code releases (tabcomputer#40) ---
+// `claude install` fetched Anthropic's 250 MB native build from inside the
+// guest, through the TCP relay and its per-IP rate limit (TABCOMPUTER_TCP_BYTES_PER_SEC,
+// 4 MiB/s: ~56 s). /claude-releases/ serves the same files from this origin
+// to the page's own fetch (src/commands/claude-native.ts), fetched from
+// downloads.claude.ai once and kept on disk:
+//   /claude-releases/latest                      the latest version (re-checked every TABCOMPUTER_CLAUDE_LATEST_TTL s, default 600)
+//   /claude-releases/VERSION/manifest.json       a release's manifest (immutable)
+//   /claude-releases/VERSION/PLATFORM/claude     the binary, kept only if its sha256 matches the manifest (immutable)
+// Not a proxy: only these three shapes, semver versions and the platforms in
+// TABCOMPUTER_CLAUDE_PLATFORMS (default linux-x64-musl, the build Blink runs)
+// are served; anything else is a 404, and so is everything with
+// TABCOMPUTER_CLAUDE_RELEASES=0 (the client then downloads through the relay as before).
+// The newest TABCOMPUTER_CLAUDE_KEEP (3) versions stay in TABCOMPUTER_CLAUDE_CACHE, and at
+// most TABCOMPUTER_CLAUDE_DOWNLOADS (2) binaries download at once (others get a 503 and
+// the relay), so the disk holds at most KEEP + DOWNLOADS binaries (~250 MB each).
+export const CLAUDE_KNOWN_PLATFORMS = ['linux-x64', 'linux-x64-musl', 'linux-arm64', 'linux-arm64-musl', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
+const CLAUDE_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z]{1,32}(?:\.[0-9A-Za-z]{1,32}){0,4})?$/;
+const CLAUDE_MAX_BYTES = 1024 * 1024 * 1024;
+
+export function claudeReleasesConfig(env = process.env) {
+  const platforms = (env.TABCOMPUTER_CLAUDE_PLATFORMS || 'linux-x64-musl').split(',').map((p) => p.trim()).filter((p) => CLAUDE_KNOWN_PLATFORMS.includes(p));
+  return {
+    enabled: env.TABCOMPUTER_CLAUDE_RELEASES !== '0',
+    upstream: (env.TABCOMPUTER_CLAUDE_RELEASES_UPSTREAM || 'https://downloads.claude.ai/claude-code-releases').replace(/\/+$/, ''),
+    cacheDir: env.TABCOMPUTER_CLAUDE_CACHE || join(tmpdir(), 'shiro-claude'),
+    platforms,
+    latestTtl: Number(env.TABCOMPUTER_CLAUDE_LATEST_TTL || 600) * 1000,
+    keep: Math.max(1, Number(env.TABCOMPUTER_CLAUDE_KEEP || 3)),
+    downloads: Math.max(1, Number(env.TABCOMPUTER_CLAUDE_DOWNLOADS || 2)),
+  };
+}
+
+/** What /claude-releases/REST asks for, or null when it isn't one of the served shapes. */
+export function claudeReleaseRequest(rest, platforms = ['linux-x64-musl']) {
+  if (rest === 'latest') return { kind: 'latest' };
+  const parts = rest.split('/');
+  if (!CLAUDE_VERSION_RE.test(parts[0] || '')) return null;
+  if (parts.length === 2 && parts[1] === 'manifest.json') return { kind: 'manifest', version: parts[0] };
+  if (parts.length === 3 && parts[2] === 'claude' && platforms.includes(parts[1])) return { kind: 'binary', version: parts[0], platform: parts[1] };
+  return null;
+}
+
+const CLAUDE_RELEASES = claudeReleasesConfig();
+const claudeInflight = new Map();
+
+async function claudeCachedText(url, file, maxAgeMs, check) {
+  try {
+    const st = await stat(file);
+    if (Date.now() - st.mtimeMs < maxAgeMs) return { ok: true, text: await readFile(file, 'utf8') };
+  } catch { /* not cached */ }
+  try {
+    const r = await upstreamFetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+    if (!r.ok) return { ok: false, status: r.status === 404 ? 404 : 502, text: `upstream: ${r.status}\n` };
+    const text = await r.text();
+    if (!check(text)) return { ok: false, status: 502, text: 'upstream: unexpected content\n' };
+    await mkdir(file.slice(0, file.lastIndexOf('/')), { recursive: true });
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}`;
+    await writeFile(tmp, text);
+    await rename(tmp, file);
+    return { ok: true, text };
+  } catch (e) {
+    // Upstream down: a stale copy beats none
+    try { return { ok: true, text: await readFile(file, 'utf8') }; } catch {}
+    return { ok: false, status: 502, text: `upstream: ${e.message}\n` };
+  }
+}
+
+function claudeManifestEntry(text, platform) {
+  try {
+    const e = JSON.parse(text)?.platforms?.[platform];
+    if (e && /^[0-9a-f]{64}$/.test(e.checksum) && Number.isInteger(e.size) && e.size > 0 && e.size <= CLAUDE_MAX_BYTES) return e;
+  } catch { /* below */ }
+  return null;
+}
+
+const claudeManifestOk = (text) => { try { return typeof JSON.parse(text)?.platforms === 'object'; } catch { return false; } };
+
+/** The binary on disk, downloaded and checked once; { file, size, checksum } or { status, text }. */
+async function claudeBinary(version, platform) {
+  const cfg = CLAUDE_RELEASES;
+  const m = await claudeCachedText(`${cfg.upstream}/${version}/manifest.json`, join(cfg.cacheDir, version, 'manifest.json'), Infinity, claudeManifestOk);
+  if (!m.ok) return { status: m.status, text: m.text };
+  const entry = claudeManifestEntry(m.text, platform);
+  if (!entry) return { status: 404, text: `no ${platform} build in ${version}\n` };
+  const file = join(cfg.cacheDir, version, platform, 'claude');
+  try {
+    if ((await stat(file)).size === entry.size) return { file, size: entry.size, checksum: entry.checksum };
+  } catch { /* not cached */ }
+  const key = `${version}/${platform}`;
+  let p = claudeInflight.get(key);
+  if (!p) {
+    // Requests for many versions at once would each write a temp file of ~250 MB
+    if (claudeInflight.size >= cfg.downloads) return { status: 503, text: 'busy: other releases are downloading; try again later\n' };
+    p = (async () => {
+      await mkdir(file.slice(0, file.lastIndexOf('/')), { recursive: true });
+      const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}`;
+      const fh = await open(tmp, 'w');
+      try {
+        const r = await upstreamFetch(`${cfg.upstream}/${version}/${platform}/claude`, { redirect: 'follow', signal: AbortSignal.timeout(15 * 60_000) });
+        if (!r.ok || !r.body) return { status: r.status === 404 ? 404 : 502, text: `upstream: ${r.status}\n` };
+        const hash = createHash('sha256');
+        let n = 0;
+        for await (const chunk of r.body) {
+          n += chunk.length;
+          if (n > entry.size) return { status: 502, text: 'upstream: larger than the manifest says\n' };
+          hash.update(chunk);
+          await fh.write(chunk);
+        }
+        const got = hash.digest('hex');
+        if (n !== entry.size || got !== entry.checksum) return { status: 502, text: `upstream: sha256/size mismatch (${n} bytes, ${got})\n` };
+        await fh.close();
+        await rename(tmp, file);
+        console.log(`[claude-releases] cached ${key} (${n} bytes)`);
+        claudePrune().catch(() => {});
+        return { file, size: n, checksum: got };
+      } catch (e) {
+        return { status: 502, text: `upstream: ${e.message}\n` };
+      } finally {
+        await fh.close().catch(() => {});
+        await unlink(tmp).catch(() => {});
+      }
+    })().finally(() => claudeInflight.delete(key));
+    claudeInflight.set(key, p);
+  }
+  return p;
+}
+
+/** Keep the newest CLAUDE_RELEASES.keep versions on disk */
+async function claudePrune() {
+  const dir = CLAUDE_RELEASES.cacheDir;
+  const versions = [];
+  for (const name of await readdir(dir)) {
+    if (!CLAUDE_VERSION_RE.test(name)) continue;
+    versions.push({ name, mtime: (await stat(join(dir, name))).mtimeMs });
+  }
+  versions.sort((a, b) => b.mtime - a.mtime);
+  for (const v of versions.slice(CLAUDE_RELEASES.keep)) await rm(join(dir, v.name), { recursive: true, force: true });
+}
+
+async function handleClaudeReleases(req, res, rest) {
+  const cfg = CLAUDE_RELEASES;
+  const what = cfg.enabled && (req.method === 'GET' || req.method === 'HEAD') ? claudeReleaseRequest(rest, cfg.platforms) : null;
+  const fail = (status, text) => {
+    res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(text);
+  };
+  if (!what) return fail(404, 'not a served Claude Code release path\n');
+  const head = req.method === 'HEAD';
+  const same = { 'cross-origin-resource-policy': 'same-origin' };
+  if (what.kind === 'latest' || what.kind === 'manifest') {
+    const r = what.kind === 'latest'
+      ? await claudeCachedText(`${cfg.upstream}/latest`, join(cfg.cacheDir, 'latest'), cfg.latestTtl, (t) => CLAUDE_VERSION_RE.test(t.trim()))
+      : await claudeCachedText(`${cfg.upstream}/${what.version}/manifest.json`, join(cfg.cacheDir, what.version, 'manifest.json'), Infinity, claudeManifestOk);
+    if (!r.ok) return fail(r.status, r.text);
+    const body = Buffer.from(r.text);
+    res.writeHead(200, {
+      'content-type': what.kind === 'latest' ? 'text/plain; charset=utf-8' : 'application/json',
+      'cache-control': what.kind === 'latest' ? 'no-cache' : 'public, max-age=31536000, immutable',
+      'content-length': body.length, ...same,
+    });
+    return res.end(head ? undefined : body);
+  }
+  const b = await claudeBinary(what.version, what.platform);
+  if (!b.file) return fail(b.status, b.text);
+  res.writeHead(200, {
+    'content-type': 'application/octet-stream',
+    'content-length': b.size,
+    'cache-control': 'public, max-age=31536000, immutable',
+    etag: `"sha256-${b.checksum}"`,
+    ...same,
+  });
+  if (head) return res.end();
+  createReadStream(b.file).on('error', () => res.destroy()).pipe(res);
 }
 
 // --- WebRTC signaling ---
@@ -1610,6 +1786,9 @@ const server = createServer(async (req, res) => {
 
   if (pathname.startsWith('/api/')) {
     return handleProxy(req, res, pathname.slice(5));
+  }
+  if (pathname.startsWith('/claude-releases/')) {
+    return handleClaudeReleases(req, res, pathname.slice('/claude-releases/'.length));
   }
   if (pathname.startsWith('/debian/pool/')) {
     // The GUI apps' .debs (src/gui/apps.ts fetches debian/<Filename>): the same mirror

@@ -81,10 +81,15 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   // allow rule older Shiro seeded, which current Claude Code warns about)
   try {
     const { ensureClaudeBootstrap } = await import('../claude-config');
-    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user' });
+    // Trust the working directory as the npm build does (node-compat/preload.ts):
+    // without it every native start in a fresh or reset project stopped at
+    // Claude's workspace trust prompt, a session restore included
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: ctx.env.HOME || '/home/user', projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true });
   } catch { /* settings are Claude's own business; never block the run */ }
-  // JSC's JIT costs more than it saves under Blink: -p took 85 s without it
-  // and 107 s with it (musl build, docs/COMPAT.md). Export BUN_JSC_useJIT=1 to keep it.
+  // JSC's JIT costs more than it saves under Blink: the code it writes at run
+  // time mostly runs interpreted there. `-p` took 32.8 s without it, 56.9 s with
+  // it and 61.1 s with only the baseline JIT (mean of 3 each, build 965, #40).
+  // Export BUN_JSC_useJIT=1 to keep it.
   const jit = ctx.env.BUN_JSC_useJIT === undefined ? 'BUN_JSC_useJIT=0 ' : '';
   // URLs as OSC 8 links: the sign-in URL Claude prints wraps over several
   // lines, and a click on the link opens it (no popup blocker involved)

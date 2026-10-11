@@ -1,0 +1,43 @@
+From 945de2edeba061e8e5adc1a1034fba0e26a3eb33 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 01:34:46 +0000
+Subject: [PATCH] Shiro: a shared object's buffer is in hand before its mapping
+ is used
+
+The kernel sends a remote object's SharedArrayBuffer to host.mjs's thread
+by message, before the reply to shiro_shmobj_map. A reply on the thread's
+own channel (0128) has no message to keep that order, so the thread's next
+shiro_shm_* call could find no object: an exec'd child read nothing of
+what its parent had written to a memfd and waited forever. The thread now
+waits (shiro_shm_ready) until host.mjs has the buffer.
+---
+ blink/shiro.inc | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 4c2385c..d86fdb7 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -2683,6 +2683,7 @@ extern int shiro_shm_acquire(int id, u32 off, void *p, int *flag, int how);
+ extern int shiro_shm_release(int id, u32 off, const void *p);
+ extern int shiro_shm_watch(int id, u32 off, u32 expect, int *flag, int ms);
+ extern int shiro_shm_wake(int id, u32 off, int n);
++extern int shiro_shm_ready(int id);
+ 
+ #define SHIRO_NOT_REMOTE (-100000)
+ #define kShiroLeaseMs    0.5  // how long a thread may keep an object locked between instructions
+@@ -2985,6 +2986,11 @@ static i64 ShiroRemoteMapFile(struct Machine *m, i64 virt, u64 size, int prot,
+     KS(m, 1021, A12((int)id));
+     return SHIRO_NOT_REMOTE;
+   }
++  // its buffer comes to host.mjs's thread by message, before the reply; a
++  // reply on this thread's own channel (0128) can come first, and shiro_shm_*
++  // calls before the buffer would find no object (a child read "" of what
++  // its parent wrote, and waited forever)
++  shiro_shm_ready((int)id);
+   if (!(o = (struct ShiroRemoteObj *)calloc(1, sizeof(*o))) ||
+       !(r = (struct ShiroRemoteMap *)calloc(1, sizeof(*r)))) {
+     free(o);
+-- 
+2.43.0
+

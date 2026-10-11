@@ -20,6 +20,7 @@
  * into it as one, both ways.
  */
 import { instancesOf, lineage, liveImport, liveModule } from './live';
+import { onWedge } from '../watchdog';
 
 export interface ClassReport {
   name: string;
@@ -71,9 +72,18 @@ export interface SwapRecord {
   report: ModuleReport[];
   /** Saved by `hotswap confirm --persist` (or re-applied from there at boot) */
   persisted?: boolean;
+  /**
+   * Earlier swaps squashed into this one (`hotswap watch`), oldest first, that
+   * later ones don't fully replace: persisting saves them before this one
+   */
+  parts?: SwapPart[];
+  /** The files `code` builds, when `files` also has squashed parts' (default: files) */
+  bundleFiles?: string[];
   undo: (() => void)[];
   timer?: ReturnType<typeof setTimeout>;
 }
+
+export interface SwapPart { label: string; files: string[]; code: string; hash: string }
 
 export interface ApplyMeta {
   label?: string;
@@ -300,7 +310,24 @@ function runUndo(steps: (() => void)[]): string[] {
   return errors;
 }
 
-export type RevertReason = 'manual' | 'ttl' | 'error';
+export type RevertReason = 'manual' | 'ttl' | 'error' | 'wedge';
+
+// Hot-swap's own long work (an esbuild-wasm build runs on the page's thread, a
+// test run can too): a freeze during it isn't a swap's fault (revertOnWedge)
+let quietDepth = 0;
+const quietSpans: [number, number][] = [];
+export async function quietDuring<T>(fn: () => Promise<T>): Promise<T> {
+  quietDepth++;
+  const t0 = Date.now();
+  try { return await fn(); } finally {
+    quietDepth--;
+    quietSpans.push([t0, Date.now()]);
+    if (quietSpans.length > 20) quietSpans.shift();
+  }
+}
+function quietOverlaps(from: number, to: number): boolean {
+  return quietDepth > 0 || quietSpans.some(([a, b]) => a <= to && b >= from);
+}
 
 /** The stack of applied swaps, with TTLs. One per page (`hotswap` below). */
 export class HotswapManager {
@@ -356,6 +383,34 @@ export class HotswapManager {
     return this.revertThrough(all ? this.stack[0] : this.stack[this.stack.length - 1]);
   }
 
+  /**
+   * Fold `prev`, the swap right below `rec`, into `rec` (`hotswap watch`: one
+   * record per editing session). Reverting `rec` then undoes both, its TTL
+   * covers both, and `rec.files` is their union. `prev` must be unconfirmed.
+   */
+  squash(prev: SwapRecord, rec: SwapRecord): boolean {
+    const i = this.stack.indexOf(rec);
+    if (i < 1 || this.stack[i - 1] !== prev || prev.confirmed) return false;
+    this.stack.splice(i - 1, 1);
+    clearTimeout(prev.timer);
+    // The files each record's own bundle (its code) builds
+    const own = rec.bundleFiles ?? rec.files;
+    const prevOwn = prev.bundleFiles ?? prev.files;
+    rec.bundleFiles = own;
+    // (runUndo runs steps newest first: rec's, then prev's)
+    rec.undo = [...prev.undo, ...rec.undo];
+    rec.files = [...new Set([...prev.files, ...own])];
+    rec.label = rec.files.join(' ');
+    rec.appliedAt = Math.min(prev.appliedAt, rec.appliedAt);
+    const parts = [...(prev.parts ?? []), { label: prev.label, files: prevOwn, code: prev.code, hash: prev.hash }];
+    // A part whose files later parts (or rec's own bundle) all rebuild isn't needed to persist this
+    rec.parts = parts.filter((p, j) => {
+      const later = new Set([...parts.slice(j + 1).flatMap((q) => q.files), ...own]);
+      return !p.files.every((f) => later.has(f));
+    });
+    return true;
+  }
+
   /** Revert `rec` and every swap applied after it (they may build on it), newest first */
   revertThrough(rec: SwapRecord): SwapRecord[] {
     const i = this.stack.indexOf(rec);
@@ -372,9 +427,26 @@ export class HotswapManager {
   pending(): SwapRecord[] {
     return this.stack.filter((r) => !r.confirmed);
   }
+
+  /**
+   * The page froze (watchdog onWedge) and runs again: an unconfirmed swap
+   * applied before the freeze began may have caused it, so revert the oldest
+   * such swap and everything after it, as its TTL would have. A freeze during
+   * hot-swap's own builds and test runs (quietDuring) doesn't count.
+   */
+  revertOnWedge(frozenMs: number, since: number): SwapRecord[] {
+    if (quietOverlaps(since, since + frozenMs)) return [];
+    const first = this.stack.find((r) => !r.confirmed && r.appliedAt <= since);
+    if (!first) return [];
+    const undone = this.revertThrough(first);
+    if (this.onAutoRevert) this.onAutoRevert(undone, 'wedge');
+    else console.warn(`[hotswap] reverted ${undone.map((r) => `#${r.id}`).join(', ')}: the page froze for ${Math.round(frozenMs / 1000)} s`);
+    return undone;
+  }
 }
 
 export const hotswap = new HotswapManager();
+onWedge((ms, since) => { hotswap.revertOnWedge(ms, since); });
 
 /** Load a built swap bundle (build.ts) and return its modules by live key */
 export async function evaluateBundle(code: string): Promise<Record<string, Record<string, unknown>>> {

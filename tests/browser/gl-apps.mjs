@@ -162,6 +162,26 @@ try {
     check(colors.corners.every((p) => p.every((v) => v < 30)), 'the frame fills the window');
     check(colors.red > 100 && colors.green > 100 && colors.blue > 100, 'the window shows red, green and blue gears');
   } else check(colors.colors > 50, 'the window shows a rendered scene');
+  // XGetImage of the GL window: the server reads the frame back from its surface (server.glFrame)
+  if (colors.glSurface) {
+    const img = await page.evaluate(() => {
+      const { server } = window.__shiroX;
+      const xid = Number(document.querySelector('canvas[data-gl-surface]').dataset.glSurface);
+      const f = server.glFrame(server.winOrNull(xid));
+      if (!f) return null;
+      const n = { red: 0, green: 0, blue: 0, colors: new Set() };
+      for (let i = 0; i < f.data.length; i += 4) {
+        const [r, g, b] = [f.data[i], f.data[i + 1], f.data[i + 2]];
+        if (n.colors.size < 1000) n.colors.add((r << 16) | (g << 8) | b);
+        if (r > 100 && g < 60 && b < 60) n.red++; else if (g > 100 && r < 60 && b < 60) n.green++; else if (b > 100 && r < 60 && g < 60) n.blue++;
+      }
+      return { size: [f.width, f.height], red: n.red, green: n.green, blue: n.blue, colors: n.colors.size };
+    });
+    console.log(`XGetImage's frame: ${JSON.stringify(img)}`);
+    check(!!img && img.size[0] === colors.size[0] && img.size[1] === colors.size[1], 'XGetImage reads the GL frame back from the surface');
+    if (img && app.gears) check(img.red > 100 && img.green > 100 && img.blue > 100, 'XGetImage shows the gears');
+    else if (img) check(img.colors > 50, 'XGetImage shows the scene');
+  }
   await page.screenshot({ path: process.env.GL_SHOT ?? `/tmp/gl-${appName}.png` });
 
   // no animation frames (a hidden tab): the app stops at its swap within a few frames

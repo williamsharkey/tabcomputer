@@ -7181,6 +7181,13 @@
    "when": "ca-certificates"
   },
   {
+   "path": "/",
+   "sha256": "d02ba5aa9f609b602d091d5f2f13adbea77f0f83417f2da4cf91adc62b5ab999",
+   "size": 378880,
+   "tar": true,
+   "when": "libc6"
+  },
+  {
    "path": "/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders.cache",
    "sha256": "273aa524347270aafe5966ed9824b2261d0719932f313cc18c2571f7a41a3ecd",
    "size": 2653,

@@ -67,9 +67,11 @@ async function savePersisted(list: PersistedSwap[]): Promise<void> {
 
 /** Persist confirmed swaps (in stack order), replacing what was saved */
 export async function persistSwaps(records: SwapRecord[], build = buildId()): Promise<PersistedSwap[]> {
-  const list = records.filter((r) => r.confirmed && r.code).map((r) => ({
-    files: r.files, label: r.label, code: r.code, hash: r.hash, build, savedAt: Date.now(),
-  }));
+  // A squashed record (hotswap watch) saves its earlier parts first, then its own bundle
+  const list = records.filter((r) => r.confirmed && r.code).flatMap((r) => [
+    ...(r.parts ?? []).map((p) => ({ files: p.files, label: p.label, code: p.code, hash: p.hash, build, savedAt: Date.now() })),
+    { files: r.bundleFiles ?? r.files, label: r.parts?.length ? (r.bundleFiles ?? r.files).join(' ') : r.label, code: r.code, hash: r.hash, build, savedAt: Date.now() },
+  ]);
   await savePersisted(list);
   return list;
 }

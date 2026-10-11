@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { hcCmd } from '@shiro/commands/hc';
 import type { FileSystem } from '@shiro/filesystem';
 import type { Shell } from '@shiro/shell';
-import { AGENTS_PATH, CLAUDE_PATH, CLAUDE_MD, MANIFEST_PATH, KNOWN_ISSUES, buildAgentsMd, seedAgentDocs } from '@shiro/agent-docs';
+import { AGENTS_PATH, CLAUDE_PATH, OLD_CLAUDE_PATH, CLAUDE_MD, MANIFEST_PATH, KNOWN_ISSUES, buildAgentsMd, seedAgentDocs } from '@shiro/agent-docs';
 import { defaultRuntimeContext, parseRuntimeContext, type ShiroRuntimeContext } from '@shiro/seed-runtime-context';
 import { createTestShell, run } from './helpers';
 
@@ -31,18 +31,21 @@ describe('agent docs', () => {
     fs = env.fs;
     shell.commands.register(hcCmd);
     delete (window as any).__tabcomputer;
-    for (const p of [AGENTS_PATH, CLAUDE_PATH, MANIFEST_PATH, '/home/user/NEO.md', '/home/user/.shiro-context.json']) await fs.unlink(p).catch(() => {});
+    for (const p of [AGENTS_PATH, CLAUDE_PATH, OLD_CLAUDE_PATH, MANIFEST_PATH, '/home/user/NEO.md', '/home/user/.shiro-context.json']) await fs.unlink(p).catch(() => {});
   });
 
-  it('AGENTS.md describes the machine, doctor and the source, and CLAUDE.md imports it', () => {
+  it('AGENTS.md describes the machine, doctor and the source, and ~/.claude/CLAUDE.md imports it', () => {
     const md = buildAgentsMd(defaultRuntimeContext());
     expect(md).toContain('You are on tabcomputer (tabcomputer.com)');
     expect(md).toContain('`doctor`');
     expect(md).toContain('https://github.com/williamsharkey/tabcomputer');
-    expect(md).toContain('not checked out');
+    expect(md).toContain('hotswap checkout');
+    expect(md).toContain('hotswap watch -d');
+    expect(md).toContain('hotswap test --changed');
     expect(md).toContain("runs on its own page");
     expect(md).not.toMatch(/NEO\.md|shiro-context|src\/main\.ts/);
-    expect(CLAUDE_MD).toBe('@AGENTS.md\n');
+    expect(CLAUDE_PATH).toBe('/home/user/.claude/CLAUDE.md');
+    expect(CLAUDE_MD).toBe('@~/AGENTS.md\n');
   });
 
   it('tells the agent how to orient itself, and lists the known issues', () => {
@@ -76,21 +79,48 @@ describe('agent docs', () => {
     const log = await seedAgentDocs(fs, defaultRuntimeContext());
     expect(log).toEqual([`wrote ${AGENTS_PATH}`, `wrote ${CLAUDE_PATH}`]);
     expect(await read(AGENTS_PATH)).toBe(buildAgentsMd(defaultRuntimeContext()));
-    expect(await read(CLAUDE_PATH)).toBe('@AGENTS.md\n');
+    expect(await read(CLAUDE_PATH)).toBe('@~/AGENTS.md\n');
     expect(Object.keys(JSON.parse((await read(MANIFEST_PATH))!))).toEqual([AGENTS_PATH, CLAUDE_PATH]);
     expect(await seedAgentDocs(fs, defaultRuntimeContext())).toEqual([]);
   });
 
   it('replaces what the old build seeded and removes NEO.md and .shiro-context.json', async () => {
     await fs.writeFile(AGENTS_PATH, fixture('AGENTS.md'));
-    await fs.writeFile(CLAUDE_PATH, fixture('CLAUDE.md'));
+    await fs.writeFile(OLD_CLAUDE_PATH, fixture('CLAUDE.md'));
     await fs.writeFile('/home/user/NEO.md', fixture('NEO-standalone.md'));
     await fs.writeFile('/home/user/.shiro-context.json', JSON.stringify(defaultRuntimeContext(), null, 2));
     await seedAgentDocs(fs, defaultRuntimeContext());
     expect(await read(AGENTS_PATH)).toBe(buildAgentsMd(defaultRuntimeContext()));
-    expect(await read(CLAUDE_PATH)).toBe('@AGENTS.md\n');
+    expect(await read(CLAUDE_PATH)).toBe('@~/AGENTS.md\n');
+    expect(await read(OLD_CLAUDE_PATH)).toBe(null);
     expect(await read('/home/user/NEO.md')).toBe(null);
     expect(await read('/home/user/.shiro-context.json')).toBe(null);
+  });
+
+  it('moves the import from ~/CLAUDE.md to ~/.claude/CLAUDE.md (no external-import prompt below home)', async () => {
+    // what the previous build seeded, with its manifest
+    await fs.writeFile(AGENTS_PATH, buildAgentsMd(defaultRuntimeContext()));
+    await fs.writeFile(OLD_CLAUDE_PATH, '@AGENTS.md\n');
+    const log = await seedAgentDocs(fs, defaultRuntimeContext());
+    expect(log).toEqual([`wrote ${CLAUDE_PATH}`, `removed ${OLD_CLAUDE_PATH} (now ${CLAUDE_PATH})`]);
+    expect(await read(OLD_CLAUDE_PATH)).toBe(null);
+    expect(await read(CLAUDE_PATH)).toBe('@~/AGENTS.md\n');
+    expect(Object.keys(JSON.parse((await read(MANIFEST_PATH))!))).toEqual([AGENTS_PATH, CLAUDE_PATH]);
+    expect(await seedAgentDocs(fs, defaultRuntimeContext())).toEqual([]);
+  });
+
+  it('keeps an edited ~/CLAUDE.md, and keeps ~/CLAUDE.md while ~/.claude/CLAUDE.md is the user\'s own', async () => {
+    await fs.writeFile(OLD_CLAUDE_PATH, '@AGENTS.md\nmy notes\n');
+    expect(await seedAgentDocs(fs, defaultRuntimeContext())).toContain(`kept ${OLD_CLAUDE_PATH} (edited)`);
+    expect(await read(OLD_CLAUDE_PATH)).toBe('@AGENTS.md\nmy notes\n');
+
+    await fs.writeFile(OLD_CLAUDE_PATH, '@AGENTS.md\n');
+    await fs.writeFile(CLAUDE_PATH, 'my global rules\n');
+    const log = await seedAgentDocs(fs, defaultRuntimeContext());
+    expect(log).toContain(`kept ${CLAUDE_PATH} (edited)`);
+    expect(log).toContain(`kept ${OLD_CLAUDE_PATH} (${CLAUDE_PATH} is the user's own)`);
+    expect(await read(OLD_CLAUDE_PATH)).toBe('@AGENTS.md\n');
+    expect(await read(CLAUDE_PATH)).toBe('my global rules\n');
   });
 
   it('recognizes an injected boot\'s old NEO.md from its context file', async () => {
@@ -112,7 +142,7 @@ describe('agent docs', () => {
     expect(await read(AGENTS_PATH)).toBe(mine);
     expect(await read('/home/user/NEO.md')).toContain('edited');
     expect(await read('/home/user/.shiro-context.json')).toBe('{"mine": true}');
-    expect(await read(CLAUDE_PATH)).toBe('@AGENTS.md\n'); // missing: written
+    expect(await read(CLAUDE_PATH)).toBe('@~/AGENTS.md\n'); // missing: written
   });
 
   it('updates its own file on a later boot, but not once the user edits it', async () => {

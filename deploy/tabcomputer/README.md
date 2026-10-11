@@ -22,6 +22,12 @@ droplet are not involved.
   minutes on this size. `https://tabcomputer.com/deployed.txt` shows the live
   commit. A commit whose build fails is recorded in `/opt/tabcomputer/FAILED_SHA`
   and skipped; the previous release keeps serving. The last 3 releases are kept.
+- **Disk caches:** `/claude-releases/` (server.mjs, `claude install`) keeps
+  Anthropic's sha256-checked native Claude Code builds in `$TMPDIR/shiro-claude`
+  (`TABCOMPUTER_CLAUDE_CACHE`): the newest 3 versions (`TABCOMPUTER_CLAUDE_KEEP`)
+  plus at most 2 downloads in flight (`TABCOMPUTER_CLAUDE_DOWNLOADS`), about
+  250 MB each, so 1.25 GB at most. `TABCOMPUTER_CLAUDE_RELEASES=0` turns the
+  route off; clients then download through the TCP relay.
 - **TLS:** `tabcomputer-cert` waits until tabcomputer.com and www resolve to
   the droplet, then runs `certbot --nginx --redirect` once. certbot's own
   timer renews it.

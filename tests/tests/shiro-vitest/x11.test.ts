@@ -176,6 +176,26 @@ describe('X11 protocol', () => {
     expect(got).toEqual([0x112233, 0x445566, 0x778899, 0xaabbcc, 0x010203, 0x040506, 0x112233, 0x445566]);
   });
 
+  it('GetImage of a GL window returns the frame its surface shows (glFrame), over its own pixels', async () => {
+    const { server, c } = await newServer();
+    const wid = c.id(1);
+    createWindow(c, wid, 0, 0, 4, 2, 0);
+    c.send(8, 0, (w) => w.u32(wid));
+    // a 3x2 frame (smaller than the window: column 3 stays X's white), RGBA top row first
+    const frame = { width: 3, height: 2, data: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]) };
+    let asked = 0;
+    server.glFrame = (w) => { asked++; return w.id === wid ? frame : null; };
+    c.send(73, 2, (w) => w.u32(wid).i16(1).i16(0).u16(3).u16(2).u32(0xffffffff));
+    const r = await c.reply();
+    r.skip(32);
+    expect(Array.from({ length: 6 }, () => r.u32())).toEqual([0x00ff00, 0x0000ff, 0xffffff, 0x040506, 0x070809, 0xffffff]);
+    expect(asked).toBe(1);
+    // no frame: the window's own pixels
+    server.glFrame = () => null;
+    c.send(73, 2, (w) => w.u32(wid).i16(0).i16(0).u16(1).u16(1).u32(0xffffffff));
+    expect((await c.reply()).skip(32).u32() & 0xffffff).toBe(0xffffff);
+  });
+
   it('interns atoms, stores properties and notifies', async () => {
     const { c } = await newServer();
     const wid = c.id(1);

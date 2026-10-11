@@ -116,7 +116,8 @@ try {
     const total = s.reduce((a, b) => a + b.ms, 0);
     console.log(`\n== ${label}: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}; ${s.length} stalls >= ${STALL_MS} ms (${total.toFixed(0)} ms), longest ${s[0]?.ms.toFixed(0) ?? 0} ms`);
     for (const x of s.slice(0, 5)) {
-      console.log(`  ${x.ms.toFixed(0)} ms  self: ${top(x.self, GENERIC)}`);
+      const sum = (re) => [...x.self].filter(([k]) => re.test(k)).reduce((a, [, v]) => a + v, 0);
+      console.log(`  ${x.ms.toFixed(0)} ms  (gc ${sum(/^\(garbage collector\)/).toFixed(0)}, program ${sum(/^\(program\)/).toFixed(0)}, idle ${sum(/^\(idle\)/).toFixed(0)})  self: ${top(x.self, GENERIC)}`);
       console.log(`         incl: ${top(x.incl, /^\((root|program|garbage collector)\)/)}`);
     }
   }

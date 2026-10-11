@@ -22,7 +22,7 @@ const BENCH = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(BENCH, '..');
 const ALL_SUITES = ['boot', 'shell', 'kernel', 'wasm', 'x86', 'net', 'node', 'hygiene', 'workloads', 'workflows'];
 // Only when asked for (--suites debian): apt runs take minutes
-const OPTIONAL_SUITES = ['debian', 'x86first', 'workloads-slow', 'toolchains', 'perfbench', 'claude'];
+const OPTIONAL_SUITES = ['debian', 'x86first', 'workloads-slow', 'toolchains', 'perfbench', 'claude', 'blinkprof'];
 const NONISOLATED_SUITES = ['boot', 'shell', 'kernel', 'wasm', 'x86', 'hygiene'];
 // --quick: everything isolated, plus the kernel fallback paths (JSPI) not isolated
 const QUICK_NONISOLATED_SUITES = ['kernel'];
@@ -98,7 +98,7 @@ async function main() {
   const hostAddr = hostAddress();
   const tcp = await startTcpTestServer('0.0.0.0');
   // git:// server for workloads-slow's clone over the relay
-  const gitd = suites.includes('workloads-slow') ? await startGitDaemon({ cacheDir, log }) : null;
+  const gitd = suites.includes('workloads-slow') || suites.includes('blinkprof') ? await startGitDaemon({ cacheDir, log }) : null;
   // the mock Messages API native Claude Code reaches through the relay (suites/claude.mjs)
   const mockModel = suites.includes('claude') && hostAddr ? await startMockModel(hostAddr) : null;
   const netcache = new NetCache(join(cacheDir, 'net'), { offline: args.offline, log });

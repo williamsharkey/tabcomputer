@@ -316,7 +316,7 @@ export async function executeNodeScript(
         case 'node:fs/promises': return trackModule(createFsPromisesModule({ ctx, fileCache, fileMtimes, pendingPromises, tickSyncOps, FakeBuffer, getBuiltinModule, homeDir, trackAsync, atExit }));
         // claude --vm (src/claude-vm/): the Bun shim, loaded when asked; bun:* as far as
         // Claude Code's code needs them (every bun:ffi use falls back when dlopen throws)
-        case 'tabcomputer:claude-vm': return { load: () => import('../claude-vm/bun') };
+        case 'tabcomputer:claude-vm': return { load: () => import('../claude-vm/bun'), codeCache: () => import('../claude-vm/code-cache') };
         case 'bun:ffi': return { dlopen() { throw new Error('bun:ffi is not available here'); }, FFIType: {}, ptr() { return 0; }, CString: class {} };
         case 'bun:jsc': return { edenGC() {}, fullGC() {}, gcAndSweep() {}, heapStats: () => ({ heapSize: 0, heapCapacity: 0, objectCount: 0, objectTypeCounts: {}, protectedObjectTypeCounts: {} }), memoryUsage: () => ({}) };
         case 'wasi':

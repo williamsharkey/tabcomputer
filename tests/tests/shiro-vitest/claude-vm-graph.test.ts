@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseBunGraph, findElfSection, BunLoader } from '@shiro/claude-vm/bun-graph';
-import { fakeBunElf } from './fake-bun-elf';
+import { fakeBunElf } from './fake-bun-elf.mjs';
 
 
 describe('claude --vm: the Bun module graph', () => {

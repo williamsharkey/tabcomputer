@@ -151,12 +151,17 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   if (!nodeCmd) { ctx.stderr += 'claude: node command not available\n'; return 127; }
   const { nativeClaudeVersion } = await import('./claude-native');
   const version = await nativeClaudeVersion(ctx.fs, path);
+  // the service worker that serves the compiled bundle (src/claude-vm/code-cache.ts);
+  // without it (or switched off) the launcher requires bundle.js
+  const cached = ctx.env.TABCOMPUTER_VM_CODECACHE !== '0'
+    && await import('../claude-vm/sw-host').then((m) => m.ensureVmServiceWorker()).catch(() => false);
   const search = nativeSearchSetup(args, ctx.env);
   const quiet = Object.fromEntries(['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']
     .filter((k) => ctx.env[k] === undefined).map((k) => [k, '1']));
   const env: Record<string, string> = {
     FORCE_HYPERLINK: '1', ...quiet, ...(search.env ? { USE_BUILTIN_RIPGREP: '0' } : {}), ...ctx.env,
     TABCOMPUTER_CLAUDE_BUILD: 'vm', TABCOMPUTER_CLAUDE_VERSION: version ?? 'unknown',
+    ...(cached ? {} : { TABCOMPUTER_VM_CODECACHE: '0' }),
   };
   const nodeCtx = { ...ctx, env, args: [layout.launcher, ...search.args], stdout: '', stderr: '' };
   const code = await nodeCmd.exec(nodeCtx);

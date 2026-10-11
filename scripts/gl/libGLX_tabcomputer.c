@@ -1747,7 +1747,7 @@ static void tc_glXWaitX(void) {}
 static const char glx_extensions[] =
   "GLX_ARB_create_context GLX_ARB_create_context_profile GLX_ARB_get_proc_address GLX_ARB_multisample "
   "GLX_EXT_framebuffer_sRGB GLX_ARB_framebuffer_sRGB GLX_EXT_swap_control GLX_MESA_swap_control GLX_SGI_swap_control "
-  "GLX_EXT_visual_info GLX_SGIX_fbconfig GLX_EXT_create_context_es2_profile";
+  "GLX_EXT_visual_info GLX_SGIX_fbconfig GLX_SGIX_pbuffer GLX_EXT_create_context_es2_profile";
 static const char *tc_glXQueryServerString(Display *dpy, int screen, int name) {
   (void)dpy; (void)screen;
   return name == GLX_VENDOR ? "tabcomputer" : name == GLX_VERSION ? "1.4" : name == GLX_EXTENSIONS ? glx_extensions : NULL;
@@ -1766,10 +1766,70 @@ static GLXPixmap tc_glXCreatePixmap(Display *dpy, GLXFBConfig config, Pixmap pix
   (void)dpy; (void)config; (void)attribs; tc_unimplemented("glXCreatePixmap"); return pixmap;
 }
 static void tc_glXDestroyPixmap(Display *dpy, GLXPixmap pixmap) { (void)dpy; (void)pixmap; }
-static GLXPbuffer tc_glXCreatePbuffer(Display *dpy, GLXFBConfig config, const int *attribs) {
-  (void)dpy; (void)config; (void)attribs; tc_unimplemented("glXCreatePbuffer"); return 0;
+/*
+ * Pbuffers: an XID from XAllocID that the X server never sees. The page
+ * gives it a framebuffer like a window's (tcCreatePbuffer), glvnd maps it to
+ * us, and glXQueryDrawable answers from this table.
+ */
+struct pbuffer { Display *dpy; GLXPbuffer id; unsigned width, height; int preserved, largest; struct pbuffer *next; };
+static struct pbuffer *pbuffers;
+static pthread_mutex_t pbuffer_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct pbuffer *find_pbuffer(Display *dpy, GLXDrawable id) {
+  struct pbuffer *p;
+  pthread_mutex_lock(&pbuffer_lock);
+  for (p = pbuffers; p && !(p->id == id && p->dpy == dpy); p = p->next) {}
+  pthread_mutex_unlock(&pbuffer_lock);
+  return p;
 }
-static void tc_glXDestroyPbuffer(Display *dpy, GLXPbuffer pbuf) { (void)dpy; (void)pbuf; }
+static GLXPbuffer create_pbuffer(Display *dpy, unsigned width, unsigned height, int preserved, int largest) {
+  if (width > 8192) width = 8192;
+  if (height > 8192) height = 8192;
+  struct pbuffer *p = calloc(1, sizeof *p);
+  if (!p) return 0;
+  p->dpy = dpy; p->id = XAllocID(dpy); p->width = width; p->height = height; p->preserved = preserved; p->largest = largest;
+  pthread_mutex_lock(&pbuffer_lock);
+  p->next = pbuffers; pbuffers = p;
+  pthread_mutex_unlock(&pbuffer_lock);
+  if (glvnd) glvnd->addVendorDrawableMapping(dpy, p->id, our_vendor);
+  uint32_t a[3] = { (uint32_t)p->id, width, height };
+  control(0, OP_tcCreatePbuffer, a, 3);
+  return p->id;
+}
+static GLXPbuffer tc_glXCreatePbuffer(Display *dpy, GLXFBConfig config, const int *attribs) {
+  (void)config;
+  unsigned w = 0, h = 0; int preserved = 1, largest = 0;
+  for (const int *a = attribs; a && a[0] != None; a += 2) {
+    switch (a[0]) {
+    case GLX_PBUFFER_WIDTH: w = (unsigned)a[1]; break;
+    case GLX_PBUFFER_HEIGHT: h = (unsigned)a[1]; break;
+    case GLX_PRESERVED_CONTENTS: preserved = a[1]; break;
+    case GLX_LARGEST_PBUFFER: largest = a[1]; break;
+    }
+  }
+  return create_pbuffer(dpy, w, h, preserved, largest);
+}
+static void tc_glXDestroyPbuffer(Display *dpy, GLXPbuffer pbuf) {
+  pthread_mutex_lock(&pbuffer_lock);
+  struct pbuffer **pp = &pbuffers, *p;
+  while ((p = *pp) && !(p->id == pbuf && p->dpy == dpy)) pp = &p->next;
+  if (p) *pp = p->next;
+  pthread_mutex_unlock(&pbuffer_lock);
+  if (!p) return;
+  if (glvnd) glvnd->removeVendorDrawableMapping(dpy, pbuf);
+  uint32_t a = (uint32_t)pbuf;
+  control(0, OP_tcDrawableGone, &a, 1);
+  free(p);
+}
+/* GLX_SGIX_pbuffer, as some older toolkits call it */
+static GLXPbuffer tc_glXCreateGLXPbufferSGIX(Display *dpy, GLXFBConfig config, unsigned width, unsigned height, int *attribs) {
+  int preserved = 1, largest = 0;
+  for (const int *a = attribs; a && a[0] != None; a += 2) {
+    if (a[0] == GLX_PRESERVED_CONTENTS) preserved = a[1];
+    else if (a[0] == GLX_LARGEST_PBUFFER) largest = a[1];
+  }
+  (void)config;
+  return create_pbuffer(dpy, width, height, preserved, largest);
+}
 static int tc_glXQueryContext(Display *dpy, GLXContext ctx, int attribute, int *value) {
   (void)dpy;
   struct tc_ctx *c = (struct tc_ctx *)ctx;
@@ -1782,6 +1842,15 @@ static int tc_glXQueryContext(Display *dpy, GLXContext ctx, int attribute, int *
 }
 static void tc_glXQueryDrawable(Display *dpy, GLXDrawable draw, int attribute, unsigned int *value) {
   Window root; int x, y; unsigned w = 0, h = 0, bw, depth;
+  struct pbuffer *pb = find_pbuffer(dpy, draw);
+  if (pb) {
+    switch (attribute) {
+    case GLX_WIDTH: *value = pb->width; return;
+    case GLX_HEIGHT: *value = pb->height; return;
+    case GLX_PRESERVED_CONTENTS: *value = (unsigned)pb->preserved; return;
+    case GLX_LARGEST_PBUFFER: *value = (unsigned)pb->largest; return;
+    }
+  }
   switch (attribute) {
   case GLX_WIDTH: case GLX_HEIGHT:
     if (XGetGeometry(dpy, draw, &root, &x, &y, &w, &h, &bw, &depth)) *value = attribute == GLX_WIDTH ? w : h;
@@ -1791,6 +1860,10 @@ static void tc_glXQueryDrawable(Display *dpy, GLXDrawable draw, int attribute, u
   case GLX_FBCONFIG_ID: *value = T.ctx ? (unsigned)T.ctx->fbconfig : 0; return;
   }
   *value = 0;
+}
+static int tc_glXQueryGLXPbufferSGIX(Display *dpy, GLXPbuffer pbuf, int attribute, unsigned int *value) {
+  tc_glXQueryDrawable(dpy, pbuf, attribute, value);
+  return 0;
 }
 static void tc_glXSelectEvent(Display *dpy, GLXDrawable draw, unsigned long mask) { (void)dpy; (void)draw; (void)mask; }
 static void tc_glXGetSelectedEvent(Display *dpy, GLXDrawable draw, unsigned long *mask) { (void)dpy; (void)draw; *mask = 0; }
@@ -1816,6 +1889,9 @@ static const struct tc_proc glx_ext_procs[] = {
   { "glXSwapIntervalMESA", (void *)tc_glXSwapIntervalMESA },
   { "glXGetSwapIntervalMESA", (void *)tc_glXGetSwapIntervalMESA },
   { "glXSwapIntervalSGI", (void *)tc_glXSwapIntervalSGI },
+  { "glXCreateGLXPbufferSGIX", (void *)tc_glXCreateGLXPbufferSGIX },
+  { "glXDestroyGLXPbufferSGIX", (void *)tc_glXDestroyPbuffer },
+  { "glXQueryGLXPbufferSGIX", (void *)tc_glXQueryGLXPbufferSGIX },
 };
 
 static void *lookup(const struct tc_proc *t, unsigned n, const char *name) {

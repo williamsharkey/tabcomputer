@@ -227,6 +227,21 @@ describe.skipIf(!existsSync(CHROME))('GL on WebGL2 in Chromium', () => {
       expect(acks.map((m) => new DataView(m.payload.buffer).getUint32(0, true))).toEqual([1, 2]);
     });
 
+    it('renders into a pbuffer and reads it back with glReadPixels', async () => {
+      const id = await open();
+      const PB = 0x600001;
+      await run(id, 0, [['tcCreatePbuffer', PB, 16, 8], ['tcCreateContext', 1, 0, 2, 1, 0], ['tcMakeCurrent', 1, PB, PB, 0x100]]);
+      const r = await run(id, 1, [
+        ['glClearColor', 0, 1, 0, 1], ['glClear', 0x4000],
+        ['glColor3f', 1, 0, 0], ['glRectf', 0, -1, 1, 1], // the right half red
+        ['glReadPixels', 0, 0, 16, 8, 0x1908, 0x1401, 0],
+      ]);
+      const pixels = messages(r.out.map((o) => new Uint8Array(o)))[0].payload;
+      expect(pixels.length).toBe(16 * 8 * 4);
+      expect(Array.from(pixels.subarray(0, 4))).toEqual([0, 255, 0, 255]);
+      expect(Array.from(pixels.subarray(15 * 4, 16 * 4))).toEqual([255, 0, 0, 255]);
+    });
+
     it('runs a legacy GLSL program with gl_Vertex and gl_FragColor', async () => {
       const id = await start();
       const enc = (s: string) => new TextEncoder().encode(s);

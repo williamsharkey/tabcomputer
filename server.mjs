@@ -710,7 +710,7 @@ async function handleSignaling(req, res, pathname) {
 
     console.log(`[signal] offer registered: ${data.code} (${offers.has(data.code) ? 'refresh' : 'new'})`);
     // A tab that can relay names its mailbox; open it now so the peer can use it
-    const relay = data.relay && remoteRelay.open(data.relay.id) ? { v: 1, id: data.relay.id, salt: String(data.relay.salt || '') } : null;
+    const relay = data.relay && remoteRelay.open(data.relay.id) ? { v: data.relay.v === 2 ? 2 : 1, id: data.relay.id, salt: String(data.relay.salt || '') } : null;
     offers.set(data.code, {
       offer: data.offer,
       candidates: data.candidates || [],

@@ -11,7 +11,7 @@ import type { Plugin } from 'vite';
  * A module importing itself is valid ESM: the namespace is the live one.
  */
 /** npm modules registered as 'npm:NAME' where src/ imports them (a swap bundle can import these) */
-const LIVE_DEPS = ['@xterm/xterm', '@xterm/addon-fit'];
+const LIVE_DEPS = ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-unicode11', 'acorn', 'pako', 'isomorphic-git', 'isomorphic-git/http/web', 'esbuild-wasm'];
 
 export function hotswapLiveModules(root: string): Plugin {
   const srcDir = path.join(root, 'src') + path.sep;
@@ -27,10 +27,19 @@ export function hotswapLiveModules(root: string): Plugin {
       let extra = `import * as __tcLiveSelf from ${JSON.stringify(id)};\n` +
         `(globalThis.__tabcomputerLive ??= new Map()).set(${JSON.stringify(key)}, __tcLiveSelf);\n`;
       LIVE_DEPS.forEach((dep, i) => {
-        if (!code.includes(`'${dep}'`) && !code.includes(`"${dep}"`)) return;
+        if (!new RegExp(`\\bfrom\\s*(['"])${dep.replace(/[/.]/g, '\\$&')}\\1`).test(code)) return;
         extra += `import * as __tcLiveDep${i} from ${JSON.stringify(dep)};\n` +
           `globalThis.__tabcomputerLive.set(${JSON.stringify('npm:' + dep)}, __tcLiveDep${i});\n`;
       });
+      // Vite query imports (a Worker, an asset URL): registered as 'src/x.ts?worker&inline'
+      let q = 0;
+      for (const m of code.matchAll(/\bfrom\s*(['"])(\.{1,2}\/[^'"?]+)\?((?:worker|sharedworker|url)[^'"]*)\1/g)) {
+        const r = await this.resolve(m[2], id);
+        if (!r || r.external || !r.id.startsWith(srcDir)) continue;
+        const base = path.relative(root, r.id.split('?')[0]).split(path.sep).join('/');
+        extra += `import * as __tcLiveQ${q} from ${JSON.stringify(`${m[2]}?${m[3]}`)};\n` +
+          `globalThis.__tabcomputerLive.set(${JSON.stringify(`${base}?${m[3]}`)}, __tcLiveQ${q++});\n`;
+      }
       // Loaders for the lazy modules this one imports (the same import() it already
       // has, so chunking doesn't change): a swap can load them the page's way
       const seen = new Set<string>();

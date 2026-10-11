@@ -6,6 +6,7 @@
 // 2. `hotswap apply --ttl 8s src/shell.ts`: the main terminal's shell sees the change, no reload.
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
+// 5. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage.
 import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -52,11 +53,15 @@ const files = [];
 const walk = (dir) => {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) walk(p);
+    if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); }
     else if (/\.(ts|tsx|json|txt|js|mjs)$/.test(e.name)) files.push(p);
   }
 };
 walk(path.join(repo, 'src'));
+walk(path.join(repo, 'profiles'));
+for (const f of fs.readdirSync(path.join(repo, 'tests/tests/shiro-vitest'))) {
+  if (/^(shell-posix|shell-syntax|shell-issue74)\.test\.ts$|^helpers\.ts$/.test(f)) files.push(path.join(repo, 'tests/tests/shiro-vitest', f));
+}
 for (const f of ['tsconfig.json', 'build-number.txt', 'package.json']) files.push(path.join(repo, f));
 for (let i = 0; i < files.length; i += 100) {
   const batch = files.slice(i, i + 100).map((f) => [path.relative(repo, f), fs.readFileSync(f, 'utf8')]);
@@ -103,6 +108,25 @@ r = await sh(page, 'hotswap revert');
 check(/reverted #\d+/.test(r.out) && /updated the persisted swaps/.test(r.out), 'hotswap revert drops it from persistence', r.out);
 await boot(page, '/?ui=terminal');
 check((await mainEcho(page)) === '5.0.0', 'the next load has no swap');
+
+
+// 5. Suites from the checkout, in the tab
+await page.evaluate(async () => {
+  await window.__tabcomputer.fs.writeFile('/home/user/keep.txt', 'mine');
+  localStorage.setItem('hotswap-check', 'mine');
+});
+t0 = Date.now();
+r = await sh(page, 'cd /home/user/shiro && hotswap test shell-posix shell-syntax shell-issue74');
+console.log(r.out.split('\n').map((l) => '     ' + l).join('\n'));
+check(r.code === 0 && /PASS tests\/tests\/shiro-vitest\/shell-posix\.test\.ts: \d+ passed/.test(r.out) && /Tests: \d+ passed\n/.test(r.out), `hotswap test runs the shell suites (${Date.now() - t0} ms)`, r.out);
+r = await sh(page, 'cd /home/user/shiro && hotswap test -t "nothing matches this" shell-posix');
+check(/0 passed/.test(r.out), 'hotswap test -t filters');
+const kept = await page.evaluate(async () => ({
+  file: await window.__tabcomputer.fs.readFile('/home/user/keep.txt', 'utf8'),
+  ls: localStorage.getItem('hotswap-check'),
+  dbs: (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith('tabcomputer-test-')).length,
+}));
+check(kept.file === 'mine' && kept.ls === 'mine', "the tab's own files and localStorage are untouched", JSON.stringify(kept));
 
 await browser.close();
 console.log(failures ? `${failures} failure(s)` : 'all ok');

@@ -35,6 +35,11 @@ export interface BuildOptions {
   sourcemap?: boolean;
 }
 
+export interface TestBuildOptions extends Omit<BuildOptions, 'files'> {
+  /** The test file (a vitest suite) */
+  file: string;
+}
+
 export interface BuildResult {
   code: string;
   hash: string;
@@ -73,6 +78,25 @@ async function pageBuild(opts: esbuild.BuildOptions): Promise<esbuild.BuildResul
 }
 
 export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<BuildResult> {
+  return bundle(fs, opts, null);
+}
+
+/**
+ * Build a vitest suite from the checkout to run in the page (test-runner.ts).
+ * Unlike a swap, every module comes from the checkout: the suite tests the
+ * source as edited, in fresh module instances. Their IndexedDB and
+ * localStorage go to the runner's isolated stand-ins (`__tcTestEnv`), never
+ * the page's. `vitest` is the runner's API; `@shiro/x` is src/x; npm imports
+ * are the page's live ones where it has them; node:path and node:os are the
+ * runner's; anything else (node:fs, ...) throws when used.
+ */
+export async function buildTest(fs: HotswapFs, opts: TestBuildOptions): Promise<BuildResult> {
+  return bundle(fs, { ...opts, files: [] }, opts.file);
+}
+
+const TEST_GLOBALS = ['indexedDB', 'localStorage', 'sessionStorage'];
+
+async function bundle(fs: HotswapFs, opts: BuildOptions, testFile: string | null): Promise<BuildResult> {
   const root = normalize(opts.root);
   const live = opts.live ?? liveModules();
   const loaders = opts.loaders ?? liveLoaders();
@@ -100,27 +124,38 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
   let tsconfigRaw: any = undefined;
   try { tsconfigRaw = JSON.parse(await fs.readFile(`${root}/tsconfig.json`)); } catch { /* esbuild's defaults */ }
 
-  const entry = keys.map((k, i) => `export * as m${i} from ${JSON.stringify(`${root}/${k}`)};`).join('\n') +
-    `\nexport const __keys = ${JSON.stringify(keys)};\n`;
+  const testPath = testFile ? normalize(testFile.startsWith('/') ? testFile : `${root}/${testFile}`) : null;
+  const entry = testPath
+    ? `import ${JSON.stringify(testPath)};\nexport const __keys = [];\n`
+    : keys.map((k, i) => `export * as m${i} from ${JSON.stringify(`${root}/${k}`)};`).join('\n') +
+      `\nexport const __keys = ${JSON.stringify(keys)};\n`;
 
   const plugin: esbuild.Plugin = {
     name: 'tabcomputer-hotswap',
     setup(build) {
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (args.kind === 'entry-point') return { path: 'entry', namespace: 'hs-entry' };
-        const [spec, query] = args.path.split('?');
+        let [spec, query] = args.path.split('?');
         if (spec.endsWith('.css')) return { path: spec, namespace: 'hs-empty' };
+        if (testPath && spec === 'vitest') return { path: 'vitest', namespace: 'hs-vitest' };
+        if (testPath && spec.startsWith('@shiro/')) spec = `${root}/src/${spec.slice(7)}`;
         if (!spec.startsWith('.') && !spec.startsWith('/')) {
           if (live.has(`npm:${spec}`)) return { path: `npm:${spec}`, namespace: 'hs-live' };
+          if (testPath) return { path: spec, namespace: 'hs-stub' };
           return { errors: [{ text: `${args.path} (imported by ${keyOf(args.importer) ?? args.importer}) isn't a live module: add it to LIVE_DEPS in vite-plugin-hotswap.ts, or keep the import outside the swap set` }] };
         }
         const abs = await resolveFile(normalize(spec.startsWith('/') ? spec : `${dirOf(args.importer)}/${spec}`));
         if (!abs) return { errors: [{ text: `cannot resolve ${args.path} from ${args.importer}` }] };
         if (query !== undefined) {
           if (query === 'raw') return { path: abs, namespace: 'hs-raw' };
-          return { errors: [{ text: `${args.path}: Vite's ?${query} imports can't be built in the tab; keep it outside the swap set` }] };
+          // A Worker or asset URL: the page's own, which the plugin registers
+          const qkey = `${keyOf(abs)}?${query}`;
+          if (live.has(qkey)) return { path: qkey, namespace: 'hs-live' };
+          if (testPath) return { path: args.path, namespace: 'hs-stub' };
+          return { errors: [{ text: `${args.path}: Vite's ?${query} imports can't be built in the tab and the page doesn't have this one; keep it outside the swap set` }] };
         }
         const key = keyOf(abs);
+        if (testPath) return { path: abs, namespace: 'hs-src' };
         if (key && !swapSet.has(key)) {
           // import(): the page's module when the code runs (rewritten below)
           if (args.kind === 'dynamic-import' && (live.has(key) || loaders.has(key))) return { path: `tc-live:${key}`, external: true };
@@ -142,6 +177,16 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
           `if (!m) throw new Error(${JSON.stringify(`hotswap: live module ${args.path} isn't loaded`)});\n` +
           `Object.keys(m).forEach(function (k) { Object.defineProperty(o, k, { enumerable: true, get: function () { return m[k]; } }); });\n` +
           `module.exports = o;\n`,
+        loader: 'js',
+      }));
+      build.onLoad({ filter: /.*/, namespace: 'hs-vitest' }, () => ({ contents: 'module.exports = globalThis.__tcTestApi;', loader: 'js' }));
+      // A module the tab can't give a test (node:fs): it throws when used, not when imported
+      build.onLoad({ filter: /.*/, namespace: 'hs-stub' }, (args) => ({
+        contents: `var given = (globalThis.__tcTestNode || {})[${JSON.stringify(args.path.replace(/^node:/, ''))}];\n` +
+          `if (given) { module.exports = given; } else {\n` +
+          `var msg = ${JSON.stringify(`${args.path} isn't available to tests in the tab`)};\n` +
+          `var thrower = new Proxy({}, { get: function (_t, k) { if (k === Symbol.toPrimitive || k === 'then') return undefined; throw new Error(msg + ' (used: ' + String(k) + ')'); } });\n` +
+          `module.exports = new Proxy({}, { get: function (_t, k) { return k === '__esModule' ? false : thrower[k]; }, getPrototypeOf: function () { return thrower; } });\n}\n`,
         loader: 'js',
       }));
       build.onLoad({ filter: /.*/, namespace: 'hs-src' }, async (args) => {
@@ -170,15 +215,28 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
       'import.meta.env.PROD': 'true',
       'import.meta.env.MODE': '"production"',
       'import.meta.env.BASE_URL': '"./"',
+      ...(testPath ? testDefines(testPath) : {}),
       ...opts.define,
     },
     plugins: [plugin],
   });
   for (const w of result.warnings) warnings.push(w.text);
+  if (testPath) return { code: result.outputFiles![0].text, hash: '', keys: [], copied: [], needs: [], warnings };
   for (const k of copied) warnings.push(`${k} isn't loaded in the page, so the bundle has its own copy (its module state is separate)`);
   const code = `${NEEDS_PREFIX}${JSON.stringify([...needs])}\n` +
     result.outputFiles![0].text.replace(/\bimport\((["'])tc-live:([^"']+)\1\)/g, (_m, _q, key) => `globalThis.__tabcomputerLiveImport(${JSON.stringify(key)})`);
   return { code, hash: await sha256Hex(code), keys, copied: [...copied], needs: [...needs], warnings };
+}
+
+function testDefines(file: string): Record<string, string> {
+  const d: Record<string, string> = {
+    __dirname: JSON.stringify(dirOf(file)),
+    __filename: JSON.stringify(file),
+  };
+  for (const g of TEST_GLOBALS) {
+    for (const pre of ['', 'window.', 'globalThis.', 'self.']) d[pre + g] = `globalThis.__tcTestEnv.${g}`;
+  }
+  return d;
 }
 
 function pageSha(): string {

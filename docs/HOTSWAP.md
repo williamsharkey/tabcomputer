@@ -12,7 +12,7 @@ hotswap build src/shell.ts               # optional: build only and report
 hotswap apply src/shell.ts               # swap it in; reverts by itself in 90 s
 echo $BASH_VERSION; ...                  # try it in this tab
 hotswap confirm                          # keep it (this page load only)
-hotswap test tests/shiro-vitest/shell-conformance.test.ts   # (planned) run suites in the tab
+hotswap test shell-posix shell-syntax   # run vitest suites from the checkout in the tab
 git commit -am 'shell: ...' && git push -u origin fix/my-change
 ```
 
@@ -21,6 +21,20 @@ git commit -am 'shell: ...' && git push -u origin fix/my-change
 - `hotswap revert [--all]` undoes the newest swap, or all of them. `hotswap status` lists what's applied, what each swap changed, and the time left on its TTL.
 - `hotswap confirm --persist` also saves the confirmed swaps in IndexedDB, and boot re-applies them before `~/.profile` runs. That happens only on the same build (`__BUILD_SHA__` plus the build number): a new deploy discards them. Safe mode (`?safe=1`, or the automatic one) and `?hotswap=0` skip them, and `hotswap persisted [clear]` shows or drops them. A swap you never confirmed is never persisted, so a reload always gets rid of it.
 - Out of band: `window.__tabcomputer.hotswap.revert(true)` from devtools, or the shiro-mcp `eval` of a remote session.
+
+## Testing in the tab
+
+`hotswap test [--root DIR] [-t RE] [-v] SUITE...` runs vitest suites from the checkout in the tab. A SUITE is a path, or a name under `tests/tests/shiro-vitest/` (`shell-posix`). Use it to check a fix before you propose it. All 14 shell suites build and run this way (`shell-*.test.ts`, `shell.test.ts`); on build 961, 694 of their 698 tests passed in Chromium, about a minute for all of them.
+
+- The suite is built with `buildTest` (`src/hotswap/build.ts`). Unlike a swap, every module comes from the checkout, so the suite tests the source as edited, in fresh module instances, whether or not it's swapped in. `@shiro/x` is `src/x`.
+- Storage is isolated. The bundle's references to `indexedDB`, `localStorage` and `sessionStorage` go to the runner's stand-ins: IndexedDB names get a per-run `tabcomputer-test-` prefix (deleted afterwards), and the two storages live in memory. The tab's own files are never touched.
+- Shared: singletons the page publishes on `window` (the kernel, `__tabcomputerKernel`, and the kernel log) are the page's, and so is the DOM.
+- The runner (`src/hotswap/test-runner.ts`) is a subset of vitest:
+  - `describe`/`it`/`test` with `.skip`, `.only`, `.todo`, `.each`, `.skipIf`, `.runIf`, `.fails`, and the four hooks.
+  - `expect` with the common matchers, `.not`, `.resolves`/`.rejects` and the asymmetric matchers (`expect.any`, `objectContaining`, ...).
+  - `vi.fn`, `vi.spyOn`, `vi.waitFor` and `vi.stubGlobal`. `vi.useFakeTimers` and `vi.mock` aren't supported.
+  - Tests run one at a time, with vitest's 5 s default timeout.
+- Imports: `node:path` and `node:os` are small shims, npm packages are the page's live ones (`LIVE_DEPS`), and anything else (`node:fs`, `node:child_process`) throws when a test uses it. Suites that read fixtures with `readFileSync` fail those tests with that message.
 
 ## What a swap can change
 
@@ -62,8 +76,8 @@ Patches and page scripts shouldn't depend on minified names. Use these on `windo
 
 ## Cost
 
-The live map keeps every `src/` module's exports from being tree-shaken. On build 959 that added about 3.8% to the JS (8.07 MB → 8.37 MB, 2.46 MB → 2.52 MB gzipped), measured with `npx vite build`.
+The live map stops tree-shaking from removing unused exports of `src/` modules, and the registrations add bytes of their own. On build 961 it added 4.3% to the JS: 8.17 MB → 8.52 MB, or 2.49 MB → 2.56 MB gzipped (all of `dist/assets/*.js`, `npx vite build` with and without the plugin).
 
 ## Tests
 
-`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it copies `src/` into the tab, edits `src/shell.ts` with sed, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts.
+`tests/tests/shiro-vitest/hotswap.test.ts` covers the swap, the revert, the TTL, migrateFrom, hooks, the build's live resolution, persistence with its build guard, the test runner, and a real `src/shell.ts` edited, built with esbuild and swapped into a live Shell. `tests/browser/hotswap.mjs` does the same in Chromium against a build: it copies `src/` into the tab, edits `src/shell.ts` with sed, applies it, sees the change in the main shell, lets the TTL revert it, then persists one, reloads, checks safe mode and reverts. Last, it runs three shell suites with `hotswap test` and checks that the tab's own file and localStorage key are unchanged.

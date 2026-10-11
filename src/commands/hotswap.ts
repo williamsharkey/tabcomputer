@@ -14,6 +14,8 @@ const USAGE = `Usage: hotswap apply [--root DIR] [--ttl 90s | --no-ttl] FILE...
        hotswap revert [--all]               undo the newest swap (or all)
        hotswap status                       applied swaps, TTLs, what changed
        hotswap persisted [clear]            swaps re-applied at boot
+       hotswap test [--root DIR] [-t RE] [-v] SUITE...
+                                            run vitest suites from the checkout in this tab
 
 FILEs are paths in a checkout of tabcomputer's source (default root: the
 nearest directory above the cwd with src/shell.ts). Classes exported by a
@@ -47,6 +49,7 @@ function describe(report: ModuleReport[]): string {
   for (const m of report) {
     if (!m.live) { out += `  ${m.module}: not loaded in the page, nothing swapped\n`; continue; }
     for (const c of m.classes) {
+      if (!c.swapped && !c.errors.length) continue;
       const parts = [`${c.swapped} method(s) swapped`];
       if (c.changed.length) parts.push(`changed since the last swap: ${c.changed.join(', ')}`);
       if (c.added.length) parts.push(`added ${c.added.join(', ')}`);
@@ -130,6 +133,8 @@ export const hotswapCmd: Command = {
       return 0;
     }
 
+    if (sub === 'test') return runTests(ctx, args);
+
     if (sub !== 'apply' && sub !== 'build') { ctx.stderr += `hotswap: unknown subcommand '${sub}'\n${USAGE}`; return 2; }
 
     let root: string | null = null;
@@ -180,3 +185,64 @@ export const hotswapCmd: Command = {
     return 0;
   },
 };
+
+/** The suite files: paths, or names under tests/tests/shiro-vitest ('shell-posix') */
+async function suitePath(ctx: CommandContext, root: string, arg: string): Promise<string | null> {
+  const tries = [ctx.fs.resolvePath(arg, ctx.cwd)];
+  for (const name of [arg, `${arg}.test.ts`]) tries.push(`${root}/tests/tests/shiro-vitest/${name}`, `${root}/${name}`);
+  for (const p of tries) {
+    try { if ((await ctx.fs.stat(p)).isFile()) return p; } catch { /* next */ }
+  }
+  return null;
+}
+
+async function runTests(ctx: CommandContext, args: string[]): Promise<number> {
+  let root: string | null = null;
+  let filter: RegExp | undefined;
+  let verbose = false;
+  const names: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--root') root = ctx.fs.resolvePath(args[++i] ?? '.', ctx.cwd);
+    else if (a === '-t' || a === '--testNamePattern') {
+      try { filter = new RegExp(args[++i] ?? ''); } catch (e: any) { ctx.stderr += `hotswap test: bad -t: ${e.message}\n`; return 2; }
+    } else if (a === '-v' || a === '--verbose') verbose = true;
+    else if (a.startsWith('-')) { ctx.stderr += `hotswap test: unknown option ${a}\n`; return 2; }
+    else names.push(a);
+  }
+  if (!names.length) { ctx.stderr += 'Usage: hotswap test [--root DIR] [-t RE] [-v] SUITE...\n'; return 2; }
+  root ??= await findRoot(ctx, ctx.cwd);
+  if (!root) { ctx.stderr += 'hotswap test: no checkout found above the cwd (a directory with src/shell.ts); pass --root DIR\n'; return 1; }
+  const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
+  const { buildTest } = await import('../hotswap/build');
+  const { runTestBundle } = await import('../hotswap/test-runner');
+  let failed = 0, passed = 0, skipped = 0;
+  for (const name of names) {
+    const file = await suitePath(ctx, root, name);
+    if (!file) { ctx.stderr += `hotswap test: no suite ${name}\n`; failed++; continue; }
+    const rel = file.startsWith(root + '/') ? file.slice(root.length + 1) : file;
+    let code: string;
+    try {
+      code = (await buildTest({ readFile: async (p) => ctx.fs.readFile(p, 'utf8') as Promise<string> }, { root, file })).code;
+    } catch (e: any) {
+      const errs = e?.errors as { text: string; location?: { file: string; line: number } }[] | undefined;
+      out(` FAIL ${rel}: build failed\n`);
+      if (errs?.length) for (const x of errs.slice(0, 10)) out(`   ${x.location ? `${x.location.file}:${x.location.line}: ` : ''}${x.text}\n`);
+      else out(`   ${e?.message ?? e}\n`);
+      failed++;
+      continue;
+    }
+    const sum = await runTestBundle(code, {
+      filter,
+      onResult: (r) => {
+        if (r.status === 'fail') out(` \u00d7 ${r.name}\n${(r.error ?? '').split('\n').map((l) => `     ${l}`).join('\n')}\n`);
+        else if (verbose) out(` ${r.status === 'pass' ? '\u2713' : '-'} ${r.name}${r.status === 'pass' ? ` (${r.ms}ms)` : ` (${r.status})`}\n`);
+      },
+    });
+    for (const e of sum.errors) out(` \u00d7 ${e.split('\n').join('\n     ')}\n`);
+    out(` ${sum.failed ? 'FAIL' : 'PASS'} ${rel}: ${sum.passed} passed${sum.failed ? `, ${sum.failed} failed` : ''}${sum.skipped ? `, ${sum.skipped} skipped` : ''} (${(sum.ms / 1000).toFixed(1)}s)\n`);
+    failed += sum.failed; passed += sum.passed; skipped += sum.skipped;
+  }
+  if (names.length > 1) out(`Tests: ${passed} passed${failed ? `, ${failed} failed` : ''}${skipped ? `, ${skipped} skipped` : ''}\n`);
+  return failed ? 1 : 0;
+}

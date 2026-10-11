@@ -331,20 +331,26 @@ export async function evaluateBundle(code: string): Promise<Record<string, Recor
   // Lazy live modules it imports statically (build.ts NEEDS_PREFIX)
   const first = /^\/\/ hotswap-needs: (.*)\n/.exec(code);
   if (first) for (const key of JSON.parse(first[1]) as string[]) await liveImport(key);
-  const dataUrl = () => 'data:text/javascript;base64,' + btoa(unescape(encodeURIComponent(code)));
-  let mod: any;
-  let url: string | null = null;
-  try { url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' })); } catch { /* no blob: URLs */ }
-  // (Node makes blob: URLs it can't import; it imports data: ones)
-  if (url?.startsWith('blob:nodedata:')) { URL.revokeObjectURL(url); url = null; }
-  try {
-    mod = await import(/* @vite-ignore */ url ?? dataUrl());
-  } finally {
-    if (url) URL.revokeObjectURL(url);
-  }
+  const mod: any = await importCode(code);
   const keys: string[] = mod.__keys;
   if (!Array.isArray(keys)) throw new Error('not a hotswap bundle (no __keys)');
   const out: Record<string, Record<string, unknown>> = {};
   keys.forEach((k, i) => { out[k] = mod[`m${i}`]; });
   return out;
+}
+
+/** Import JavaScript source as an ES module (a blob: URL; a data: URL under Node) */
+let imports = 0;
+export async function importCode(code: string): Promise<any> {
+  // (a fresh module every time, even for the same source: data: URLs are cached)
+  code += `\n// ${++imports}\n`;
+  let url: string | null = null;
+  try { url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' })); } catch { /* no blob: URLs */ }
+  // (Node makes blob: URLs it can't import; it imports data: ones)
+  if (url?.startsWith('blob:nodedata:')) { URL.revokeObjectURL(url); url = null; }
+  try {
+    return await import(/* @vite-ignore */ url ?? 'data:text/javascript;base64,' + btoa(unescape(encodeURIComponent(code))));
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+  }
 }

@@ -347,3 +347,79 @@ describe('hotswap: persistence', () => {
     expect(g.greet()).toBe('hello p');
   });
 });
+
+describe('hotswap: the in-tab test runner', () => {
+  const suite = `
+import { describe, it, test, expect, beforeEach, afterAll, vi } from 'vitest';
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { helper } from '@shiro/hs-fixture/util';
+const log = [];
+describe('outer', () => {
+  let n = 0;
+  beforeEach(() => { n++; });
+  it('passes', () => { expect(helper()).toBe('util'); expect(n).toBe(1); });
+  it('fails', () => { expect({ a: [1, 2] }).toEqual({ a: [1, 3] }); });
+  it.each([[1, 2, 3], [2, 2, 4]])('adds %i + %i', (a, b, c) => { expect(a + b).toBe(c); });
+  it.skip('skipped', () => { throw new Error('ran'); });
+  test.todo('later');
+  it('matchers', async () => {
+    expect('hello world').toContain('world');
+    expect([1, { x: 2 }]).toContainEqual({ x: 2 });
+    expect({ a: 1, b: { c: 2 } }).toMatchObject({ b: { c: expect.any(Number) } });
+    expect(() => { throw new TypeError('bad'); }).toThrow(/ba/);
+    expect(5).not.toBeGreaterThan(5);
+    await expect(Promise.resolve(3)).resolves.toBe(3);
+    await expect(Promise.reject(new Error('no'))).rejects.toThrow('no');
+    const f = vi.fn((x) => x * 2);
+    expect(f(4)).toBe(8);
+    expect(f).toHaveBeenCalledWith(4);
+    expect(join('/a', 'b', '../c')).toBe('/a/c');
+  });
+  it('isolated storage', async () => {
+    localStorage.setItem('k', 'v');
+    expect(localStorage.getItem('k')).toBe('v');
+    expect(globalThis.__tcTestEnv.localStorage.getItem('k')).toBe('v');
+  });
+  it('node:fs throws when used', () => { expect(() => readFileSync('/x')).toThrow(/node:fs isn't available/); });
+  it('times out', async () => { await new Promise((r) => setTimeout(r, 200)); }, 20);
+  afterAll(() => { log.push('afterAll'); });
+});
+`;
+  it('runs a vitest suite built from a checkout, with isolated storage', async () => {
+    const files: Record<string, string> = {
+      '/co/tests/x.test.ts': suite,
+      '/co/src/hs-fixture/util.ts': `export const helper = (): string => 'util';\n`,
+    };
+    const fs: HotswapFs = { async readFile(p) { if (p in files) return files[p]; throw new Error('ENOENT ' + p); } };
+    const { buildTest } = await import('@shiro/hotswap/build');
+    const { runTestBundle } = await import('@shiro/hotswap/test-runner');
+    const before = (globalThis as any).localStorage;
+    const out = await buildTest(fs, { root: '/co', file: 'tests/x.test.ts', build: esbuild.build as any });
+    expect(out.code).toContain('globalThis.__tcTestEnv.localStorage');
+    const seen: string[] = [];
+    const sum = await runTestBundle(out.code, { onResult: (r) => seen.push(`${r.status} ${r.name}`) });
+    expect(sum.errors).toEqual([]);
+    expect(seen).toEqual([
+      'pass outer > passes',
+      'fail outer > fails',
+      'pass outer > adds 1 + 2',
+      'pass outer > adds 2 + 2',
+      'skip outer > skipped',
+      'todo outer > later',
+      'pass outer > matchers',
+      'pass outer > isolated storage',
+      'pass outer > node:fs throws when used',
+      'fail outer > times out',
+    ]);
+    expect(sum.results.find((r) => r.name === 'outer > fails')!.error).toMatch(/expected \{a: \[1, 2\]\} to deeply equal \{a: \[1, 3\]\}/);
+    expect(sum.results.find((r) => r.name === 'outer > times out')!.error).toMatch(/timed out in 20ms/);
+    expect([sum.passed, sum.failed, sum.skipped]).toEqual([6, 2, 2]);
+    // the page's storage was never touched
+    expect((globalThis as any).localStorage).toBe(before);
+
+    // -t filters by full name
+    const only = await runTestBundle(out.code, { filter: /adds/ });
+    expect(only.results.map((r) => r.name)).toEqual(['outer > adds 1 + 2', 'outer > adds 2 + 2']);
+  });
+});

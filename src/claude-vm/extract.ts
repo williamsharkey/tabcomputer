@@ -87,25 +87,121 @@ export function launcherSource(): string {
 /**
  * `ws` (built into Bun, so not in the bundle): a client over the page's
  * WebSocket. No server; Claude Code starts without one.
+ *
+ * The page's WebSocket sends no headers, and wss://api.anthropic.com wants
+ * `Authorization` (the voice stream): those connections go through the
+ * page's server (server.mjs `/api/ws-proxy`), which opens the real one with
+ * the URL, headers and protocols sent here as the first message (not in the
+ * URL: tokens stay out of access logs), answers `{"type":"open"}` (or why
+ * not), and then passes every frame both ways. `TABCOMPUTER_VM_WS_PROXY`
+ * names another origin for that route (tests).
  */
 export function wsShimSource(): string {
+  // (no backslashes, backticks or dollar-braces below: this is a template literal)
   return `const { EventEmitter } = require('events');
+const PROXIED = /^wss:[/][/]api[.]anthropic[.]com(:443)?[/]/i;
+function proxyUrl() {
+  let o = process.env.TABCOMPUTER_VM_WS_PROXY || '';
+  if (!o) { try { o = require('tabcomputer:claude-vm').origin() || ''; } catch (e) { o = ''; } }
+  return o ? o.replace(/[/]+$/, '').replace(/^http/, 'ws') + '/api/ws-proxy' : null;
+}
+function headersOf(opts) {
+  const h = {}, src = opts && opts.headers;
+  if (!src || typeof src !== 'object') return h;
+  if (typeof src.forEach === 'function' && !Array.isArray(src)) { src.forEach((v, k) => { h[k] = String(v); }); return h; }
+  for (const k of Object.keys(src)) if (src[k] != null) h[k] = Array.isArray(src[k]) ? src[k].join(', ') : String(src[k]);
+  return h;
+}
 class WebSocket extends EventEmitter {
   constructor(url, protocols, opts) {
     super();
-    if (protocols && !Array.isArray(protocols) && typeof protocols === 'object') protocols = undefined;
-    const ws = this._ws = new globalThis.WebSocket(String(url), protocols);
+    if (protocols && !Array.isArray(protocols) && typeof protocols === 'object') { opts = protocols; protocols = undefined; }
+    this.url = String(url);
+    this._state = 0;
+    this._protocol = '';
+    const via = PROXIED.test(this.url) ? proxyUrl() : null;
+    let ws;
+    try { ws = this._ws = new globalThis.WebSocket(via || this.url, via ? undefined : protocols); } catch (e) {
+      this._ws = null;
+      Promise.resolve().then(() => { this._error(e); this._closed(1006, ''); });
+      return;
+    }
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => { this.emit('open'); this.onopen?.({ target: this }); };
-    ws.onmessage = (e) => { const d = typeof e.data === 'string' ? e.data : Buffer.from(e.data); this.emit('message', d, typeof e.data !== 'string'); this.onmessage?.({ data: d, target: this }); };
-    ws.onerror = () => { const err = new Error('WebSocket error'); this.emit('error', err); this.onerror?.({ error: err, message: err.message, target: this }); };
-    ws.onclose = (e) => { this.emit('close', e.code, Buffer.from(e.reason || '')); this.onclose?.({ code: e.code, reason: e.reason, target: this }); };
+    let hello = !via;
+    ws.onopen = () => {
+      if (!via) return this._opened(ws.protocol);
+      ws.send(JSON.stringify({ url: this.url, headers: headersOf(opts), protocols: protocols == null ? [] : [].concat(protocols) }));
+    };
+    ws.onmessage = (e) => {
+      if (!hello) {
+        hello = true;
+        let m = {};
+        try { m = JSON.parse(String(e.data)); } catch (_) { /* not the proxy's */ }
+        if (m.type === 'open') return this._opened(m.protocol || '');
+        if (m.type === 'unexpected-response') return this._unexpected(m);
+        this._failure = m.message || 'ws-proxy refused the connection';
+        return;
+      }
+      if (this._state !== 1) return;
+      const d = typeof e.data === 'string' ? e.data : Buffer.from(e.data);
+      this.emit('message', d, typeof e.data !== 'string');
+      if (this.onmessage) this.onmessage({ data: d, target: this });
+    };
+    ws.onerror = () => { if (!this._rejected && !this._errored) this._error(new Error(this._failure || 'WebSocket error')); };
+    ws.onclose = (e) => {
+      if (!this._everOpen) {
+        if (!this._rejected && !this._errored) this._error(new Error(this._failure || 'WebSocket error'));
+        return this._closed(1006, '');
+      }
+      this._closed(e.code, e.reason || '');
+    };
   }
-  get readyState() { return this._ws.readyState; }
-  get protocol() { return this._ws.protocol; }
-  send(data, opts, cb) { if (typeof opts === 'function') cb = opts; try { this._ws.send(data); cb?.(); } catch (e) { cb?.(e); } }
-  close(code, reason) { this._ws.close(code, reason); }
-  terminate() { this._ws.close(); }
+  _opened(protocol) {
+    if (this._state !== 0) return;
+    this._state = 1; this._everOpen = true; this._protocol = protocol || '';
+    this.emit('open');
+    if (this.onopen) this.onopen({ target: this });
+  }
+  _error(err) {
+    this._errored = true;
+    this.emit('error', err);
+    if (this.onerror) this.onerror({ error: err, message: err.message, target: this });
+  }
+  _closed(code, reason) {
+    if (this._done) return;
+    this._done = true; this._state = 3;
+    this.emit('close', code, Buffer.from(reason || ''));
+    if (this.onclose) this.onclose({ code: code, reason: reason, target: this });
+  }
+  // as ws: the upgrade was answered with an HTTP status (401, 403, ...)
+  _unexpected(m) {
+    this._rejected = true;
+    this._state = 2;
+    const res = Object.assign(new EventEmitter(), { statusCode: m.status || 0, statusMessage: m.statusText || '', headers: m.headers || {}, resume() {}, destroy() {} });
+    const req = { destroy() {}, abort() {} };
+    if (this.listenerCount('unexpected-response') > 0) this.emit('unexpected-response', req, res);
+    else this._error(new Error('Unexpected server response: ' + res.statusCode));
+  }
+  get readyState() { return this._state; }
+  get protocol() { return this._protocol; }
+  get bufferedAmount() { return this._ws ? this._ws.bufferedAmount : 0; }
+  send(data, opts, cb) {
+    if (typeof opts === 'function') { cb = opts; opts = undefined; }
+    if (this._state !== 1) {
+      const err = new Error('WebSocket is not open: readyState ' + this._state);
+      if (this._state === 0) throw err;
+      if (cb) cb(err);
+      return;
+    }
+    if (opts && opts.binary === false && typeof data !== 'string') data = Buffer.from(data).toString();
+    try { this._ws.send(data); if (cb) cb(); } catch (e) { if (cb) cb(e); }
+  }
+  close(code, reason) {
+    if (this._state >= 2 || !this._ws) return;
+    this._state = 2;
+    try { if (code === 1000 || (code >= 3000 && code <= 4999)) this._ws.close(code, reason); else this._ws.close(); } catch (e) { this._ws.close(); }
+  }
+  terminate() { if (this._ws && this._state < 3) { this._state = 2; this._ws.close(); } }
   ping() {} pong() {}
 }
 WebSocket.CONNECTING = 0; WebSocket.OPEN = 1; WebSocket.CLOSING = 2; WebSocket.CLOSED = 3;

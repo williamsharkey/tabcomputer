@@ -112,6 +112,7 @@ import { requestPersistentStorage, setActiveFileSystem, storageInfo } from './st
 import { installNodeWorkerBoot } from './node-worker/boot';
 import { bootStarted, bootFinished, bootStep, safeMode } from './safe-mode';
 import { safeModeCmd } from './commands/safe-mode';
+import * as agentResume from './agent-resume';
 
 /**
  * Register a command in both the CommandRegistry (for execution) and
@@ -691,6 +692,7 @@ async function main() {
     desktop: desktop?.wm ?? null, // Window manager API (docs/DESKTOP.md), null in the classic UI
     uiMode: mode,
     profile, // The product profile (src/profile.ts, docs/PROFILES.md)
+    agentResume, // Which agent (claude, codex) each terminal runs, and its resume command (src/agent-resume.ts)
     unbecome: deactivateBecomeMode, // Exit app mode from browser console
     closeSplit: closeSplitView, // Close split pane from browser console
     lastSeedGif: null as Uint8Array | null, // Last generated seed GIF bytes (for demos/drag)

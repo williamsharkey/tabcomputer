@@ -1029,9 +1029,10 @@ export function createFsModule(deps: FsDeps): any {
         const n = fd0.tryRead(buf, off, len);
         if (n !== null) return n;
         // A guest blocks until bytes come, as node's read of a pipe does (nothing is read
-        // before the script starts); not while process.stdin takes them as a stream
+        // before the script starts); not while process.stdin takes them as a stream, nor
+        // for /dev/tty (drained until EAGAIN)
         const readStdin = nodeGuestOf(deps.ctx)?.readStdinSync;
-        if (readStdin && !fd0.flowing) {
+        if (readStdin && !fd0.flowing && !fdInfo?.tty) {
           const got = readStdin(buf.subarray(off, off + len));
           if (got >= 0) return got;
         }

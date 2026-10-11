@@ -247,6 +247,45 @@ What 2.1.296 calls, from its own code:
 
 Tests: `claude-vm-addons.test.ts`.
 
+### Voice: the speech-to-text stream
+
+Holding space sends the microphone's PCM to Anthropic's speech-to-text over a
+WebSocket (2.1.296, chunk `voice_stream`): `new WebSocket(url, { headers,
+proxy, tls })` from `ws` to
+`wss://api.anthropic.com/api/ws/speech_to_text/voice_stream?encoding=linear16&sample_rate=16000&channels=1&endpointing_ms=300&utterance_end_ms=1000&language=en&use_conversation_engine=true`
+with `Authorization: Bearer <OAuth token>`, `User-Agent`, `x-app: cli`,
+`anthropic-client-platform` and, with keyterms, `x-config-keyterms`. It sends
+`{"type":"KeepAlive"}` at once and every 8 s, the audio as binary frames, and
+`{"type":"CloseStream"}` to finish; the server answers JSON text frames
+(`TranscriptInterim`, `TranscriptText`, `TranscriptEndpoint`,
+`TranscriptError`, `error`). A refused upgrade is ws's `unexpected-response`.
+
+The page's WebSocket can't send headers, so the stream went out without
+`Authorization`, and the API answered
+`{"type":"error","error":{"type":"permission_error","message":"Invalid authorization",...},"request_id":...}`
+and closed 1008: Claude Code showed "Voice stream error: unstructured error
+frame (keys: type, error, request_id)" (it reads only an error frame's
+`message`).
+
+`--vm`'s `ws` (`wsShimSource` in `extract.ts`) now sends `wss://api.anthropic.com/...`
+through the page's own server: it opens `/api/ws-proxy` on the page's origin
+(`require('tabcomputer:claude-vm').origin()`, the page's in a node Worker too)
+and sends `{url, headers, protocols}` as the first message, so the token never
+lands in a URL or an access log. server.mjs (`createWsProxy`) opens the
+upstream with those headers (minus hop-by-hop, Cookie, Origin, Sec-WebSocket-*),
+answers `{"type":"open"}` (or `{"type":"unexpected-response","status":N}`, or
+`{"type":"error"}`), and from then on passes every frame both ways as it came
+(text or binary) and the close codes and reasons. The shim reports `open`,
+`message`, `unexpected-response` and `close` as ws does. Only
+`wss://api.anthropic.com` (port 443) is reachable through it; a page of
+another site is refused by its Origin; 8 connections per IP. Other URLs still
+use the page's WebSocket directly. nginx already passes WebSocket upgrades for
+every path (`Upgrade`/`Connection` in `location /`).
+
+Tests: `claude-vm-ws-proxy.test.ts` runs server.mjs with a stand-in for the API
+(`TABCOMPUTER_ANTHROPIC_WS_UPSTREAM`) and the shim on tabcomputer's node
+(`TABCOMPUTER_VM_WS_PROXY` names the server), in the page and as a guest.
+
 ## Results
 
 Local Chromium, `bench/claude-tui.mjs` (2 runs × 30 keys; `--vm` warm, after
@@ -327,9 +366,9 @@ and checked in Chromium where noted. Most user-visible first.
 | 8 | Git worktrees (`--worktree`, EnterWorktree): `git worktree add` | medium-low | open, not `--vm`-specific: the builtin git has only `worktree list` (`git-route.ts`) and refuses linked worktrees; Debian's git (`debian install`) has them |
 | 9 | OAuth for remote MCP servers: the callback is `localhost:PORT/callback` in the tab, which the user's browser can't reach | low-medium | open, not `--vm`-specific; Claude Code's own fallback (paste the redirect URL in `/mcp`) works |
 | 10 | Node builtins node-compat lacked, so they were auto-stubbed (they exist and do nothing; a `*Sync` returns `''`) | low-medium | **fixed**: `fs.ftruncateSync` (the in-place write fallback kept the old tail), `fchmodSync`, `mkdtempSync` (returned `''`), `statfs(Sync)`, `fs/promises` `lutimes`/`statfs`, `os.getPriority`/`setPriority`, `url.domainToASCII`, `v8.getHeapSpaceStatistics`, `tls.checkServerIdentity`. **Open**: `crypto.createCipheriv`/`createDecipheriv` (AES-256-GCM: the claude.ai MCP connectors' discovery cache), `generateKeyPairSync`/`sign`/`verify` (Cowork remote device keys, DPoP), `X509Certificate` (custom CA and gateway checks), `zlib.createZstdDecompress` (the native updater, which tabcomputer's `claude update` replaces), `http2.Http2ServerRequest`, `child_process.ChildProcess`. `claude-vm-node-builtins.test.ts` checks every builtin member the bundle imports |
-| 11 | `new WebSocket(url, { protocols, headers, ... })` (Bun's options form): the MCP `ws` transport, remote-io, the agent proxy; the browser's WebSocket takes no options and sends no headers | low | open |
+| 11 | `new WebSocket(url, { protocols, headers, ... })` (Bun's options form): the MCP `ws` transport, remote-io, the agent proxy; the browser's WebSocket takes no options and sends no headers | low | open, except `wss://api.anthropic.com`, which goes through `/api/ws-proxy` with its headers (the voice stream) |
 | 12 | Plugin function hooks: `new Worker(hooks-worker.js)`, `Bun.Transpiler` for `.ts`, and a self re-exec (6) | low | open |
-| 13 | Voice input, the native clipboard addon, `claude gateway` (`Bun.SQL`), `Bun.WebView` | low | the two addons are browser-backed stand-ins (Build 986, `claude-vm/addons/`): the microphone works, the voice stream doesn't (its `ws` needs an `Authorization` header the page's WebSocket can't send); `claude gateway` runs under `--x86`; `Bun.WebView` is unused |
+| 13 | Voice input, the native clipboard addon, `claude gateway` (`Bun.SQL`), `Bun.WebView` | low | the two addons are browser-backed stand-ins (Build 986, `claude-vm/addons/`): the microphone works; the voice stream goes through server.mjs's `/api/ws-proxy`, which adds its `Authorization` header (Voice, above; untested live); `claude gateway` runs under `--x86`; `Bun.WebView` is unused |
 | 14 | Telemetry, error reports, feature flags, Remote Control | by design | off unless `TABCOMPUTER_CLAUDE_TELEMETRY=1` (`quietEnv`), as for native |
 | 15 | The npm build's tabcomputer defaults (`node-compat/process.ts`: `ANTHROPIC_MODEL`, background tasks off, tool concurrency 4) key on a `claude-code` script path | by design | `--vm` keeps Claude Code's own defaults, as native does, so background Bash tasks are on: untested live |
 | 16 | `bun:ffi` (ttyname, `*at` directory streams, `login_tty`), `bun:jsc` | none seen | every use falls back when `dlopen` throws; `bun:jsc`'s are no-ops |
@@ -349,11 +388,10 @@ covered by `claude-restore.mjs` with `CLAUDE_BUILD=vm`.
   too: its ~1.2 GB was mostly them). The first run's extraction leaves ~250 MB of
   garbage in the page's JS that V8 collects within a minute or so. An exited
   claude's Worker (~150 MB) stays pooled for the next node, warm, for 2 minutes.
-- Voice input end to end: the microphone is there, but the voice stream is a
-  `ws` WebSocket to `wss://api.anthropic.com/api/ws/speech_to_text/voice_stream`
-  with an `Authorization: Bearer` header, and `--vm`'s `ws` is the page's
-  WebSocket, which can't send headers. It needs a `ws` over the TCP relay
-  (node-compat's tls) or a server route that adds the header.
+- Voice input end to end with a real account: the stream goes through
+  `/api/ws-proxy` (Voice, above), tested against a stand-in for the API only.
+  Still to see live: a transcript from the real server through tabcomputer.com's
+  nginx and server.
 - Background sessions in a real tab: their pieces work in the tests (the pty
   host's terminal, its Unix socket, Claude Code started again through
   execPath), the whole chain (`claude --bg`, its daemon, attaching) is

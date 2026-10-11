@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { readFile, writeFile, stat, readdir, unlink, mkdir, rename, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { realpathSync, readFileSync, readdirSync, createReadStream } from 'node:fs';
@@ -1763,9 +1763,164 @@ async function handleBrowseFetch(req, res) {
   req.pipe(up);
 }
 
+// --- WebSocket proxy for Anthropic's API (/api/ws-proxy) ---
+// A page's WebSocket can't send headers, and Claude Code's voice stream
+// (wss://api.anthropic.com/api/ws/speech_to_text/voice_stream) authenticates
+// with `Authorization: Bearer <oauth token>`. claude --vm's `ws`
+// (src/claude-vm/extract.ts, wsShimSource) connects here instead and sends
+// the real URL and headers as its first message (never in the URL, so tokens
+// stay out of access logs); this server opens the upstream WebSocket with
+// them and pipes frames both ways, text and binary, and the close codes.
+// Protocol (docs/CLAUDE_VM.md, "Voice"):
+//   client → first frame, text: {"url": "wss://api.anthropic.com/...", "headers": {...}, "protocols": [...]}
+//   server → first frame, text: {"type": "open", "protocol": "..."}
+//                             | {"type": "unexpected-response", "status": 401, "headers": {...}}
+//                             | {"type": "error", "message": "..."}
+//   after "open": every frame in either direction is the upstream's own.
+// Only WS_PROXY_HOSTS are reachable, so it is no open relay. A browser page of
+// another site can't use it (its Origin isn't this host); a client without an
+// Origin isn't a browser and could reach the API itself.
+// TABCOMPUTER_ANTHROPIC_WS_UPSTREAM (tests): the ws(s)://host:port standing in
+// for https://api.anthropic.com.
+export const WS_PROXY_PATH = '/api/ws-proxy';
+const WS_PROXY_HOSTS = new Set(['api.anthropic.com']);
+const WS_PROXY_DROP_HEADERS = /^(host|connection|upgrade|origin|cookie|content-length|transfer-encoding|keep-alive|te|trailer|expect|proxy-.*|sec-websocket-.*)$/i;
+
+export function createWsProxy({ upstreamOrigin = process.env.TABCOMPUTER_ANTHROPIC_WS_UPSTREAM || '', maxPerIp = 8, maxTotal = 500, log = console.log } = {}) {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false });
+  const perIp = new Map();
+  const live = new Set();
+  const clientIp = (req) => {
+    const peer = req.socket.remoteAddress || '';
+    if (peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1') {
+      const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (xff.length) return xff[xff.length - 1];
+    }
+    return peer;
+  };
+  /** The upstream URL for an allowed `wss://` URL, else null */
+  const upstreamOf = (raw) => {
+    let u;
+    try { u = new URL(String(raw)); } catch { return null; }
+    if (u.protocol !== 'wss:' || !WS_PROXY_HOSTS.has(u.hostname) || (u.port && u.port !== '443') || u.username || u.password) return null;
+    if (!upstreamOrigin) return u.href;
+    return upstreamOrigin.replace(/\/+$/, '') + u.pathname + u.search;
+  };
+  const headersOf = (h) => {
+    const out = {};
+    if (!h || typeof h !== 'object') return out;
+    for (const [k, v] of Object.entries(h)) {
+      if (typeof v !== 'string' && typeof v !== 'number') continue;
+      if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(k) || WS_PROXY_DROP_HEADERS.test(k)) continue;
+      const s = String(v);
+      if (/[\r\n\0]/.test(s)) continue;
+      out[k] = s;
+    }
+    return out;
+  };
+  // ws's close() takes 1000 and 3000-4999 (and the other sendable codes); 1005 is "no code"
+  const closeWith = (ws, code, reason) => {
+    try {
+      if (code === 1005 || code === undefined) ws.close();
+      else if (code === 1006) ws.terminate();
+      else ws.close(code, reason);
+    } catch { try { ws.close(1011); } catch { ws.terminate(); } }
+  };
+
+  function handleUpgrade(req, socket, head) {
+    const origin = req.headers['origin'];
+    if (origin) {
+      let oh = '';
+      try { oh = new URL(origin).host.toLowerCase(); } catch { /* bad origin */ }
+      if (oh !== String(req.headers.host || '').toLowerCase()) return rejectUpgrade(socket, 403, 'Forbidden');
+    }
+    const ip = clientIp(req);
+    const n = perIp.get(ip) || 0;
+    if (live.size >= maxTotal) return rejectUpgrade(socket, 503, 'Busy');
+    if (n >= maxPerIp) return rejectUpgrade(socket, 429, 'Too many connections');
+    perIp.set(ip, n + 1);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      const m = (perIp.get(ip) || 1) - 1;
+      if (m > 0) perIp.set(ip, m); else perIp.delete(ip);
+    };
+    socket.once('close', release);
+    wss.handleUpgrade(req, socket, head, (client) => onClient(client, ip, release));
+  }
+
+  function onClient(client, ip, release) {
+    live.add(client);
+    let upstream = null;
+    let opened = false;
+    let target = '';
+    const pending = [];
+    const started = Date.now();
+    const hello = setTimeout(() => closeWith(client, 1008, 'no request'), 10_000);
+    const fail = (msg, code = 1011) => {
+      try { client.send(JSON.stringify({ type: 'error', message: msg })); } catch { /* gone */ }
+      closeWith(client, code, msg.slice(0, 120));
+    };
+    client.on('message', (data, isBinary) => {
+      if (upstream) {
+        if (opened) upstream.send(data, { binary: isBinary });
+        else pending.push([data, isBinary]);
+        return;
+      }
+      clearTimeout(hello);
+      let reqMsg;
+      try { reqMsg = isBinary ? null : JSON.parse(String(data)); } catch { reqMsg = null; }
+      const url = reqMsg && upstreamOf(reqMsg.url);
+      if (!url) return fail('ws-proxy: only wss://api.anthropic.com is reachable here', 1008);
+      target = new URL(reqMsg.url).pathname;
+      const protocols = Array.isArray(reqMsg.protocols) ? reqMsg.protocols.filter((p) => typeof p === 'string') : typeof reqMsg.protocols === 'string' ? [reqMsg.protocols] : [];
+      try {
+        upstream = new WebSocket(url, protocols, { headers: headersOf(reqMsg.headers), handshakeTimeout: 15_000, maxPayload: 16 * 1024 * 1024 });
+      } catch (e) {
+        return fail(`ws-proxy: ${e.message}`);
+      }
+      upstream.on('open', () => {
+        opened = true;
+        client.send(JSON.stringify({ type: 'open', protocol: upstream.protocol || '' }));
+        for (const [d, b] of pending.splice(0)) upstream.send(d, { binary: b });
+      });
+      upstream.on('unexpected-response', (_r, res) => {
+        const headers = {};
+        for (const k of ['content-type', 'cf-mitigated', 'cf-ray', 'request-id', 'x-request-id', 'retry-after']) if (res.headers[k] !== undefined) headers[k] = String(res.headers[k]);
+        res.resume();
+        try { client.send(JSON.stringify({ type: 'unexpected-response', status: res.statusCode || 0, statusText: res.statusMessage || '', headers })); } catch { /* gone */ }
+        upstream.terminate?.();
+        closeWith(client, 1000);
+      });
+      upstream.on('message', (d, b) => { if (client.readyState === WebSocket.OPEN) client.send(d, { binary: b }); });
+      upstream.on('error', (e) => { if (!opened) fail(`ws-proxy: ${e.message}`); });
+      upstream.on('close', (code, reason) => {
+        if (opened && client.readyState === WebSocket.OPEN) closeWith(client, code, String(reason || ''));
+      });
+    });
+    client.on('close', (code, reason) => {
+      clearTimeout(hello);
+      live.delete(client);
+      release();
+      if (upstream && upstream.readyState === WebSocket.OPEN) closeWith(upstream, code, String(reason || ''));
+      else upstream?.terminate();
+      if (target) log(`[ws-proxy] ${ip} ${target} closed ${code} ms=${Date.now() - started}`);
+    });
+    client.on('error', () => upstream?.terminate());
+  }
+
+  return {
+    handleUpgrade,
+    stats: () => ({ connections: live.size }),
+    close() { for (const ws of live) ws.terminate(); wss.close(); },
+  };
+}
+
 // --- HTTP server ---
 const TCP_RELAY_CONFIG = tcpRelayConfigFromEnv();
 const tcpRelay = TCP_RELAY_CONFIG.enabled ? createTcpRelay(TCP_RELAY_CONFIG) : null;
+const wsProxy = createWsProxy();
 
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
@@ -1856,6 +2011,7 @@ server.on('upgrade', (req, socket, head) => {
     return wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   }
   if (pathname === '/tcp' && tcpRelay) return tcpRelay.handleUpgrade(req, socket, head);
+  if (pathname === WS_PROXY_PATH) return wsProxy.handleUpgrade(req, socket, head);
   rejectUpgrade(socket, 404, 'Not found');
 });
 const channels = new Map(); // channelId -> Set<WebSocket>

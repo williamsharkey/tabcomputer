@@ -35,7 +35,7 @@ Page (everything under `src/` is the engine; products are profiles):
 
 Server and tooling:
 
-- `server.mjs`: static hosting with COOP/COEP, API proxies, OAuth callback, git proxy, Debian mirror (`/debian/`), browse origins, and the TCP relay (`/tcp`). [docs/NETWORKING.md](docs/NETWORKING.md).
+- `server.mjs`: static hosting with COOP/COEP, API proxies (and `/api/ws-proxy`, a WebSocket to `wss://api.anthropic.com` with headers the page can't send: claude --vm's voice stream), git proxy, Debian mirror (`/debian/`), browse origins, and the TCP relay (`/tcp`). [docs/NETWORKING.md](docs/NETWORKING.md).
 - `deploy/tabcomputer/`: the droplet (cloud-init, `release.sh`). `profiles/tabcomputer/server.env` is its server environment.
 - `tests/`: the vitest suite (`tests/tests/shiro-vitest/`), conformance suites (`tests/conformance/`), browser scripts (`tests/browser/`).
 - `scripts/browser-check.mjs`, `scripts/browser-tui.mjs`: drive a built app in headless Chromium.

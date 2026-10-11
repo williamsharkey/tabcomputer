@@ -574,8 +574,10 @@ export class Executor {
     const w = new ReplyWriter();
     const dbg = this.ext.WEBGL_debug_renderer_info as { UNMASKED_RENDERER_WEBGL: number } | undefined;
     const native = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-    const version = c.core ? `${c.major}.${c.minor} (Core Profile) tabcomputer` : '2.1 tabcomputer';
-    const glsl = c.core ? '3.30 tabcomputer' : '1.20 tabcomputer';
+    // a compatibility context asked for as 3.0+ (Krita 5 needs 3.0) says so: fixed function stays, and GLSL 1.30+ translates like core's
+    const [major, minor] = c.core || c.major * 10 + c.minor >= 30 ? [c.major, c.minor] : [2, 1];
+    const version = c.core ? `${major}.${minor} (Core Profile) tabcomputer` : major * 10 + minor >= 32 ? `${major}.${minor} (Compatibility Profile) tabcomputer` : `${major}.${minor} tabcomputer`;
+    const glsl = `${({ 21: '1.20', 30: '1.30', 31: '1.40', 32: '1.50', 33: '3.30' } as Record<number, string>)[major * 10 + minor] ?? '1.20'} tabcomputer`;
     w.str('tabcomputer');
     w.str(`tabcomputer WebGL2 (${native})`);
     w.str(version);
@@ -610,7 +612,7 @@ export class Executor {
       [E.MAX_PROGRAM_TEXEL_OFFSET, num(p(gl.MAX_PROGRAM_TEXEL_OFFSET))], [E.MIN_PROGRAM_TEXEL_OFFSET, num(p(gl.MIN_PROGRAM_TEXEL_OFFSET))],
       [E.MAX_SERVER_WAIT_TIMEOUT, [0]], [E.MAX_TEXTURE_BUFFER_SIZE, [65536]], [E.MAX_RECTANGLE_TEXTURE_SIZE, [maxTex]],
       [E.MAX_GEOMETRY_OUTPUT_VERTICES, [0]], [E.MAX_CLIP_DISTANCES, [FF_CLIP_PLANES]],
-      [E.MAJOR_VERSION, [c.core ? c.major : 2]], [E.MINOR_VERSION, [c.core ? c.minor : 1]], [E.NUM_EXTENSIONS, [this.extensions(c).length]],
+      [E.MAJOR_VERSION, [major]], [E.MINOR_VERSION, [minor]], [E.NUM_EXTENSIONS, [this.extensions(c).length]],
       [E.CONTEXT_PROFILE_MASK, [c.core ? 1 : 2]], [E.CONTEXT_FLAGS, [0]],
       [E.NUM_COMPRESSED_TEXTURE_FORMATS, [0]], [E.NUM_SHADING_LANGUAGE_VERSIONS, [1]], [E.NUM_PROGRAM_BINARY_FORMATS, [0]],
       [E.DOUBLEBUFFER, [1]], [E.STEREO, [0]], [E.SAMPLE_BUFFERS, [cfg?.samples ? 1 : 0]], [E.SAMPLES, [cfg?.samples ?? 0]],

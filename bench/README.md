@@ -110,6 +110,7 @@ perf-kernel use the same definitions.
 | `claude_native.turn` | Enter on a prompt → the streamed mock reply |
 | `claude_native.exit.{cold,warm}` | `/exit` Enter → the shell's prompt line back (then a marker the shell prints confirms it reads input); `exit_hung.*` counts launches still running after 120 s, which the suite kills from a side shell to go on |
 | `claude_npm.*` | the same for `claude --npm` (installed before the round) |
+| `claude_vm.*` | the same for `claude --vm` (the native build's JavaScript on the page's engine); `claude_vm.extract` is the first `claude --vm --version` of the profile, the one-time extraction from the binary, kept out of the start times |
 
 `claude_native.native.*` runs the same binary on this machine's Linux in a
 pty (`lib/native-pty.py`; needs musl's loader at `/lib/ld-musl-x86_64.so.1`,

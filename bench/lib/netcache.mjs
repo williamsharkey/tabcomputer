@@ -3,6 +3,8 @@
 // (which honours the environment's proxy and CA bundle; headless Chromium
 // here does not) and kept.
 import { execFile } from 'node:child_process';
+import { createReadStream, statSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -58,8 +60,33 @@ export class NetCache {
   }
 
   /** Install on a Playwright BrowserContext: everything not from `localOrigin` goes through the cache. */
+  /**
+   * DevTools hands a fulfilled body over in one message, capped at 100 MiB
+   * (base64 adds a third): a bigger one closes the browser's connection
+   * (npm's @openai/codex linux-x64 package). Those are served from a local
+   * HTTP server instead, with the same headers, and the request is
+   * redirected to it.
+   */
+  async bigServer() {
+    if (this.big) return this.big;
+    const srv = createServer((req, res) => {
+      const k = req.url.slice(1).replace(/[^0-9a-f]/g, '');
+      const body = join(this.dir, k), meta = join(this.dir, k + '.json');
+      if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders()); res.end(); return; }
+      if (!k || !existsSync(body) || !existsSync(meta)) { res.writeHead(404, corsHeaders()); res.end(); return; }
+      const info = JSON.parse(readFileSync(meta, 'utf8'));
+      res.writeHead(200, { 'content-type': info.contentType, 'content-length': statSync(body).size, ...corsHeaders() });
+      createReadStream(body).pipe(res);
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    srv.unref();
+    this.big = `http://127.0.0.1:${srv.address().port}/`;
+    return this.big;
+  }
+
   async install(context, localOrigin) {
-    await context.route((url) => !url.href.startsWith(localOrigin) && /^https?:/.test(url.protocol), async (route) => {
+    const big = await this.bigServer();
+    await context.route((url) => !url.href.startsWith(localOrigin) && !url.href.startsWith(big) && /^https?:/.test(url.protocol), async (route) => {
       const req = route.request();
       if (req.method() === 'OPTIONS') {
         return route.fulfill({ status: 204, headers: corsHeaders() });
@@ -67,6 +94,9 @@ export class NetCache {
       if (req.method() !== 'GET') return route.abort('failed');
       const r = await this.get(req.url(), req.headers());
       if (!r) return route.abort('internetdisconnected');
+      if (r.body.length > 64 * 1024 * 1024 && r.status === 200) {
+        return route.fulfill({ status: 307, headers: { location: big + this.key(req.url()), ...corsHeaders() } });
+      }
       await route.fulfill({ status: r.status, body: r.body, headers: { 'content-type': r.contentType, ...corsHeaders() } });
     });
   }

@@ -184,7 +184,8 @@ takes about `PBENCH_MS` (500) ms, guest clock. Full runs add
 `x86.blink_direct.*` (Blink's direct kernel channels,
 `TABCOMPUTER_BLINK_DIRECT=1`) and `x86.native.pipe_pingpong_1cpu` (pinned
 with `taskset -c 0`). WASI equivalents: `kernel.syscall_rtt.sab` (fstat
-round trip), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
+round trip), `kernel.pipe_pingpong` (kbench `ping` ↔ `pong`, two kernel
+pipes), `kernel.memcpy_bw.wasm` (kbench `memcpy 32 8`, memory.copy),
 `kernel.spawn_wait.wasm` (no fork in WASI).
 
 Native numbers on a VM depend on what else runs: an idle vCPU woken by a
@@ -307,8 +308,9 @@ node bench/ab.mjs origin/unix/integration --quick          # integration vs your
 ## Fixtures
 
 - `fixtures/kbench.c` → `kbench.wasm` (committed; `sh fixtures/build.sh`):
-  freestanding WASI program for syscall loops, pipe and file throughput and a
-  CPU loop, and `memcpy` (memory.copy). It times itself with
+  freestanding WASI program for syscall loops, pipe and file throughput, a
+  pipe ping-pong (`ping`/`pong`, joined both ways by `B.pingPong`), a CPU
+  loop, and `memcpy` (memory.copy). It times itself with
   `clock_time_get`, which the guest answers without a syscall.
 - x86: Go hello / net/http from `tests/.../fixtures/x86`, the Go cpuloop from
   `vendor/blink/bench`, a static glibc hello and pbench (rebuilt when

@@ -39,10 +39,17 @@ int main(void) {
   timer_settime(t, 0, &its, 0);
   printf("runs %d value %d other thread %d\n", runs >= 3, value, other);
   fflush(stdout);
+  // a notification taken before the timer stopped may still be running its
+  // function (a thread each, slow to start on a loaded machine): let them end
+  for (i = 0, st = runs; i < 50; ++i) {
+    usleep(100 * 1000);
+    if (runs == st && i >= 2) break;
+    st = runs;
+  }
   // armed again across a fork: only the parent's runs
+  runs = 0;
   its.it_value.tv_nsec = 200 * 1000 * 1000;
   timer_settime(t, 0, &its, 0);
-  runs = 0;
   if (!fork()) {
     usleep(500 * 1000);
     printf("child runs %d\n", runs);
@@ -50,6 +57,8 @@ int main(void) {
     _exit(0);
   }
   wait(&st);
+  for (i = 0; i < 500 && !runs; ++i) usleep(10 * 1000);
+  usleep(200 * 1000);  // (and no second one)
   printf("parent runs %d\n", runs);
   timer_delete(t);
   return 0;

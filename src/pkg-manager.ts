@@ -481,6 +481,11 @@ export async function installPackages(fs: FileSystem, index: PkgIndex, names: st
     if (status[p.name]) await removeFiles(fs, status[p.name]);
     status[p.name] = await installOne(fs, p, opts);
     await writeStatus(fs, status);
+    // The full git pushes to GitHub through gh's credential helper when signed in (git-credential.ts)
+    if (p.name === 'git' && signedInToGitHub()) {
+      const { ensureGitCredentialHelper } = await import('./git-credential');
+      await ensureGitCredentialHelper(fs as Parameters<typeof ensureGitCredentialHelper>[0]).catch(() => false);
+    }
   }
   return todo.map(p => p.name);
 }
@@ -1028,4 +1033,9 @@ async function runInPage(mod: WebAssembly.Module, entry: PkgEntry | undefined, a
     ctx.stderr += `${argv[0]}: ${e?.message || e}\n`;
     return 1;
   }
+}
+
+/** A saved GitHub sign-in (gh's token; github-auth.ts) */
+function signedInToGitHub(): boolean {
+  try { return typeof localStorage !== 'undefined' && !!localStorage.getItem('tabcomputer_github_token'); } catch { return false; }
 }

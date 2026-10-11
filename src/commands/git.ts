@@ -831,7 +831,13 @@ async function gitMain(ctx: CommandContext): Promise<number> {
               return 1;
             }
           } catch (e: any) {
-            if (e.code === 'HttpError' || e.statusCode === 401 || e.statusCode === 403) {
+            const http = e.statusCode || e.data?.statusCode;
+            if (http === 413) {
+              // nginx in front of the git proxy takes requests up to 100 MB; the built-in git
+              // sends more than the new objects (all of history for a new branch of a big repo)
+              ctx.stderr = `error: push failed: the upload was too large for tabcomputer's git proxy (HTTP 413, over 100 MB).\n`
+                + `The full git sends only what the remote lacks: pkg install git, then git push again.\n`;
+            } else if (e.code === 'HttpError' || e.statusCode === 401 || e.statusCode === 403) {
               ctx.stderr = `error: authentication failed (HTTP ${e.statusCode || e.data?.statusCode || ''})\nSign in again with: gh auth login (or gh auth refresh if the token lacks access)\n`;
             } else if (e.code === 'PushRejectedError') {
               ctx.stderr = `error: push rejected — remote has new commits. Pull first.\n`;

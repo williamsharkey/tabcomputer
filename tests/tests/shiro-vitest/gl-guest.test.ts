@@ -66,7 +66,7 @@ async function setup(root = ROOT!) {
     // as in the page, nothing forces the vendor: libglvnd asks Xshiro's GLX (GLX_VENDOR_NAMES_EXT)
     const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: { DISPLAY: ':0', PATH: '/usr/bin:/bin', HOME: '/root', ...env }, fds: { 0: new BufferFile(''), 1: out, 2: out } });
     const t0 = Date.now();
-    const status = await Promise.race([p.wait(), new Promise<number>((r) => setTimeout(() => { p.kill?.(9); r(-1); }, ms))]);
+    const status = await Promise.race([p.wait(), new Promise<number>((r) => setTimeout(() => { kernel.kill(p.pid, 9); r(-1); }, ms))]);
     return { status, out: out.text(), ms: Date.now() - t0 };
   };
   return { run, mock, frames, execs, logs, fs };

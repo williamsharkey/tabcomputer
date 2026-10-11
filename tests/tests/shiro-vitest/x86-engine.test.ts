@@ -506,13 +506,14 @@ describe.skipIf(!haveJit || !haveFuzz)('Blink engine: wasm JIT', () => {
 
   it.skipIf(!haveAlu)('runs every ALU form like the interpreter and the host CPU (alufuzz)', async () => {
     // add/or/adc/sbb/and/sub/xor/cmp in each width as reg, reg<-mem, mem<-reg, imm8, imm32 and mem<-imm, with the flags
-    // dead, pushed, or consumed by a fused jcc: one checksum line per form (5360), each run hot enough to compile
+    // dead, pushed, or consumed by a fused jcc, also across movd/addsd/movq (Blink 0139: Firefox's parser turned ++i
+    // into --i): one checksum line per form (6968), each run hot enough to compile
     const { shell } = await setup(readFileSync(aluBin));
     const jit = await run(shell, './prog 300');
     const interp = await run(shell, 'BLINK_WJIT=0 ./prog 300');
     expect(jit.exitCode).toBe(0);
     const lines = (s: string) => s.replace(/\r/g, '').trim().split('\n');
-    expect(lines(jit.output).length).toBe(5360);
+    expect(lines(jit.output).length).toBe(6968);
     expect(lines(jit.output)).toEqual(lines(interp.output));
     if (process.arch === 'x64') expect(lines(jit.output)).toEqual(lines(execFileSync(aluBin, ['300']).toString()));
   }, 600_000);

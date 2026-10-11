@@ -27,7 +27,7 @@ Columns: **installs**; **window**: a desktop window appears, with the time from 
 |---|---|---:|---:|:-:|---:|:-:|:-:|:-:|---|
 | gimp | gtk2 | 66.1 MB | 10 s | ✓ | 35 s | ✓ | ✓ | ✓ (1) | main window at 285 s |
 | inkscape | gtk3 | 83 MB | 14 s | ✓ | 54 s | ✓ | ✓ | ✓ (18) |  |
-| krita | qt5 | 121.9 MB | 6.6 s | ✓ | 8.8 s | ✓ | ✓ | ✗ | main window at 422 s; opened with an image |
+| krita | qt5 | 121.9 MB | 10 s | ✓ | 12 s | ✓ | ✓ | ✗ | main window at 250 s; opened with an image; GL: n/a (glshiro gives its 3.0 compatibility request a 2.1 context, so Krita draws with QPainter) |
 | blender | gl | 231.5 MB | 22 s | ✗ | – | – | – | – | exited (status 256) before a window; past the CPU check and PI futexes (engine fixes); needs OpenGL 3.3 over GLX, which Xshiro doesn't provide |
 | shotwell | gtk3 | 60.2 MB | 8.7 s | ✓ | 11 s | ✓ | ✓ | ✓ (11) | opened with an image |
 | simple-scan | gtk3 | 51.7 MB | 7.1 s | ✓ | 20 s | ✓ | ✓ | ✗ |  |

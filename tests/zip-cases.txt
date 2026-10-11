@@ -1,0 +1,61 @@
+# zip / unzip cases: run in tabcomputer's shell and with Info-ZIP zip 3.0 /
+# unzip 6.0 (GNU_DIFF=1 GNU_DIFF_CASES=../tests/zip-cases.txt ... gnu-tools-diff).
+# Directory walks print in the file system's order, so those outputs are sorted.
+# zlib's deflate (CompressionStream) is not Info-ZIP's: a file can come out a
+# byte or so bigger, so a few cases mask the percentages.
+{ zip o.zip a.txt; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+{ zip o a.txt; ls o.zip; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -q o.zip a.txt; echo $?
+zip -r o.zip src | sort
+zip -qr o.zip src; echo $?; unzip -Z1 o.zip | sort
+zip -rq o.zip src; unzip -Z1 o.zip | sort
+zip -r -q o.zip src a.txt; unzip -Z1 o.zip | sort
+zip -rD o.zip src | sort
+zip -r0 o.zip src | sort
+zip -j o.zip src/main.ts src/sub/deep.js
+zip o.zip src
+zip -r o.zip src -x '*.md' | sort
+zip -r o.zip src -x 'src/sub/*' | sort
+zip -r o.zip src -i '*.ts' | sort
+zip o.zip nope; echo $?
+{ zip o.zip nope a.txt; echo $?; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+{ zip o.zip a.txt; zip o.zip a.txt b.csv; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -q o.zip a.txt b.csv; zip -d o.zip a.txt; unzip -Z1 o.zip
+zip -q o.zip a.txt; zip -d o.zip nope; echo $?
+zip -q o.zip a.txt b.csv log.txt; zip -d o.zip '*.txt'; unzip -Z1 o.zip
+zip -q o.zip a.txt; zip -T o.zip
+zip -qT o.zip a.txt; echo $?
+{ zip -m o.zip a.txt; ls a.txt; echo $?; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -q o.zip a.txt; zip -u o.zip a.txt; echo $?
+zip -q o.zip a.txt; zip -f o.zip b.csv; echo $?
+{ printf 'a.txt\nb.csv\n' | zip -@ o.zip; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -q o.zip ./a.txt; unzip -Z1 o.zip
+zip -q o.zip 'sp ace.txt' && unzip -Z1 o.zip
+zip -q o.zip a.txt && unzip -l o.zip | sed 's/[0-9-]* [0-9:]*  / DATE /'
+zip -q o.zip a.txt b.csv && unzip -l o.zip | sed 's/[0-9-]* [0-9:]*  / DATE /'
+zip -q o.zip a.txt && unzip -qq -l o.zip | sed 's/[0-9-]* [0-9:]*  / DATE /'
+zip -q o.zip a.txt b.csv && unzip -v o.zip | sed 's/[0-9-]* [0-9:]* / DATE /' | sed -E 's/ +[0-9]+ +[0-9]+% / C P /'
+zip -q o.zip a.txt && mkdir x && cd x && unzip ../o.zip && cat a.txt
+zip -qr o.zip src && mkdir x && cd x && unzip -q ../o.zip && find . -type f | sort
+zip -q o.zip a.txt && unzip o.zip; echo $?
+zip -q o.zip a.txt && unzip o.zip < /dev/null; echo $?
+zip -q o.zip a.txt && unzip -o o.zip; echo $?
+zip -q o.zip a.txt && unzip -n o.zip; echo $?
+zip -q o.zip a.txt && unzip -d out o.zip && cat out/a.txt
+zip -q o.zip a.txt && unzip -qd out o.zip && ls out
+zip -q o.zip a.txt && unzip -p o.zip a.txt
+zip -q o.zip a.txt b.csv && unzip -p o.zip
+zip -q o.zip a.txt && unzip -t o.zip
+zip -q o.zip a.txt && unzip -tq o.zip
+zip -q o.zip a.txt b.csv && mkdir y && unzip -d y o.zip b.csv
+zip -qr o.zip src && unzip -j -d y o.zip | sort
+zip -qr o.zip src && unzip -d y o.zip -x 'src/sub/*' | sort
+zip -q o.zip a.txt && unzip o.zip nope; echo $?
+unzip nope.zip; echo $?
+unzip nope; echo $?
+zip -q o.zip a.txt && unzip -Z1 o
+zip -q o.zip a.txt && chmod 600 a.txt && zip -q p.zip a.txt && mkdir z && cd z && unzip -q ../p.zip && stat -c %a a.txt
+{ zip -q o.zip a.txt; zip o.zip a.txt; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -0 o.zip a.txt
+{ zip -9 o.zip a.txt; } | sed -E "s/deflated [0-9]+%/deflated N%/"
+zip -qr o.zip . -x 'o.zip'; unzip -Z1 o.zip | sort

@@ -1,0 +1,193 @@
+# ripgrep cases: run in tabcomputer's shell and with the host's ripgrep 14
+# (GNU_DIFF=1 GNU_DIFF_CASES=tests/rg-cases.txt ... gnu-tools-diff). stdout is
+# not a terminal in either, so no line numbers unless -n; directory searches
+# sort by path, since real rg's order follows its threads.
+rg apple a.txt
+rg apple a.txt | cat
+rg -n apple a.txt
+rg -N apple a.txt
+rg -H apple a.txt
+rg --with-filename apple a.txt
+rg apple a.txt log.txt b.csv
+rg -n apple a.txt b.csv
+rg -I apple a.txt b.csv
+rg --no-filename apple a.txt b.csv
+rg -In apple a.txt b.csv
+rg --sort path TODO
+rg --sort path -n TODO
+rg --sort path TODO src
+rg --sort path -I TODO
+rg --sort path -c TODO
+rg -c apple a.txt
+rg -c apple a.txt b.csv
+rg -Hc apple a.txt
+rg --count apple a.txt
+rg --count-matches -i a a.txt
+rg --count-matches ERROR log.txt
+rg --sort path --count-matches -i x src
+rg -i -w apple a.txt
+rg -iw apple a.txt
+rg -r X apple a.txt
+rg --replace X apple a.txt
+rg --replace=X apple a.txt
+rg -rX apple a.txt
+rg -r '[$0]' 'a.' a.txt
+rg -r '$1-$2' '(\d+)-(\d+)' log.txt
+rg -r '${1}x' '(\w+) ERROR' log.txt
+rg -o -r '<$0>' ERROR log.txt
+rg -ir Z APPLE a.txt
+rg -r '' an a.txt
+rg -r '$name' '(?P<name>E\w+)' log.txt
+rg -n -r X apple a.txt
+rg -o apple a.txt
+rg -on ERROR log.txt
+rg -v apple a.txt
+rg -l apple a.txt b.csv
+rg --sort path -l TODO
+rg --files-with-matches apple a.txt
+rg --files-without-match apple a.txt b.csv
+rg -m1 apple a.txt
+rg --max-count 1 apple a.txt
+rg -A1 ERROR log.txt
+rg -n -B1 ERROR log.txt
+rg -C1 -n start log.txt
+rg -e apple -e cherry a.txt
+rg --regexp apple a.txt
+rg -F '2.5' a.txt
+rg -x apple a.txt
+rg --line-regexp apple a.txt
+rg -s Apple a.txt
+rg -S apple a.txt
+rg -S Apple a.txt
+rg --vimgrep apple a.txt
+rg --column apple a.txt
+rg -b apple a.txt
+rg --byte-offset -n apple a.txt
+rg -nH --heading apple a.txt b.csv
+rg --heading apple a.txt b.csv
+rg --no-heading apple a.txt b.csv
+rg --stats apple a.txt | grep -v -e seconds -e 'bytes printed'
+rg -q apple a.txt; echo $?
+rg -q nope a.txt; echo $?
+rg nope a.txt; echo $?
+rg apple missing.txt; echo $?
+rg -t md Title --sort path
+rg --type ts --sort path TODO
+rg -g '*.js' --sort path return
+rg --glob '!*.ts' --sort path TODO
+rg -0 -l apple a.txt b.csv | od -c
+rg --null -H apple a.txt | od -c
+rg --trim return src/sub/deep.js
+rg -M 5 apple a.txt
+rg -U 'apple\ncherry' a.txt
+rg --json apple a.txt | head -c 0
+rg --passthru apple log.txt
+rg --sort path -L TODO
+rg --max-depth 1 --sort path TODO
+rg --sort path --files src
+rg --files a.txt
+rg -p apple a.txt
+rg --pretty apple a.txt
+rg --color never apple a.txt
+rg --color=never apple a.txt
+rg -- -3 a.txt
+rg -e -3 a.txt
+rg --include-zero -c nope a.txt
+rg -c nope a.txt; echo $?
+echo hi there | rg hi
+echo hi there | rg -n hi
+echo hi there | rg -H hi
+echo hi there | rg -c hi
+echo hi there | rg -r X hi
+printf 'a\nb\na\n' | rg --count-matches a
+rg -g '*.ts' -g '!lib*' --sort path TODO
+rg -g '*.md' -g '*.js' --sort path -l .
+rg -g '!sub' --sort path -l .
+rg -T ts --sort path -l .
+rg --iglob '*.TS' --sort path -l TODO
+rg -g '*.{ts,js}' --sort path -l .
+rg -g 'src/**/*.js' -l return
+rg --sortr path -l TODO
+rg -w 'ap|apple' a.txt
+rg -x 'a|apple|10' a.txt
+rg '(?i)APPLE' a.txt
+rg '[[:digit:]]+' a.txt
+rg -o '(?P<y>\d{4})' log.txt
+rg -f a.txt b.csv; echo $?
+printf 'ERROR\nWARN\n' > p.txt; rg -c -f p.txt log.txt
+rg -S '\Winfo' log.txt; echo $?
+rg -U -r '<$0>' 'boom\n2024' log.txt
+rg -U -c 'boom\n2024' log.txt
+printf 'ab\0needle\n' > bin.dat; rg needle bin.dat; echo $?
+printf 'ab\0needle\n' > bin.dat; rg -l needle; echo $?
+printf 'ab\0needle\n' > bin.dat; rg -c needle bin.dat
+printf 'ab\0needle\n' > bin.dat; rg -a -c needle bin.dat
+printf 'ab\0needle\n' > bin.dat; rg --sort path -uuu -l needle
+printf 'naïve café x\n' > u.txt; rg --column -o 'x|caf' u.txt
+printf 'naïve café x\n' > u.txt; rg -b -o 'x' u.txt
+mkdir -p .h && echo TODO > .h/t.txt; rg --sort path -l TODO
+mkdir -p .h && echo TODO > .h/t.txt; rg --sort path --hidden -l TODO
+mkdir -p .h && echo TODO > .h/t.txt; rg --sort path -uu -l TODO
+mkdir -p .h && echo TODO > .h/t.txt; rg --sort path -. -l TODO
+rg --sort path --heading -n -A1 TODO
+rg --sort path --heading -c TODO
+rg --sort path -A1 TODO
+rg --sort path -A1 --no-context-separator TODO
+rg --sort path -A1 --context-separator=XX TODO
+rg -C1 -n ERROR log.txt
+rg --vimgrep --sort path TODO
+rg --vimgrep 'p' a.txt
+rg -n --column -o 'an' a.txt
+rg --max-depth 2 --sort path -l TODO
+rg -d 1 --sort path -l .
+rg --max-depth 0 -l TODO src
+rg nothing --glob '*.zzz'; echo $?
+rg --no-messages apple nope a.txt; echo $?
+rg -c -l apple a.txt b.csv
+rg -l -c apple a.txt b.csv
+rg -o -c a a.txt
+rg -v -c apple a.txt
+rg -v --count-matches apple a.txt
+rg -m1 -A1 ERROR log.txt
+rg -e '' a.txt | head -3
+rg -c '' a.txt
+rg -c '^' noeol.txt
+rg last noeol.txt
+rg -r '$$' apple a.txt
+rg -r '$9' apple a.txt
+rg -o -r '$1' 'ERROR (\w+)' log.txt
+rg 'ERROR' --replace '[$0]' log.txt
+rg -nr X apple a.txt
+rg -i -c apple a.txt
+rg -s -i APPLE a.txt
+rg -i -s APPLE a.txt; echo $?
+rg -F 'a.' a.txt; echo $?
+rg -F -x apple a.txt
+rg -e apple -F -e '2.5' a.txt
+rg --files --sort path
+rg --files --sort path -g '*.ts'
+rg --files -t md --sort path
+rg --files --sort path src/sub
+rg --files nope; echo $?
+rg --files --max-depth 1 --sort path
+rg -l --null TODO src/lib.ts | od -c
+rg --heading --null -H apple a.txt | od -c
+echo hi | rg -H hi
+echo hi | rg --vimgrep hi
+echo hi | rg -l hi
+echo hi | rg --stats hi | grep -v -e seconds -e 'bytes printed'
+rg --stats -c apple a.txt b.csv | grep -v -e seconds -e 'bytes printed'
+rg -q --stats apple a.txt | grep -v -e seconds -e 'bytes printed'
+rg --json -c apple a.txt | head -c 0
+rg -e; echo $?
+rg; echo $?
+rg -t nosuchtype x; echo $?
+rg '(' a.txt; echo $?
+rg --trim -o return src/sub/deep.js
+rg -C1 --passthru apple a.txt
+rg -U -n 'boom\n2024' log.txt
+rg -U -n -r '<$0>' 'boom\n2024' log.txt
+rg --color always -n --column apple a.txt b.csv
+rg --color always --heading -A1 TODO src/lib.ts src/main.ts
+rg -p -o -r Y apple a.txt
+rg --color always -c apple a.txt b.csv

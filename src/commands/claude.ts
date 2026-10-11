@@ -14,6 +14,7 @@
  * runs Anthropic's native binary in the x86-64 emulator, shiro the pinned npm
  * build. Either way:
  *   claude --native ... / claude --npm ...   # pick one for this run (CLAUDE_NATIVE=1/0 too)
+ *   claude --vm ...                          # the native build's JavaScript on this page's engine (experimental)
  *   claude install [--native|--npm] [ver]    # install that build (native: claude-native.ts)
  */
 
@@ -112,6 +113,58 @@ async function runNative(ctx: Parameters<Command['exec']>[0], args: string[]): P
   return ctx.shell.execute(line, (s) => { ctx.stdout += s.replace(/\r\n/g, '\n'); }, (s) => { ctx.stderr += s.replace(/\r\n/g, '\n'); }, false, ctx.terminal, true);
 }
 
+/**
+ * `claude --vm`: the native build's own JavaScript, taken out of the binary
+ * and run on tabcomputer's node in the page's JS engine, with a Bun shim
+ * (src/claude-vm/, docs/CLAUDE_VM.md). The binary is the one `claude install`
+ * put at $CLAUDE_NATIVE_PATH; nothing else is downloaded.
+ */
+async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promise<number> {
+  const path = nativeClaudePath(ctx.env);
+  let elf = false;
+  try {
+    const st = await ctx.fs.stat(path);
+    elf = st.size > 1_000_000;
+  } catch { /* missing */ }
+  if (!elf) {
+    ctx.stderr += `claude --vm: native Claude Code is not installed (no binary at ${path}).\n`
+      + 'Run `claude install` first: --vm runs that build\'s JavaScript without the x86-64 emulator.\n';
+    return 1;
+  }
+  const home = ctx.env.HOME || '/home/user';
+  const say = (t: string) => { if (ctx.terminal) ctx.terminal.writeOutput(t.replace(/\n/g, '\r\n')); else ctx.stderr += t; };
+  let layout;
+  try {
+    const { ensureClaudeVm } = await import('../claude-vm/extract');
+    layout = await ensureClaudeVm(ctx.fs as any, path, home, say);
+  } catch (e: any) {
+    // (what --vm can't run yet, the native build in the emulator can)
+    say(`claude --vm: could not read the native build's JavaScript (${e?.message || e}); running it in the emulator instead\n`);
+    return runNative(ctx, args);
+  }
+  args = loginArgs(args);
+  try {
+    const { ensureClaudeBootstrap } = await import('../claude-config');
+    await ensureClaudeBootstrap(ctx.fs, { homeDir: home, projectPath: ctx.cwd, trustProject: true, completeProjectOnboarding: true });
+  } catch { /* settings are Claude's own business; never block the run */ }
+  const nodeCmd = ctx.shell.commands.get('node');
+  if (!nodeCmd) { ctx.stderr += 'claude: node command not available\n'; return 127; }
+  const { nativeClaudeVersion } = await import('./claude-native');
+  const version = await nativeClaudeVersion(ctx.fs, path);
+  const search = nativeSearchSetup(args, ctx.env);
+  const quiet = Object.fromEntries(['DISABLE_AUTOUPDATER', 'DISABLE_INSTALLATION_CHECKS', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL']
+    .filter((k) => ctx.env[k] === undefined).map((k) => [k, '1']));
+  const env: Record<string, string> = {
+    FORCE_HYPERLINK: '1', ...quiet, ...(search.env ? { USE_BUILTIN_RIPGREP: '0' } : {}), ...ctx.env,
+    TABCOMPUTER_CLAUDE_BUILD: 'vm', TABCOMPUTER_CLAUDE_VERSION: version ?? 'unknown',
+  };
+  const nodeCtx = { ...ctx, env, args: [layout.launcher, ...search.args], stdout: '', stderr: '' };
+  const code = await nodeCmd.exec(nodeCtx);
+  ctx.stdout += nodeCtx.stdout;
+  ctx.stderr += nodeCtx.stderr;
+  return code;
+}
+
 const CLAUDE_SUBCOMMANDS = new Set(['auth', 'mcp', 'config', 'doctor', 'install', 'update', 'upgrade', 'plugin', 'setup-token', 'migrate-installer']);
 
 /**
@@ -144,6 +197,8 @@ export const claudeCmd: Command = {
     const flagAt = install ? 1 : 0;
     let pick: 'npm' | 'native' | null = null;
     while (args[flagAt] === '--npm' || args[flagAt] === '--native') pick = args.splice(flagAt, 1)[0] === '--npm' ? 'npm' : 'native';
+    // --vm: the native build's JavaScript on this page's engine (experimental)
+    if (!install && args[0] === '--vm') { args.shift(); return runVm(ctx, args); }
     if (install && !pick) {
       const i = args.findIndex((a) => a === '--npm' || a === '--native');
       if (i > 0) pick = args.splice(i, 1)[0] === '--npm' ? 'npm' : 'native';

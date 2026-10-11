@@ -303,6 +303,10 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
   It only inserts text, so line numbers hold; a conversion inside a macro
   inlines that one use. Source it can't parse goes on unchanged. Krita's
   shaders don't need it; Blender's and hand-written GL 2/3 apps' do.
+- `in`/`out` interface blocks between stages (Blender's generated shaders)
+  become one varying per member, `_tc_<Block>_<member>`, matching across
+  stages by name; `inst.member` and an anonymous block's bare members are
+  renamed (`flattenInterfaceBlocks`).
 - The rest of the full front end below is the plan:
 - Desktop GLSL 110–330 to GLSL ES 3.00, in `src/gl/glsl/`: preprocessor,
   parser, a type checker for the built-in function set, and a printer.
@@ -323,12 +327,34 @@ Xshiro's GLX, the GL window surface and app scoring: unix/gui.
 - Translated shaders are cached by source hash (IndexedDB), like Mesa's disk
   cache.
 
+### GL 3.3 core in the guest (stage 4 so far)
+
+`scripts/gl/probes/glcore.c` (gl-apps.mjs `--app glcore`) checks what
+Blender's GPU module needs first, in the page: a 3.3 core context from
+glXCreateContextAttribsARB, interface blocks, a std140 uniform block and its
+queries, an instanced draw with glVertexAttribDivisor, primitive restart,
+a texture buffer, glReadPixels. The uniform block queries (glGetActiveUniformBlockiv/Name,
+glGetActiveUniformsiv, glGetActiveUniformName, glGetUniformIndices) are
+answered in the guest from the program info it already fetches; a block
+member's location there is `-2 - block index`. GL_UNIFORM_OFFSET and the
+strides aren't sent (apps that lay out std140 themselves don't ask).
+
+Blender 3.4.1 (gui's catalog, Debian's) in the page: past the libraries
+(a kernel fast-path bug in symlink chains, fixed in src/filesystem.ts) and
+Python (its closure lacked libpython3.11-minimal/-stdlib, gui's manifest),
+it gets a 3.3 core context, reports "Renderer: tabcomputer WebGL2 (…)",
+compiles its shaders, creates its viewport textures, then its main thread
+spins at 100% CPU with no syscalls and no GL calls (25+ min). With
+`BLINK_WJIT=0` it doesn't: it goes on to the workbench shaders (texture
+buffers, and names with `__`, both handled now), so the spin looks like a
+Blink JIT problem (reported to perf-blink).
+
 ### GL 3.3 core gaps on WebGL2
 
 | Gap | Plan |
 |---|---|
 | Geometry shaders (Blender 3.4: wide lines, overlays) | Two passes. The vertex shader runs with transform feedback into a buffer (rasterizer discarded), copied to a texture. A generated vertex shader then runs the geometry shader's body per output vertex: `gl_VertexID` gives the primitive and the vertex k, it fetches the primitive's inputs with `texelFetch`, runs the body counting `EmitVertex()` and keeps the k-th vertex; strips become triangle lists by index; unemitted slots are culled. Needs a bounded `max_vertices` (Blender's are 4–6). Stage 4. |
-| Texture buffers (`samplerBuffer`) | A 2D texture 4096 wide fed from the buffer on the GPU (`PIXEL_UNPACK_BUFFER`) when it changed; `texelFetch(b, i)` rewritten to 2D coordinates. |
+| Texture buffers (`samplerBuffer`) | Done: a 2D texture 4096 wide, refilled from the buffer on the GPU (`PIXEL_UNPACK_BUFFER`) before a draw when the buffer's version changed; `texelFetch(b, i)` becomes `_tc_texelFetchBuffer(b, i)`, which reads `(i & 4095, i >> 12)`; `textureSize(b)` is the texture's area. TEXTURE_BUFFER data goes to WebGL through COPY_WRITE_BUFFER. |
 | `glPolygonMode(GL_LINE/POINT)` | Index buffer of edges/points built on the page (cached per buffer). |
 | `glDrawElementsBaseVertex`, `glDrawArrays` with `first` on client arrays | Re-point attributes by `baseVertex × stride`; the base-vertex extension when present. |
 | Persistent mapping (GL 4.4) | Not in 3.3; `glMapBufferRange` as above. |

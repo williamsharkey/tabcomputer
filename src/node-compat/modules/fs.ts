@@ -574,6 +574,15 @@ export function createFsModule(deps: FsDeps): any {
     await Promise.allSettled([...writeState.inflight]);
   };
 
+  /** A terminal's stats: a character device (stdio, /dev/tty) */
+  const ttyStats = () => {
+    const now = new Date();
+    return { isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false,
+      isCharacterDevice: () => true, isBlockDevice: () => false, isFIFO: () => false, isSocket: () => false,
+      size: 0, mode: 0o20620, mtime: now, ctime: now, atime: now, birthtime: now,
+      mtimeMs: now.getTime(), ctimeMs: now.getTime(), atimeMs: now.getTime(), birthtimeMs: now.getTime(),
+      dev: 0, ino: 0, nlink: 1, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, blocks: 0 };
+  };
   // Synchronous shims that use cached data or throw
   const fsShim: any = {
     readFileSync: (p: string, opts?: any) => {
@@ -681,8 +690,12 @@ export function createFsModule(deps: FsDeps): any {
     statSync: (p: string, opts?: any) => {
       tickSyncOps();
       const resolved = real(p);
-      // Text of a file other processes wrote: promoted to the cache (binary stays bytes)
-      if (!fileCache.has(resolved)) {
+      // The terminal is a device, not text to cache: reading it waited for a key
+      // (Claude Code stats /dev/tty when it sets up its stdout)
+      if (resolved === '/dev/tty') return ttyStats();
+      // Text of a file other processes wrote: promoted to the cache (binary stays bytes;
+      // never a device's or /proc's: /dev/zero has no end, /proc/self/fd/0 waits for input)
+      if (!resolved.startsWith('/dev/') && !resolved.startsWith('/proc/') && !fileCache.has(resolved)) {
         const bytes = ctx.fs.readBytesCached(resolved);
         const text = bytes === undefined ? null : decodeUtf8Strict(bytes);
         if (text !== null) fileCache.set(resolved, text);
@@ -935,16 +948,9 @@ export function createFsModule(deps: FsDeps): any {
     },
     chownSync: () => {},
     fstatSync: (fd: number) => {
-      if (fd === 0 || fd === 1 || fd === 2) {
-        // stdio is the terminal: a character device, like a TTY
-        const now = new Date();
-        return { isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false,
-          isCharacterDevice: () => true, isBlockDevice: () => false, isFIFO: () => false, isSocket: () => false,
-          size: 0, mode: 0o20620, mtime: now, ctime: now, atime: now, birthtime: now,
-          mtimeMs: now.getTime(), ctimeMs: now.getTime(), atimeMs: now.getTime(), birthtimeMs: now.getTime(),
-          dev: 0, ino: 0, nlink: 1, uid: 1000, gid: 1000, rdev: 0, blksize: 4096, blocks: 0 };
-      }
+      // stdio is the terminal, and so is a /dev/tty fd: a character device, like a TTY
       const entry = (globalThis as any).__shiroFds?.[fd];
+      if ((!entry && (fd === 0 || fd === 1 || fd === 2)) || entry?.tty) return ttyStats();
       if (!entry) {
         const err: any = new Error(`EBADF: bad file descriptor, fstat`);
         err.code = 'EBADF'; err.errno = -9; err.syscall = 'fstat';
@@ -958,10 +964,14 @@ export function createFsModule(deps: FsDeps): any {
       // The terminal: what has been typed, not a file's bytes. Ink drains it with
       // open("/dev/tty", O_RDONLY|O_NONBLOCK) and readSync until EAGAIN or 0 when
       // Claude Code exits; reading the device as a file waited for a key (/exit hung)
-      if (resolved === '/dev/tty') {
+      // The process's own stdio by another name (/proc/self/fd/1, /dev/stdout): the same
+      // stream (Claude Code opens /proc/self/fd/1 non-blocking, then compares its fstat with fd 1)
+      const std = /^\/(?:proc\/self\/fd|dev\/fd)\/([012])$/.exec(String(p)) ?? /^\/dev\/(stdin|stdout|stderr)$/.exec(String(p));
+      if (resolved === '/dev/tty' || std) {
         (globalThis as any).__shiroFds = (globalThis as any).__shiroFds || {};
         const fd = nextFd((globalThis as any).__shiroFds);
-        (globalThis as any).__shiroFds[fd] = { path: resolved, flags: 'r+', offset: 0, tty: true };
+        const stdio = std ? (/^\d$/.test(std[1]) ? Number(std[1]) : ['stdin', 'stdout', 'stderr'].indexOf(std[1])) : undefined;
+        (globalThis as any).__shiroFds[fd] = { path: resolved, flags: 'r+', offset: 0, tty: true, stdio };
         return fd;
       }
       const fl = parseOpenFlags(flags);
@@ -995,7 +1005,7 @@ export function createFsModule(deps: FsDeps): any {
       // fds 1 and 2: the process's stdout and stderr (Go's runtime writes them so: esbuild);
       // /dev/tty: the terminal, as stdout
       if (fdInfo?.tty || (!fdInfo && (fd === 1 || fd === 2))) {
-        if (fdInfo?.tty) fd = 1;
+        if (fdInfo?.tty) fd = fdInfo.stdio === 2 ? 2 : 1;
         const proc = deps.getProcess?.();
         const bytes = typeof data === 'string' ? data : toBytes(data) ?? new Uint8Array(0);
         (fd === 1 ? proc?.stdout : proc?.stderr)?.write(bytes);

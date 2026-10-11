@@ -102,6 +102,7 @@ perf-kernel use the same definitions.
 | `claude_native.start.cold.first_screen` | Enter on `claude` (first launch in the profile) → Claude's first output |
 | `claude_native.start.cold.prompt` | Enter → the idle prompt (`❯` and the shortcuts hint) |
 | `claude_native.start.warm.*` | the same for the second launch in the same page |
+| `claude_native.start.next.*`, `rss_at_prompt.next`, `exit.next` | the next session: the page reloaded on the same storage (installed, extracted, nothing in memory), then a launch: what users get from their second session on |
 | `claude_native.rss_at_prompt` | renderer RSS (Workers included) at the cold prompt |
 | `claude_native.echo.first` | the first key, typed 1.5 s after the prompt shows → its echo |
 | `claude_native.echo.{p50,p90,p99,max}` | after a 20 s settle, 35 keys typed one at a time, each 150 ms after the previous echo → its echo |

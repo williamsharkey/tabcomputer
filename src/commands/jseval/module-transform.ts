@@ -611,11 +611,12 @@ export function codeMask(src: string, blockComments?: [number, number][]): Uint8
   const beforeRegex = new Uint8Array(128);
   for (const ch of '(,=:[!&|?{};+-*%<>~^') beforeRegex[ch.charCodeAt(0)] = 1;
   const scanTemplate = (): void => {
-    // at template text; stops after the closing ` or after `${`
+    // at template text; stops after the closing ` (prev: a literal) or after `${`
+    // (prev: `{`, so `${/re/.test(x)}` starts a regex)
     while (i < len) {
       const c = src.charCodeAt(i);
       if (c === 92) { i += 2; continue; } // backslash
-      if (c === 96) { i++; return; } // `
+      if (c === 96) { i++; prev = A; return; } // `
       if (c === 36 && src.charCodeAt(i + 1) === 123) { // ${
         i += 2;
         braceStack.push(depth);
@@ -625,6 +626,7 @@ export function codeMask(src: string, blockComments?: [number, number][]): Uint8
       }
       i++;
     }
+    prev = A;
   };
   while (i < len) {
     const c = src.charCodeAt(i);
@@ -677,7 +679,7 @@ export function codeMask(src: string, blockComments?: [number, number][]): Uint8
       i++;
       prev = A;
       continue;
-    } else if (c === 96) { i++; scanTemplate(); prev = A; continue; }
+    } else if (c === 96) { i++; scanTemplate(); continue; }
     mask[i] = 1;
     if (c === 123) depth++;
     else if (c === 125) {
@@ -687,11 +689,11 @@ export function codeMask(src: string, blockComments?: [number, number][]): Uint8
         mask[i] = 0;
         i++;
         scanTemplate();
-        prev = A;
         continue;
       }
     }
-    prev = c;
+    // `...` (spread) is followed by an expression: `[a, .../re/.test(x)]`
+    prev = c === 46 && src.charCodeAt(i - 1) === 46 && src.charCodeAt(i - 2) === 46 ? 44 : c;
     i++;
   }
   return mask;

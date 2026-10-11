@@ -179,6 +179,10 @@ static int connect_server(void) {
     sock_failed = 1;
     return -1;
   }
+  /* a whole window's texture (Qt re-sends it every frame) in one write: the kernel's default AF_UNIX send
+   * buffer is 256 KB, which made a 1.7 MB upload ~7 handoffs to glshiro (Linux doubles this, up to wmem_max) */
+  int sndbuf = 8 << 20;
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
   sock_fd = fd;
   /* hello: protocol, pid, program name (control batch, context 0) */
   char name[256] = "";
@@ -238,7 +242,7 @@ struct tc_ctx {
   GLenum error;
   int swap_interval;
   /* client state the guest needs */
-  struct tc_carray { uint8_t enabled, client; GLint size; GLenum type; GLsizei stride; const uint8_t *ptr; } arrays[29];
+  struct tc_carray { uint8_t enabled, client; GLint size; GLenum type; GLsizei stride; const uint8_t *ptr; GLuint divisor; } arrays[29];
   GLuint client_unit, vao;
   int in_begin;
   uint32_t list_mode;
@@ -654,6 +658,8 @@ GLuint tc_glCreateProgram(void) {
 }
 static void simple1(unsigned op, uint32_t a) { uint32_t *w = tc_begin(1, op); if (w) { w[0] = a; tc_end(); } }
 static void simple2(unsigned op, uint32_t a, uint32_t b) { uint32_t *w = tc_begin(2, op); if (w) { w[0] = a; w[1] = b; tc_end(); } }
+/* (WebGL2 restarts at the index type's maximum, the index GL 3.1 apps like Blender use; the page notes others) */
+void tc_glPrimitiveRestartIndex(GLuint index) { simple1(OP_glPrimitiveRestartIndex, index); }
 void tc_glDeleteShader(GLuint s) {
   CUR();
   struct tc_object *o = object(c->share, s, 0);
@@ -842,9 +848,76 @@ void tc_glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize, GLsize
   fetch_program_info(o, program);
   active_var(o->uniforms, o->nuniforms, index, bufSize, length, size, type, name);
 }
+/* Uniform blocks, from the program's info (a block member's loc is -2 - its block's index; others' are >= -1). */
+static struct tc_object *program_info(GLuint program) {
+  struct tc_ctx *c = T.ctx;
+  if (!c) return NULL;
+  struct tc_object *o = object(c->share, program, 0);
+  if (!o || o->kind != 2) { local_error(GL_INVALID_VALUE); return NULL; }
+  fetch_program_info(o, program);
+  return o;
+}
+void tc_glGetActiveUniformBlockName(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nblocks) { local_error(GL_INVALID_VALUE); return; }
+  copy_log(o->blocks[index].name, bufSize, length, name);
+}
+void tc_glGetActiveUniformBlockiv(GLuint program, GLuint index, GLenum pname, GLint *params) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nblocks) { local_error(GL_INVALID_VALUE); return; }
+  GLint n = 0;
+  for (uint32_t i = 0; i < o->nuniforms; i++) if (o->uniforms[i].loc == -2 - (int32_t)index) n++;
+  switch (pname) {
+  case GL_UNIFORM_BLOCK_DATA_SIZE: *params = o->blocks[index].size; return;
+  case GL_UNIFORM_BLOCK_NAME_LENGTH: *params = (GLint)strlen(o->blocks[index].name) + 1; return;
+  case GL_UNIFORM_BLOCK_BINDING: *params = 0; return; /* (as linked; glUniformBlockBinding's isn't kept here) */
+  case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS: *params = n; return;
+  case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
+    for (uint32_t i = 0, k = 0; i < o->nuniforms; i++) if (o->uniforms[i].loc == -2 - (int32_t)index) params[k++] = (GLint)i;
+    return;
+  case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER: case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER: *params = 1; return;
+  case GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER: *params = 0; return;
+  }
+  local_error(GL_INVALID_ENUM);
+}
+void tc_glGetActiveUniformName(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  if (index >= o->nuniforms) { local_error(GL_INVALID_VALUE); return; }
+  copy_log(o->uniforms[index].name, bufSize, length, name);
+}
+void tc_glGetActiveUniformsiv(GLuint program, GLsizei count, const GLuint *indices, GLenum pname, GLint *params) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  for (GLsizei k = 0; k < count; k++) {
+    if (indices[k] >= o->nuniforms) { local_error(GL_INVALID_VALUE); return; }
+    struct tc_uniform *u = &o->uniforms[indices[k]];
+    switch (pname) {
+    case GL_UNIFORM_TYPE: params[k] = (GLint)u->type; break;
+    case GL_UNIFORM_SIZE: params[k] = u->size; break;
+    case GL_UNIFORM_NAME_LENGTH: params[k] = (GLint)strlen(u->name) + 1; break;
+    case GL_UNIFORM_BLOCK_INDEX: params[k] = u->loc <= -2 ? -2 - u->loc : -1; break;
+    case GL_UNIFORM_IS_ROW_MAJOR: params[k] = 0; break;
+    /* the std140 layout isn't sent: the page would have to be asked */
+    case GL_UNIFORM_OFFSET: case GL_UNIFORM_ARRAY_STRIDE: case GL_UNIFORM_MATRIX_STRIDE:
+      params[k] = -1; tc_unimplemented("glGetActiveUniformsiv(OFFSET/ARRAY_STRIDE/MATRIX_STRIDE)"); break;
+    default: local_error(GL_INVALID_ENUM); return;
+    }
+  }
+}
+void tc_glGetUniformIndices(GLuint program, GLsizei count, const GLchar *const *names, GLuint *indices) {
+  struct tc_object *o = program_info(program);
+  if (!o) return;
+  for (GLsizei k = 0; k < count; k++) {
+    indices[k] = GL_INVALID_INDEX;
+    for (uint32_t i = 0; i < o->nuniforms; i++) if (!strcmp(o->uniforms[i].name, names[k])) { indices[k] = i; break; }
+  }
+}
 /* "a", "a[0]" and "a[3]" find the uniform the page listed as "a[0]" (size n). */
 static GLint find_location(struct tc_uniform *v, uint32_t n, const char *name) {
-  for (uint32_t i = 0; i < n; i++) if (!strcmp(v[i].name, name)) return v[i].loc;
+  for (uint32_t i = 0; i < n; i++) if (!strcmp(v[i].name, name)) return v[i].loc < 0 ? -1 : v[i].loc;
   size_t len = strlen(name);
   long idx = 0;
   size_t base = len;
@@ -1322,19 +1395,27 @@ static void upload(uint32_t which, uint32_t unit, int64_t offset, const void *p,
   if (!w) return;
   w[0] = which; w[1] = unit; memcpy(w + 2, &offset, 8); tc_put_array(w + 4, p, n); tc_end();
 }
-/* Copies vertices first .. first + count - 1 of every enabled client array to the page. */
-static void upload_arrays(struct tc_ctx *c, int64_t first, int64_t count) {
+/* Copies vertices first .. first + count - 1 of every enabled client array to the page; an instanced
+ * array (glVertexAttribDivisor) its elements 0 .. ceil(instances / divisor) - 1. */
+static void upload_arrays_inst(struct tc_ctx *c, int64_t first, int64_t count, int64_t instances) {
   static const GLenum ff[] = { GL_VERTEX_ARRAY, GL_NORMAL_ARRAY, GL_COLOR_ARRAY, GL_SECONDARY_COLOR_ARRAY, GL_FOG_COORD_ARRAY };
   if (first < 0 || count <= 0) return;
   for (int i = 0; i < CA_N; i++) {
     struct tc_carray *a = &c->arrays[i];
     if (!a->enabled || !a->client) continue;
     size_t elem = element_size(a), stride = a->stride ? (size_t)a->stride : elem;
-    int64_t off = first * (int64_t)stride;
-    size_t n = (size_t)(count - 1) * stride + elem;
+    int64_t from = first, many = count;
+    if (a->divisor) { from = 0; many = (instances + a->divisor - 1) / a->divisor; if (many <= 0) continue; }
+    int64_t off = from * (int64_t)stride;
+    size_t n = (size_t)(many - 1) * stride + elem;
     uint32_t which = i < 16 ? (uint32_t)i : i < CA_TEXCOORD ? ff[i - CA_VERTEX] : GL_TEXTURE_COORD_ARRAY;
     upload(which, i >= CA_TEXCOORD ? (uint32_t)(i - CA_TEXCOORD) : 0, off, a->ptr + off, n);
   }
+}
+static void upload_arrays(struct tc_ctx *c, int64_t first, int64_t count) { upload_arrays_inst(c, first, count, 1); }
+void tc_glVertexAttribDivisor(GLuint index, GLuint divisor) {
+  if (T.ctx && index < 16) T.ctx->arrays[index].divisor = divisor;
+  simple2(OP_glVertexAttribDivisor, index, divisor);
 }
 void tc_glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) {
   set_array(index < 16 ? (int)index : -1, size, type, stride, pointer);
@@ -1401,7 +1482,7 @@ void tc_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
   uint32_t *w = tc_begin(3, OP_glDrawArrays); if (w) { w[0] = mode; w[1] = (uint32_t)first; w[2] = (uint32_t)count; tc_end(); }
 }
 void tc_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei inst) {
-  if (T.ctx && client_arrays_on(T.ctx)) upload_arrays(T.ctx, first, count);
+  if (T.ctx && client_arrays_on(T.ctx)) upload_arrays_inst(T.ctx, first, count, inst);
   uint32_t *w = tc_begin(4, OP_glDrawArraysInstanced); if (w) { w[0] = mode; w[1] = (uint32_t)first; w[2] = (uint32_t)count; w[3] = (uint32_t)inst; tc_end(); }
 }
 static void index_range(const void *p, GLsizei count, GLenum type, uint32_t *lo, uint32_t *hi) {
@@ -1417,6 +1498,8 @@ static void index_range(const void *p, GLsizei count, GLenum type, uint32_t *lo,
 /* range: the vertices the draw reads when the app said (glDrawRangeElements), else NULL */
 static void draw_elements(unsigned op, GLenum mode, GLsizei count, GLenum type, const void *indices, const uint32_t *extra, int nextra,
                           const uint32_t *range, GLint base) {
+  /* instanced ops carry the instance count first */
+  int64_t instances = op == OP_glDrawElementsInstanced || op == OP_glDrawElementsInstancedBaseVertex ? (int64_t)extra[0] : 1;
   struct tc_ctx *c = T.ctx;
   if (!c || count <= 0) return;
   size_t isize = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
@@ -1435,7 +1518,7 @@ static void draw_elements(unsigned op, GLenum mode, GLsizei count, GLenum type, 
       index_range(tmp, count, type, &lo, &hi);
       free(tmp);
     }
-    if (lo <= hi) upload_arrays(c, (int64_t)lo + base, (int64_t)hi - lo + 1);
+    if (lo <= hi) upload_arrays_inst(c, (int64_t)lo + base, (int64_t)hi - lo + 1, instances);
   }
   if (client_indices) { upload(GL_ELEMENT_ARRAY_BUFFER, 0, 0, indices, n); indices = NULL; }
   uint32_t *w = tc_begin(5 + (size_t)nextra, op);

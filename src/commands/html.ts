@@ -43,6 +43,7 @@ export const htmlCmd: Command = {
     const win = createServerWindow({
       mode: 'iframe',
       title: ctx.args[0] || 'html',
+      appId: 'html', appName: 'HTML Viewer',
       width: '32em',
       height: '22em',
     });
@@ -99,6 +100,7 @@ export const imgCmd: Command = {
     const win = createServerWindow({
       mode: 'iframe',
       title: name,
+      appId: 'img', appName: 'Image Viewer',
       width: '32em',
       height: '22em',
     });

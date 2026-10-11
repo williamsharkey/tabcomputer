@@ -442,15 +442,6 @@ def main():
         h = hashlib.sha256(data).hexdigest()
         open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
         overlays.append({'path': '/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders.cache', 'sha256': h, 'size': len(data), 'when': 'librsvg2-common'})
-    # Firefox ESR's system prefs (/etc/firefox-esr is its syspref directory): see the file
-    lc = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'overlays', 'firefox-esr-shared-memory.js')
-    # (Thunderbird is the same engine: its syspref directory is /etc/thunderbird/pref)
-    for pkg, path in (('firefox-esr', '/etc/firefox-esr/shared-memory.js'), ('thunderbird', '/etc/thunderbird/pref/shared-memory.js')):
-        if not any(pkg in a['packages'] for a in apps.values()): continue
-        data = open(lc, 'rb').read()
-        h = hashlib.sha256(data).hexdigest()
-        open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
-        overlays.append({'path': path, 'sha256': h, 'size': len(data), 'when': pkg})
     # Font directories (installer: pinFontDirs) and fontconfig's caches for them. Fontconfig
     # keeps a directory's mtime in its cache: the installer gives each font directory a
     # fixed mtime when it holds just its package's files, and the caches were made with it

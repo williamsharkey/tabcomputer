@@ -171,6 +171,8 @@ describe('data flow: actions', () => {
   });
   it('in a guest, points at the guest\'s own statement', () => {
     expect(ids({ guest: { name: 'a', ephemeral: true, noNetwork: false }, guestsOffered: null })).toEqual(['about-guest', 'network']);
+    // a no-network guest has no relay to set
+    expect(ids({ guest: { name: 'a', ephemeral: true, noNetwork: true }, guestsOffered: null })).toEqual(['about-guest']);
   });
   it('offers sign-out only for what is signed in, and storage only when it is not persistent', () => {
     expect(ids({ github: true })).toContain('accounts');

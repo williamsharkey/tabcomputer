@@ -366,7 +366,8 @@ export function dataFlowActions(s: DataFlowState): { actions: DataFlowAction[]; 
   } else if (s.guestsOffered === false) {
     unavailable.push('This server has no guest profiles, so there is no separate place here for code you don\'t trust.');
   }
-  actions.push(s.ui === 'desktop'
+  // (a no-network guest has no relay, the user's own included: nothing to set there)
+  if (!(s.guest && !s.guest.network)) actions.push(s.ui === 'desktop'
     ? { id: 'network', label: 'Network Settings…', why: 'Use a relay you run for programs\' connections. The API, GitHub and download paths stay on this site\'s server.' }
     : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network; the terminal UI always uses this site\'s.' });
   if (s.secrets.github || s.secrets.claude) {

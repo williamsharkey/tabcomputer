@@ -267,7 +267,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
-    { id: 'dataflow', name: 'How Your Data Flows', icon: ICONS.about, order: 92, dock: false, launch: focusOrLaunch('dataflow', lazy(() => import('./apps/dataflow'))) },
+    { id: 'dataflow', name: 'How Your Data Flows', icon: ICONS.about, glyph: 'M2.5 8.5h5.5v7H2.5zM16 8.5h5.5v7H16zM8 12h8M13.5 9.5 16 12l-2.5 2.5', order: 92, dock: false, launch: focusOrLaunch('dataflow', lazy(() => import('./apps/dataflow'))) },
     // The hardwired half of the app-maker comparison (docs/research/APP_MAKER.md): not in the dock
     { id: 'converter', name: 'Converter', icon: ICONS.files, order: 91, dock: false, launch: focusOrLaunch('converter', lazy(() => import('./apps/converter'))) },
   ];

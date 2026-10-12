@@ -160,9 +160,13 @@ const info = await guest.evaluate(() => ({ origin: location.origin, coi: crossOr
 check(info.origin !== mainOrigin && info.origin === new URL(guestUrl).origin, `guest: its own origin (${info.origin})`);
 check(info.coi === true, 'guest: cross-origin isolated (Workers, SharedArrayBuffer)');
 check(info.pill === 'Guest', 'guest: the menu bar says Guest', String(info.pill));
-await guest.waitForSelector('.sd-guest-pop', { timeout: 10_000 }).catch(() => {});
+await guest.click('.sd-mb-guest');
 const stated = await guest.evaluate(() => document.querySelector('.sd-guest-pop')?.textContent ?? '');
-check(stated.includes(new URL(guestUrl).host) && stated.includes('cannot read your main tabcomputer') && stated.includes('Kept in this browser under the name "work"'), 'guest: the statement of the boundary appears by itself', stated);
+check(stated.includes(new URL(guestUrl).host) && stated.includes('cannot read your main tabcomputer') && stated.includes('Kept in this browser under the name "work"'), 'guest: the Guest button states the boundary', stated);
+const printed = await guest.evaluate(() => { const b = window.__tabcomputer.terminal.term.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += (b.getLine(i)?.translateToString(true) ?? '') + (b.getLine(i + 1)?.isWrapped ? '' : '\n'); return s; });
+check(printed.includes('cannot read your main tabcomputer'), 'guest: the terminal prints it above the first prompt', printed.slice(0, 400));
+await guest.keyboard.press('Escape');
+await guest.mouse.click(400, 400);
 const status = await sh(guest, 'guest');
 check(status.includes('Guest (kept as "work")') && status.includes('It has internet access'), 'guest: `guest` prints the same statement', status);
 
@@ -238,9 +242,10 @@ check(nnInfo.other === 'threw' && nnInfo.mainOrigin === 'threw' && nnInfo.image 
 check(nnInfo.api.startsWith('403') && nnInfo.token.startsWith('403') && nnInfo.gitProxy.startsWith('403') && nnInfo.api.includes('no network'), 'no network: the server refuses its proxies and the relay token', JSON.stringify(nnInfo));
 check(nnInfo.wsTcp !== 'open' && nnInfo.wsChannel !== 'open' && nnInfo.wsMain !== 'open', 'no network: no WebSocket opens, to this host or the main one', JSON.stringify(nnInfo));
 check(nnInfo.own.startsWith('200') && nnInfo.own.includes('"enforced":true'), 'no network: the host\'s own files still load, and the server says it enforces the mode', nnInfo.own);
-await nn.waitForSelector('.sd-guest-pop', { timeout: 10_000 }).catch(() => {});
+await nn.click('.sd-mb-guest');
 const nnStated = await nn.evaluate(() => document.querySelector('.sd-guest-pop')?.textContent ?? '');
 check(nnStated.includes('the browser blocks requests to other sites') && nnStated.includes('can still send the tab to another address') && nnStated.includes('Thrown away'), 'no network: the statement says what is blocked and what is not', nnStated);
+await nn.mouse.click(400, 400);
 const curl = await sh(nn, 'curl -sS -m 8 https://example.com/ ; echo "curl=$?"');
 check(/curl=[1-9]/.test(curl), 'no network: curl fails', curl);
 for (const mode of ['page', 'worker']) {

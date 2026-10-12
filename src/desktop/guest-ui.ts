@@ -61,7 +61,11 @@ async function open(root: HTMLElement, anchor: HTMLElement, guest: GuestInfo): P
   setTimeout(() => document.addEventListener('pointerdown', outside, true));
 }
 
-/** Add the Guest button before `before` in the menu bar; the statement shows once by itself. */
+/**
+ * Add the Guest button before `before` in the menu bar. It does not open by
+ * itself (it would cover the menu bar on a phone): the main terminal prints
+ * the same statement above its first prompt (main.ts).
+ */
 export function initGuestUI(root: HTMLElement, menubar: HTMLElement, before: HTMLElement, guest: GuestInfo): void {
   const b = document.createElement('button');
   b.className = 'sd-mb-item sd-mb-status sd-mb-guest';
@@ -72,8 +76,4 @@ export function initGuestUI(root: HTMLElement, menubar: HTMLElement, before: HTM
   menubar.insertBefore(b, before);
   const toggle = () => { if (popover) close(); else void open(root, b, guest); };
   b.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
-  // Once per tab: a reload doesn't bring it back
-  let shown = false;
-  try { shown = sessionStorage.getItem('tabcomputer-guest-stated') === '1'; sessionStorage.setItem('tabcomputer-guest-stated', '1'); } catch { /* no storage */ }
-  if (!shown) setTimeout(() => { if (!popover) void open(root, b, guest); }, 1200);
 }

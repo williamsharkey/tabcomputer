@@ -239,6 +239,42 @@ the mode (`/guest/config.json`), so it says less when less is true:
 > No network: … / It has internet access …
 > Thrown away: … / Kept under the name …
 
+## What is built
+
+- `src/guest.ts`: the label, `guestInfo()`, `?guest` / `&nonet`, `guestUrl`,
+  `openGuest`, the statement, `bootGuest()` (first thing in `main()`), the
+  wipe and the discard.
+- `server.mjs` "Guests": `guestConfigFor`, `/guest/config.json`, the refusals
+  by Host and by Origin, the CSP and headers for guest hosts, no app shell
+  into a same-site frame, `/browse/config.json` off for guests. On for
+  localhost; elsewhere inert until `TABCOMPUTER_GUESTS=1`.
+- The desktop's Guest button and popover (`src/desktop/guest-ui.ts`), the
+  System menu items, the statement above the terminal's first prompt, the
+  `guest` command.
+- No relay in a no-network guest (`relayNetConfig`, `net.ts`), no sign-in
+  sheet raised in a guest, a note in Accounts and on `gh auth login`, no
+  persistent-storage request for a thrown-away guest.
+- Tests: `guest.test.ts` (label, addresses, statement, every server refusal),
+  `tests/browser/guest-profile.mjs`: a fake token in the main profile's files,
+  localStorage, a cache and OPFS; a probe that finds it there from a node
+  script in the page, in a Worker and from page JavaScript; the same probe in
+  a guest of the same site finds nothing; the main profile takes no seed from
+  a guest's frame; the no-network CSP and refusals with node still running;
+  kept, thrown away, discard; the main profile unchanged afterwards.
+
+## Turning it on
+
+1. Decide the guest domain (below). For subdomains nothing is needed outside
+   the repository: add `TABCOMPUTER_GUESTS=1` to
+   `profiles/tabcomputer/server.env` and release.
+2. For a separate domain: register it, point `*.<domain>` at the droplet, add
+   a wildcard certificate and an nginx server block like `tabcomputer-wild`
+   (`tls-install.sh`), set `TABCOMPUTER_GUEST_ORIGIN=https://{guest}.<domain>`
+   and add `https://*.<domain>` to `TABCOMPUTER_TCP_ORIGINS`.
+3. Run `tests/browser/guest-profile.mjs` against the site's own hostnames once
+   (the planted token is fake), and check `/guest/config.json` on a guest host
+   says `"enforced": true`.
+
 ## Still open after the slice
 
 - Navigation out of a no-network guest (above).

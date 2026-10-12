@@ -221,15 +221,25 @@ export function runChildSync(sys: GuestSys, cmd: string, opts: ChildOptions = {}
   return finish(r, w.status);
 }
 
+/**
+ * How long runChild waits before it polls again, `quietMs` after the child last moved
+ * anything: a sixteenth of that, to 20 ms. A child is noticed ending within about 6% of
+ * the time it ran. (It was a millisecond more each empty round, which for a 70 ms command
+ * is 12 ms between rounds: exec() cost that on top of the command, APP_MAKER.md.)
+ */
+export function pollDelay(quietMs: number): number {
+  return Math.min(20, Math.max(0, Math.floor(quietMs / 16)));
+}
+
 /** Run CMD; the guest's event loop keeps going (polled from timers) */
 export function runChild(sys: GuestSys, cmd: string, opts: ChildOptions = {}): Promise<ChildResult> {
   const r = start(sys, cmd, opts);
   if (typeof r === 'number') return Promise.resolve({ stdout: new Uint8Array(0), stderr: enc.encode(`spawn sh: errno ${-r}\n`), status: 127, signal: null, pid: 0 });
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let idle = 0;
+  let moved = performance.now(); // when anything last did
   let tick = () => {};
   /** Run a round soon: input to send */
-  const kick = () => { idle = 0; if (timer !== null) { cancel(timer); timer = later(tick, 0); } };
+  const kick = () => { moved = performance.now(); if (timer !== null) { cancel(timer); timer = later(tick, 0); } };
   opts.control?.({
     pid: r.pid,
     write(b) {
@@ -259,11 +269,12 @@ export function runChild(sys: GuestSys, cmd: string, opts: ChildOptions = {}): P
   return new Promise((resolve) => {
     tick = () => {
       timer = null;
-      // poll without waiting; back off while nothing happens (0, 1, 2 ... 20 ms)
+      // poll without waiting; back off while nothing happens (pollDelay)
       const before = r.out.length + r.err.length + r.inOff + r.ipcMoved;
       const done = pump(sys, r, 0);
-      idle = r.out.length + r.err.length + r.inOff + r.ipcMoved === before ? Math.min(20, idle + 1) : 0;
-      if (!done) { timer = later(tick, idle); return; }
+      const now = performance.now();
+      if (r.out.length + r.err.length + r.inOff + r.ipcMoved !== before) moved = now;
+      if (!done) { timer = later(tick, pollDelay(now - moved)); return; }
       if (r.inW >= 0) { sys.close(r.inW); r.inW = -1; }
       r.inLive = false;
       // what the child sent before it ended, then the channel's end

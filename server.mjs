@@ -544,7 +544,15 @@ async function handleStatic(req, res, guest = null, guests = null) {
     const isolation = isAppShell || ext === '.js' || ext === '.mjs' ? isolationHeaders() : {};
     if (isAppShell) {
       const override = new URL(req.url, 'http://localhost').searchParams.get('profile');
-      data = Buffer.from(brandAppShell(data.toString('utf8'), req.headers['host'], profileFor(req.headers['host'], override)?.brand));
+      let html = brandAppShell(data.toString('utf8'), req.headers['host'], profileFor(req.headers['host'], override)?.brand);
+      // The shell names its entry relative to the page ("./assets/…"): under /s/<id>
+      // that is /s/assets/…, a 404, and the app never starts. Where shared seeds are
+      // on, a base element makes it the root again. (Other nested paths, like
+      // /<user>/<repo>, are left as they are: the app does not start there.)
+      if (SEED_SHARE && /^\/s\/[a-z0-9]{4,16}$/.test(new URL(req.url, 'http://localhost').pathname) && !/<base\b/i.test(html)) {
+        html = html.replace(/<head([^>]*)>/i, '<head$1>\n  <base href="/">');
+      }
+      data = Buffer.from(html);
     }
     // The streamed Debian rootfs's chunks are content-addressed (named by sha256),
     // and so are the engines' hashed wasm copies and versioned Blink directories

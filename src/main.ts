@@ -876,10 +876,12 @@ async function main() {
         const full = await pipeBytes(compressed, new DecompressionStream('gzip'));
         const envelope = JSON.parse(new TextDecoder().decode(full));
 
-        // A link must not replace this machine by itself: its files (startup scripts
-        // among them) would run here, next to whatever this profile is signed in to
+        // Where the server has guests, a /s/ link was sent to a guest of its own before
+        // this (bootGuest, src/guest.ts). On a server without them it lands here, in the
+        // profile itself: then a link must not replace the machine by itself. Its files
+        // (startup scripts among them) would run next to whatever the profile is signed in to.
         const { importSeedState, parseSeedNdjson, sharedSeedQuestion } = await import('./seed-state');
-        if (!window.confirm(sharedSeedQuestion(seedId, envelope))) {
+        if (!guest && !window.confirm(sharedSeedQuestion(seedId, envelope))) {
           terminal.term.writeln('Not loaded. Nothing was changed.');
           history.replaceState(null, '', '/');
           throw Object.assign(new Error('declined'), { declined: true });

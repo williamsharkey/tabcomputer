@@ -9,7 +9,7 @@
  * replaces the importer's sign-ins nor plants a remote-control code.
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -360,6 +360,9 @@ describe('server.mjs and shared seeds', () => {
   async function start(env: Record<string, string>): Promise<string> {
     const dir = mkdtempSync(join(tmpdir(), 'seed-share-'));
     dirs.push(dir);
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'dist', 'index.html'), '<!doctype html><html><head><title>t</title></head><body><script type="module">import "./assets/index-abc.js"</script></body></html>');
+    env = { STATIC_DIR: join(dir, 'dist'), ...env };
     const proc = spawn(process.execPath, [serverPath], { env: { ...process.env, PORT: '0', SEED_DIR: join(dir, 'seeds'), TABCOMPUTER_SEED_SHARE: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     procs.push(proc);
     const port = await new Promise<number>((resolve, reject) => {
@@ -377,6 +380,7 @@ describe('server.mjs and shared seeds', () => {
     expect(await up.json()).toEqual({ error: 'Seed sharing is off on this server' });
     expect((await realFetch(`${off}/api/seed/abcd1234`)).status).toBe(404);
     expect(existsSync(join(dirs[dirs.length - 1], 'seeds'))).toBe(false);
+    expect(await (await realFetch(`${off}/s/abcd1234`)).text()).not.toContain('<base');   // unchanged where sharing is off
   }, 30_000);
 
   it('with it on, the routes answer (they sit before the /api/ proxy) and a seed comes back as it went', async () => {
@@ -390,6 +394,11 @@ describe('server.mjs and shared seeds', () => {
     expect(id).toMatch(/^[a-z0-9]{16}$/);   // the id is all that guards a seed
     expect(new Uint8Array(await (await realFetch(`${on}/api/seed/${id}`)).arrayBuffer())).toEqual(body);
     expect((await realFetch(`${on}/api/seed/zzzz9999`)).status).toBe(404);
+    // the link's page can find the app: its entry is named relative to the page
+    const page = await (await realFetch(`${on}/s/${id}`)).text();
+    expect(page).toContain('<base href="/">');
+    expect(page).toContain('import "./assets/index-abc.js"');
+    expect(await (await realFetch(`${on}/`)).text()).not.toContain('<base');
     // over the limit: refused (the server may hang up before the whole body is in)
     const big = await realFetch(`${on}/api/seed`, { method: 'POST', body: new Uint8Array(600 * 1024) }).then((r) => r.status, () => 413);
     expect(big).toBe(413);
@@ -486,7 +495,8 @@ describe('importing a seed', () => {
     expect(main).not.toMatch(/fs\.importAll\(/);
     expect(main).not.toMatch(/localStorage\.setItem\(key, value as string\)/);
     const share = main.slice(main.indexOf('Check for shared seed URL'), main.indexOf('Check for GitHub import URL'));
-    expect(share.indexOf('window.confirm(sharedSeedQuestion(')).toBeGreaterThan(-1);
+    // (asked in a main profile: where the server has guests the link went to a guest before this)
+    expect(share).toContain('if (!guest && !window.confirm(sharedSeedQuestion(');
     expect(share.indexOf('window.confirm(')).toBeLessThan(share.indexOf('importSeedState('));
     const q = sharedSeedQuestion('abcd1234', { files: 12, hostname: 'tabcomputer.com', timestamp: Date.UTC(2026, 9, 12) });
     expect(q).toContain('replaces every file');

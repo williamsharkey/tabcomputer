@@ -18,6 +18,7 @@
  */
 
 import { networkCredential, requireNetworkSignIn, setNetworkStatus } from '../net-signin';
+import { guestInfo } from '../guest';
 import type { KStat } from './abi';
 import { retain, release, type FdTable, type OpenFile } from './fd';
 import type { Kernel } from './kernel';
@@ -125,7 +126,8 @@ export interface NetConfig {
 
 function defaultConfig(): NetConfig {
   const loc = typeof location !== 'undefined' ? location : null;
-  const web = !!loc && (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host;
+  // A no-network guest (src/guest.ts) gets no relay
+  const web = !!loc && (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host && !guestInfo()?.noNetwork;
   return {
     relayUrl: web ? `${loc!.protocol === 'https:' ? 'wss' : 'ws'}://${loc!.host}/tcp` : null,
     tokenUrl: web ? `${loc!.protocol}//${loc!.host}/tcp/token` : null,

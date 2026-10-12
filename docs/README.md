@@ -45,6 +45,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 
 - [research/AGENT-EXPERIMENTS.md](research/AGENT-EXPERIMENTS.md): coding-agent workflows inside tabcomputer, and the limits they hit (2026-10-09).
 - [research/DEV-TOOLS.md](research/DEV-TOOLS.md): developer tools tested in tabcomputer.
+- [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

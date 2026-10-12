@@ -35,6 +35,10 @@ A tab can hold Claude and GitHub tokens and the person's files, so a link never 
 
 A refused link prints `run link: <why>` in the terminal and runs nothing.
 
+### In a guest
+
+`&guest` on a run link opens it in a guest (docs/research/GUEST_PROFILE.md): tabcomputer on a separate origin that cannot read the main profile's files or sign-ins. `&guest=NAME` keeps the guest under that name, `&nonet` gives it no network. The page goes to the guest before anything is fetched, and the rest of the link goes along, so the prompt and the script appear there. When the server has no guests the link runs nothing and the Terminal says so. `guest` and `nonet` are the page's own parameters, never arguments.
+
 ### What a curated recipe may do with its arguments
 
 Anyone can make a link to a curated recipe with any argument values, and it runs without a prompt. So a recipe treats its arguments as hostile:
@@ -109,5 +113,5 @@ Put the setup script at `.tabcomputer/run.sh` in the repository, then:
 ## Not built yet
 
 - Recipe snapshots: a heavy recipe's resulting files built on the server and streamed, as toolchain layers are.
-- A separate filesystem profile per third-party script, so it never sees `~/.claude`.
+- `gh:` and `sh:` links opening in a guest by themselves, and the `claude-sandbox` and `untrusted-repo` gallery links carrying `&guest` (once the site has guests; GUEST_PROFILE.md "Owner decisions").
 - Acting on `needs` (a warning when the page can't run what the recipe needs) and measured `first-run` times.

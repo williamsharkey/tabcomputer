@@ -233,6 +233,20 @@ export async function ensureBuiltinShims(fs: FileSystem, isCommand: (name: strin
   return written;
 }
 
+/**
+ * What `debian install` and `toolchain install` print for applyDefaults'
+ * changes: each one with -v, else a count (a change that was refused is
+ * always shown).
+ */
+export function overlayReport(changed: string[], verbose: boolean): string[] {
+  const line = (c: string) => `  overlay: ${c}`;
+  if (verbose) return changed.map(line);
+  const done = changed.filter((c) => /: now (?:tabcomputer's|Debian's)/.test(c));
+  const out = changed.filter((c) => !done.includes(c)).map(line);
+  if (done.length) out.unshift(line(`${done.length} program${done.length === 1 ? '' : 's'} set to their defaults (-v lists each; tabcomputer-alternatives --list)`));
+  return out;
+}
+
 // ── Builtins vs. files on PATH ───────────────────────────────────────────
 
 const BIN_DIRS = ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'];

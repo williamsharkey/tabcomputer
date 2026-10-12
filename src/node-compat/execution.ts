@@ -810,7 +810,7 @@ export async function executeNodeScript(
     let _timersDone: Promise<void> | null = null;
     const _timerIds = new Set<any>();
     const _intervalIds = new Set<any>();
-    const _refdIntervals = new Set<any>(); // a guest's ref'd intervals: activity, as in node
+    const _refdIntervals = new Set<any>(); // the script's ref'd intervals: activity, as in node
     // (and its open sockets and servers)
     const intervalsAlive = () => _refdIntervals.size > 0 || !!guest?.busy?.() || threadsAlive() || ipcAlive();
     if (code.length <= 500000) {
@@ -864,9 +864,9 @@ export async function executeNodeScript(
           }
           _baseCT(rawTimer(id));
         } as typeof clearTimeout;
-        // Intervals never kept a script alive in the page (one left running would hold the
-        // shell); they still answer unref() etc. A kernel guest is a process that can be
-        // killed, so there, as in node, a ref'd interval keeps it running until cleared.
+        // As in node, a ref'd interval keeps the script running until it is cleared (#93).
+        // In the page that is the script's own: one page code set through the global while
+        // the script runs isn't its to wait for. Ctrl-C or a kill ends it (endOnAbort).
         const setI = function(fn: any, ms?: number, ...args: any[]) {
           fn = asyncContext.bind(fn);
           const raw = PAGE_SET_INTERVAL((...a: any[]) => {
@@ -878,7 +878,7 @@ export async function executeNodeScript(
           }, ms, ...args);
           _intervalIds.add(raw);
           if (own) _ownIntervalIds.add(raw);
-          if (!guest) return nodeTimer(raw, {});
+          if (!guest && !own) return nodeTimer(raw, {});
           _refdIntervals.add(raw);
           return nodeTimer(raw, {
             onUnref: () => { _refdIntervals.delete(raw); },
@@ -894,6 +894,23 @@ export async function executeNodeScript(
       globalThis.setInterval = _st.installedSetInterval = shared.setInterval;
       globalThis.clearInterval = _st.installedClearInterval = shared.clearInterval;
       ownTimers = makeTimers(true);
+      // The shell stops waiting for a page script on Ctrl-C, a timeout or a kill (runCommand's
+      // abort). The script ends with it, as the signal would end node: one kept running by an
+      // interval would otherwise run on in the page. (A script reading the terminal takes ^C itself.)
+      const shellAbort: AbortSignal | undefined = guest ? undefined : ((ctx.shell as any)?.abortController ?? (ctx.shell as any)?.inheritedAbort)?.signal;
+      if (shellAbort) {
+        const endOnAbort = () => {
+          if (_st.isInteractiveMode) return;
+          const sig = (shellAbort.reason as { signal?: unknown } | undefined)?.signal;
+          if (!_st.exitCalled) { _st.exitCode = 128 + (typeof sig === 'number' ? sig : 2); _st.exitCalled = true; }
+          _st.deferredExitResolve?.(_st.exitCode);
+        };
+        if (shellAbort.aborted) endOnAbort();
+        else {
+          shellAbort.addEventListener('abort', endOnAbort, { once: true });
+          atExit(() => shellAbort.removeEventListener('abort', endOnAbort));
+        }
+      }
       // When the script ends its own timers go with it, as with a process: an interval
       // left running fired into the next script and, through that script's setTimeout,
       // kept it from ever going idle. Timers others made through the global (xterm's

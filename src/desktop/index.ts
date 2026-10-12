@@ -433,6 +433,16 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         root.append(pop);
         if (iconSetId === 'pixel') paintPixelTiles(pop, wm.theme(), appName);
         const r = b.getBoundingClientRect();
+        // A short screen (a phone on its side): no room above the dock for two rows, so the
+        // stack gets as many columns as fit, and scrolls if even one row is too tall
+        const room = r.top - 10 - root.getBoundingClientRect().top - 8;
+        if (pop.offsetHeight > room) {
+          const fit = Math.max(4, Math.floor((window.innerWidth - 16 - 22) / 78));
+          items.style.setProperty('--sd-stack-cols', String(Math.min(members.length, fit)));
+          pop.style.maxWidth = 'calc(100vw - 16px)';
+          pop.style.maxHeight = `${Math.max(96, room)}px`;
+          pop.style.overflowY = 'auto';
+        }
         const w = pop.offsetWidth;
         pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
         pop.style.bottom = `${Math.max(8, root.getBoundingClientRect().bottom - r.top + 10)}px`;

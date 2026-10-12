@@ -15,7 +15,7 @@ import type { DesktopWindow } from '../wm';
 
 /** extension → [program that writes HTML to stdout, program that writes CSV] */
 const TOOLS: Record<string, { html?: string; csv?: string }> = {
-  wpd: { html: 'wpd2html' }, pub: { html: 'pub2xhtml' }, wps: { html: 'wps2html' },
+  wpd: { html: 'wpd2html' }, wp: { html: 'wpd2html' }, pub: { html: 'pub2xhtml' }, wps: { html: 'wps2html' },
   wks: { csv: 'wks2csv' }, wk1: { csv: 'wks2csv' }, wk3: { csv: 'wks2csv' }, wk4: { csv: 'wks2csv' },
   cwk: { html: 'mwaw2html', csv: 'mwaw2csv' },
 };

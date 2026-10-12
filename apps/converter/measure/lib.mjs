@@ -56,8 +56,20 @@ export async function putApp(page, tabDir = '/home/user/apps/converter') {
   return files.length;
 }
 export const until = async (page, fn, ms = 15000, step = 100) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) return v; await page.waitForTimeout(step); } };
-/** Total memory of the page, its frames and workers, in MB (the page must be cross-origin isolated) */
-export const memMB = (page) => page.evaluate(async () => { try { const m = await performance.measureUserAgentSpecificMemory(); return Math.round(m.bytes / 1e6); } catch (e) { return String(e); } });
+/**
+ * Memory in MB: measureUserAgentSpecificMemory (the page, its frames and workers; the page must be
+ * cross-origin isolated). It answers at the browser's next garbage collection, which can be never
+ * on an idle page, so after 15 s this falls back to the page's own JS heap, marked `heapOnly`.
+ */
+export const memMB = (page) => page.evaluate(async () => {
+  const heap = () => ({ heapOnly: Math.round(performance.memory.usedJSHeapSize / 1e6) });
+  try {
+    return await Promise.race([
+      performance.measureUserAgentSpecificMemory().then((m) => Math.round(m.bytes / 1e6)),
+      new Promise((r) => setTimeout(() => r(heap()), 15000)),
+    ]);
+  } catch { return heap(); }
+});
 /** The hardwired window's module (src/desktop/apps/converter.ts) as a script that defines __hwConverter */
 export function hardwiredBundle() {
   const esbuild = require(join(REPO, 'node_modules/esbuild'));

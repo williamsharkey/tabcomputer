@@ -129,9 +129,10 @@ ${bootSection(ctx, name)}
   \`doctor --agents\` checks, step by step, what agent CLIs need from both
   runtimes.
 - \`echo $TABCOMPUTER_CLAUDE_BUILD $TABCOMPUTER_CLAUDE_VERSION\` tells you which
-  Claude Code you are, when ${name}'s \`claude\` started you. \`native\` is Anthropic's
-  binary in the x86-64 emulator: about 2 minutes per request. \`npm\` is the pinned
-  pure-JavaScript build on ${name}'s Node runtime: much faster.
+  Claude Code you are, when ${name}'s \`claude\` started you. \`vm\` (the default) is
+  the JavaScript of Anthropic's native build on ${name}'s Node runtime. \`native\`
+  (\`claude --x86\`) is that binary in the x86-64 emulator: much slower. \`npm\`
+  (\`claude --npm\`) is the pinned npm build on the Node runtime.
 - Read "Known issues" below before working around something that fails, and
   check the tracker for newer ones: \`gh issue list -R ${source.replace('https://github.com/', '')}\`.
 

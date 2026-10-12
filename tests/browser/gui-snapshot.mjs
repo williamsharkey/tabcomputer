@@ -30,7 +30,7 @@ const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 /** Apps whose first windows aren't the usable one: the title of the window that is */
 const READY = { gimp: 'GNU Image Manipulation Program' };
 /** How each app is used after a restore: 'pointer' moves over it, 'type' types into it */
-const USE = { xeyes: 'pointer', xclock: 'none', gpicview: 'none', xterm: 'type', geany: 'geany', l3afpad: 'type', mousepad: 'type', featherpad: 'type', galculator: 'type' };
+const USE = { xeyes: 'pointer', xclock: 'none', gpicview: 'none', gimp: 'gimp', xterm: 'type', geany: 'geany', l3afpad: 'type', mousepad: 'type', featherpad: 'type', galculator: 'type' };
 
 const boot = async (page, app) => {
   await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 90_000 });
@@ -54,7 +54,14 @@ async function open(page, app) {
     for (let i = 0; i < d.length; i += 4 * 97) if (((d[i] << 16) | (d[i + 1] << 8) | d[i + 2] | (d[i + 3] << 24)) !== first) return true;
     return false;
   }, [app, READY[app] ?? ''], { timeout: LIMIT, polling: 20 });
-  return { windowMs, drawnMs: Date.now() - t0 };
+  const drawnMs = Date.now() - t0;
+  // ... and to its process running: a guest thread of the launched process waits in a kernel call
+  // (a restored window is on screen before its process exists)
+  await page.waitForFunction(() => {
+    const p = window.__tabcomputer.kernel.procs.get(window.__guiLast?.pid);
+    return !!p && [...(p.data.engineDirect?.values() ?? [])].some((ch) => ch.pending);
+  }, null, { timeout: LIMIT, polling: 10 }).catch(() => {});
+  return { windowMs, drawnMs, runningMs: Date.now() - t0 };
 }
 
 /** A hash of the app's window pixels, and where it is on the page */
@@ -79,6 +86,7 @@ async function use(page, app) {
   if (!a) return { ok: false, why: 'no window' };
   if (kind === 'none') return { ok: true, kind };
   if (kind === 'geany') return useGeany(page, a);
+  if (kind === 'gimp') return useGimp(page, a);
   if (kind === 'pointer') {
     // (xeyes asks where the pointer is a few times a second; its window is the two eyes' shape,
     // so the pointer goes inside one eye, then the other)
@@ -92,11 +100,17 @@ async function use(page, app) {
   }
   await page.mouse.click(a.x + a.width / 2, a.y + a.height * 0.6);
   await page.waitForTimeout(300);
-  const before = await look(page, app);
-  await page.keyboard.type('snapshot 12345', { delay: 30 });
-  let after = before;
-  for (let i = 0; i < 40 && after.hash === before.hash; i++) { await page.waitForTimeout(250); after = await look(page, app); }
-  return { ok: after.hash !== before.hash, kind, title: after.title };
+  // (an editor's caret blinks: what the window looks like over a blink, before any key)
+  const before = new Set();
+  for (let i = 0; i < 14; i++) { before.add((await look(page, app)).hash); await page.waitForTimeout(100); }
+  // the first key after a restore: how long until the window shows it (the JIT starts cold)
+  const t0 = Date.now();
+  await page.keyboard.type('s');
+  let after = await look(page, app);
+  for (let i = 0; i < 400 && before.has(after.hash); i++) { await page.waitForTimeout(25); after = await look(page, app); }
+  const firstKeyMs = Date.now() - t0;
+  await page.keyboard.type('napshot 12345', { delay: 30 });
+  return { ok: !before.has(after.hash), kind, title: after.title, firstKeyMs };
 }
 
 /**
@@ -114,24 +128,59 @@ async function useGeany(page, a) {
   await page.waitForTimeout(300);
   await page.keyboard.press('Control+o');
   await until('no Open File dialog', async () => (await title()).some((t) => /Open File/.test(t)));
-  await page.waitForTimeout(500);
-  await page.keyboard.press('Control+l');
-  await page.waitForTimeout(300);
-  await page.keyboard.type('/home/user/snap-test.txt', { delay: 20 });
-  await page.keyboard.press('Enter');
-  await until('the file did not open', async () => (await title()).some((t) => /snap-test\.txt/.test(t)));
-  await page.waitForTimeout(300);
-  await page.keyboard.type('typed after the restore ', { delay: 20 });
+  // (the dialog's window is up before its widgets take keys: the first one compiles as it runs. Asked
+  // again while the dialog stays, as someone would)
+  for (let tries = 0; ; tries++) {
+    await page.waitForTimeout(1500);
+    await page.keyboard.press('Control+l');
+    await page.waitForTimeout(800);
+    await page.keyboard.press('Control+a');
+    await page.keyboard.type('/home/user/snap-test.txt', { delay: 30 });
+    await page.keyboard.press('Enter');
+    const opened = async () => (await title()).some((t) => /snap-test\.txt/.test(t));
+    if (await until('the file did not open', opened, 15_000).catch(() => false)) break;
+    // only while the dialog is still there: with it gone the keys would go to the editor
+    if (tries === 2 || !(await title()).some((t) => /Open File/.test(t))) { await until('the file did not open', opened); break; }
+  }
+  // (the dialog closes and the editor takes the keyboard: keys sent in between go to a window that is gone)
+  await page.waitForTimeout(2000);
+  await page.keyboard.type('typed after the restore ', { delay: 30 });
   await until('typing did not mark the file changed', async () => (await title()).some((t) => /^\*snap-test\.txt/.test(t)));
   await page.keyboard.press('Control+s');
   const saved = () => page.evaluate(() => window.__tabcomputer.fs.readFile('/home/user/snap-test.txt', 'utf8').catch(() => ''));
-  await until('the file was not saved', async () => /typed after the restore first line/.test(await saved()));
+  await until('the file was not saved', async () => /typed after the restore first line/.test(await saved()), 15_000).catch(async (e) => { throw new Error(`${e.message}; it holds ${JSON.stringify(await saved())}`); });
   const pid = await page.evaluate(() => window.__guiLast.pid);
   await page.keyboard.press('Control+q');
   await until('Ctrl+Q did not end it', () => page.evaluate((pid) => !window.__tabcomputer.kernel.procs.has(pid), pid));
   const status = await page.evaluate(() => window.__guiLast.exited);
   if (status !== 0) throw new Error(`geany: exit status ${status} after Ctrl+Q`);
   return { ok: true, kind: 'geany: opened a file, typed, saved, Ctrl+Q', quit: true };
+}
+
+/** GIMP after a restore: a new image through its dialog (new windows, the canvas, babl and GEGL at work), then Ctrl+Q */
+async function useGimp(page, a) {
+  const title = () => page.evaluate(() => window.__tabcomputer.desktop.windows().filter((w) => w.appId === 'gimp' && w.surface).map((w) => w.title));
+  const until = async (what, test, ms = 60_000) => {
+    for (const t0 = Date.now(); Date.now() - t0 < ms;) { if (await test()) return true; await page.waitForTimeout(200); }
+    throw new Error(`gimp: ${what} (windows: ${JSON.stringify(await title())})`);
+  };
+  await page.mouse.click(a.x + a.width / 2, a.y + a.height * 0.5);
+  await page.waitForTimeout(500);
+  const t0 = Date.now();
+  await page.keyboard.press('Control+n');
+  await until('no New Image dialog', async () => (await title()).some((t) => /Create a New Image/.test(t)));
+  const dialogMs = Date.now() - t0;
+  await page.waitForTimeout(2500);
+  await page.keyboard.press('Enter');
+  await until('no new image', async () => (await title()).some((t) => /Untitled/.test(t)));
+  await page.waitForTimeout(1500);
+  const pid = await page.evaluate(() => window.__guiLast.pid);
+  // (an untouched new image isn't unsaved work: Ctrl+Q quits without asking)
+  await page.keyboard.press('Control+q');
+  await until('Ctrl+Q did not end it', () => page.evaluate((pid) => ![...window.__tabcomputer.kernel.procs.values()].some((p) => p.pid === pid || p.ppid === pid), pid));
+  const status = await page.evaluate(() => window.__guiLast.exited);
+  if (status !== 0) throw new Error(`gimp: exit status ${status} after Ctrl+Q`);
+  return { ok: true, kind: `gimp: new image through its dialog (dialog after ${dialogMs} ms), Ctrl+Q`, quit: true };
 }
 
 /** Close the app's windows by the title bar; an editor with typed text asks first: answer "close without saving" */
@@ -193,6 +242,8 @@ for (const app of apps) {
     r.quit = r.use.quit ? { ok: true, ms: 0 } : await quit(page, app);
     if (!r.quit.ok) throw new Error(`the restored app did not quit: ${JSON.stringify(r.quit.left)}`);
     if ((await procs(page, app)).length) throw new Error(`a process was left after it quit: ${JSON.stringify(await procs(page, app))}`);
+    // (its X client goes when its socket closes: the display has only its own client again)
+    await page.waitForFunction(() => (window.__shiroX?.server.clients.size ?? 0) <= 1, null, { timeout: 30_000, polling: 100 });
     await page.waitForTimeout(500);
     // Again in the same page. An app that saved new settings as it quit (what was typed changed
     // them) has outdated its snapshot: then this launch starts the usual way, which is right.
@@ -200,14 +251,14 @@ for (const app of apps) {
     r.againLog = (await snapshotLog(page)).find((e) => e.restored !== undefined) ?? null;
     if (!r.againLog?.restored && !/ changed$/.test(r.againLog?.why ?? '')) throw new Error(`not restored the second time: ${r.againLog?.why ?? 'no snapshot was tried'}`);
     await page.waitForTimeout(500);
-    if (r.againLog.restored && USE[app] !== 'geany') {
+    if (r.againLog.restored && !r.use.quit) {
       r.useAgain = await use(page, app);
       if (!r.useAgain.ok) throw new Error(`the app restored a second time did not react (${r.useAgain.kind})`);
     }
     await quit(page, app);
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     const mb = (b) => (b / 1e6).toFixed(1);
-    console.log(`ok   ${app.padEnd(11)} first launch ${r.first.windowMs} ms; snapshot ${mb(taken.bytes.image)} MB (${mb(taken.bytes.stored)} MB stored, ${mb(taken.bytes.x)} MB of X requests) in ${taken.ms} ms; restored: window ${r.restored.windowMs} ms, drawn ${r.restored.drawnMs} ms (X ${r.restoreLog.x} ms, image ${r.restoreLog.image} ms); again ${r.again.windowMs} ms${r.againLog.restored ? '' : ' (not restored: ' + r.againLog.why + ')'}; used: ${r.use.kind}; quit ${r.quit.ms} ms${r.retaken.length ? `; retaken ${r.retaken.length}x (${r.retaken.join('; ')})` : ''}`);
+    console.log(`ok   ${app.padEnd(11)} first launch ${r.first.windowMs} ms; snapshot ${mb(taken.bytes.image)} MB (${mb(taken.bytes.stored)} MB stored, ${mb(taken.bytes.x)} MB of X requests) in ${taken.ms} ms; restored: window ${r.restored.windowMs} ms, drawn ${r.restored.drawnMs} ms, process running ${r.restored.runningMs} ms (X ${r.restoreLog.x} ms, image ${r.restoreLog.image} ms)${r.use.firstKeyMs ? `, first key shown after ${r.use.firstKeyMs} ms` : ''}; again ${r.again.windowMs} ms${r.againLog.restored ? '' : ' (not restored: ' + r.againLog.why + ')'}; used: ${r.use.kind}; quit ${r.quit.ms} ms${r.retaken.length ? `; retaken ${r.retaken.length}x (${r.retaken.join('; ')})` : ''}`);
   } catch (e) {
     failed++;
     r.error = String(e.message);

@@ -320,6 +320,8 @@ export class XServer {
   private shapeEvent = 0;
 
   time(): number { return (Date.now() - this.startTime) >>> 0; }
+  /** The server's time never before `t`: a restored client has seen timestamps up to there (src/gui/snapshot.ts) */
+  timeAtLeast(t: number): void { const now = this.time(); if (now <= t) this.startTime -= t - now + 1; }
 
   addExtension(name: string, nEvents: number, nErrors: number, handle: Extension['handle']): Extension {
     const ext: Extension = {

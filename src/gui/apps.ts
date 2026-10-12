@@ -583,6 +583,14 @@ export interface LaunchedApp { pid: number; exited: Promise<number>; output: () 
 type SnapshotModule = typeof import('./snapshot');
 
 /**
+ * Apps started without the session bus while snapshots are on. An app that
+ * holds a bus connection can't be snapshotted (the daemon keeps its side of
+ * it: docs/research/GUI_SNAPSHOTS.md), and these work without one: GIMP uses
+ * the bus only to hand a second invocation's files to the running one.
+ */
+const SNAPSHOT_WITHOUT_BUS = new Set(['gimp']);
+
+/**
  * Whether this launch can use snapshots, and with what: the stored one when it
  * is still good (a stale one is dropped), the key a new one would get, and
  * the X client number the app's snapshots use.
@@ -637,7 +645,8 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
   // and Dillo's launch: docs/GUI_LAUNCH.md)
   await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
-  const bus = await sessionBus(kernel, m);
+  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && (await import('./snapshot')).snapshotsEnabled();
+  const bus = withoutBus ? null : await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
   // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile
   env = { ...env, ...((globalThis as { __guiLaunchEnv?: Record<string, string> }).__guiLaunchEnv ?? {}) };
@@ -660,10 +669,10 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
     const t0 = Date.now();
     try {
       // (its windows name the pid it had then)
-      if (!kernel.procs.has(plan.stored.meta.pid) && !ids.pidAppIds.has(plan.stored.meta.pid)) { ids.pidAppIds.set(plan.stored.meta.pid, name); restoredPids.push(plan.stored.meta.pid); }
+      if (!kernel.procs.has(plan.stored.meta.procs[0].pid) && !ids.pidAppIds.has(plan.stored.meta.procs[0].pid)) { ids.pidAppIds.set(plan.stored.meta.procs[0].pid, name); restoredPids.push(plan.stored.meta.procs[0].pid); }
       const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
       p = r.proc;
-      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.pid });
+      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.procs[0].pid });
       // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again
       const S = plan.S;
       void p.wait().then((st) => { if (st !== 0 && Date.now() - t0 < 5000) { snapshotLog(name, { restored: false, why: `the restored process ended at once (${st})` }); void S.dropSnapshot(name); } });

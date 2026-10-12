@@ -226,13 +226,19 @@ and opens it in a browser tab.
 
 ## Developer tools
 
-Two dock stacks from the research in `docs/research/DEV-TOOLS.md` (catalog:
-`src/desktop/devtools.ts`):
+Three dock stacks from the research in `docs/research/DEV-TOOLS.md` (catalog:
+`src/desktop/devtools.ts`), each always one stack (`collapse: 'always'`, no
+loose members), after htop and Python:
 
-| stack | loose | stacked |
-|---|---|---|
-| Developer | nano, Vim, Code (the CodeMirror window), Git | Neovim, Emacs, Geany, tmux |
-| AI agents | Claude Code | Gemini CLI, Codex, Grok, Antigravity (`agy`), aider |
+| stack | members |
+|---|---|
+| Text Editors | nano, Vim, Neovim, Emacs, Code (the CodeMirror window), Geany |
+| Developer Tools | Git, tmux |
+| AI agents | Claude Code, Gemini CLI, Codex, Grok, Antigravity (`agy`), aider |
+
+Apps with a logo have a glyph drawn after it (`iconsets.ts`), on every icon
+set's grid. A stack that doesn't fit above the dock (a phone on its side) gets
+more columns, then scrolls.
 
 A tool that isn't installed has a ↓ badge whose tooltip gives its install
 time. The first click opens its Terminal window, which says what it installs

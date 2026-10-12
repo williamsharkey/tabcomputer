@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 1001 | see `git log --grep "^Build 1001"` | 2026-10-12 | gdb runs programs (#108, docs/research/GDB.md): a debug agent in Blink (patch 0550, engine rebuilt) and `tabcomputer-gdbserver` behind gdb's `run`; breakpoints, stepping, backtraces, watchpoints, Ctrl-C, a stop on a segfault; main thread only. A static program's `abort()` ends the process |
 | 1000 | see `git log --grep "^Build 1000"` | 2026-10-12 | `become PORT SLUG --start CMD`: app mode restarts the app's backend after a reload and serves the real preview document; `apps/converter/` (a user-space file converter, #114) and a thin built-in one (`desktop open converter`); docs/research/APP_MAKER.md measures served apps against built-in ones and proposes an app toolkit |
 | 999 | see `git log --grep "^Build 999"` | 2026-10-12 | Guest profiles (#113, docs/research/GUEST_PROFILE.md): the app on its own origin `guest--<name>.<base>`, thrown-away and no-network modes, the `guest` command and menu items; off until the server sets `TABCOMPUTER_GUESTS=1`. Recipes: the four Debian ones ran on production, no longer marked untested |
 | 998 | see `git log --grep "^Build 998"` | 2026-10-12 | Run links (#115, docs/RUN_LINKS.md): `?run=<recipe>` runs a curated recipe in a new Terminal, `?run=gh:owner/repo` and `?run=sh:…` show the script with Run and Cancel first; six recipes, a gallery at `/recipes`, a README badge |

@@ -178,7 +178,8 @@ fetched the first time it runs.
 `pip install NAME` works in Debian's python3 without a venv: tabcomputer writes
 `/etc/pip.conf` with `break-system-packages = true` (`pipInstallsPackages` in
 `src/debian/rootfs.ts`) when the file doesn't exist; edit or empty it to get
-PEP 668's refusal back.
+PEP 668's refusal back. gdb is installed with `c` but can't run a program:
+ptrace isn't implemented (tabcomputer#108).
 
 **What a layer is.** `scripts/debian/build-layers.sh` (root, any Linux host)
 rebuilds the exact base rootfs users install from `public/debian`

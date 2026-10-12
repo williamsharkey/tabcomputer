@@ -1674,6 +1674,8 @@ export class Kernel {
    * go to fds 1 and 2 when the command returns. The shells (sh, bash, dash)
    * use the fds themselves instead (src/shell-stdio.ts): stdin is read when
    * a command in the script needs it, output is written as it is produced.
+   * So do the commands that run another (sudo, timeout, env...): COMMAND gets
+   * fd 0 unread, as its own would be, and its output goes out as it writes it.
    * fd 0 is read only if the command looks at ctx.stdin (execLazyStdin):
    * `echo`, `mkdir`... leave it for the next reader.
    */
@@ -1684,7 +1686,7 @@ export class Kernel {
     let shell: Shell | undefined;
     const getShell = () => (shell ??= this.forkShell(proc, env));
     let stdio: KernelStdio | undefined;
-    if (SHELL_NAMES.has(cmd.name) || SHELL_NAMES.has(proc.argv[0]?.slice(proc.argv[0].lastIndexOf('/') + 1))) {
+    if (SHELL_NAMES.has(cmd.name) || RUNS_COMMAND.has(cmd.name) || SHELL_NAMES.has(proc.argv[0]?.slice(proc.argv[0].lastIndexOf('/') + 1))) {
       const sh = getShell();
       stdio = new KernelStdio(this, proc);
       sh.kernelStdio = stdio;
@@ -3801,6 +3803,12 @@ export function getKernel(): Kernel {
 }
 
 const SHELL_NAMES = new Set(['sh', 'bash', 'dash']);
+/**
+ * Commands that run another command as themselves: on the process's fds like the
+ * shells. Read to EOF first (ctx.stdin), `sudo` under node's spawn(), whose piped
+ * stdin stays open until the parent ends it, never ran its command.
+ */
+const RUNS_COMMAND = new Set(['sudo', 'timeout', 'env', 'nohup', 'setsid']);
 
 /** The words of a shell command that needs no shell: plain words and quoted
  *  strings without expansions, redirections or operators (`exec` dropped). */

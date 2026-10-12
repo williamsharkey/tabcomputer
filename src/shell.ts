@@ -7602,6 +7602,21 @@ export class Shell {
     return this.execute(line, writeStdout, writeStderr, false, undefined, true);
   }
 
+  /**
+   * execute() for a command that runs another as itself (sudo, nohup, setsid): COMMAND's
+   * stdin is the caller's. In a shell that is a kernel process that is its live fd 0, left
+   * unread for COMMAND: reading ctx.stdin there waits for the pipe to close, and node's
+   * spawn() keeps a child's stdin open until the parent ends it (`sudo` under it never
+   * returned). Otherwise ctx.stdin, as executeWithStdin.
+   */
+  executeWithStdinOf(
+    ctx: CommandContext, line: string,
+    writeStdout: (s: string) => void, writeStderr?: (s: string) => void,
+  ): Promise<number> {
+    if (ctx.liveStdin && this.kernelStdio) return this.execute(line, writeStdout, writeStderr, false, undefined, true);
+    return this.executeWithStdin(line, ctx.stdin || '', writeStdout, writeStderr);
+  }
+
   private async runHeadedPipeline(
     parts: string[], stdin: string | null,
     writeStdout: (s: string) => void, writeStderr: (s: string) => void, terminalOverride?: any,

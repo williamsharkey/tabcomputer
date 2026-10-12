@@ -82,7 +82,7 @@ export const nohup: Command = {
     let code: number;
     try {
       // (stdin that is the terminal is empty; otherwise COMMAND reads what we were given)
-      code = await child.executeWithStdin(quoteArgsForShell(args), inTerminal ? '' : (ctx.stdin || ''), stdout, stderr);
+      code = await (inTerminal ? child.executeWithStdin(quoteArgsForShell(args), '', stdout, stderr) : child.executeWithStdinOf(ctx, quoteArgsForShell(args), stdout, stderr));
     } finally {
       outer?.signal.removeEventListener('abort', onOuter);
       await pending;

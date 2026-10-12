@@ -161,7 +161,7 @@ async function installWithApt(fs: FileSystem, kernel: Kernel, name: string, app:
     };
     const argv = cmd.split(' ');
     const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: appEnv({ DEBIAN_FRONTEND: 'noninteractive' }), fds: { 0: new BufferFile(''), 1: out, 2: out } });
-    const st = await p.wait();
+    const st = await exitOf(kernel, p);
     if (pending.trim()) log(pending.trim());
     return st;
   };
@@ -303,11 +303,22 @@ async function runTriggers(fs: FileSystem, kernel: Kernel, which: Set<number>, l
   }));
 }
 
+/**
+ * A process's wait status, with the process reaped. What the page starts is a
+ * child of init, which nothing waits for: a quit app stayed in the process
+ * table as a zombie (`ps`, Activity) until the kernel's 30-second sweep (#118).
+ */
+export async function exitOf(kernel: Kernel, p: { pid: number; wait(): Promise<number> }): Promise<number> {
+  const st = await p.wait();
+  await kernel.waitpid(p.pid, 1 /* WNOHANG */).catch(() => undefined);
+  return st;
+}
+
 async function runQuiet(kernel: Kernel, argv: string[], env: Record<string, string>): Promise<number> {
   const { BufferFile } = await import('../kernel/fd');
   const out = new BufferFile(null);
   const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: { ...appEnv(), ...env }, fds: { 0: new BufferFile(''), 1: out, 2: out } });
-  return p.wait();
+  return exitOf(kernel, p);
 }
 
 /** Environment GUI apps start with. */
@@ -398,10 +409,11 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
     while (next < want.length && ready.size < 16) {
       const n = want[next++];
       ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => {
+        const size = data.length; // (the decoder takes the buffer)
         const entries = await debEntriesOffThread(data);
         readyBytes += m.packages[n].size;
         report('fetch', n);
-        return { size: data.length, cached, entries };
+        return { size, cached, entries };
       }));
     }
   };
@@ -495,7 +507,7 @@ async function startSessionBus(kernel: Kernel, bin: string): Promise<string | nu
     env: appEnv(), fds: { 0: new BufferFile(''), 1: new BufferFile(null), 2: new BufferFile(null) },
   });
   let exited = false;
-  void p.wait().then(() => { exited = true; buses.delete(kernel); });
+  void exitOf(kernel, p).then(() => { exited = true; buses.delete(kernel); });
   for (let t = 0; t < 15000 && !exited; t += 100) {
     if (await fs.exists(sock).catch(() => false)) return SESSION_BUS;
     await new Promise((r) => setTimeout(r, 100));
@@ -586,7 +598,7 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
     env: appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env }), fds: { 0: new BufferFile(''), 1: out, 2: out },
   });
   ids.pidAppIds.set(p.pid, name);
-  const launched = { pid: p.pid, exited: p.wait().finally(() => ids.pidAppIds.delete(p.pid)), output: () => out.text() };
+  const launched = { pid: p.pid, exited: exitOf(kernel, p).finally(() => ids.pidAppIds.delete(p.pid)), output: () => out.text() };
   (globalThis as { __guiLast?: LaunchedApp }).__guiLast = launched;
   return launched;
 }

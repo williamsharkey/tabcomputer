@@ -250,3 +250,32 @@ describe('GUI apps: the GL environment (docs/research/GL.md)', () => {
     }
   });
 });
+
+describe('GUI apps: quitting (#118)', () => {
+  it('leaves no zombie: the page reaps the app it started', async () => {
+    const { fs } = await createTestShell();
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { configureGuiApps, launchApp } = await import('@shiro/gui/apps');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    // a stand-in program: runs until told to quit
+    let quit: (() => void) | undefined;
+    kernel.addLoader((path) => (path === '/usr/bin/fakeapp' ? async () => { await new Promise<void>((r) => { quit = r; }); return 0; } : null));
+    configureGuiApps({
+      manifest: {
+        suite: 'test', arch: 'amd64', mirror: '', snapshot: '', packages: {},
+        apps: { fakeapp: { description: 'demo', toolkit: 'x11', bin: '/usr/bin/fakeapp', packages: [], size: 0, closureSize: 0, dropped: [] } },
+      },
+    });
+    try {
+      const app = await launchApp(kernel, 'fakeapp');
+      for (let i = 0; i < 100 && !quit; i++) await new Promise((r) => setTimeout(r, 10));
+      expect(kernel.procs.get(app.pid)?.state).toBe('running');
+      quit!();
+      expect(await app.exited).toBe(0);
+      // not a zombie waiting for the kernel's 30-second sweep of init's children
+      expect(kernel.procs.has(app.pid)).toBe(false);
+    } finally {
+      configureGuiApps({ manifest: null });
+    }
+  });
+});

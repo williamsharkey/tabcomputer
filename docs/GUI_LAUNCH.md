@@ -245,3 +245,21 @@ at all: a snapshot of the started process.
 ## What changed
 
 Each change is measured against the corpus, before and after, back to back.
+
+### Quitting leaves no zombie (#118)
+
+The baseline's quit column says "1 zombie" for every app: the window went,
+the process ended, and its entry stayed in the process table in state Z
+(`ps`, Activity) for up to 30 seconds. What the page starts is a child of
+init (pid 1), and nothing waited for it: `launchApp` took the exit status
+with `Process.wait()`, which doesn't reap, and left the rest to the kernel's
+30-second sweep of init's children. The same for the installer's triggers
+(`glib-compile-schemas`: the second zombie of a cold launch) and the session
+bus. Not Geany's doing, and not a helper holding it: it has none (no D-Bus
+connection, no child process), and its window and X client were gone 0.7 s
+after the close button.
+
+`exitOf` in `src/gui/apps.ts` now reaps what the page starts as soon as it
+exits (`kernel.waitpid(pid, WNOHANG)`, as the shell's and the WASI runners
+do). Test: `gui-apps.test.ts` "quitting (#118)"; the benchmark's quit column
+reports zombies for every launch.

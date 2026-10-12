@@ -49,6 +49,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/GDB.md](research/GDB.md): how gdb debugs programs here (a debug agent in the x86 engine and the remote protocol, not ptrace), what works and what remains.
 - [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
+- [research/TLS_IN_TAB.md](research/TLS_IN_TAB.md): a design note: why the model, GitHub and git proxies end TLS at the server, and what it would take to do TLS in the tab over the relay instead (not implemented).
 - [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and a proposed app layer (2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

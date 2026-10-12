@@ -8,14 +8,15 @@ There are three places: **this tab** (your browser, this site's origin), **the s
 
 - **Files** live in the browser's IndexedDB for this origin, database `tabcomputer-fs` (`src/filesystem.ts`). They are not uploaded anywhere. Clearing this site's data in the browser deletes them. So can the browser itself when the disk runs low, unless storage is persistent: the page asks for persistence after a large write or a big install (`src/storage.ts`), and Settings → Storage shows the answer.
 - **Programs** (x86-64, WASM, node, the shell) run in the page and its Workers. Loopback connections (`localhost`, `127.0.0.1`) and local servers stay inside the page's kernel (`src/kernel/net.ts`).
-- **Sign-ins** are stored here and nowhere else:
+- **Sign-ins** are stored here and nowhere else (the list the code uses is `src/credentials.ts`):
 
   | secret | where |
   |---|---|
   | GitHub token | `localStorage.tabcomputer_github_token` (`src/github-auth.ts`, `src/net-signin.ts`) |
-  | Claude credentials | the file `~/.claude/.credentials.json` (`src/claude-signin.ts`) |
+  | Claude credentials | the file `~/.claude/.credentials.json` (`src/claude-signin.ts`), and a copy of it in `localStorage` under `wal:/home/user/.claude/.credentials.json`: node keeps one of every `~/.claude` file it writes, to survive a tab closed before the write lands (`src/node-compat/modules/fs.ts`) |
   | API keys set with the shell | `localStorage.tabcomputer_{anthropic,openai,google,api}_key` (`src/shell.ts`, `src/main.ts`) |
   | remote-control code (both parts) | `localStorage.tabcomputer-remote-code` (`src/commands/remote.ts`) |
+  | own-relay setting (its URLs can carry a token) | `localStorage.tabcomputer_relay` (`src/net-signin.ts`) |
 
   **Every program that runs in the profile can read them.** `node`, npm install scripts and agents' tools are JavaScript in the page's origin; they can open IndexedDB and localStorage directly, and no kernel check is in that path (docs/research/GUEST_PROFILE.md). x86-64 and WASM programs read the files through the kernel, which does not hide them either.
 - The server sets no cookie and keeps no account for you (`server.mjs` has no `set-cookie`).
@@ -36,6 +37,8 @@ There are three places: **this tab** (your browser, this site's origin), **the s
 | `/api/github`, `/api/github-login` | `gh`, the Git app, the menu bar's account check, GitHub sign-in (device flow) | everything: the GitHub token in the `Authorization` header, requests and replies; during sign-in, the new token in GitHub's reply. Not stored | method, path, status |
 | `/git-proxy/…` | `git clone`, `fetch`, `pull`, `push` (isomorphic-git, `src/commands/git.ts`) | everything: the GitHub token (basic auth, github.com remotes only) and the repository data. Reaches any public http(s) host on ports 80 and 443 | the URL, on an error |
 | `/tcp/token` on a server that requires a sign-in (`TABCOMPUTER_TCP_REQUIRE_SIGNIN=1`; tabcomputer.com does not) | each relay token request (`relayToken` in `src/kernel/net.ts`) | the GitHub token, as `Authorization: Bearer`; the server checks it with GitHub (`githubSigninVerifier`) and keeps a hash of it in memory for 10 minutes. The page asks without it first and sends it only after the server answered `401 {"error":"signin_required"}`; a server that issues tokens to anyone never receives it | nothing |
+
+The rows that say "everything" are that way by design today: each proxy exists because of a header a page cannot set or a host without CORS, not because the server needs the contents. [research/TLS_IN_TAB.md](research/TLS_IN_TAB.md) says why each exists and what moving them to TLS in the tab over the relay would take.
 
 **Browse origins** (`{key}.web.<domain>`, the Browser app): the server serves four fixed scripts and a bootstrap page there, nothing else. Page content comes from the app in your tab, fetched over `/tcp` with TLS in the tab, so the server sees hosts and sizes, not pages. A server-side fetch that would see plaintext exists for measurement only and is off unless `TABCOMPUTER_BROWSE_SERVER_FETCH=1` (`server.mjs`).
 
@@ -61,7 +64,7 @@ Settings → Network says "the npm registry proxy". There is none: npm goes stra
   - of localStorage, only layout and preferences go (an allowlist). The GitHub token, API keys, the own-relay setting, the remote-control code, the `wal:` copies node keeps of `~/.claude` files, the console log and anything not listed stay.
 
   The output lists every file and entry left out, by name. **What it cannot do:** recognise a secret with no known shape inside one of your own files (a password in a notes file, a token in a format not listed). Those go with the rest: read the file count and remove what should not be public. `seed share --with-credentials` is refused.
-- **`seed`, `seed blob`** copy the same snapshot to the clipboard as a snippet to paste into another page's DevTools console; **`seed gif`, `seed html`** save it as a file on your disk. Same rules: no credentials unless `--with-credentials` (for moving your own machine; the output then starts with a warning and lists what is included; the remote-control code is never included). The snippet opens tabcomputer from this site in a frame and hands it the state (it used to load `https://shiro.computer` whatever site made it). A `seed blob` runs in the origin of the page it is pasted into, so that site's scripts can read the files.
+- **`seed`, `seed blob`** copy the same snapshot to the clipboard as a snippet to paste into another page's DevTools console; **`seed gif`, `seed html`** save it as a file on your disk. Same rules: no credentials unless `--with-credentials` (for moving your own machine; the output then starts with a warning and lists what is included; the remote-control code is never included). The snippet opens tabcomputer from the site that made it in a frame and posts the state to that origin only (`buildTargetUrl` in `src/commands/seed.ts`). A `seed blob` runs in the origin of the page it is pasted into, so that site's scripts can read the files.
 - **Opening a seed** (`/s/<id>`, a dropped seed GIF, a pasted snippet; `importSeedState` in `src/seed-state.ts`) replaces every file. It does not replace your sign-ins: your own credential files are put back over the seed's, a credential entry in the seed's localStorage is taken only where you have none, and a remote-control code or `wal:` copy never. A `/s/<id>` link asks before it loads (`window.confirm`): the seed's startup scripts run in this profile afterwards and can read whatever it is signed in to, so open one only from someone you trust (a guest window is the place for the others, though a link does not open in one by itself).
 - **`group`** relays messages between tabs through the server's `/channel/` WebSocket, unencrypted (`src/commands/group.ts`).
 - **`download`, `upload`, drag and drop** move files between the tab and your own disk. No server is involved.

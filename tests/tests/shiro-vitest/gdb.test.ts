@@ -15,7 +15,7 @@
  * x86_64-linux-musl where there is no Linux gcc (macOS: put zig on PATH or
  * set ZIG); without either, parts 2 and 3 are skipped.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,7 @@ import { createTestShell, run as runRaw } from './helpers';
 import { GdbServer, BlinkTracee, wireKernel, agentToG, gToAgent, toHex, fromHex, TARGET_XML, AGENT_REGS, G_SIZE, type Tracee, type TraceeEvent } from '@shiro/x86-engine/gdbserver';
 import { GDBINIT, GDBINIT_PATH } from '@shiro/x86-engine/gdbinit';
 import { installAlwaysShims } from '@shiro/path-shims';
+import { TtySession } from '@shiro/kernel/pty';
 
 const ROOT = resolve(__dirname, '../../..');
 const FIX = resolve(__dirname, 'fixtures/x86');
@@ -424,44 +425,141 @@ const haveRootfs = existsSync(join(ROOT, 'public/debian/rootfs.json'));
 const realLayers = process.env.TABCOMPUTER_TEST_LAYERS;
 
 describe.skipIf(!haveRootfs || !realLayers || !blinkHasGdb)("Debian's gdb (TABCOMPUTER_TEST_LAYERS)", () => {
-  it('break, run, bt, print, next, step, finish, a segfault with a backtrace, on a PIE built by gcc', async () => {
-    process.env.TABCOMPUTER_DEBIAN_LAYERS_URL = 'file://' + resolve(realLayers!) + '/';
-    try {
-      const { fs, shell } = await createTestShell();
-      expect((await run(shell, 'toolchain install c')).exitCode).toBe(0);
-      await installAlwaysShims(fs);
-      await fs.mkdir('/home/user/dbg', { recursive: true });
-      await fs.writeFile('/home/user/dbg/demo.c', readFileSync(join(FIX, 'gdbdemo.c')));
-      const cc = await run(shell, 'cd /home/user/dbg && gcc -g -O0 -o demo demo.c && file demo 2>/dev/null; echo built=$?');
-      expect(cc.output).toContain('built=0');
-      const gdb = async (cmds: string[], args = '') => {
-        await fs.writeFile('/home/user/dbg/g.cmd', cmds.join('\n') + '\n');
-        return run(shell, `cd /home/user/dbg && gdb -q -batch -x g.cmd --args ./demo ${args} 2>&1`);
-      };
-      const a = await gdb(['break add', 'run', 'bt', 'print a', 'print b', 'print counter', 'next', 'next', 'print sum', 'print counter', 'finish', 'step', 'info registers rip', 'continue']);
-      expect(a.output).toMatch(/Breakpoint 1 at 0x[0-9a-f]+: file demo\.c, line 11\./);
-      expect(a.output).toMatch(/Breakpoint 1, add \(a=3, b=4\) at demo\.c:11/);
-      expect(a.output).toMatch(/#0 +add \(a=3, b=4\) at demo\.c:11\n#1 +0x[0-9a-f]+ in main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21/);
-      expect(a.output).toContain('$1 = 3\n');
-      expect(a.output).toContain('$2 = 4\n');
-      expect(a.output).toContain('$3 = 41\n');
-      expect(a.output).toContain('$4 = 7\n');   // sum, after two `next`
-      expect(a.output).toContain('$5 = 48\n');  // counter
-      expect(a.output).toMatch(/\n0x[0-9a-f]+ in main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21\n21\t  int x = add\(3, 4\);\n/); // finish
-      expect(a.output).toContain('Value returned is $6 = 7');
-      expect(a.output).toMatch(/\n22\t  if \(argc > 1 /);                    // step, to the next line
-      expect(a.output).toMatch(/rip +0x[0-9a-f]+ +0x[0-9a-f]+ <main\+\d+>/);
-      expect(a.output).toContain('x=7 counter=48\n');
-      expect(a.output).toMatch(/\[Inferior 1 \(process \d+\) exited with code 07\]/);
-      expect(a.output).not.toMatch(/ptrace|Could not trace|warning: Error/);
+  let fs: Awaited<ReturnType<typeof createTestShell>>['fs'];
+  let shell: Awaited<ReturnType<typeof createTestShell>>['shell'];
+  const gdb = async (cmds: string[], args = '') => {
+    await fs.writeFile('/home/user/dbg/g.cmd', cmds.join('\n') + '\n');
+    const r = await run(shell, `cd /home/user/dbg && gdb -q -batch -x g.cmd --args ./demo ${args} 2>&1`);
+    if (process.env.GDB_TEST_SHOW) console.log(r.output);
+    return r;
+  };
 
-      if (process.env.GDB_TEST_SHOW) console.log(a.output);
-      const b = await gdb(['run', 'bt', 'print p', 'continue'], 'segv');
-      if (process.env.GDB_TEST_SHOW) console.log(b.output);
-      expect(b.output).toMatch(/Program received signal SIGSEGV, Segmentation fault\.\n(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17/);
-      expect(b.output).toMatch(/#0 +(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17\n#1 +0x[0-9a-f]+ in main \(argc=2, argv=0x[0-9a-f]+\) at demo\.c:22/);
-      expect(b.output).toContain('$1 = (int *) 0x0');
-      expect(b.output).toContain('Program terminated with signal SIGSEGV, Segmentation fault.');
-    } finally { delete process.env.TABCOMPUTER_DEBIAN_LAYERS_URL; }
+  beforeAll(async () => {
+    process.env.TABCOMPUTER_DEBIAN_LAYERS_URL = 'file://' + resolve(realLayers!) + '/';
+    ({ fs, shell } = await createTestShell());
+    expect((await run(shell, 'toolchain install c')).exitCode).toBe(0);
+    await installAlwaysShims(fs);
+    await fs.mkdir('/home/user/dbg', { recursive: true });
+    await fs.writeFile('/home/user/dbg/demo.c', readFileSync(join(FIX, 'gdbdemo.c')));
+    // Debian's gcc default: a dynamically linked PIE
+    const cc = await run(shell, 'cd /home/user/dbg && gcc -g -O0 -o demo demo.c; echo built=$?');
+    expect(cc.output).toContain('built=0');
+    expect(Buffer.from(await fs.readFile('/home/user/dbg/demo') as Uint8Array).readUInt16LE(16)).toBe(3); // ET_DYN
   }, 1_800_000);
+  afterAll(() => { delete process.env.TABCOMPUTER_DEBIAN_LAYERS_URL; });
+
+  it('break, run, bt, print, next, finish, step, info registers, continue to the exit', async () => {
+    const a = await gdb(['break add', 'run', 'bt', 'print a', 'print b', 'print counter', 'next', 'next', 'print sum', 'print counter', 'finish', 'step', 'info registers rip', 'continue']);
+    expect(a.output).toMatch(/Breakpoint 1 at 0x[0-9a-f]+: file demo\.c, line 11\./);
+    expect(a.output).toMatch(/Breakpoint 1, add \(a=3, b=4\) at demo\.c:11/);
+    expect(a.output).toMatch(/#0 +add \(a=3, b=4\) at demo\.c:11\n#1 +0x[0-9a-f]+ in main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21/);
+    expect(a.output).toContain('$1 = 3\n');
+    expect(a.output).toContain('$2 = 4\n');
+    expect(a.output).toContain('$3 = 41\n');
+    expect(a.output).toContain('$4 = 7\n');   // sum, after two `next`
+    expect(a.output).toContain('$5 = 48\n');  // counter
+    expect(a.output).toMatch(/\n0x[0-9a-f]+ in main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21\n21\t  int x = add\(3, 4\);\n/); // finish
+    expect(a.output).toContain('Value returned is $6 = 7');
+    expect(a.output).toMatch(/\n22\t  if \(argc > 1 /);                    // step, to the next line
+    expect(a.output).toMatch(/rip +0x[0-9a-f]+ +0x[0-9a-f]+ <main\+\d+>/);
+    expect(a.output).toContain('x=7 counter=48\n');
+    expect(a.output).toMatch(/\[Inferior 1 \(process \d+\) exited with code 07\]/);
+    expect(a.output).not.toMatch(/ptrace|Could not trace|warning:|Error/);
+  }, 600_000);
+
+  it('break main and start, a breakpoint by file:line, set var, call, x, info locals, a second run', async () => {
+    const a = await gdb(['break main', 'run', 'info locals', 'break demo.c:12', 'continue', 'info locals', 'set var sum = 100', 'delete', 'print add(1, 2)', 'x/dw &counter', 'continue', 'start', 'next', 'print x', 'kill']);
+    if (process.env.GDB_TEST_SHOW) console.log(a.output);
+    expect(a.output).toMatch(/Breakpoint 1, main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21/);
+    expect(a.output).toMatch(/Breakpoint 2, add \(a=3, b=4\) at demo\.c:12\n12\t  counter \+= sum;/);
+    expect(a.output).toContain('sum = 7\n');
+    expect(a.output).toContain('$1 = 3\n');                       // a call in the program: add(1, 2), counter 41 -> 44
+    expect(a.output).toMatch(/<counter>:\t44\n/);
+    expect(a.output).toContain('x=100 counter=144\n');            // the changed local came back from add()
+    expect(a.output).toMatch(/\[Inferior 1 \(process \d+\) exited with code 0?144\]/); // 100, in octal
+    // `start` runs it again, to main
+    expect(a.output).toMatch(/Temporary breakpoint 3, main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21/);
+    expect(a.output).toContain('$2 = 7\n');
+    expect(a.output).not.toMatch(/ptrace|Could not trace|warning:/);
+  }, 600_000);
+
+  it('a segfault stops in gdb with a backtrace', async () => {
+    const b = await gdb(['run', 'bt', 'print p', 'continue'], 'segv');
+    expect(b.output).toMatch(/Program received signal SIGSEGV, Segmentation fault\.\n(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17/);
+    expect(b.output).toMatch(/#0 +(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17\n#1 +0x[0-9a-f]+ in main \(argc=2, argv=0x[0-9a-f]+\) at demo\.c:22/);
+    expect(b.output).toContain('$1 = (int *) 0x0');
+    expect(b.output).toContain('Program terminated with signal SIGSEGV, Segmentation fault.');
+  }, 600_000);
+
+  /** A terminal with a pty session; `screen` is everything written to it. */
+  function terminal() {
+    const tty = new TtySession();
+    tty.resize(24, 80);
+    let screen = '';
+    tty.pty.onOutput((b) => { screen += new TextDecoder().decode(b); });
+    return {
+      tty,
+      // (without gdb's colors and bracketed-paste switches)
+      get screen() { return screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, ''); },
+      type(s: string) { tty.pty.input(s); },
+      writeOutput: (s: string) => { screen += s; },
+      enterStdinPassthrough() {}, exitStdinPassthrough() {}, enterRawMode() {}, exitRawMode() {},
+      isRawMode: () => false, onResize: () => () => {},
+      getSize: () => ({ rows: 24, cols: 80 }),
+      term: null,
+    };
+  }
+  async function until(term: ReturnType<typeof terminal>, re: RegExp, from = 0): Promise<number> {
+    const t0 = Date.now();
+    for (;;) {
+      const m = re.exec(term.screen.slice(from));
+      if (m) return from + m.index + m[0].length;
+      if (Date.now() - t0 > 120_000) throw new Error(`timed out waiting for ${re}: ${JSON.stringify(term.screen.slice(-1500))}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it('at a terminal: the program reads what is typed, Ctrl-C stops it in gdb, and it goes on', async () => {
+    const term = terminal();
+    const done = shell.execute('cd /home/user/dbg && gdb -q --args ./demo wait', (s) => term.writeOutput(s), (s) => term.writeOutput(s), false, term as any);
+    let at = await until(term, /\(gdb\) /);
+    term.type('run\n');
+    at = await until(term, /waiting\n/, at);
+    await new Promise((r) => setTimeout(r, 300)); // in read(0)
+    term.type('\x03');
+    at = await until(term, /Program received signal SIGINT, Interrupt\.\n[^]*\(gdb\) /, at);
+    term.type('bt\n');
+    at = await until(term, /#\d+ +0x[0-9a-f]+ in main \(argc=2, argv=0x[0-9a-f]+\) at demo\.c:26\n[^]*\(gdb\) /, at);
+    // a Ctrl-C at the prompt is gdb's, not the program's
+    term.type('\x03');
+    at = await until(term, /Quit\n[^]*\(gdb\) /, at);
+    term.type('continue\n');
+    at = await until(term, /Continuing\.\n/, at);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(term.screen.slice(at)).not.toContain('SIGINT');
+    term.type('abq\n');
+    at = await until(term, /woke\nx=7 counter=48\n\[Inferior 1 \(process \d+\) exited with code 07\]\n[^]*\(gdb\) /, at);
+    term.type('quit\n');
+    expect(await done).toBe(0);
+    if (process.env.GDB_TEST_SHOW) console.log(term.screen);
+  }, 600_000);
+
+  it('at a terminal: Ctrl-C stops a loop; print, then kill', async () => {
+    const term = terminal();
+    const done = shell.execute('cd /home/user/dbg && gdb -q --args ./demo spin', (s) => term.writeOutput(s), (s) => term.writeOutput(s), false, term as any);
+    let at = await until(term, /\(gdb\) /);
+    term.type('run\n');
+    at = await until(term, /spinning\n/, at);
+    term.type('\x03');
+    at = await until(term, /Program received signal SIGINT, Interrupt\.\n[^]*\(gdb\) /, at);
+    term.type('print counter > 48\n');
+    at = await until(term, /\$1 = 1\n\(gdb\) /, at);
+    term.type('kill\n');
+    at = await until(term, /Kill the program being debugged\? \(y or n\) /, at);
+    term.type('y\n');
+    at = await until(term, /\[Inferior 1 \(process \d+\) killed\]\n\(gdb\) /, at);
+    term.type('quit\n');
+    expect(await done).toBe(0);
+    if (process.env.GDB_TEST_SHOW) console.log(term.screen);
+  }, 600_000);
 });

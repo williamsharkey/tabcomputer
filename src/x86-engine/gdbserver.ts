@@ -108,7 +108,16 @@ export class BlinkTracee implements Tracee {
   /** SYS_shiro_debug from the thread: a stop, or a command's result. Resolves with the next command. */
   report(args: ArrayLike<number>, data: Uint8Array): Promise<number> {
     const op = args[0], seq = args[1];
-    const pending = new Promise<number>((reply) => { this.call = { data, reply }; });
+    // A signal for the process ends the call like any blocking one (EINTR):
+    // its reply hands the signal to the engine, which holds it while the
+    // thread is stopped and makes the call again, with the same seq
+    const interrupted = this.proc.syscallSignal;
+    const pending = new Promise<number>((reply) => {
+      const call = { data, reply };
+      this.call = call;
+      const onAbort = () => { if (this.call === call) { this.call = null; reply(-EINTR); } };
+      if (interrupted.aborted) onAbort(); else interrupted.addEventListener('abort', onAbort, { once: true });
+    });
     if (seq === this.lastSeq) return pending; // the same report again (its call was interrupted)
     this.lastSeq = seq;
     const len = Math.max(0, Math.min(args[4], data.length));

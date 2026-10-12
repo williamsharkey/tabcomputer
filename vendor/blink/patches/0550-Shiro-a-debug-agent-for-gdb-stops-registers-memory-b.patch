@@ -1,6 +1,6 @@
-From 10377eb5158f2827cafe65ac2b3611daf2dbcb26 Mon Sep 17 00:00:00 2001
+From 525a2cf6316dd0f13d442e1bcd83bb18cd0c9305 Mon Sep 17 00:00:00 2001
 From: shiro <build@shiro>
-Date: Mon, 12 Oct 2026 04:21:01 -0400
+Date: Mon, 12 Oct 2026 04:36:24 -0400
 Subject: [PATCH] Shiro: a debug agent for gdb: stops, registers, memory,
  breakpoints, steps over a kernel call (1050)
 
@@ -40,10 +40,10 @@ DeliverSignalToUser.
  blink/blink.c      |   3 +
  blink/machine.h    |   6 +
  blink/shiro.inc    |   2 +
- blink/shirogdb.inc | 274 +++++++++++++++++++++++++++++++++++++++++++++
+ blink/shirogdb.inc | 282 +++++++++++++++++++++++++++++++++++++++++++++
  blink/signal.c     |   8 ++
  blink/throw.c      |   2 +
- 6 files changed, 295 insertions(+)
+ 6 files changed, 303 insertions(+)
  create mode 100644 blink/shirogdb.inc
 
 diff --git a/blink/blink.c b/blink/blink.c
@@ -89,10 +89,10 @@ index 670e1f4..f575bf6 100644
 +#include "blink/shirogdb.inc"
 diff --git a/blink/shirogdb.inc b/blink/shirogdb.inc
 new file mode 100644
-index 0000000..bbb321f
+index 0000000..7bb99fd
 --- /dev/null
 +++ b/blink/shirogdb.inc
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,282 @@
 +// ── Debug agent (gdb: docs/research/GDB.md) ─────────────────────────────
 +// Included by shiro.inc.
 +//
@@ -243,7 +243,15 @@ index 0000000..bbb321f
 +      case 1:  // continue
 +      case 2:  // step
 +        sig = Read32(b);
++        // signals to forget (a terminal's Ctrl-C that was for the debugger),
++        // with what they carry: one still queued would keep its signal pending
 +        drop = Read32(b + 4) | (u64)Read32(b + 8) << 32;
++        for (i = 0; drop >> i; ++i) {
++          if (drop >> i & 1) {
++            while (ShiroTakeSiginfo(m, i + 1, 0)) {
++            }
++          }
++        }
 +        LOCK(&m->system->sig_lock);
 +        m->signals &= ~drop;
 +        UNLOCK(&m->system->sig_lock);

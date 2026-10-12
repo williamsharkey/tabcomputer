@@ -1,12 +1,12 @@
 /**
- * The dock's Developer and AI agents stacks (docs/DESKTOP.md "Developer
+ * The dock's Text Editors, Developer Tools and AI agents stacks (docs/DESKTOP.md "Developer
  * tools"; measured in docs/research/DEV-TOOLS.md and docs/COMPAT.md "Agent
  * CLIs"). Each entry installs on first use in its own Terminal window, which
  * shows the install command, its usual time and its progress, then runs the
  * program; later clicks just run it.
  */
 
-export type DevGroup = 'developer' | 'agents';
+export type DevGroup = 'editors' | 'developer' | 'agents';
 
 export interface DevTool {
   id: string;
@@ -32,33 +32,37 @@ export interface DevTool {
    * deciding to install and after, so it runs and isn't installed again.
    */
   home?: boolean;
+  /** The Classic icon set's tile gradient, in the brand's colors (default: the group's) */
+  tile?: [string, string];
 }
 
 const DEBIAN = 'debian install && sudo apt install -y';
 
 export const DEV_TOOLS: DevTool[] = [
-  // Developer: nano, Vim, Code and Git loose (DEV-TOOLS.md "Proposal"), the rest stacked
-  { id: 'nano', name: 'nano', group: 'developer', order: 40, bins: ['nano'], install: 'pkg install nano', run: 'nano', time: 'about 1 s' },
-  { id: 'vim', name: 'Vim', group: 'developer', order: 41, bins: ['vim'], install: 'pkg install vim', run: 'vim', time: 'about 2 s' },
-  { id: 'code', name: 'Code', group: 'developer', order: 42, bins: [], run: 'code ~', window: true },
-  { id: 'git', name: 'Git', group: 'developer', order: 43, bins: [], run: '', window: true },
-  { id: 'neovim', name: 'Neovim', group: 'developer', order: 44, bins: ['nvim'], install: 'pkg install neovim', run: 'nvim', time: 'about 2 s, first start 7 s' },
-  { id: 'emacs', name: 'Emacs', group: 'developer', order: 45, bins: ['emacs'], install: 'pkg install emacs', run: 'emacs -nw', time: 'about 3 s (26 MB), first start 9 s' },
-  { id: 'geany', name: 'Geany', group: 'developer', order: 46, bins: ['geany'], install: `${DEBIAN} geany`, run: 'DISPLAY=:0 geany &', time: 'several minutes (Debian), then 30 s to its window', note: 'Geany is a Debian program: the first install sets up Debian mode.' },
+  // Text editors: the terminal ones first, then the windowed ones
+  { id: 'nano', name: 'nano', group: 'editors', order: 40, bins: ['nano'], install: 'pkg install nano', run: 'nano', time: 'about 1 s' },
+  { id: 'vim', name: 'Vim', group: 'editors', order: 41, bins: ['vim'], install: 'pkg install vim', run: 'vim', time: 'about 2 s' },
+  { id: 'neovim', name: 'Neovim', group: 'editors', order: 42, bins: ['nvim'], install: 'pkg install neovim', run: 'nvim', time: 'about 2 s, first start 7 s' },
+  { id: 'emacs', name: 'Emacs', group: 'editors', order: 43, bins: ['emacs'], install: 'pkg install emacs', run: 'emacs -nw', time: 'about 3 s (26 MB), first start 9 s' },
+  { id: 'code', name: 'Code', group: 'editors', order: 44, bins: [], run: 'code ~', window: true },
+  { id: 'geany', name: 'Geany', group: 'editors', order: 45, bins: ['geany'], install: `${DEBIAN} geany`, run: 'DISPLAY=:0 geany &', time: 'several minutes (Debian), then 30 s to its window', note: 'Geany is a Debian program: the first install sets up Debian mode.' },
+  // Developer tools
+  { id: 'git', name: 'Git', group: 'developer', order: 46, bins: [], run: '', window: true, tile: ['#f4664a', '#b8321c'] },
   { id: 'tmux', name: 'tmux', group: 'developer', order: 47, bins: ['tmux'], install: 'pkg install tmux', run: 'tmux', time: 'a few seconds' },
   // AI agents: fastest round trips first, aider last (COMPAT.md); the keys are the user's own
-  { id: 'claude', name: 'Claude Code', group: 'agents', order: 50, bins: [], run: 'claude', note: 'Sign in with your Claude account when it asks (or in Settings → Accounts).' },
-  { id: 'gemini', name: 'Gemini CLI', group: 'agents', order: 51, bins: ['gemini'], install: 'npm i -g @google/gemini-cli', run: 'gemini', time: 'a few seconds', note: 'Needs a Gemini API key (GEMINI_API_KEY) or a Google sign-in.' },
-  { id: 'codex', name: 'Codex', group: 'agents', order: 52, bins: ['codex'], install: 'npm i -g @openai/codex', run: 'codex --sandbox danger-full-access', time: 'under a minute (294 MB)', note: 'Needs an OpenAI API key (OPENAI_API_KEY) or a ChatGPT sign-in. No bubblewrap here, so it runs without its sandbox.' },
-  { id: 'grok', name: 'Grok', group: 'agents', order: 53, bins: ['grok'], install: 'pkg install curl && curl -fsSL https://x.ai/cli/install.sh | sh', home: true, run: 'grok', time: 'under a minute (183 MB)', note: 'Needs an xAI API key (XAI_API_KEY).' },
-  { id: 'agy', name: 'Antigravity', group: 'agents', order: 54, bins: ['agy'], install: 'curl -fsSL https://antigravity.google/cli/install.sh | sh && debian install', home: true, run: 'agy', time: 'about a minute (211 MB)', note: 'Needs a Google sign-in.' },
+  { id: 'claude', name: 'Claude Code', group: 'agents', order: 50, bins: [], run: 'claude', note: 'Sign in with your Claude account when it asks (or in Settings → Accounts).', tile: ['#e08a5f', '#b5532f'] },
+  { id: 'gemini', name: 'Gemini CLI', group: 'agents', order: 51, bins: ['gemini'], install: 'npm i -g @google/gemini-cli', run: 'gemini', time: 'a few seconds', note: 'Needs a Gemini API key (GEMINI_API_KEY) or a Google sign-in.', tile: ['#5f8ff7', '#8a5cf0'] },
+  { id: 'codex', name: 'Codex', group: 'agents', order: 52, bins: ['codex'], install: 'npm i -g @openai/codex', run: 'codex --sandbox danger-full-access', time: 'under a minute (294 MB)', note: 'Needs an OpenAI API key (OPENAI_API_KEY) or a ChatGPT sign-in. No bubblewrap here, so it runs without its sandbox.', tile: ['#4a4d55', '#101114'] },
+  { id: 'grok', name: 'Grok', group: 'agents', order: 53, bins: ['grok'], install: 'pkg install curl && curl -fsSL https://x.ai/cli/install.sh | sh', home: true, run: 'grok', time: 'under a minute (183 MB)', note: 'Needs an xAI API key (XAI_API_KEY).', tile: ['#3a3b40', '#050506'] },
+  { id: 'agy', name: 'Antigravity', group: 'agents', order: 54, bins: ['agy'], install: 'curl -fsSL https://antigravity.google/cli/install.sh | sh && debian install', home: true, run: 'agy', time: 'about a minute (211 MB)', note: 'Needs a Google sign-in.', tile: ['#5aa0ff', '#2e5bd6'] },
   { id: 'aider', name: 'aider', group: 'agents', order: 55, bins: ['aider'], install: 'debian install && pkg install curl && curl -LsSf https://aider.chat/install.sh | sh', home: true, run: 'aider', time: 'slow: about 10 minutes, first run 6 more', note: 'Needs a model API key (OPENAI_API_KEY, ANTHROPIC_API_KEY, …).' },
 ];
 
-/** Groups: name, dock order, and the members shown loose even when the rest is stacked */
+/** Groups: name and dock order. Each is always one stack, its members inside it. */
 export const DEV_GROUPS = [
-  { id: 'developer', name: 'Developer', order: 40, maxLoose: 4, loose: ['nano', 'vim', 'code', 'git'] },
-  { id: 'agents', name: 'AI agents', order: 50, maxLoose: 2, loose: ['claude'] },
+  { id: 'editors', name: 'Text Editors', order: 40 },
+  { id: 'developer', name: 'Developer Tools', order: 45 },
+  { id: 'agents', name: 'AI agents', order: 50 },
 ] as const;
 
 /** Directories the dock checks for a tool's executables (where pkg, npm -g and the install scripts put them) */

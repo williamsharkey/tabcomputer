@@ -293,7 +293,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   hold(refreshInstalled());
   deps.fs.onChange((_ev, path) => { if (path === PKG_STATUS) void refreshInstalled(); });
 
-  // Developer and AI agents stacks (devtools.ts): install on first use, in a Terminal window
+  // Text Editors, Developer Tools and AI agents stacks (devtools.ts): install on first use, in a Terminal window
   const toolMissing = new Set<string>();
   const toolInstalling = new Set<string>();
   const toolInstalled = async (t: DevTool) => {
@@ -323,11 +323,11 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     win?.on?.('close', () => { if (toolInstalling.delete(t.id)) queueDock(); });
     return win;
   };
-  for (const g of DEV_GROUPS) wm.registerGroup({ id: g.id, name: g.name, order: g.order, maxLoose: g.maxLoose, loose: [...g.loose] });
+  for (const g of DEV_GROUPS) wm.registerGroup({ id: g.id, name: g.name, order: g.order, collapse: 'always' });
   const openGit = focusOrLaunch('git', lazy(() => import('./apps/git')));
   for (const t of DEV_TOOLS) {
-    // Classic: the existing art where there is one (vim), else the glyph on a tile in the group's colors
-    const icon = ICONS[t.id] ?? glyphClassicTile(t.id, ...(t.group === 'agents' ? ['#e08a5f', '#a24a2a'] : ['#4b5468', '#1e2330']) as [string, string]);
+    // Classic: the existing art where there is one (vim), else the glyph on a tile in the brand's or the group's colors
+    const icon = ICONS[t.id] ?? glyphClassicTile(t.id, ...(t.tile ?? (t.group === 'agents' ? ['#e08a5f', '#a24a2a'] : ['#4b5468', '#1e2330'])) as [string, string]);
     wm.registerApp({ id: t.id, name: t.name, icon, order: t.order, group: t.group, launch: t.id === 'git' ? openGit : () => launchTool(t) });
   }
   hold(refreshTools());

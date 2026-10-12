@@ -349,14 +349,39 @@ class MemoryStorage {
 function isolatedEnv(runId: string) {
   const real: IDBFactory | undefined = (globalThis as any).indexedDB;
   const prefix = `${TEST_DB_PREFIX}${runId}:`;
+  const open = new Set<IDBDatabase>();
+  let ended = false;
+  /** An open request that fails: the run is over, and its databases are not to be made again */
+  const refused = (): IDBOpenDBRequest => {
+    const req: any = new EventTarget();
+    req.readyState = 'done';
+    req.error = new DOMException('the test run that used this database has ended', 'InvalidStateError');
+    setTimeout(() => { const ev = new Event('error'); req.onerror?.(ev); req.dispatchEvent(ev); }, 0);
+    return req;
+  };
   const indexedDB = real && {
-    open: (name: string, version?: number) => (version === undefined ? real.open(prefix + name) : real.open(prefix + name, version)),
+    open: (name: string, version?: number) => {
+      if (ended) return refused();
+      const req = version === undefined ? real.open(prefix + name) : real.open(prefix + name, version);
+      req.addEventListener('success', () => { if (ended) req.result.close(); else open.add(req.result); });
+      return req;
+    },
     deleteDatabase: (name: string) => real.deleteDatabase(prefix + name),
     cmp: (a: unknown, b: unknown) => real.cmp(a, b),
     databases: async () => ((await real.databases?.()) ?? [])
       .filter((d) => d.name?.startsWith(prefix)).map((d) => ({ ...d, name: d.name!.slice(prefix.length) })),
   };
-  return { indexedDB, localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage() };
+  /**
+   * The run is over: close its connections, unheard. A suite's FileSystem that sees its
+   * database deleted reopens it and reports the tab's storage as lost (tabcomputer#71's
+   * detector), which it isn't (#99); later opens (a timer the suite left) fail instead.
+   */
+  const end = () => {
+    ended = true;
+    for (const db of open) { db.onclose = null; db.onversionchange = null; try { db.close(); } catch { /* closed */ } }
+    open.clear();
+  };
+  return { indexedDB, localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(), end };
 }
 
 /** Delete test databases (this run's, and any a crashed run left) without waiting on open connections */
@@ -487,7 +512,7 @@ async function runNow(code: string, opts: RunOptions): Promise<RunSummary> {
   // The page as it is before the suite's copies run: put back after (#47)
   const pageBefore = snapshotPage();
   const runId = Math.random().toString(36).slice(2, 8);
-  g.__tcTestEnv = isolatedEnv(runId);
+  const env = g.__tcTestEnv = isolatedEnv(runId);
   g.__tcTestApi = makeApi(root, restorers);
   g.__tcTestNode = { path: testPath, os: testOs, ...makeTestNode(opts.files ?? new Map(), opts.cwd) };
   try {
@@ -562,6 +587,7 @@ async function runNow(code: string, opts: RunOptions): Promise<RunSummary> {
     delete g.__tcTestApi;
     summary.ms = Math.round(performance.now() - started);
     // (the env stays: timers the suite left may still use it; the next run replaces it)
+    env.end();
     void dropTestDatabases();
   }
 }

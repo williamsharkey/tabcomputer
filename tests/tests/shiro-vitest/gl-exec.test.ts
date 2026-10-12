@@ -75,6 +75,17 @@ describe('GL executor', () => {
     }
   });
 
+  it('reports a compatibility context asked for as 3.0+ as that version (Krita 5 needs 3.0)', () => {
+    for (const [major, minor, version, glsl] of [[3, 0, '3.0 tabcomputer', '1.30'], [3, 1, '3.1 tabcomputer', '1.40'], [3, 2, '3.2 (Compatibility Profile) tabcomputer', '1.50']] as const) {
+      const t = setup();
+      t.run(0, [['tcCreateContext', 1, 0, major, minor, 0], ['tcMakeCurrent', 1, WIN, WIN, FBCONFIG]]);
+      t.run(1, [['tcContextInfo']]);
+      const [, , v, g, exts] = readStrings(t.replies()[0], 5);
+      expect([v, g]).toEqual([version, `${glsl} tabcomputer`]);
+      expect(exts.includes('GL_ARB_multitexture')).toBe(true); // still a compatibility context
+    }
+  });
+
   it('clears and presents a frame at swap, acking its number', () => {
     const t = setup();
     t.start();

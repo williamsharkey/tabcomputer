@@ -574,8 +574,10 @@ export class Executor {
     const w = new ReplyWriter();
     const dbg = this.ext.WEBGL_debug_renderer_info as { UNMASKED_RENDERER_WEBGL: number } | undefined;
     const native = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-    const version = c.core ? `${c.major}.${c.minor} (Core Profile) tabcomputer` : '2.1 tabcomputer';
-    const glsl = c.core ? '3.30 tabcomputer' : '1.20 tabcomputer';
+    // a compatibility context asked for as 3.0+ (Krita 5 needs 3.0) says so: fixed function stays, and GLSL 1.30+ translates like core's
+    const [major, minor] = c.core || c.major * 10 + c.minor >= 30 ? [c.major, c.minor] : [2, 1];
+    const version = c.core ? `${major}.${minor} (Core Profile) tabcomputer` : major * 10 + minor >= 32 ? `${major}.${minor} (Compatibility Profile) tabcomputer` : `${major}.${minor} tabcomputer`;
+    const glsl = `${({ 21: '1.20', 30: '1.30', 31: '1.40', 32: '1.50', 33: '3.30' } as Record<number, string>)[major * 10 + minor] ?? '1.20'} tabcomputer`;
     w.str('tabcomputer');
     w.str(`tabcomputer WebGL2 (${native})`);
     w.str(version);
@@ -610,7 +612,7 @@ export class Executor {
       [E.MAX_PROGRAM_TEXEL_OFFSET, num(p(gl.MAX_PROGRAM_TEXEL_OFFSET))], [E.MIN_PROGRAM_TEXEL_OFFSET, num(p(gl.MIN_PROGRAM_TEXEL_OFFSET))],
       [E.MAX_SERVER_WAIT_TIMEOUT, [0]], [E.MAX_TEXTURE_BUFFER_SIZE, [65536]], [E.MAX_RECTANGLE_TEXTURE_SIZE, [maxTex]],
       [E.MAX_GEOMETRY_OUTPUT_VERTICES, [0]], [E.MAX_CLIP_DISTANCES, [FF_CLIP_PLANES]],
-      [E.MAJOR_VERSION, [c.core ? c.major : 2]], [E.MINOR_VERSION, [c.core ? c.minor : 1]], [E.NUM_EXTENSIONS, [this.extensions(c).length]],
+      [E.MAJOR_VERSION, [major]], [E.MINOR_VERSION, [minor]], [E.NUM_EXTENSIONS, [this.extensions(c).length]],
       [E.CONTEXT_PROFILE_MASK, [c.core ? 1 : 2]], [E.CONTEXT_FLAGS, [0]],
       [E.NUM_COMPRESSED_TEXTURE_FORMATS, [0]], [E.NUM_SHADING_LANGUAGE_VERSIONS, [1]], [E.NUM_PROGRAM_BINARY_FORMATS, [0]],
       [E.DOUBLEBUFFER, [1]], [E.STEREO, [0]], [E.SAMPLE_BUFFERS, [cfg?.samples ? 1 : 0]], [E.SAMPLES, [cfg?.samples ?? 0]],
@@ -2151,7 +2153,12 @@ export class Executor {
       const s = gl.createShader(type)!;
       gl.shaderSource(s, src);
       gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${gl.getShaderInfoLog(s)}\n`;
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(s) ?? '';
+        const ctx = errorContext(gl.getShaderSource(s) ?? '', log);
+        o.linkLog += `${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader: ${log}\n${ctx}`;
+        this.log(`glshiro: a ${type === gl.VERTEX_SHADER ? 'vertex' : 'fragment'} shader failed to compile: ${log.split('\n')[0]}\n${ctx}`);
+      }
       return s;
     };
     const vs = mk(gl.VERTEX_SHADER, vt.source), fs = mk(gl.FRAGMENT_SHADER, ft.source);
@@ -2886,6 +2893,14 @@ function normalize(type: string, v: number): number {
   }
   return v;
 }
+/** The translated lines around each line a compile log names (numbered after the translation's `#line 1`), for the app's log. */
+function errorContext(source: string, log: string): string {
+  const at = source.indexOf('\n#line 1\n');
+  const lines = (at >= 0 ? source.slice(at + 9) : source).split('\n');
+  const nums = [...new Set([...log.matchAll(/ERROR: \d+:(\d+):/g)].map((m) => +m[1]))].slice(0, 3);
+  return nums.map((n) => `--- translated, around line ${n} ---\n${lines.slice(Math.max(0, n - 3), n + 2).map((l, i) => `${Math.max(1, n - 2) + i}: ${l}`).join('\n')}\n`).join('');
+}
+
 export function webglTarget(target: number): number {
   switch (target) {
     case E.TEXTURE_1D: case E.TEXTURE_RECTANGLE: case E.TEXTURE_2D: return E.TEXTURE_2D;

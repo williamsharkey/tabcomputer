@@ -93,26 +93,26 @@ export function dataFlowState(i: DataFlowInputs): DataFlowState {
 export type ServerReads = 'nothing' | 'requests' | 'endpoints' | 'contents';
 
 export const READS_LABEL: Record<ServerReads, string> = {
-  nothing: 'Server sees nothing',
-  requests: 'Server sees which files',
-  endpoints: 'Server sees where, not what',
-  contents: 'Server can read the contents',
+  nothing: "Can't see it",
+  requests: 'Sees which file',
+  endpoints: 'Sees the address only',
+  contents: 'Can read it',
 };
 
 export interface Flow {
   id: 'local' | 'site' | 'mirror' | 'tcp' | 'api' | 'github' | 'direct' | 'shared';
-  /** What travels */
+  /** What travels, in two or three words */
   title: string;
-  /** Who sends it, in the tab */
+  /** Examples of what sends it */
   from: string;
-  /** The server's part; null when the flow does not pass through this site's server */
+  /** The server's routes; null when the flow does not pass through this site's server. Shown in the detail only */
   via: string | null;
-  /** Where it ends up outside; null when it ends at the server or never leaves */
+  /** The hosts it ends at; null when it ends at the server or never leaves. Shown in the detail only */
   to: string | null;
+  /** Where it ends up, in a word or two, for the diagram */
+  dest?: string;
   reads: ServerReads;
-  /** One sentence: what the server can read here */
-  readsText: string;
-  /** A sentence or two more */
+  /** One or two plain sentences: what happens, and what the server can read */
   detail: string;
   /** 'off': this tab cannot use the path now */
   status: 'on' | 'off';
@@ -144,17 +144,10 @@ function profileLine(s: DataFlowState): string {
   return `Guest, ${s.guest.kept ? `kept as "${s.guest.name}"` : 'thrown away'}${s.guest.network ? '' : ', no network'}`;
 }
 
-function relayLine(s: DataFlowState): string {
-  const r = s.relay;
-  if (r.kind === 'own') return `Relay: your own (${r.host})`;
-  if (r.kind === 'none') return r.why === 'guest' ? 'Relay: none (no-network guest)' : 'Relay: none (off on this server)';
-  return `Relay: this site's (${r.host}/tcp)${r.seen ? '' : ', not checked'}`;
-}
-
-function persistedLine(s: DataFlowState): string {
-  if (s.persisted === true) return 'Storage: persistent';
-  if (s.persisted === false) return 'Storage: not persistent';
-  return 'Storage: persistence unknown';
+/** The technical route of a flow, for the detail line */
+export function flowRoute(f: Flow): string {
+  if (!f.via && !f.to) return '';
+  return ['this tab', f.via, f.to].filter(Boolean).join(' → ');
 }
 
 /** The places and flows for a state, each in sentences that are true for it. Pure. */
@@ -163,174 +156,166 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   const noNet = !!g && !g.network;
   /** A no-network guest the server enforces: its proxies refuse, and the CSP blocks other sites */
   const sealed = noNet && g!.enforced;
-  const present = (b: boolean) => (b ? 'present' : 'none');
+  const priv = s.mode === 'private';
+  const signed = (b: boolean) => (b ? 'signed in' : 'not signed in');
+  const r = s.relay;
 
   const tab: Place = {
     id: 'tab',
     title: 'This tab',
     lines: [
       profileLine(s),
-      `Files: in this browser, for ${s.host}`,
-      persistedLine(s),
-      `GitHub token: ${present(s.secrets.github)}`,
-      `Claude credentials: ${present(s.secrets.claude)}`,
-      `API keys: ${s.secrets.apiKeys.length ? s.secrets.apiKeys.join(', ') : 'none'}`,
-      relayLine(s),
+      `Files: saved in this browser${s.persisted === false ? ' (it may delete them)' : ''}`,
+      `GitHub: ${signed(s.secrets.github)}`,
+      `Claude: ${signed(s.secrets.claude)}`,
+      ...(s.secrets.apiKeys.length ? [`API keys: ${s.secrets.apiKeys.join(', ')}`] : []),
+      ...(r.kind === 'own' ? [`Relay: your own (${r.host})`] : r.kind === 'none' ? ['Relay: none'] : []),
+      `Mode: ${priv ? 'private' : 'proxy'}`,
     ],
     detail: (g
-      ? `This is a guest: a separate site in the browser (${s.host}). What runs here cannot read your main tabcomputer's files or sign-ins. Anything you sign in to, paste or upload here can be read by everything that runs here.`
-      : 'Files are kept in this browser\'s storage for this site and are not uploaded. Every program you run here can read all of them, and any sign-in saved here: node scripts and npm install scripts are code in the page.')
-      + (s.persisted === false ? ' The browser may delete the files when the disk runs low; Settings → Storage can ask it not to.' : '')
-      + ' Clearing this site\'s data in the browser deletes everything.',
+      ? 'This tab is a guest window. A guest window cannot see your main files or sign-ins. Every program in this guest window can read anything you put in this guest window.'
+      : 'Your files are saved in this browser and are not uploaded. Any program you run in this tab can read your files and your saved sign-ins.')
+      + (s.persisted === false ? ' The browser may delete your files if the disk fills up. Settings → Storage asks the browser to keep your files.' : '')
+      + ' Clearing site data for this site deletes your files.',
   };
   const server: Place = {
     id: 'server',
     title: `${s.host.replace(/^guest--[a-z0-9-]+\./, '')} server`,
-    lines: [
-      'Serves the app and downloads',
-      'Relays connections and API calls',
-      'Sets no cookie, keeps no account',
-    ],
-    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores only what you upload with seed share, and copies of public downloads. Its logs record addresses, hosts, paths and sizes, not payloads.',
+    lines: ['Keeps no account'],
+    detail: 'Our server sent you this page. Our server passes traffic between this tab and other sites. Our server keeps no account for you. Our server stores nothing you send, except a seed you share.',
   };
   const internet: Place = {
     id: 'internet',
     title: 'The internet',
-    lines: ['Sites programs talk to', 'GitHub', 'Anthropic and other APIs', 'npm, PyPI, Debian'],
-    detail: 'Every other host. One reached through the server sees the server\'s address. One the browser reaches directly sees yours.',
+    lines: ['GitHub, Claude, other sites'],
+    detail: 'Every other site. A site reached through our server sees our server\'s address. A site your browser reaches directly sees your address.',
   };
 
   const flows: Flow[] = [];
 
   flows.push({
     id: 'local',
-    title: 'Files, programs, local servers',
-    from: 'the shell, x86-64 and WASM programs, node, localhost',
+    title: 'Files and programs',
+    from: 'everything you run and save',
     via: null,
     to: null,
     reads: 'nothing',
-    readsText: 'Nothing is sent.',
-    detail: 'Running a program, editing a file or opening a local server on localhost stays inside the tab.',
+    detail: 'Programs run inside this tab and files are saved inside this tab. Nothing is sent anywhere.',
     status: 'on',
     carries: [],
   });
 
   flows.push({
     id: 'site',
-    title: 'The app and files this site hosts',
-    from: 'boot, debian install, toolchain install, pkg',
+    title: 'The app itself',
+    from: 'loading tabcomputer, toolchains, pkg',
     via: 'static files',
     to: null,
     reads: 'requests',
-    readsText: 'Which files this browser asks for.',
-    detail: 'Downloads only. Nothing of yours is sent with them.',
+    detail: 'Your browser downloads the app from our server. Our server sees which files are downloaded. None of your data is sent.',
     status: 'on',
     carries: [],
   });
 
   flows.push({
     id: 'mirror',
-    title: 'Debian packages, Claude Code releases',
+    title: 'Package downloads',
     from: 'apt, GUI apps, claude install',
-    via: '/debian/mirror, /claude-releases: fetches and keeps a copy',
+    via: '/debian/mirror, /claude-releases',
     to: 'deb.debian.org, security.debian.org, downloads.claude.ai',
+    dest: 'Debian',
     reads: 'requests',
-    readsText: 'Which package or version is asked for.',
-    detail: 'Public files. Debian and Anthropic see the server\'s address, not yours. apt checks signatures; the other downloads are checked by sha256.',
+    detail: 'Our server fetches each package and keeps a copy. Our server sees which package you asked for. Debian and Anthropic see our server\'s address, not your address.',
     status: 'on',
     carries: [],
   });
 
   const tcp: Flow = {
     id: 'tcp',
-    title: 'Connections programs open',
-    from: 'curl, ssh, git in Debian, claude --x86, the Browser app',
+    title: 'Other connections',
+    from: 'curl, ssh, the Browser app',
     via: '/tcp relay',
     to: 'any public host, on the ports the relay allows (22, 80, 443 and 9418 by default)',
+    dest: 'any site',
     reads: 'endpoints',
-    readsText: 'The host name, port, byte counts and your address. Not the contents when the program encrypts.',
-    detail: 'TLS and SSH are done in the tab, so the relay carries ciphertext. Plain http and git:// are readable. The server logs your address, the host and the byte counts.',
+    detail: 'Our relay passes each connection along and sees the site name and the amount of data. Our relay cannot read https or ssh, because this tab encrypts https and ssh. Our relay can read plain http.',
     status: 'on',
     carries: [],
   };
-  if (s.relay.kind === 'own') {
+  if (r.kind === 'own') {
     tcp.via = null;
-    tcp.to = `your relay (${s.relay.host}), then the hosts it allows`;
+    tcp.to = `your relay (${r.host}), then the hosts it allows`;
+    tcp.dest = 'your relay';
     tcp.reads = 'nothing';
-    tcp.readsText = 'This site\'s server sees none of it. Your relay sees the host name, port and byte counts.';
-    tcp.detail = 'Programs\' connections go to the relay you set in Settings → Network. TLS and SSH are done in the tab, so it carries ciphertext too. Your GitHub token is not sent to it.';
-  } else if (s.relay.kind === 'none') {
+    tcp.detail = 'Connections go through your own relay (Settings → Network), not through our server. Your relay sees the site name and the amount of data.';
+  } else if (r.kind === 'none') {
     tcp.status = 'off';
-    tcp.note = s.relay.why === 'guest'
-      ? 'Off: this guest has no network. Programs here have no connection.'
-      : 'Off: this server has no relay. Programs here cannot open connections.';
+    tcp.note = r.why === 'guest'
+      ? 'Off: this guest has no network.'
+      : 'Off: this server has no relay, so programs here cannot open connections.';
   }
-  if (s.relay.ownIgnored) tcp.note = `${tcp.note ? tcp.note + ' ' : ''}A relay of your own is saved, but the terminal UI does not use it.`;
-  if (s.relay.kind === 'site' && s.secrets.github) {
+  if (r.ownIgnored) tcp.note = `${tcp.note ? tcp.note + ' ' : ''}A relay of your own is saved, but the terminal UI does not use it.`;
+  if (r.kind === 'site' && s.secrets.github) {
     tcp.carries.push('GitHub token');
-    tcp.detail += ' Your GitHub token is sent with each request for a relay token; this server does not need it unless it requires a sign-in.';
+    tcp.detail += ' This tab sends your GitHub sign-in to our server when it asks to use the relay.';
   }
   flows.push(tcp);
 
   const proxyOff = sealed ? 'Off: the server refuses this to a no-network guest.'
     : noNet ? 'Not blocked: this server does not enforce no-network for this address.' : undefined;
-
-  // Private network mode (net-mode.ts): the same traffic, kept from the server's proxies
-  const priv = s.mode === 'private';
-  const relayWord = s.relay.kind === 'own' ? 'your relay' : s.relay.kind === 'none' ? 'the relay (there is none here, so these fail)' : 'the /tcp relay';
+  const viaRelay = r.kind === 'site';
+  const relayName = r.kind === 'own' ? 'your relay' : 'our relay';
 
   flows.push(priv ? {
     id: 'api',
-    title: 'Claude and other model APIs',
-    from: 'claude (the default build, and --npm), Gemini CLI, node programs',
-    via: s.relay.kind === 'site' ? '/tcp relay' : null,
+    title: 'Claude and other AI',
+    from: 'claude, Gemini',
+    via: viaRelay ? '/tcp relay' : null,
     to: 'api.anthropic.com, platform.claude.com, generativelanguage.googleapis.com',
-    reads: s.relay.kind === 'site' ? 'endpoints' : 'nothing',
-    readsText: s.relay.kind === 'site'
-      ? 'The host name, byte counts and your address. Not the prompts, the replies or your token.'
-      : 'This does not pass through the server.',
-    detail: `Private mode: the request is encrypted in the tab and carried by ${relayWord}, which sees ciphertext. Voice input is off, because its route needs the server to read the token.`,
-    status: sealed || s.relay.kind === 'none' ? 'off' : 'on',
+    dest: 'Anthropic',
+    reads: viaRelay ? 'endpoints' : 'nothing',
+    detail: r.kind === 'none'
+      ? 'Private mode needs a relay. This server has no relay, so Claude requests fail.'
+      : `Private mode is on. This tab encrypts Claude traffic, and ${relayName} passes the encrypted traffic along. ${viaRelay ? 'Our server' : 'Your relay'} sees that you contacted Anthropic. ${viaRelay ? 'Our server' : 'Your relay'} cannot read your prompts or your sign-in. Claude voice input is off in private mode.`,
+    status: sealed || r.kind === 'none' ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: [],
   } : {
     id: 'api',
-    title: 'Claude and other model APIs',
-    from: 'claude (the default build, and --npm), Gemini CLI, node programs',
+    title: 'Claude and other AI',
+    from: 'claude, Gemini',
     via: '/api/anthropic, /api/platform, /api/mcp-proxy, /api/gemini, /api/ws-proxy',
     to: 'api.anthropic.com, platform.claude.com, generativelanguage.googleapis.com',
+    dest: 'Anthropic',
     reads: 'contents',
-    readsText: 'Prompts, replies and the Authorization header (your Claude token or API key) pass through it unencrypted.',
-    detail: 'The server ends the HTTPS connection and makes its own to the API. It forwards and does not store them. It logs the path, the model, sizes and timing. claude --x86 goes by the relay instead, encrypted in the tab. Private mode (Settings → Network, or netmode private) keeps these from the server.',
+    detail: 'Our server forwards Claude traffic and can read your prompts, the replies and your Claude sign-in. Our server stores none of your prompts, replies or sign-in. In private mode our server cannot read Claude traffic.',
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: [...(s.secrets.claude ? ['Claude credentials'] : []), ...s.secrets.apiKeys.map((k) => `${k} API key`)],
   });
 
+  const guestSignIn = g ? ' A guest cannot sign in to GitHub.' : '';
   flows.push(priv ? {
     id: 'github',
-    title: 'GitHub: git, gh, sign-in',
-    from: 'git, gh, the Git app, GitHub sign-in',
+    title: 'GitHub',
+    from: 'git, gh, sign-in',
     via: null,
-    to: 'api.github.com straight from the browser; github.com sign-in and other git hosts by the relay',
+    to: 'api.github.com from the browser; sign-in, large repositories and other git hosts by the relay',
+    dest: 'GitHub',
     reads: 'nothing',
-    readsText: 'GitHub\'s API is called by the browser itself: the token and the repository do not pass through the server.',
-    detail: `Private mode: gh and git on github.com use GitHub's API directly, so GitHub sees your address. Sign-in, repositories too large for the API and other git hosts are encrypted in the tab and carried by ${relayWord}, which sees the host name and byte counts.`
-      + (g ? ' The server refuses GitHub sign-in to a guest.' : ''),
+    detail: `Private mode is on. Your browser talks to GitHub directly, so our server sees no GitHub traffic. GitHub sign-in, large repositories and other git sites are encrypted in this tab and passed along by ${relayName}.` + guestSignIn,
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: [],
   } : {
     id: 'github',
-    title: 'GitHub: git, gh, sign-in',
-    from: 'git, gh, the Git app, GitHub sign-in',
+    title: 'GitHub',
+    from: 'git, gh, sign-in',
     via: '/git-proxy, /api/github, /api/github-login',
     to: 'github.com, api.github.com; git reaches any public http(s) host',
+    dest: 'GitHub',
     reads: 'contents',
-    readsText: 'The GitHub token, the requests and the repository data pass through it unencrypted.',
-    detail: 'The server ends the HTTPS connection and makes its own to GitHub. It forwards and does not store them. It logs the method, path and status.'
-      + (g ? ' The server refuses GitHub sign-in to a guest.' : '')
-      + ' Private mode (Settings → Network, or netmode private) keeps these from the server.',
+    detail: 'Our server forwards GitHub traffic and can read your code and your GitHub sign-in. Our server stores none of your code or sign-in. In private mode our server cannot read GitHub traffic.' + guestSignIn,
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: s.secrets.github ? ['GitHub token'] : [],
@@ -338,13 +323,13 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
 
   flows.push({
     id: 'direct',
-    title: 'Straight from the browser',
-    from: 'npm, pip, node fetch, DNS lookups, sign-in pages',
+    title: 'npm and pip',
+    from: 'npm, pip, node fetch',
     via: null,
     to: 'registry.npmjs.org, pypi.org, esm.sh, cdn.jsdelivr.net, unpkg.com, cloudflare-dns.com, sites that allow cross-origin requests',
+    dest: 'npm, PyPI',
     reads: 'nothing',
-    readsText: 'This does not pass through the server.',
-    detail: 'The browser connects to these itself, so they see your address and the request, as with any website.',
+    detail: 'Your browser connects to npm, PyPI and other sites directly. Each site sees your address, as any website does. Our server is not involved.',
     status: sealed ? 'off' : 'on',
     ...(sealed ? { note: 'Off: the browser blocks requests to other sites in this guest. A script can still send the tab itself to another address.' }
       : noNet ? { note: 'Not blocked: this server does not enforce no-network for this address, so scripts here can still make web requests.' } : {}),
@@ -358,13 +343,13 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   ];
   flows.push({
     id: 'shared',
-    title: 'Only when you run them: remote start, seed share, group',
+    title: 'Sharing',
     from: 'remote start, seed share, group',
     via: '/offer, /relay, /api/seed, /channel',
     to: 'whoever holds the code or the link',
+    dest: 'link holders',
     reads: 'contents',
-    readsText: 'seed share stores every file and all saved sign-ins on the server, for anyone with the link. remote start gives the server the code that its relayed messages are sealed with.',
-    detail: 'remote start lets the holder of the code run commands and read files here. A shared seed is deleted 60 days after its last visit. group messages pass through unencrypted.'
+    detail: 'Nothing is shared unless you run a sharing command. seed share uploads your files and saved sign-ins, and anyone with the link can open them for 60 days. remote start lets anyone with the code control this tab. group messages are not encrypted.'
       + (s.secrets.remoteCode ? ' A remote code is saved in this tab.' : ''),
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
@@ -372,10 +357,10 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   });
 
   const headline = g
-    ? `${profileLine(s)}. It cannot read your main tabcomputer; what you put here, everything here can read.`
-    : s.secrets.any
-      ? 'Main profile, with sign-ins saved. Every program you run here can read them and your files.'
-      : 'Main profile, no sign-ins saved. Every program you run here can read your files.';
+    ? `${profileLine(s)}. A guest window cannot see your main files or sign-ins.`
+    : priv
+      ? 'Your files stay in this browser. Private mode is on: our server cannot read your GitHub or Claude traffic.'
+      : 'Your files stay in this browser. GitHub and Claude traffic passes through our server, which can read it.';
 
   return { headline, places: [tab, server, internet], flows };
 }
@@ -383,7 +368,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
 // ── What the person can do about it (only things that exist) ──
 
 export interface DataFlowAction {
-  id: 'guest' | 'guest-nonet' | 'about-guest' | 'network' | 'accounts' | 'storage';
+  id: 'private' | 'guest' | 'guest-nonet' | 'about-guest' | 'network' | 'accounts' | 'storage';
   label: string;
   /** The same thing at a prompt, when there is a command for it */
   command?: string;
@@ -394,26 +379,35 @@ export interface DataFlowAction {
 export function dataFlowActions(s: DataFlowState): { actions: DataFlowAction[]; unavailable: string[] } {
   const actions: DataFlowAction[] = [];
   const unavailable: string[] = [];
+  const priv = s.mode === 'private';
+  if (!(s.guest && !s.guest.network)) actions.push({
+    id: 'private',
+    label: priv ? 'Turn Off Private Mode' : 'Turn On Private Mode',
+    command: priv ? 'netmode proxy' : 'netmode private',
+    why: priv
+      ? 'Proxy mode is faster, and our server can read GitHub and Claude traffic.'
+      : 'Our server cannot read GitHub or Claude traffic. A little slower.',
+  });
   if (s.guest) {
-    actions.push({ id: 'about-guest', label: 'About This Guest…', command: 'guest', why: 'What this guest can and cannot reach, and Discard.' });
+    actions.push({ id: 'about-guest', label: 'About This Guest…', command: 'guest', why: 'What this guest window can reach, and Discard.' });
   } else if (s.guestsOffered) {
-    actions.push({ id: 'guest', label: 'Open a Guest Window', command: 'guest open', why: 'A separate tabcomputer for code you don\'t trust: it cannot read these files or sign-ins.' });
-    actions.push({ id: 'guest-nonet', label: 'Open a Guest (No Network)', command: 'guest open --no-network', why: 'The same, with no relay and no requests to other sites.' });
+    actions.push({ id: 'guest', label: 'Open a Guest Window', command: 'guest open', why: 'A separate tabcomputer for code you do not trust.' });
+    actions.push({ id: 'guest-nonet', label: 'Open a Guest (No Network)', command: 'guest open --no-network', why: 'A guest window with no internet.' });
   } else if (s.guestsOffered === false) {
-    unavailable.push('This server has no guest profiles, so there is no separate place here for code you don\'t trust.');
+    unavailable.push('This server has no guest profiles, so this server has no separate place for code you do not trust.');
   }
   // (a no-network guest has no relay, the user's own included: nothing to set there)
   if (!(s.guest && !s.guest.network)) actions.push(s.ui === 'desktop'
-    ? { id: 'network', label: 'Network Settings…', why: 'Use a relay you run for programs\' connections. The API, GitHub and download paths stay on this site\'s server.' }
-    : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network; the terminal UI always uses this site\'s.' });
+    ? { id: 'network', label: 'Network Settings…', why: 'Use your own relay.' }
+    : { id: 'network', label: 'Network Settings…', why: 'Your own relay is set in the desktop\'s Settings → Network. The terminal UI always uses this site\'s relay.' });
   if (s.secrets.github || s.secrets.claude) {
     actions.push({
       id: 'accounts', label: 'Accounts…',
       command: [s.secrets.github ? 'gh auth logout' : '', s.secrets.claude ? 'rm ~/.claude/.credentials.json' : ''].filter(Boolean).join('; '),
-      why: 'Sign out of GitHub or Claude: removes the saved credential from this browser.',
+      why: 'Sign out of GitHub or Claude.',
     });
   }
-  if (s.persisted === false) actions.push({ id: 'storage', label: 'Storage…', why: 'Ask the browser to keep these files when the disk runs low.' });
+  if (s.persisted === false) actions.push({ id: 'storage', label: 'Storage…', why: 'Keep your files when the disk fills up.' });
   return { actions, unavailable };
 }
 
@@ -430,42 +424,69 @@ function wrap(text: string, width: number, indent: string): string[] {
   return out;
 }
 
-/** The explainer as plain text, for a terminal `width` columns wide. Pure. */
-export function dataFlowText(s: DataFlowState, width = 80): string {
+/** Where a flow goes, in a few words: the middle column of the table */
+export function flowPath(f: Flow): string {
+  if (!f.via && !f.to) return 'stays in this tab';
+  const dest = f.dest ?? f.to;
+  if (!f.via) return `browser → ${dest}`;
+  return dest ? `our server → ${dest}` : 'our server';
+}
+
+/**
+ * The explainer as plain text, for a terminal `width` columns wide: one row
+ * per kind of traffic. `verbose` adds a paragraph and the route under each row. Pure.
+ */
+export function dataFlowText(s: DataFlowState, width = 80, verbose = false): string {
   const m = dataFlowModel(s);
   const w = Math.max(40, Math.min(width, 100));
   const out: string[] = [];
   out.push('How your data flows');
   out.push(...wrap(m.headline, w, ''));
   out.push('');
-  for (const p of m.places) {
-    out.push(p.title.toUpperCase());
-    if (p.id === 'tab') for (const l of p.lines) out.push(...wrap(l, w, '  '));
-    out.push(...wrap(p.detail, w, '  '));
-    out.push('');
+  const rows = m.flows.map((f) => ({
+    f,
+    what: f.title + (f.status === 'off' ? ' [off here]' : ''),
+    path: flowPath(f),
+    reads: READS_LABEL[f.reads],
+  }));
+  const c1 = Math.max(...rows.map((r) => r.what.length), 4) + 2;
+  const c2 = Math.max(...rows.map((r) => r.path.length), 7) + 2;
+  const table = c1 + c2 + Math.max(...rows.map((r) => r.reads.length), 10) + 2 <= w;
+  if (table) out.push('  ' + 'WHAT'.padEnd(c1) + 'GOES TO'.padEnd(c2) + 'OUR SERVER');
+  for (const r of rows) {
+    if (table) out.push('  ' + r.what.padEnd(c1) + r.path.padEnd(c2) + r.reads);
+    else { out.push(...wrap(r.what, w, '')); out.push(...wrap(`${r.path}. Our server: ${r.reads}`, w, '  ')); }
+    const extra = [
+      ...(verbose ? [r.f.detail, flowRoute(r.f) ? `Route: ${flowRoute(r.f)}` : ''] : []),
+      verbose && r.f.carries.length ? `Carries your ${r.f.carries.join(', ')}.` : '',
+      r.f.note ?? '',
+    ].filter(Boolean);
+    for (const e of extra) out.push(...wrap(e, w, '      '));
   }
-  out.push('FLOWS');
-  out.push(...wrap('Who connects to whom. Replies come back the same way.', w, '  '));
-  m.flows.forEach((f, n) => {
-    out.push('');
-    out.push(...wrap(`${n + 1}. ${f.title}${f.status === 'off' ? '  [off here]' : ''}`, w, ''));
-    const path = [`tab: ${f.from}`, f.via ? `server: ${f.via}` : f.to ? '(not through the server)' : '', f.to ?? ''].filter(Boolean).join('  ->  ');
-    out.push(...wrap(path, w, '   '));
-    out.push(...wrap(`${READS_LABEL[f.reads]}. ${f.readsText}`, w, '   '));
-    out.push(...wrap(f.detail, w, '   '));
-    if (f.carries.length) out.push(...wrap(`From this tab now: ${f.carries.join(', ')}.`, w, '   '));
-    if (f.note) out.push(...wrap(f.note, w, '   '));
-  });
+  out.push('');
+  out.push('THIS TAB');
+  // (whole facts per line: "Claude: not signed in" is never split)
+  let row = '';
+  for (const fact of m.places[0].lines) {
+    if (row && 2 + row.length + 3 + fact.length > w) { out.push('  ' + row); row = fact; }
+    else row = row ? `${row} · ${fact}` : fact;
+  }
+  if (row) out.push(...(2 + row.length > w ? wrap(row, w, '  ') : ['  ' + row]));
+  out.push(...wrap(s.guest
+    ? 'Every program in this guest window can read anything you put in this guest window.'
+    : 'Any program you run in this tab can read your files and your saved sign-ins.', w, '  '));
   out.push('');
   const { actions, unavailable } = dataFlowActions(s);
   out.push('WHAT YOU CAN CHANGE');
   for (const a of actions) {
     if (a.id === 'storage') continue; // a desktop pane; no command asks for persistence
-    out.push(...wrap(`${a.command ? a.command : a.label.replace(/…$/, '')}: ${a.why}`, w, '  '));
+    out.push(...wrap(a.command ? a.command : a.label.replace(/…$/, ''), w, '  '));
+    out.push(...wrap(a.why, w, '      '));
   }
   for (const u of unavailable) out.push(...wrap(u, w, '  '));
   out.push('');
-  out.push(...wrap('All of it, with the code behind each claim:', w, ''));
+  if (!verbose) out.push(...wrap('dataflow -v explains each row. The code behind each claim:', w, ''));
+  else out.push(...wrap('The code behind each claim:', w, ''));
   out.push(DOCS_URL);
   return out.join('\n') + '\n';
 }

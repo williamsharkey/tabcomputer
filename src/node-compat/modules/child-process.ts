@@ -214,6 +214,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     return "'" + s.replace(/'/g, "'\\''") + "'";
   };
   const shellQuoteArgs = (args: string[]): string => args.map(shellQuoteArg).join(' ');
+  /** `cmd` run in opts.cwd when one is given (exec, execFile and their promisified forms; execFileSync in the page) */
+  const inCwd = (cmd: string, opts: any): string => (opts?.cwd ? `cd ${shellQuoteArg(String(opts.cwd))} && ${cmd}` : cmd);
   const stripOuterQuotes = (s: string): string => {
     // Strip matching outer quotes like a shell would: "cmd" → cmd, 'cmd' → cmd
     // Also unescape inner escaped quotes: \" → "
@@ -837,7 +839,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const killer = new AbortController();
       let killedWith: number | null = null;
       child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
-      const p = execAsync(cmd, undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
+      const p = execAsync(inCwd(cmd, opts), undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
@@ -879,7 +881,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const cmdP = isClipCmd
         ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(cmd, undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
+        : execAsync(inCwd(cmd, opts), undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
       const p = cmdP.then(r => {
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
@@ -1112,6 +1114,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       if (deps.guest) { const g = guestSync(fullCmd, opts); guestThrow(fullCmd, g); return g.stdout; }
       // Synchronous fast-path for detection commands
+      fullCmd = inCwd(fullCmd, opts); // (the guest above takes cwd as an option)
       const syncResponse = inputOf(opts) === undefined ? syncInherited(getSyncResponse(fullCmd), opts) : null;
       if (syncResponse) {
         const buf: any = FakeBuffer.from(syncResponse.stdout);
@@ -1160,7 +1163,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   // Add util.promisify.custom for exec/execFile to return { stdout, stderr }
   const customSym = Symbol.for('nodejs.util.promisify.custom');
   cpModule.exec[customSym] = (cmd: string, opts?: any) => {
-    const p = execAsync(cmd).then(r => {
+    const p = execAsync(inCwd(cmd, opts)).then(r => {
       if (r.exitCode !== 0) throw Object.assign(new Error(`Command failed: ${cmd}`), { code: r.exitCode, stdout: r.stdout, stderr: r.stderr });
       return { stdout: r.stdout, stderr: r.stderr };
     });
@@ -1174,7 +1177,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     } else {
       cmd = `${file} ${shellQuoteArgs(args || [])}`;
     }
-    const p = execAsync(cmd).then(r => {
+    const p = execAsync(inCwd(cmd, opts)).then(r => {
       if (r.exitCode !== 0) throw Object.assign(new Error(`Command failed: ${cmd}`), { code: r.exitCode, stdout: r.stdout, stderr: r.stderr });
       return { stdout: r.stdout, stderr: r.stderr };
     });

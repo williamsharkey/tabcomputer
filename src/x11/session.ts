@@ -64,6 +64,7 @@ async function create(display: number): Promise<XSession> {
     document.addEventListener('cut', dirty);
     window.addEventListener('focus', dirty);
   }
+  await (await import('../gui/snapshot')).keepAtoms(server).catch(() => {});
   if (typeof window !== 'undefined') (window as unknown as { __shiroX?: unknown }).__shiroX = { server, rootless };
   return { display, server, rootless, started: Date.now() };
 }

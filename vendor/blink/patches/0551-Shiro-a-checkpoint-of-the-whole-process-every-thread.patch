@@ -1,0 +1,390 @@
+From d9f726a2630091971cd3dc3b241a35eb61dfa3c7 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Mon, 12 Oct 2026 12:02:41 -0400
+Subject: [PATCH] Shiro: a checkpoint of the whole process (every thread) that
+ a later page load restores
+
+blink_shiro_checkpoint(), called by the worker's own thread, takes the GIL
+and writes the process's image: a fork snapshot of the main thread's memory
+and state, one record per guest thread (registers, FPU, TLS base, signal
+mask, tid), and a tail. A thread waiting in a system call that only waits
+(poll, select, epoll_wait, a futex wait, a sleep) is recorded on its syscall
+instruction with the call's number back in ax, so the restored thread runs
+the call again; a thread between two instructions goes on at its ip; any
+other state (mid-call, mid-instruction in a kernel call, in a signal handler)
+means no checkpoint now (-1), and the caller asks again. A process with fork
+children in its instance or a writable shared mapping can't be (-2).
+
+ShiroRestore starts the image's other threads after the main one, each on a
+new Machine with its record's registers and its old tid.
+
+Machine gains shiro_inkernel (kernel calls in progress, of any kind) and
+shiro_sysax (ax as the outermost system call began: waits store -EINTR in ax
+while they wait).
+---
+ blink/blink.c   |   8 ++
+ blink/machine.h |   2 +
+ blink/shiro.inc | 284 +++++++++++++++++++++++++++++++++++++++++++++++-
+ blink/syscall.c |   3 +
+ 4 files changed, 292 insertions(+), 5 deletions(-)
+
+diff --git a/blink/blink.c b/blink/blink.c
+index 4f2ea4c..94e5112 100644
+--- a/blink/blink.c
++++ b/blink/blink.c
+@@ -283,6 +283,14 @@ EMSCRIPTEN_KEEPALIVE void blink_shiro_signal(int sig) {
+   ShiroSignalSystem(g_shiro_system, sig);
+ }
+ 
++// The process as an image a later page load restores (shiro.inc
++// ShiroCheckpoint; blink_shiro_checkpoint_data/_size/_why/_free): 0 taken,
++// -1 not now (a thread is busy), -2 this process can't be
++int ShiroCheckpoint(struct System *);
++EMSCRIPTEN_KEEPALIVE int blink_shiro_checkpoint(void) {
++  return ShiroCheckpoint(g_shiro_system);
++}
++
+ // A SIGEV_THREAD_ID timer's signal is for one thread (glibc's SIGEV_THREAD
+ // helper waits for it in sigwaitinfo, with every signal blocked): false if
+ // it isn't one of ours
+diff --git a/blink/machine.h b/blink/machine.h
+index ee09586..90e45d5 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -469,6 +469,8 @@ struct Machine {               //
+   _Atomicish(u64) signals;               // [attention] pending delivery
+   u64 tkills;                            // [Shiro] of those, sent by tkill/tgkill (SI_TKILL)
+   _Atomic(int) shiro_incall;             // [Shiro] interruptible kernel calls this thread is in
++  _Atomic(int) shiro_inkernel;           // [Shiro] kernel calls this thread is in, of any kind (ShiroCheckpoint)
++  u64 shiro_sysax;                       // [Shiro] ax as its outermost system call began (a wait stores -EINTR in ax meanwhile)
+   struct timespec cpu0;                  // [Shiro] the thread's CPU-time clock counts from here
+   bool shiro_kmask_ok;                   // [Shiro] ShiroSyncMask has looked at...
+   u64 shiro_kmask;                       // [Shiro] ...this sigmask of this thread
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index f575bf6..9132b5e 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -303,10 +303,17 @@ static i64 ShiroCallIn(struct Machine *, int, const int[12], void *, int, int, b
+ static i64 ShiroCall(struct Machine *m, int nr, const int a[12], void *data,
+                      int inlen, int outcap, bool restart, bool intr) {
+   i64 r;
+-  if (!m || !intr || t_vfork) return ShiroCallIn(m, nr, a, data, inlen, outcap, restart, intr);
+-  atomic_fetch_add(&m->shiro_incall, 1);
+-  r = ShiroCallIn(m, nr, a, data, inlen, outcap, restart, intr);
+-  atomic_fetch_sub(&m->shiro_incall, 1);
++  // (shiro_inkernel: a checkpoint knows a thread outside a system call is
++  // still mid-instruction, e.g. a page fault reading its file)
++  if (m) atomic_fetch_add(&m->shiro_inkernel, 1);
++  if (!m || !intr || t_vfork) {
++    r = ShiroCallIn(m, nr, a, data, inlen, outcap, restart, intr);
++  } else {
++    atomic_fetch_add(&m->shiro_incall, 1);
++    r = ShiroCallIn(m, nr, a, data, inlen, outcap, restart, intr);
++    atomic_fetch_sub(&m->shiro_incall, 1);
++  }
++  if (m) atomic_fetch_sub(&m->shiro_inkernel, 1);
+   return r;
+ }
+ 
+@@ -2818,9 +2825,13 @@ static void ShiroRestoreFrom(struct Machine *m, const u8 *p, size_t len) {
+   s->loaded = true;
+ }
+ 
+-// Rebuild the forked process in `m` (a fresh machine from Exec).
++static void ShiroRestoreThreads(struct Machine *, const u8 *, size_t);
++
++// Rebuild the forked process in `m` (a fresh machine from Exec), or a
++// checkpointed one with all its threads (ShiroCheckpoint).
+ void ShiroRestore(struct Machine *m) {
+   ShiroRestoreFrom(m, g_shiro_restore, g_shiro_restore_len);
++  ShiroRestoreThreads(m, g_shiro_restore, g_shiro_restore_len);
+   free(g_shiro_restore);
+   g_shiro_restore = 0;
+ }
+@@ -3257,6 +3268,269 @@ _Noreturn void ShiroInstanceChildKilled(struct Machine *m, int sig) {
+ }
+ 
+ 
++// ── checkpoint: the whole process, for a restore in a later page load ────
++//
++// (docs/research/GUI_SNAPSHOTS.md.) The image is a fork snapshot of the
++// main thread (ShiroSnapshot: every page, the signal table, brk, the ELF
++// info) followed by one record per thread and a tail. It is taken from
++// outside the guest, by the worker's own thread holding the GIL, so no
++// guest thread runs meanwhile. A thread then is in one of three places:
++// between two instructions (it waits for the GIL in Actor: it goes on at
++// its ip), in a system call that only waits (poll, a futex wait, a sleep:
++// the restored thread runs the call again, as Linux restarts one), or
++// anywhere else, mid-call or mid-instruction, and then there is no
++// checkpoint now: the caller tries again later.
++
++#define SHIRO_CKPT_MAGIC 0x54504b43  // "CKPT"
++
++struct ShiroCkptThread {
++  u8 regs[128];
++  u8 xmm[16][16];
++  u64 ip;
++  u32 flags, mxcsr;
++  struct MachineFpu fpu;
++  i64 fsbase, gsbase;
++  u64 sigmask;
++  struct sigaltstack_linux altstack;
++  i64 ctid;
++  i32 tid;
++  i32 restart;  // 1: it waited in a system call, which runs again
++  char comm[16];
++  u64 timerslack;
++};
++
++struct ShiroCkptTail {
++  u32 magic, size;
++  u32 nthreads, threadsize;
++  i32 pid;
++  u32 next_tid;
++};
++
++static struct ShiroBuf g_shiro_ckpt;
++static char g_shiro_ckpt_why[160];
++
++EMSCRIPTEN_KEEPALIVE u8 *blink_shiro_checkpoint_data(void) { return g_shiro_ckpt.p; }
++EMSCRIPTEN_KEEPALIVE double blink_shiro_checkpoint_size(void) { return (double)g_shiro_ckpt.n; }
++EMSCRIPTEN_KEEPALIVE const char *blink_shiro_checkpoint_why(void) { return g_shiro_ckpt_why; }
++EMSCRIPTEN_KEEPALIVE void blink_shiro_checkpoint_free(void) {
++  free(g_shiro_ckpt.p);
++  memset(&g_shiro_ckpt, 0, sizeof(g_shiro_ckpt));
++}
++
++// System calls that only wait: run again, they wait again
++static bool ShiroCkptWaits(u64 nr, u64 si) {
++  switch (nr) {
++    case 0x007: case 0x10F:              // poll, ppoll
++    case 0x017: case 0x10E:              // select, pselect6
++    case 0x0E8: case 0x119: case 0x1B9:  // epoll_wait, epoll_pwait, epoll_pwait2
++    case 0x022: case 0x023: case 0x0E6:  // pause, nanosleep, clock_nanosleep
++    case 0x018:                          // sched_yield
++      return true;
++    case 0x0CA:                          // futex: FUTEX_WAIT, FUTEX_WAIT_BITSET
++      return (si & 127) == 0 || (si & 127) == 9;
++    default:
++      return false;
++  }
++}
++
++// 0: goes on at its ip; 1: its system call runs again; -1: not now
++static int ShiroCkptState(struct Machine *t) {
++  if (t->sigdepth || atomic_load(&t->killed)) return -1;
++  if (!t->insyscall) return atomic_load(&t->shiro_inkernel) || t->sysdepth ? -1 : 0;
++  if (t->sysdepth != 1) return -1;
++  return ShiroCkptWaits(t->shiro_sysax & 0xfff, Get64(t->si)) ? 1 : -1;
++}
++
++// 0: g_shiro_ckpt holds the image; -1: a thread is busy (try again);
++// -2: this process can't be checkpointed (blink_shiro_checkpoint_why)
++int ShiroCheckpoint(struct System *s) {
++  struct ShiroCkptThread *recs = 0, *r;
++  struct ShiroCkptTail tail;
++  struct Machine *t, *mainm = 0, *tm = 0, *saved = g_machine;
++  struct ShiroBuf b = {0};
++  struct Dll *e;
++  int n = 0, i = 0, st, rc = 0;
++  blink_shiro_checkpoint_free();
++  g_shiro_ckpt_why[0] = 0;
++  if (!s || !s->loaded) {
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "no program is loaded yet");
++    return -1;
++  }
++  GilAcquire();
++  if (g_shiro_nkids || atomic_load(&g_shiro_kids_starting)) {
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "it has forked children in its engine instance");
++    rc = -2;
++    goto Done;
++  }
++  if (ShiroHasSharedMemory(s)) {
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "it has a writable shared mapping");
++    rc = -2;
++    goto Done;
++  }
++  LOCK(&s->machines_lock);
++  for (e = dll_first(s->machines); e; e = dll_next(s->machines, e)) ++n;
++  if (!(recs = (struct ShiroCkptThread *)calloc(n, sizeof(*recs)))) rc = -2;
++  for (e = dll_first(s->machines); e && !rc; e = dll_next(s->machines, e)) {
++    t = MACHINE_CONTAINER(e);
++    if ((st = ShiroCkptState(t)) < 0) {
++      snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why),
++               "thread %d is busy (%s%#x, depth %d, in the kernel %d)", t->tid,
++               t->insyscall ? "system call " : "", t->insyscall ? (int)(t->shiro_sysax & 0xfff) : 0,
++               t->sysdepth, atomic_load(&t->shiro_inkernel));
++      rc = -1;
++      break;
++    }
++    if (t->tid == s->pid) mainm = t;
++    r = recs + i++;
++    memcpy(r->regs, t->beg, sizeof(r->regs));
++    // a call that runs again: its number back in ax (the first register; a
++    // wait keeps -EINTR there for a signal's frame), ip back onto the
++    // syscall instruction (0f 05)
++    if (st) Put64(r->regs, t->shiro_sysax);
++    memcpy(r->xmm, t->xmm, sizeof(r->xmm));
++    r->ip = t->ip - (st ? 2 : 0);
++    r->flags = t->flags;
++    r->mxcsr = t->mxcsr;
++    memcpy(&r->fpu, &t->fpu, sizeof(r->fpu));
++    r->fsbase = t->fs.base;
++    r->gsbase = t->gs.base;
++    r->sigmask = t->sigmask;
++    memcpy(&r->altstack, &t->sigaltstack, sizeof(r->altstack));
++    r->ctid = t->ctid;
++    r->tid = t->tid;
++    r->restart = st;
++    memcpy(r->comm, t->comm, sizeof(r->comm));
++    r->timerslack = t->timerslack;
++  }
++  UNLOCK(&s->machines_lock);
++  if (!rc && !mainm) {
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "its main thread has ended");
++    rc = -2;
++  }
++  if (rc) goto Done;
++  // The pages are read through a machine of this thread's own (a copy of the
++  // main thread's, in no list): reading faults untouched file pages in, and
++  // as in a system call a page that can't be read is an error, not a signal
++  if (posix_memalign((void **)&tm, _Alignof(struct Machine), sizeof(*tm))) {
++    rc = -2;
++    goto Done;
++  }
++  memcpy(tm, mainm, sizeof(*tm));
++  memset(&tm->path, 0, sizeof(tm->path));
++  memset(&tm->freelist, 0, sizeof(tm->freelist));
++  memset(&tm->pagelocks, 0, sizeof(tm->pagelocks));
++  ResetInstructionCache(tm);
++  ResetTlb(tm);
++  WjResetTlb(tm);
++  tm->insyscall = true;
++  tm->nofault = false;
++  tm->sysdepth = 1;
++  tm->sigdepth = 0;
++  tm->signals = 0;
++  atomic_store(&tm->shiro_inkernel, 0);
++  atomic_store(&tm->shiro_incall, 0);
++  g_machine = tm;
++  st = ShiroSnapshot(tm, 0, 0, 0, &b, false);
++  g_machine = saved;
++  tm->sysdepth = 0;
++  CollectPageLocks(tm);
++  CollectGarbage(tm, 0);
++  free(tm->pagelocks.p);
++  free(tm->freelist.p);
++  free(tm);
++  if (st < 0) {
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "out of memory");
++    rc = -2;
++    goto Done;
++  }
++  memset(&tail, 0, sizeof(tail));
++  tail.magic = SHIRO_CKPT_MAGIC;
++  tail.size = sizeof(tail);
++  tail.nthreads = n;
++  tail.threadsize = sizeof(*recs);
++  tail.pid = s->pid;
++  tail.next_tid = s->next_tid;
++  if (!ShiroPut(&b, recs, (size_t)n * sizeof(*recs)) || !ShiroPut(&b, &tail, sizeof(tail))) {
++    free(b.p);
++    snprintf(g_shiro_ckpt_why, sizeof(g_shiro_ckpt_why), "out of memory");
++    rc = -2;
++    goto Done;
++  }
++  g_shiro_ckpt = b;
++Done:
++  free(recs);
++  GilRelease();
++  return rc;
++}
++
++static void ShiroCkptApply(struct Machine *t, const struct ShiroCkptThread *r) {
++  memcpy(t->beg, r->regs, sizeof(r->regs));
++  memcpy(t->xmm, r->xmm, sizeof(r->xmm));
++  t->ip = r->ip;
++  t->flags = r->flags;
++  t->mxcsr = r->mxcsr;
++  memcpy(&t->fpu, &r->fpu, sizeof(r->fpu));
++  t->fs.base = r->fsbase;
++  t->gs.base = r->gsbase;
++  t->sigmask = r->sigmask;
++  memcpy(&t->sigaltstack, &r->altstack, sizeof(r->altstack));
++  t->ctid = r->ctid;
++  memcpy(t->comm, r->comm, sizeof(t->comm));
++  t->timerslack = r->timerslack;
++  t->insyscall = false;
++  t->sysdepth = 0;
++  t->sigdepth = 0;
++  t->signals = 0;
++  t->shiro_kmask_ok = false;  // the kernel hears this thread's mask again
++}
++
++// After ShiroRestoreFrom: when the image is a checkpoint, its threads. The
++// main thread takes its record's registers (the snapshot's are a fork
++// child's), and every other thread starts as a clone would, at its own.
++static void ShiroRestoreThreads(struct Machine *m, const u8 *p, size_t len) {
++  struct System *s = m->system;
++  struct ShiroCkptTail tail;
++  struct ShiroCkptThread r;
++  const u8 *recs;
++  u32 i;
++  if (len < sizeof(tail)) return;
++  memcpy(&tail, p + len - sizeof(tail), sizeof(tail));
++  if (tail.magic != SHIRO_CKPT_MAGIC || tail.size != sizeof(tail) || tail.threadsize != sizeof(r) ||
++      (u64)tail.nthreads * sizeof(r) + sizeof(tail) > len) {
++    return;
++  }
++  recs = p + len - sizeof(tail) - (size_t)tail.nthreads * sizeof(r);
++  s->next_tid = tail.next_tid;
++  s->kmask_ok = false;
++  for (i = 0; i < tail.nthreads; ++i) {
++    memcpy(&r, recs + (size_t)i * sizeof(r), sizeof(r));
++    if (r.tid == tail.pid) ShiroCkptApply(m, &r);
++  }
++  for (i = 0; i < tail.nthreads; ++i) {
++    struct Machine *m2;
++    pthread_attr_t attr;
++    pthread_t th;
++    sigset_t ss, oldss;
++    memcpy(&r, recs + (size_t)i * sizeof(r), sizeof(r));
++    if (r.tid == tail.pid) continue;
++    m->threaded = true;
++    s->jit.threaded = true;
++    unassert((m2 = NewMachine(s, m)));
++    s->next_tid = tail.next_tid;  // (NewMachine took one)
++    ShiroCkptApply(m2, &r);
++    m2->tid = r.tid;
++    m2->threaded = true;
++    sigfillset(&ss);
++    unassert(!pthread_sigmask(SIG_SETMASK, &ss, &oldss));
++    m2->spawn_sigmask = oldss;
++    unassert(!pthread_attr_init(&attr));
++    unassert(!pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
++    unassert(!pthread_create(&th, &attr, OnSpawn, m2));
++    unassert(!pthread_attr_destroy(&attr));
++    unassert(!pthread_sigmask(SIG_SETMASK, &oldss, 0));
++  }
++}
++
+ // ── Objects shared with other Blink instances (shmobj) ──────────────────
+ //
+ // docs/research/SHARED_MAPPINGS.md. A MAP_SHARED mapping of a /dev/shm file
+diff --git a/blink/syscall.c b/blink/syscall.c
+index b0d5521..777fa30 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -6454,6 +6454,9 @@ void OpSyscall(P) {
+   mark = m->freelist.n;
+   m->interrupted = false;
+   ax = Get64(m->ax);
++#ifdef __EMSCRIPTEN__
++  if (m->sysdepth == 1) m->shiro_sysax = ax;  // (a checkpoint runs a waiting call again: shiro.inc)
++#endif
+   di = Get64(m->di);
+   si = Get64(m->si);
+   dx = Get64(m->dx);
+-- 
+2.39.5 (Apple Git-154)
+

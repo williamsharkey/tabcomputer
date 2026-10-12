@@ -10,6 +10,7 @@ import type { Kernel } from '../kernel/kernel';
 import { netStackOf, installNet, KSocket, type UnixOps } from '../kernel/net';
 import { AF_UNIX, SOCK_STREAM } from '../kernel/abi';
 import type { Process } from '../kernel/process';
+import type { Client } from './server';
 
 export interface DisplayHandle {
   display: number;
@@ -91,6 +92,38 @@ async function acceptLoop(listener: KSocket, handle: DisplayHandle, kernel: Kern
   }
 }
 
+/**
+ * A client whose every request is kept from its first byte (src/gui/snapshot.ts):
+ * played again into a new server, the bytes rebuild what the server holds for
+ * it (windows, pixmaps, GCs, glyphs, properties, its sequence number).
+ */
+export interface XRecording {
+  /** The process whose connection is recorded */
+  pid: number;
+  /** The client number it is given (its resource ids are made from it) */
+  index: number;
+  chunks: Uint8Array[];
+  bytes: number;
+  /** Past this many bytes the recording is dropped (`chunks` emptied, `over` set) */
+  limit: number;
+  over: boolean;
+  /** Connections the process made: more than one can't be played back as one client */
+  connections: number;
+  client: Client | null;
+}
+
+const recordings = new Map<number, XRecording>();
+
+/** Record the X connection process `pid` is about to make, as client number `index`. */
+export function recordXClient(pid: number, index: number, limit = 64 << 20): XRecording {
+  const rec: XRecording = { pid, index, chunks: [], bytes: 0, limit, over: false, connections: 0, client: null };
+  recordings.set(pid, rec);
+  return rec;
+}
+
+/** Stop recording `pid`'s connection (the bytes so far stay in its record). */
+export function stopXRecording(pid: number): void { recordings.delete(pid); }
+
 async function serveClient(sock: KSocket, display: number, kernel: Kernel): Promise<void> {
   const { getXSession } = await import('./session');
   const { server } = await getXSession(display);
@@ -98,17 +131,63 @@ async function serveClient(sock: KSocket, display: number, kernel: Kernel): Prom
   await (await import('../gl/setup')).prepareGL(kernel);
   let chain: Promise<unknown> = Promise.resolve();
   let closed = false;
+  let rec = recordings.get(sock.peerPid) ?? null;
+  // (a second connection, or its number taken by another instance of the app: not recorded)
+  if (rec && (++rec.connections > 1 || server.clients.has(rec.index))) { rec.over = true; rec.chunks = []; rec = null; }
   const client = server.connect({
     write: (d) => { chain = chain.then(() => (closed ? 0 : sock.send(d))); },
     close: () => { closed = true; void chain.then(() => sock.close()); },
-  });
+  }, rec?.index);
+  if (rec) rec.client = client;
+  await pump(sock, client, rec);
+  server.disconnect(client);
+  closed = true;
+  void sock.close();
+}
+
+async function pump(sock: KSocket, client: Client, rec: XRecording | null): Promise<void> {
   const buf = new Uint8Array(256 * 1024);
   for (;;) {
     const n = await sock.recv(buf);
     if (n <= 0) break;
+    if (rec && !rec.over && recordings.get(rec.pid) === rec) {
+      rec.bytes += n;
+      if (rec.bytes > rec.limit) { rec.over = true; rec.chunks = []; } else rec.chunks.push(buf.slice(0, n));
+    }
     client.receive(buf.subarray(0, n));
   }
-  server.disconnect(client);
-  closed = true;
-  void sock.close();
+}
+
+/**
+ * A restored process's X connection: client number `index` with the server
+ * state its recorded `requests` build, on a new socket pair. The requests are
+ * played with the client's output dropped (it read those replies and events
+ * the first time), so its sequence number ends where the process left it;
+ * then each of its toplevels is told where it is now. Returns the process's
+ * end of the pair; `done` resolves when the connection has ended.
+ */
+export async function adoptXClient(kernel: Kernel, display: number, index: number, requests: Uint8Array[]): Promise<{ sock: KSocket; client: Client; done: Promise<void> }> {
+  const { getXSession } = await import('./session');
+  const { server } = await getXSession(display);
+  if (server.clients.has(index)) throw new Error(`X client number ${index} is in use`);
+  if (!netStackOf(kernel)) installNet(kernel);
+  const pair = netStackOf(kernel)!.socketpair();
+  if (typeof pair === 'number') throw new Error(`socketpair: errno ${-pair}`);
+  const [guest, ours] = pair;
+  let chain: Promise<unknown> = Promise.resolve();
+  let closed = false, muted = true;
+  const client = server.connect({
+    write: (d) => { if (!muted) chain = chain.then(() => (closed ? 0 : ours.send(d))); },
+    close: () => { closed = true; void chain.then(() => ours.close()); },
+  }, index);
+  for (const chunk of requests) client.receive(chunk);
+  client.flush();
+  muted = false;
+  for (const w of server.topsOf(client)) if (w.mapped) server.announce(w);
+  const done = pump(ours, client, null).then(() => {
+    server.disconnect(client);
+    closed = true;
+    void ours.close();
+  });
+  return { sock: guest, client, done };
 }

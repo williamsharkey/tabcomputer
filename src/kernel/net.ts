@@ -2121,7 +2121,7 @@ export function installNet(kernel: Kernel, stack: NetStack = netStack): () => vo
 }
 
 /** AF_UNIX path sockets in `proc`'s view of the kernel's filesystem. */
-function unixOpsFor(k: Kernel, proc: Parameters<Kernel['resolvePath']>[0]): UnixOps {
+export function unixOpsFor(k: Kernel, proc: Parameters<Kernel['resolvePath']>[0]): UnixOps {
   return {
     resolve: (path) => k.resolvePath(proc, path),
     exists: async (path) => !!k.fs && (await k.fs.exists(path)),

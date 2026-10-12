@@ -371,6 +371,12 @@ function keepCompiledModule(key: unknown, module: unknown, size: number, ownBudg
  * tid on the call; a call without one isn't listed).
  */
 export interface EngineCall { nr: number; since: number; args: number[] }
+/**
+ * A Blink process's image (proc.data.engineCheckpoint()): rc 0 with the
+ * image; -1 a thread is in the middle of something (ask again); -2 this
+ * process can't be checkpointed (`why` says)
+ */
+export interface EngineCheckpoint { rc: number; why: string; image: ArrayBuffer | null }
 function engineCalls(proc: Process): Map<number, EngineCall> {
   return (proc.data.engineCalls ??= new Map<number, EngineCall>()) as Map<number, EngineCall>;
 }
@@ -703,8 +709,26 @@ export function wireWorker(proc: Process, w: GuestWorker, kernel: Kernel, pool: 
       // second later the kernel ends it itself.
       proc.data.crashSignal = SIGABRT;
       setTimeout(() => { if (!proc.exiting) void kernel.exit(proc, SIGABRT); }, ABORT_GRACE_MS);
+    } else if (m?.type === 'blink-checkpointed') {
+      const done = checkpoints.get(m.id);
+      checkpoints.delete(m.id);
+      done?.({ rc: m.rc | 0, why: String(m.why ?? ''), image: m.snapshot instanceof ArrayBuffer ? m.snapshot : null });
     } else if (m?.type === 'blink-watch') watch(m.fd);
     else if (m?.type === 'blink-unwatch') { subs.get(m.fd)?.(); subs.delete(m.fd); }
+  });
+  // The process's image for a later restore (Blink patch 0551; src/gui/snapshot.ts)
+  const checkpoints = new Map<number, (r: EngineCheckpoint) => void>();
+  let checkpointSeq = 0;
+  proc.data.engineCheckpoint = (): Promise<EngineCheckpoint> => new Promise((resolve) => {
+    if (ended || proc.exiting) { resolve({ rc: -2, why: 'the process has ended', image: null }); return; }
+    const id = ++checkpointSeq;
+    checkpoints.set(id, resolve);
+    w.postMessage({ type: 'blink-checkpoint', id });
+  });
+  proc.onTerminate(() => {
+    for (const done of checkpoints.values()) done({ rc: -2, why: 'the process has ended', image: null });
+    checkpoints.clear();
+    delete proc.data.engineCheckpoint;
   });
   // (not while the kernel runs a direct channel's call: its reply takes the
   // signal, with the guest's thread waiting for it, where host.mjs's thread

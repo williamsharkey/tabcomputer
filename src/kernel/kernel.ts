@@ -1242,6 +1242,9 @@ export class Kernel {
     }
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
+    // (proc.data.openLog: the paths a process opens or looks for, for whoever set it: a GUI app's snapshot is
+    // good while those files are what they were)
+    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     // O_TMPFILE: an unnamed regular file in directory `p` (linkat names it)
     if (flags & A.__O_TMPFILE) {
@@ -1403,6 +1406,7 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.devices.has(p) || /^\/(?:dev|proc)\//.test(p)) return undefined;
+    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
     if (flags & (A.O_CREAT | A.O_TRUNC | A.O_NOFOLLOW)) {

@@ -14,6 +14,7 @@
  */
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from '../kernel/kernel';
+import type { Process } from '../kernel/process';
 import { untar, type TarEntry } from '../pkg-tar';
 import { debEntriesOffThread } from './deb';
 import { toolkitScaleEnv } from './display-scale';
@@ -570,6 +571,47 @@ async function shipLib(fs: FileSystem, name: string, path: string): Promise<bool
 
 export interface LaunchedApp { pid: number; exited: Promise<number>; output: () => string }
 
+type SnapshotModule = typeof import('./snapshot');
+
+/**
+ * Whether this launch can use snapshots, and with what: the stored one when it
+ * is still good (a stale one is dropped), the key a new one would get, and
+ * the X client number the app's snapshots use.
+ */
+async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: GuiApp, argv: string[], env: Record<string, string>): Promise<{ S: SnapshotModule; key: string; index: number | null; stored: import('./snapshot').StoredSnapshot | null } | null> {
+  const fs = kernel.fs as FileSystem | undefined;
+  if (!fs || typeof indexedDB === 'undefined') return null;
+  try {
+    const S = await import('./snapshot');
+    if (!S.snapshotsEnabled() || await debianMode(fs)) return null;
+    const { getXSession } = await import('../x11/session');
+    const { server } = await getXSession(0);
+    const { FIRST_RESERVED_CLIENT, LAST_CLIENT } = await import('../x11/server');
+    const key = S.snapshotKey({
+      app: name, argv, env, packages: app.packages.map((n) => `${n}=${m.packages[n]?.version ?? ''}`),
+      screen: [server.width, server.height, server.dpi], textMode: `${server.domText}/${server.domTextRaster}`,
+    });
+    const index = S.clientNumberFor(name, FIRST_RESERVED_CLIENT, LAST_CLIENT);
+    let stored = index !== null && !server.clients.has(index) ? await S.loadSnapshot(name) : null;
+    if (stored) {
+      const problem = await S.snapshotProblem(fs, stored, key);
+      if (problem) { snapshotLog(name, { restored: false, why: problem }); await S.dropSnapshot(name); stored = null; }
+    }
+    // (another instance is running with the app's client number: this one starts the usual way, unrecorded)
+    return { S, key, index: index !== null && !server.clients.has(index) ? index : null, stored };
+  } catch (e) {
+    snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
+    return null;
+  }
+}
+
+/** What snapshots did, newest last (`window.__guiSnapshots`: tests and the benchmark read it) */
+function snapshotLog(app: string, what: Record<string, unknown>): void {
+  const g = globalThis as { __guiSnapshots?: Record<string, unknown>[] };
+  (g.__guiSnapshots ??= []).push({ app, at: Date.now(), ...what });
+  if (g.__guiSnapshots.length > 50) g.__guiSnapshots.shift();
+}
+
 /** Start an installed app as a background kernel process. */
 export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}, opts: { onOutput?: (text: string) => void } = {}): Promise<LaunchedApp> {
   const m = await guiManifest();
@@ -591,14 +633,44 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
     const dec = new TextDecoder();
     out.onData = (d) => { try { opts.onOutput!(dec.decode(d, { stream: true })); } catch { /* a listener's problem */ } };
   }
-  const p = kernel.spawn({
-    // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
-    // oosplash finds soffice.bin next to argv[0])
-    path: app.bin, argv: [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args], cwd: '/home/user',
-    env: appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env }), fds: { 0: new BufferFile(''), 1: out, 2: out },
-  });
-  ids.pidAppIds.set(p.pid, name);
-  const launched = { pid: p.pid, exited: exitOf(kernel, p).finally(() => ids.pidAppIds.delete(p.pid)), output: () => out.text() };
+  // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
+  // oosplash finds soffice.bin next to argv[0])
+  const argv = [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args];
+  const fullEnv = appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env });
+  const cwd = '/home/user';
+  // Snapshots (experimental, off by default: src/gui/snapshot.ts): a plain start of the app is
+  // restored from the image its last start left, when nothing it was made from has changed
+  const plan = args.length === 0 ? await snapshotPlan(kernel, m, name, app, argv, fullEnv) : null;
+  let p: Process | null = null;
+  const restoredPids: number[] = [];
+  if (plan?.stored) {
+    const t0 = Date.now();
+    try {
+      // (its windows name the pid it had then)
+      if (!kernel.procs.has(plan.stored.meta.pid) && !ids.pidAppIds.has(plan.stored.meta.pid)) { ids.pidAppIds.set(plan.stored.meta.pid, name); restoredPids.push(plan.stored.meta.pid); }
+      const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
+      p = r.proc;
+      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes });
+    } catch (e) {
+      for (const pid of restoredPids.splice(0)) ids.pidAppIds.delete(pid);
+      snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
+      await plan.S.dropSnapshot(name);
+    }
+  }
+  if (!p) {
+    p = kernel.spawn({ path: app.bin, argv, cwd, env: fullEnv, fds: { 0: new BufferFile(''), 1: out, 2: out } });
+    if (plan && plan.index !== null) {
+      // its first start: keep its X requests and the files it opens, and its image once it is up and quiet
+      const proc = p;
+      proc.data.openLog = new Set<string>();
+      const { recordXClient } = await import('../x11/display');
+      const watch = plan.S.snapshotWhenQuiet(kernel, name, proc, recordXClient(proc.pid, plan.index), plan.key, { argv, env: fullEnv, cwd, output: out });
+      void watch.done.then((r) => { delete proc.data.openLog; snapshotLog(name, r.ok ? { taken: true, ms: r.ms, bytes: r.meta?.sizes } : { taken: false, why: r.why }); });
+    }
+  }
+  const pid = p.pid;
+  ids.pidAppIds.set(pid, name);
+  const launched = { pid, exited: exitOf(kernel, p).finally(() => { ids.pidAppIds.delete(pid); for (const old of restoredPids) ids.pidAppIds.delete(old); }), output: () => out.text() };
   (globalThis as { __guiLast?: LaunchedApp }).__guiLast = launched;
   return launched;
 }

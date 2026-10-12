@@ -1690,6 +1690,8 @@ export class EventFile implements OpenFile {
   constructor(initval: number, public flags: number, private semaphore = false) {
     this.count = BigInt(initval >>> 0);
   }
+  /** What a new EventFile needs to stand in for this one (a process snapshot: src/gui/snapshot.ts) */
+  get state(): { count: number; semaphore: boolean } { return { count: Number(this.count & 0xffffffffn), semaphore: this.semaphore }; }
   private wake(): void {
     for (const w of [...this.waiters]) w();
     this.listeners.fire();

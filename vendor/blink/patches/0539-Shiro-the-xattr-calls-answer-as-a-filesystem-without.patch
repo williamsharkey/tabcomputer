@@ -1,0 +1,94 @@
+From 90d372f69b6e69859a5cfd45dc618c8d038f08ca Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 12 Oct 2026 01:15:10 -0400
+Subject: [PATCH] Shiro: the xattr calls answer as a filesystem without
+ attributes (they were ENOSYS)
+
+Blink has no xattr system calls, so all twelve were ENOSYS (0081 only
+made the f* ones EBADF for a bad or O_PATH fd). Callers treat "not
+supported here" as fine but not ENOSYS: Python's shutil.copy2 ignores
+ENOTSUP, ENODATA and EINVAL from listxattr, so `python3 -m venv` failed
+in ensurepip (tabcomputer #107).
+
+- listxattr, llistxattr, flistxattr: 0 (no attributes).
+- getxattr, lgetxattr, fgetxattr: ENODATA.
+- setxattr, lsetxattr, fsetxattr, removexattr, lremovexattr,
+  fremovexattr: ENOTSUP.
+
+Before that, Linux's checks: a bad or O_PATH fd is EBADF; a name that
+can't be read is EFAULT, an empty one or one past 255 bytes ERANGE; set's
+unknown flags are EINVAL and a value past 64 KiB E2BIG; the path is
+resolved with one stat in the kernel (ENOENT, ENOTDIR, EACCES,
+ENAMETOOLONG, ELOOP; the l* calls don't follow a final symbolic link).
+
+blink_shiro_xattr marks the engine for the tests.
+---
+ blink/shiro.inc | 45 ++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 7752449..670e1f4 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -933,6 +933,41 @@ static i64 ShiroFaccessat2(struct Machine *m, int dirfd, i64 path, int mode, int
+   return 0;
+ }
+ 
++// Extended attributes: the kernel's files have none. Blink has no such
++// calls, so they were ENOSYS, which callers that expect "not supported
++// here" don't forgive (Python's shutil.copy2 ignores ENOTSUP, ENODATA and
++// EINVAL from listxattr, not ENOSYS: `python3 -m venv` failed). As a Linux
++// filesystem without them: a list is empty, a get is ENODATA, a set or a
++// remove is ENOTSUP; after Linux's own checks of the fd (EBADF, O_PATH
++// too), the name (EFAULT; ERANGE for an empty one or one past 255 bytes),
++// set's flags (EINVAL) and size (E2BIG), and the path (ENOENT, ENOTDIR,
++// EACCES, ...; the l* calls don't follow a final symbolic link).
++EMSCRIPTEN_KEEPALIVE int blink_shiro_xattr(void) { return 1; }
++
++static i64 ShiroXattr(struct Machine *m, int nr, u64 file, i64 name, u64 size, u64 flags) {
++  int what = (nr - 0x0BC) / 3;  // 0 set, 1 get, 2 list, 3 remove
++  int form = (nr - 0x0BC) % 3;  // 0 path, 1 path (no follow), 2 fd
++  char *s;
++  i64 r;
++  if (form == 2) {
++    r = KS(m, 72, A12((int)file, 3, 0));                              // F_GETFL
++    if (r < 0 || (r & 010000000)) return -EBADF_LINUX;
++  }
++  if (what != 2) {
++    if (!name || !(s = LoadStr(m, name))) return -EFAULT_LINUX;
++    if (!*s || strlen(s) > 255) return -ERANGE_LINUX;
++  }
++  if (what == 0) {
++    if (flags & ~3) return -EINVAL_LINUX;                            // XATTR_CREATE | XATTR_REPLACE
++    if (size > 65536) return -E2BIG_LINUX;                           // XATTR_SIZE_MAX
++  }
++  if (form != 2) {
++    if (!file) return -EFAULT_LINUX;
++    if ((r = ShiroStatAt(m, -100, file, 0, form == 1 ? 0x100 : 0, 0)) < 0) return r;
++  }
++  return what == 2 ? 0 : what == 1 ? -ENODATA_LINUX : -ENOTSUP_LINUX;
++}
++
+ static i64 ShiroUtimens(struct Machine *m, int dirfd, i64 path, i64 times,
+                         int flags, int timeval) {
+   char *buf = (char *)ShiroAlloc(m, 4096 + 32);
+@@ -5384,11 +5419,11 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+       }
+       break;
+     }
+-    case 0x0BE: case 0x0C1: case 0x0C4: case 0x0C7:                  // f{set,get,list,remove}xattr
+-      // a bad or O_PATH fd is EBADF; otherwise Blink's answer (no xattrs)
+-      r = KS(m, 72, A12(a, 3, 0));                                    // F_GETFL
+-      if (r >= 0 && !(r & 010000000)) return false;
+-      r = -EBADF_LINUX;
++    case 0x0BC: case 0x0BD: case 0x0BE:                               // setxattr, lsetxattr, fsetxattr
++    case 0x0BF: case 0x0C0: case 0x0C1:                               // getxattr, lgetxattr, fgetxattr
++    case 0x0C2: case 0x0C3: case 0x0C4:                               // listxattr, llistxattr, flistxattr
++    case 0x0C5: case 0x0C6: case 0x0C7:                               // removexattr, lremovexattr, fremovexattr
++      r = ShiroXattr(m, nr, a, b, d, e);
+       break;
+     case 0x009:                                                       // mmap
+       // Linux's checks first: no length (EINVAL; LTP mmap06), a fixed address
+-- 
+2.39.5 (Apple Git-154)
+

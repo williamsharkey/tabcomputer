@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tabcomputer recipes</title>
+  <meta name="description" content="One link sets up a machine in a browser tab: a C or Python class, a LaTeX build, a sandbox for a coding agent, old documents converted without uploading them.">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0f1a; color: #e0e0e0; line-height: 1.6; -webkit-font-smoothing: antialiased;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    }
+    a { color: #00d4ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: 'SF Mono', Consolas, 'Liberation Mono', monospace; font-size: 0.88em;
+      background: rgba(255, 255, 255, 0.08); padding: 2px 6px; border-radius: 3px; overflow-wrap: anywhere;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 40px 20px 64px; }
+    h1 { font-size: 1.9rem; color: #fff; margin-bottom: 8px; }
+    .lede { color: #a8a8c0; max-width: 62ch; margin-bottom: 28px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .card {
+      display: flex; flex-direction: column; gap: 8px; padding: 18px;
+      background: #13132a; border: 1px solid #2a2a3e; border-radius: 10px;
+    }
+    .card h2 { font-size: 1.05rem; color: #fff; line-height: 1.35; }
+    .card p { color: #a8a8c0; font-size: 0.92rem; }
+    .card .meta { font-size: 0.8rem; color: #7c7c98; overflow-wrap: anywhere; }
+    .card .grow { flex: 1; }
+    .run {
+      align-self: flex-start; margin-top: 6px; padding: 7px 16px; border-radius: 6px;
+      background: #00d4ff; color: #0f0f1a; font-weight: 600; font-size: 0.92rem;
+    }
+    .run:hover { text-decoration: none; filter: brightness(1.1); }
+    .tag { display: inline-block; padding: 0 7px; border: 1px solid #5a4a1e; border-radius: 999px; color: #e0b34a; font-size: 0.72rem; vertical-align: 2px; margin-left: 6px; }
+    section { margin-top: 40px; max-width: 72ch; }
+    section h2 { font-size: 1.2rem; color: #fff; margin-bottom: 8px; }
+    section p { color: #a8a8c0; margin-bottom: 10px; }
+    #empty { color: #a8a8c0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Recipes</h1>
+  <p class="lede">Each link starts a computer in this browser tab and sets it up: nothing is installed on your machine, and your files stay in the tab. The second visit is fast, because the tab keeps what the first one set up. <a href="/">tabcomputer</a></p>
+  <div class="grid" id="grid"></div>
+  <p id="empty" hidden>The recipe list could not be loaded.</p>
+
+  <section>
+    <h2>Your own project</h2>
+    <p>Put a setup script at <code>.tabcomputer/run.sh</code> in a GitHub repository and link to <code>https://tabcomputer.com/?run=gh:owner/repo</code>. tabcomputer shows the person the whole script and runs it only when they choose Run.</p>
+    <p>A badge for a README: <code>[![Run in tabcomputer](https://tabcomputer.com/recipes/badge.svg)](https://tabcomputer.com/?run=gh:owner/repo)</code></p>
+    <p>The format, the arguments a link can carry and the trust rules are in <a href="https://github.com/williamsharkey/tabcomputer/blob/main/docs/RUN_LINKS.md">docs/RUN_LINKS.md</a>.</p>
+  </section>
+</main>
+<script>
+  // Cards from /recipes/index.json (scripts/recipes/gen-index.mjs). Text only: nothing from the list is parsed as HTML.
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  fetch('/recipes/index.json', { cache: 'no-cache' }).then((r) => r.json()).then(({ recipes }) => {
+    const grid = document.getElementById('grid');
+    for (const r of recipes) {
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(r.name)) continue;
+      const card = el('div', '', 'card');
+      const h = el('h2', r.title || r.name);
+      if (r.status === 'untested') h.append(el('span', 'untested', 'tag'));
+      card.append(h, el('p', r.for ? `For ${r.for}.` : ''));
+      card.append(el('div', '', 'grow'));
+      if (r.args) card.append(el('p', `Link arguments: ${r.args}`, 'meta'));
+      if (r.needs) card.append(el('p', `Uses: ${r.needs}`, 'meta'));
+      card.append(el('p', `/?run=${r.name}`, 'meta'));
+      const run = el('a', 'Run', 'run');
+      run.href = `/?run=${r.name}`;
+      card.append(run);
+      grid.append(card);
+    }
+  }).catch(() => { document.getElementById('empty').hidden = false; });
+</script>
+</body>
+</html>

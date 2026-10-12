@@ -147,11 +147,13 @@ export class TerminalView {
     this.wireTerm(tab, term);
   }
 
-  newTab(opts: { command?: string; cwd?: string } = {}): void {
+  /** `env`: variables for this tab's shell (a run link's RUN_*: set here, never typed) */
+  newTab(opts: { command?: string; cwd?: string; env?: Record<string, string> } = {}): void {
     const pane = document.createElement('div');
     pane.className = 'sd-term-pane';
     const shell = this.deps.makeShell();
     if (opts.cwd) shell.cwd = opts.cwd;
+    if (opts.env) Object.assign(shell.env, opts.env);
     const tab = this.addTab(pane, null, shell, false);
     this.select(tab);
     const term = new ShiroTerminal(pane, shell);

@@ -61,6 +61,7 @@ log('firstUse', { dropToFirstConvertedMs: Date.now() - t0, rows: r1, marks: awai
 log('setupLogTail', (await f.evaluate(() => document.getElementById('setup-log').textContent)).split('\n').slice(-25).join('\n'));
 log('statusAfter', await f.evaluate(() => ({ ready: window.__converter.status.ready, outputs: window.__converter.status.outputs })));
 log('memAfterSetupMB', await mem());
+log('programs', (await sh(page, 'dpkg -L libwpd-tools libmspub-tools libwps-tools libmwaw-tools mdbtools | grep /usr/bin/ | xargs -n1 basename | tr "\\n" " "')).out);
 if (!r1 || r1[0].status !== 'done') { console.log('setup failed; stopping'); await ctx.close(); process.exit(1); }
 
 // ── batch 1: every sample (cold: each program's first run) ──
@@ -73,7 +74,7 @@ out.batchColdRows = b1; save();
 const job1 = await f.evaluate(() => window.__converter.job);
 
 // ── the same commands directly in a shell fork (warm) ──
-const TOOL = { wpd: 'wpd2html', wp: 'wpd2html', pub: 'pub2xhtml', wps: 'wps2html', wks: 'wks2csv', wk1: 'wks2csv', wk3: 'wks2csv', wk4: 'wks2csv', 123: 'wks2csv', wq1: 'wks2csv', wq2: 'wks2csv', wdb: 'wdb2csv', cwk: 'mwaw2html', mdb: 'mdb-tables -1' };
+const TOOL = { wpd: 'wpd2html', wp: 'wpd2html', pub: 'pub2xhtml', wps: 'wps2html', wks: 'wks2csv', wk1: 'wks2csv', wk3: 'wks2csv', wk4: 'wks2csv', 123: 'wks2csv', wq1: 'wks2csv', wq2: 'wks2csv', wdb: 'wks2csv', cwk: 'mwaw2html', mdb: 'mdb-tables -1' };
 const direct = [];
 for (const s of all) {
   const ext = s.name.split('.').pop().toLowerCase();

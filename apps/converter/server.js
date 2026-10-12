@@ -26,8 +26,10 @@ const WORK = process.env.CONVERTER_WORK || '/tmp/converter';         // dropped 
 const RESULTS = process.env.CONVERTER_RESULTS || path.join(HOME, 'Converted'); // what the person keeps
 
 const PACKAGES = ['libwpd-tools', 'libmspub-tools', 'libwps-tools', 'libmwaw-tools', 'mdbtools'];
-const TOOLS = ['wpd2html', 'pub2xhtml', 'wps2html', 'wks2csv', 'mwaw2html', 'mwaw2csv', 'mdb-tables', 'mdb-export', 'mdb-schema'];
-const OPTIONAL = ['pandoc', 'soffice', 'wkhtmltopdf', 'weasyprint', 'pdflatex'];
+// Needed before anything converts; the optional ones widen what converts (Debian 13's
+// libmwaw-tools and libwps-tools ship no mwaw2csv or wdb2csv)
+const TOOLS = ['wpd2html', 'pub2xhtml', 'wps2html', 'wks2csv', 'mwaw2html', 'mdb-tables', 'mdb-export', 'mdb-schema'];
+const OPTIONAL = ['mwaw2csv', 'wdb2csv', 'pandoc', 'soffice', 'wkhtmltopdf', 'weasyprint', 'pdflatex'];
 
 // extension → family. A family names the program for each output it can make.
 const DOC = (html, text) => ({ kind: 'document', html, text });
@@ -180,6 +182,9 @@ async function convert(job, rel, to) {
   const fail = (error, extra = {}) => ({ ok: false, path: rel, error, ms: Date.now() - t0, ...extra });
   if (!fam) return fail(`.${ext} is not a format this converter knows`);
   if (!exists(input)) return fail('the file did not arrive');
+  // A family's CSV program may not be installed: Works databases then go through wks2csv
+  const have = (await status()).tools;
+  const csvTool = fam.csv && (have[fam.csv] ? fam.csv : fam.csv === 'wdb2csv' ? 'wks2csv' : null);
   fs.mkdirSync(outDir, { recursive: true });
   let toolMs = 0;
 
@@ -213,7 +218,8 @@ async function convert(job, rel, to) {
 
   if (to === 'csv') {
     if (!fam.csv) return fail(`a ${LABELS[ext]} file is a document, not a table: pick HTML`);
-    const r = await run(`${fam.csv} ${q(input)}`, out('.csv'));
+    if (!csvTool) return fail(`${fam.csv} is not installed here: pick HTML`);
+    const r = await run(`${csvTool} ${q(input)}`, out('.csv'));
     toolMs += r.ms;
     return r.error ? fail(r.error, { toolMs }) : done([out('.csv')], { toolMs });
   }
@@ -224,15 +230,15 @@ async function convert(job, rel, to) {
     const r = await run(`${fam.html} ${q(input)}`, html);
     toolMs += r.ms;
     // ClarisWorks spreadsheets: mwaw2html refuses them, mwaw2csv takes them
-    if (r.error && fam.csv) {
-      const c = await run(`${fam.csv} ${q(input)}`, out('.csv'));
+    if (r.error && csvTool) {
+      const c = await run(`${csvTool} ${q(input)}`, out('.csv'));
       toolMs += c.ms;
       if (c.error) return fail(r.error, { toolMs });
       fs.writeFileSync(html, csvToHtml(fs.readFileSync(out('.csv'), 'utf8'), stem));
       fs.unlinkSync(out('.csv'));
     } else if (r.error) return fail(r.error, { toolMs });
   } else {
-    const c = await run(`${fam.csv} ${q(input)}`, out('.csv'));
+    const c = await run(`${csvTool} ${q(input)}`, out('.csv'));
     toolMs += c.ms;
     if (c.error) return fail(c.error, { toolMs });
     fs.writeFileSync(html, csvToHtml(fs.readFileSync(out('.csv'), 'utf8'), stem));

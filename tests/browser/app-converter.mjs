@@ -42,7 +42,7 @@ const STUBS = {
   wps2html: '#!/bin/sh\necho "<html><body><h1>stub wps2html</h1></body></html>"\n',
   wks2csv: '#!/bin/sh\necho "a,b,c"\necho "1,2,3"\n',
   mwaw2html: '#!/bin/sh\necho "<html><body><h1>stub mwaw2html</h1></body></html>"\n',
-  mwaw2csv: '#!/bin/sh\necho "a,b"\n',
+  mwaw2csv: '#!/bin/sh\necho "a,b"\n', // optional in the app; here so both paths run
   'mdb-tables': '#!/bin/sh\necho People\necho Orders\n',
   'mdb-export': '#!/bin/sh\necho "id,name"\necho "1,$2"\n',
   'mdb-schema': '#!/bin/sh\necho "CREATE TABLE People (id int);"\n',

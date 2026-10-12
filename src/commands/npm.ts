@@ -376,6 +376,12 @@ async function installTree(
   let added = 0;
   let failed = 0;
   const fresh: TreeNode[] = [];
+  // Packages unpacked with their files' x bits (node_modules/.package-modes). One installed
+  // before that was kept (Codex 0.162 won't start with a vendor binary that isn't executable)
+  // is unpacked again, once: the modes are only in the tarball.
+  const modesFile = `${base}/node_modules/.package-modes`;
+  const withModes = new Set<string>(await ctx.fs.readFile(modesFile, 'utf8').then((t) => String(t).split('\n').filter(Boolean), () => []));
+  const modeKey = (n: TreeNode) => `${n.dir}@${n.version}`;
   for (const depth of [...byDepth.keys()].sort((x, y) => x - y)) {
     const queue = [...byDepth.get(depth)!];
     const worker = async () => {
@@ -384,7 +390,7 @@ async function installTree(
         try {
           try {
             const have = JSON.parse(await ctx.fs.readFile(`${dir}/package.json`, 'utf8') as string);
-            if (have.version === n.version && have.name === n.source) continue; // (an alternate's files carry its own name)
+            if (have.version === n.version && have.name === n.source && withModes.has(modeKey(n))) continue; // (an alternate's files carry its own name)
             await ctx.fs.rm(dir, { recursive: true, force: true } as any);
           } catch { /* not installed */ }
           const response = await fetch(n.tarball);
@@ -397,6 +403,7 @@ async function installTree(
             chmod: async (path: string, mode: number) => { await ctx.fs.chmod(path, mode); },
           };
           await extractTarGzToFS(tarballData, dir, fsWriter);
+          withModes.add(modeKey(n));
           fresh.push(n);
           added++;
         } catch (e: any) {
@@ -425,6 +432,7 @@ async function installTree(
       await ctx.fs.chmod(`${base}/${n.dir}/${clean}`, 0o755).catch(() => {});
     }
   }
+  if (tree.nodes.length) await ctx.fs.writeFile(modesFile, [...withModes].sort().join('\n') + '\n').catch(() => {});
   if (!opts.ignoreScripts) await runInstallScripts(ctx, base, fresh);
   return { added, failed };
 }

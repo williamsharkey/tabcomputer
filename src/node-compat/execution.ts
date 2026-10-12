@@ -869,7 +869,13 @@ export async function executeNodeScript(
         // killed, so there, as in node, a ref'd interval keeps it running until cleared.
         const setI = function(fn: any, ms?: number, ...args: any[]) {
           fn = asyncContext.bind(fn);
-          const raw = PAGE_SET_INTERVAL(fn, ms, ...args);
+          const raw = PAGE_SET_INTERVAL((...a: any[]) => {
+            try { if (typeof fn === 'function') fn(...a); }
+            catch (e) {
+              // process.exit() from an interval ends the script, as from a timer (#105)
+              if (!(e instanceof ProcessExitError)) throw e;
+            }
+          }, ms, ...args);
           _intervalIds.add(raw);
           if (own) _ownIntervalIds.add(raw);
           if (!guest) return nodeTimer(raw, {});

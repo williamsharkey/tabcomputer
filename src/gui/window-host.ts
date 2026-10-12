@@ -48,6 +48,8 @@ export interface CanvasWindowOptions {
   resizable?: boolean;
   /** App identity for docks/taskbars (X WM_CLASS). */
   appId?: string;
+  /** A start-up splash screen (_NET_WM_WINDOW_TYPE_SPLASH): the app's real window is still to come */
+  splash?: boolean;
 }
 
 export interface CanvasWindowEvents {

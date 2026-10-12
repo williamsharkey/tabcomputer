@@ -142,6 +142,13 @@ export class Rootless {
     return h;
   }
 
+  /** The first _NET_WM_WINDOW_TYPE atom's name, '' without one */
+  private windowType(w: XWindow): string {
+    const type = this.server.prop(w, '_NET_WM_WINDOW_TYPE');
+    if (!type || type.data.length < 4) return '';
+    return this.server.atomName(new DataView(type.data.buffer, type.data.byteOffset).getUint32(0, true)) ?? '';
+  }
+
   private undecorated(w: XWindow): boolean {
     if (w.overrideRedirect) return true;
     const motif = this.server.prop(w, '_MOTIF_WM_HINTS');
@@ -149,12 +156,7 @@ export class Rootless {
       const dv = new DataView(motif.data.buffer, motif.data.byteOffset, motif.data.byteLength);
       if ((dv.getUint32(0, true) & 2) && dv.getUint32(8, true) === 0) return true;
     }
-    const type = this.server.prop(w, '_NET_WM_WINDOW_TYPE');
-    if (type && type.data.length >= 4) {
-      const name = this.server.atomName(new DataView(type.data.buffer, type.data.byteOffset).getUint32(0, true)) ?? '';
-      if (/_(MENU|DROPDOWN_MENU|POPUP_MENU|TOOLTIP|NOTIFICATION|COMBO|DND|SPLASH)$/.test(name)) return true;
-    }
-    return false;
+    return /_(MENU|DROPDOWN_MENU|POPUP_MENU|TOOLTIP|NOTIFICATION|COMBO|DND|SPLASH)$/.test(this.windowType(w));
   }
 
   private mapped(w: XWindow): void {
@@ -182,6 +184,7 @@ export class Rootless {
       minWidth: hints.minW || undefined, minHeight: hints.minH || undefined,
       resizable: !(hints.maxW && hints.maxW === hints.minW && hints.maxH === hints.minH),
       appId: this.appId(w),
+      splash: this.windowType(w).endsWith('_SPLASH'),
     });
     t.cw = cw;
     // The host may have placed or clamped the window: tell the client where it is

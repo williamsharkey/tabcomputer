@@ -189,6 +189,25 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   const wm = new WindowManager(root, { workArea });
   wm.relayout();
   (globalThis as any).__shiroDesktop = wm;
+  // Launches in progress (launch-state.ts): the dock marks them; a slow app's placeholder
+  // window comes from launch-ui.ts, loaded with the first launch that wants one
+  const launches = wm.launches;
+  launches.holdFailed = true;
+  let launchUI: Promise<unknown> | null = null;
+  launches.on((ev, l) => {
+    if (l.info.placeholder) launchUI ??= import('./launch-ui').then(m => m.initLaunchUI(wm, launches, { toast: (text) => showToast(root, toastText(text), 9000) }));
+    if (ev === 'request' || ev === 'end' || (ev === 'stage' && !l.active)) queueDock();
+    // Its tile's tooltip says the stage it is in
+    else if ((ev === 'stage' || ev === 'progress') && l.active) {
+      const tip = dock.querySelector(`:scope > .sd-dock-item[data-app="${CSS.escape(l.id)}"] > .sd-dock-tip`);
+      if (tip) tip.textContent = `${l.info.name} — ${l.text()}`;
+    }
+    // A phone's dock scrolls: bring the tile that just got its mark into view
+    if (ev === 'request' && wm.compact) setTimeout(() => {
+      const tile = dock.querySelector<HTMLElement>('.sd-starting');
+      if (tile) dock.scrollTo({ left: tile.offsetLeft - (dock.clientWidth - tile.offsetWidth) / 2 });
+    }, 0);
+  });
 
   // ── Terminal ──
   const termDeps = { makeShell: deps.makeShell, mainShell: deps.shell };
@@ -360,7 +379,20 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     const all = wm.apps();
     for (const a of all) setAppGlyph(a.id, a.glyph);
     const docked = all.filter(a => a.dock !== false);
-    const extra = [...running].filter(id => id && !all.some(a => a.id === id && a.dock !== false));
+    // Running apps without a dock entry, and ones that are starting (an app opened before it is installed)
+    const extra = [...new Set([...running, ...launches.list().map(l => l.id)])].filter(id => id && !all.some(a => a.id === id && a.dock !== false));
+    /** The starting (or failed-to-start) mark: a pulsing dot whose phase survives re-renders, and its words */
+    const markLaunch = (b: HTMLElement, id: string, name: string, label = name): boolean => {
+      const l = launches.get(id);
+      if (!l) return false;
+      const words = l.active ? `${name} is starting` : `${name} did not start`;
+      b.classList.add(l.active ? 'sd-starting' : 'sd-start-failed');
+      if (l.active) { b.setAttribute('aria-busy', 'true'); b.style.setProperty('--sd-start-phase', `${-((Date.now() - l.startedAt) % 1600)}ms`); }
+      b.setAttribute('aria-label', label === name ? words : `${label}: ${words}`);
+      const tip = b.querySelector(':scope > .sd-dock-tip');
+      if (tip && label === name) tip.textContent = l.active ? `${name} — ${l.text()}` : `${name} — did not start`;
+      return true;
+    };
     // Each dock tile's place in the row (sets whose hue or sky runs along the dock)
     let tileN = 0;
     const iconHtml = (id: string, name: string, icon: string | undefined, i = tileN) => appIconIn(iconSetId, id, name, icon, i, wm.app(id)?.glyph);
@@ -372,7 +404,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         else top.focus();
         return;
       }
-      if (b && !prefersReducedMotion()) { b.classList.add('sd-launching'); setTimeout(() => b.classList.remove('sd-launching'), 900); }
+      // (asked for again while it starts: its placeholder answers, the icon doesn't bounce again)
+      if (b && !launches.get(id) && !prefersReducedMotion()) { b.classList.add('sd-launching'); setTimeout(() => b.classList.remove('sd-launching'), 900); }
       launch();
     };
     const add = (id: string, name: string, icon: string | undefined, launch: () => void) => {
@@ -393,6 +426,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         b.classList.add('sd-not-installed');
         b.querySelector('.sd-dock-tip')!.textContent = `${name} — click to install`;
       }
+      markLaunch(b, id, name);
       b.addEventListener('click', () => activate(id, launch, b));
       b.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -414,6 +448,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       b.setAttribute('aria-haspopup', 'true');
       b.innerHTML = `<span class="sd-stack-grid">${members.slice(0, 4).map((m, k) => `<span>${iconHtml(m.id, m.name, m.icon, tileN + k / 4)}</span>`).join('')}</span><span class="sd-dock-tip">${g.name}</span>`;
       if (members.some(m => running.has(m.id))) b.classList.add('sd-running');
+      const starting = members.find(m => launches.get(m.id)?.active) ?? members.find(m => launches.get(m.id));
+      if (starting) markLaunch(b, starting.id, starting.name, `${g.name} (${members.length})`);
       tileN++;
       b.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -432,6 +468,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
           it.innerHTML = `<span class="sd-stack-icon">${iconHtml(m.id, m.name, m.icon, members.indexOf(m))}</span><span class="sd-stack-name"></span>`;
           it.querySelector('.sd-stack-name')!.textContent = m.name;
           if (running.has(m.id)) it.classList.add('sd-running');
+          markLaunch(it, m.id, m.name);
           it.addEventListener('click', () => { closeStack(); activate(m.id, () => void wm.openApp(m.id)); });
           items.append(it);
         }
@@ -496,7 +533,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       dock.append(el('div', 'sd-dock-sep'));
       for (const id of extra) {
         const w = wm.visibleOrder().find(x => x.appId === id);
-        add(id!, w?.title || id!, w?.options.icon, () => w?.focus());
+        const a = wm.app(id);
+        add(id!, a?.name ?? (w?.title || id!), a?.icon ?? w?.options.icon, () => { if (w) w.focus(); else void wm.openApp(id!); });
       }
     }
     dock.style.setProperty('--n', String(Math.max(2, tileN)));
@@ -936,6 +974,13 @@ const SHORTCUTS_HTML = `<b>Keyboard shortcuts</b><div class="sd-small sd-muted" 
 Alt+Shift+Enter — new terminal window<br>Alt+Shift+T — new tab<br>Alt+Shift+W — close window<br>
 Alt+Shift+M — minimize · Alt+Shift+↑ zoom<br>Alt+Shift+← / → — tile left / right<br>Ctrl+Alt+U / I / J / K — quarters<br>Alt+\` — cycle windows<br>
 Ctrl+Space — search · Alt+Shift+F — Files · Alt+Shift+, — Settings<br>Cmd+N, Cmd+W, Cmd+\` too, where the browser lets them through</div>`;
+
+/** Plain text as a toast's HTML */
+function toastText(text: string): string {
+  const d = document.createElement('div');
+  d.textContent = text;
+  return `<div class="sd-small">${d.innerHTML}</div>`;
+}
 
 export function showToast(root: HTMLElement, html: string, ms = 5000): void {
   const t = el('div', 'sd-toast', html);

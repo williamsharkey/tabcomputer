@@ -5,6 +5,7 @@
 //                windows that fit the work area, and a Preview beside the Terminal
 //   keyboard     with the on-screen keyboard up (a shorter viewport) the Terminal and its
 //                prompt stay above it
+//   launching    a starting app's placeholder window (and a failed one) fits: in front on phones
 //   welcome      the first-run welcome fits a phone as a bottom sheet
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
@@ -90,6 +91,37 @@ for (const { name, phone, defaultBrowserType, ...device } of SIZES) {
   await page.keyboard.press('Escape');
   const stack = await page.$('.sd-stack-tile');
   if (stack) { await stack.click(); await page.waitForTimeout(300); await fits('a dock stack'); await page.keyboard.press('Escape'); await page.mouse.click(vp.width / 2, 60); }
+
+  // An app that is starting: its placeholder window, installing and then failed (launch-state.ts;
+  // the launch is driven here, no app is installed)
+  const slow = await page.evaluate(async () => {
+    const wm = window.__shiroDesktop;
+    const { launch } = wm.launches.request({ id: 'slowapp', name: 'A Slow App With A Long Name', placeholder: true, note: 'first start takes a few minutes', retry: () => {} });
+    launch.installing({ done: 21e6, total: 53e6, unit: 'bytes' });
+    launch.log('Unpacking libgtk-3-common (3.24.38-2~deb12u3) over the previous version, a long line of output\n');
+    await new Promise((r) => setTimeout(r, 700));
+    const ph = document.querySelector('.sd-launch-win[data-launch="slowapp"]');
+    const body = ph?.querySelector('.sd-launch');
+    return { there: !!ph, state: ph?.dataset.state, front: wm.focused()?.id === 'launching-slowapp', sideways: body ? body.scrollWidth > body.clientWidth + 1 : null,
+      // Cancel is in view without scrolling
+      cancel: (() => { const c = ph?.querySelector('[data-act=cancel]')?.getBoundingClientRect(), b = body?.getBoundingClientRect(); return !!c && c.height > 0 && c.bottom <= b.bottom + 1 && c.top >= b.top - 1; })() };
+  });
+  await fits('a starting app\'s placeholder');
+  check(`${name}: placeholder ${phone ? 'in front, maximized' : 'behind, a normal window'}, nothing cut off sideways`, slow.there && slow.sideways === false && slow.cancel && (phone ? slow.front && slow.state === 'maximized' : !slow.front && slow.state === 'normal'), JSON.stringify(slow));
+  if (shots) await page.screenshot({ path: join(shots, `small-${name}-launch.png`) });
+  const failedFits = await page.evaluate(async () => {
+    const l = window.__shiroDesktop.launches.get('slowapp');
+    l.log('error while loading shared libraries: libgegl-0.4.so.0: cannot open shared object file: No such file or directory\n');
+    l.fail('A Slow App With A Long Name quit before opening a window (exit status 127).');
+    await new Promise((r) => setTimeout(r, 400));
+    const ph = document.querySelector('.sd-launch-win[data-launch="slowapp"]'), body = ph.querySelector('.sd-launch');
+    const inside = (e) => { const r = e.getBoundingClientRect(), b = body.getBoundingClientRect(); return r.width > 0 && r.left >= b.left - 1 && r.right <= b.right + 1; };
+    return { buttons: [...ph.querySelectorAll('.sd-launch-actions button')].filter((b) => !b.hidden).map((b) => b.textContent).join(), sideways: body.scrollWidth > body.clientWidth + 1, error: inside(ph.querySelector('.sd-launch-error')), actions: inside(ph.querySelector('.sd-launch-actions')) };
+  });
+  await fits('a failed launch\'s placeholder');
+  check(`${name}: failed launch shows its error with Close and Retry`, failedFits.buttons === 'Close,Retry' && !failedFits.sideways && failedFits.error && failedFits.actions, JSON.stringify(failedFits));
+  await page.evaluate(() => window.__shiroDesktop.get('launching-slowapp')?.close());
+  await page.waitForTimeout(300);
 
   // A Preview
   await page.evaluate(async () => {

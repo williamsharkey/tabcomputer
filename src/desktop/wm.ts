@@ -15,6 +15,8 @@
  * More kinds can be added with `registerContentKind`.
  */
 
+import { launches, placeholderId, type LaunchTracker } from './launch-state';
+
 export const DESKTOP_API_VERSION = 1;
 
 export type WindowState = 'normal' | 'minimized' | 'maximized' | 'snapped-left' | 'snapped-right'
@@ -73,6 +75,13 @@ export interface WindowOptions {
   state?: 'normal' | 'maximized' | 'minimized';
   /** Take focus when shown. Default true (false for override windows). */
   focus?: boolean;
+  /** Open below the other windows instead of on top (use with `focus: false`). */
+  behind?: boolean;
+  /**
+   * A start-up splash screen (X11 `_NET_WM_WINDOW_TYPE_SPLASH`): its app is
+   * still starting, so it doesn't end the app's launch (launch-state.ts).
+   */
+  splash?: boolean;
   /** Called before closing; return false to keep the window open. */
   onClose?: (win: DesktopWindow) => boolean | void;
 }
@@ -251,6 +260,8 @@ export interface DesktopAPI {
   registerGroup?(group: DockGroup): void;
   groups?(): DockGroup[];
   openApp(id: string, args?: Record<string, unknown>): Promise<DesktopWindow | null>;
+  /** Launches in progress (launch-state.ts): the dock's starting mark, placeholder windows. Additive (API v1.5). */
+  readonly launches?: LaunchTracker;
   theme(): 'light' | 'dark';
   setTheme(pref: 'light' | 'dark' | 'system'): void;
   on(ev: DesktopEvent, cb: (win?: DesktopWindow) => void): () => void;
@@ -302,6 +313,8 @@ export class WindowManager implements DesktopAPI {
   workAreaFn: () => Geometry;
   /** Narrow screens: every window fills the work area. */
   compact = false;
+  /** App launches in progress (docs/DESKTOP.md "Launch feedback") */
+  readonly launches = launches;
 
   constructor(readonly root: HTMLElement, opts: { workArea: () => Geometry }) {
     instance = this;
@@ -337,6 +350,8 @@ export class WindowManager implements DesktopAPI {
       return s;
     });
     window.addEventListener('resize', () => this.relayout());
+    // An app's first window ends its launch
+    launches.attach(this);
   }
 
   // ── DesktopAPI ──
@@ -346,7 +361,7 @@ export class WindowManager implements DesktopAPI {
     while (!id || this.wins.has(id)) id = 'w' + this.nextId++;
     const win = new WindowImpl(this, id, opts);
     this.wins.set(id, win);
-    this.stack.push(win);
+    if (opts.behind) this.stack.unshift(win); else this.stack.push(win);
     this.layer.appendChild(win.element);
     this.restack();
     const content = opts.content ?? { kind: 'dom' };
@@ -408,7 +423,22 @@ export class WindowManager implements DesktopAPI {
   async openApp(id: string, args?: Record<string, unknown>): Promise<DesktopWindow | null> {
     const app = this.appMap.get(id);
     if (!app) return null;
-    return app.launch(args);
+    // Still starting (or its failure is showing): no second copy. The placeholder answers.
+    const busy = launches.get(id);
+    if (busy) { launches.again(busy); return this.wins.get(placeholderId(id)) ?? null; }
+    const r = app.launch(args);
+    if (!r || typeof (r as Promise<unknown>).then !== 'function') return r as DesktopWindow | null;
+    // A launcher that reports its own stages (Debian GUI apps) has asked by now; any other
+    // launch that isn't instant (a lazily loaded app) is tracked here: asked for → its window
+    const own = launches.get(id) ? null : launches.request({ id, name: app.name, icon: app.icon }).launch;
+    try {
+      const w = await r;
+      own?.running(w);
+      return w;
+    } catch (e) {
+      own?.fail((e as Error)?.message || String(e));
+      throw e;
+    }
   }
 
   theme(): 'light' | 'dark' {

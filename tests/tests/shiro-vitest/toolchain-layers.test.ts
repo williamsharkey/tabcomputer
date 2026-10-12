@@ -47,6 +47,84 @@ describe('dpkg version comparison', () => {
   });
 });
 
+describe('the sets (src/debian/toolchains.json)', () => {
+  type Set = { title: string; description: string; packages: string[]; extends?: string; disk_gb?: number; prepare?: string[]; check?: string };
+  const sets: Record<string, Set> = JSON.parse(readFileSync(resolve(ROOT, 'src/debian/toolchains.json'), 'utf8')).layers;
+  /** build-layers.sh's own reading of a set (its `spec` function), so the builder is what's tested */
+  const builder = (id: string, what: string) => execFileSync('bash', ['-c',
+    'eval "$(sed -n \'/^spec() {$/,/^}$/p\' "$1")"; spec "$2" "$3"', 'bash', resolve(ROOT, 'scripts/debian/build-layers.sh'), id, what],
+  { env: { ...process.env, SPEC: resolve(ROOT, 'src/debian/toolchains.json') }, encoding: 'utf8' }).replace(/\n$/, '');
+
+  it('are well formed', () => {
+    for (const [id, s] of Object.entries(sets)) {
+      // server.mjs serves /debian/layers/<id>/ for this shape only; `toolchain list` has 8 columns for it
+      expect(id).toMatch(/^[a-z0-9-]{1,8}$/);
+      expect(s.title && s.description && s.check, id).toBeTruthy();
+      expect(s.packages.length, id).toBeGreaterThan(0);
+      for (const p of s.packages) expect(p, id).toMatch(/^[a-z0-9][a-z0-9+.-]+$/); // Debian policy 5.6.1
+      expect(new Set(s.packages).size, id).toBe(s.packages.length);
+      if (s.extends) expect(Object.keys(sets), id).toContain(s.extends);
+    }
+  });
+
+  it('tex-full is tex and the packages theses need (#111), built with tex\'s packages first', () => {
+    expect(sets['tex-full'].extends).toBe('tex');
+    expect(sets['tex-full'].packages).toEqual(['texlive-latex-extra', 'texlive-pictures', 'texlive-science', 'texlive-bibtex-extra', 'biber',
+      'texlive-plain-generic', 'texlive-fonts-recommended', 'texlive-fonts-extra', 'texlive-xetex', 'texlive-luatex']);
+    expect(builder('tex-full', 'packages').split(' ')).toEqual([...sets.tex.packages, ...sets['tex-full'].packages]);
+    expect(builder('tex', 'packages').split(' ')).toEqual(sets.tex.packages);
+    // 1 GB of .debs, 2.7 GB unpacked and the chunks, at once: not on a nearly full disk
+    expect(Number(builder('tex-full', 'disk_gb'))).toBeGreaterThanOrEqual(8);
+    expect(builder('tex', 'disk_gb')).toBe('0');
+  });
+
+  it('python has tkinter, so `import turtle` works in Debian\'s python3 (#112)', () => {
+    expect(sets.python.packages).toContain('python3-tk');
+    expect(sets.python.check).toMatch(/import .*\bturtle\b/);
+  });
+
+  // #110: trixie's libxml2 is 2.9.14 under a 2.12.7 version number, and Debian's libcob
+  // was compiled against the real 2.12.7, so every COBOL program warned at start
+  it('classic: libcob asks libxml2 for the version trixie has, and is left alone when it is not the libcob expected', () => {
+    const d = mkdtempSync(join(tmpdir(), 'tc-cob-'));
+    try {
+      const prepare = builder('classic', 'prepare').replace(/^lib=.*$/m, `lib=${d}`);
+      expect(prepare).toContain(`lib=${d}\n`);
+      const sh = () => execFileSync('sh', ['-e', '-c', prepare], { encoding: 'utf8' });
+      const call = (version: number) => Buffer.from([0xbf, version & 255, version >> 8, 0, 0, 0xe8, 1, 2, 3, 4]); // mov $version,%edi; call
+      const pad = Buffer.from('\x7fELF and other code\n\0\0');
+      const lib = join(d, 'libcob.so.4.2.0');
+      writeFileSync(lib, Buffer.concat([pad, call(21207), pad, call(21207), pad]), { mode: 0o644 });
+      // Another libxml2 (a later Debian): nothing is touched
+      expect(sh()).toMatch(/not the libxml2 2\.9\.14/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(21207), pad, call(21207), pad]));
+      writeFileSync(join(d, 'libxml2.so.2.9.14'), '');
+      expect(sh()).toMatch(/is now xmlCheckVersion\(20914\), twice/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(20914), pad, call(20914), pad]));
+      // Not the libcob this was written for (one call, or already done): left as it is
+      expect(sh()).toMatch(/0 xmlCheckVersion\(21207\) calls, not 2/);
+      writeFileSync(lib, Buffer.concat([pad, call(21207), pad]));
+      expect(sh()).toMatch(/1 xmlCheckVersion\(21207\) calls, not 2/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(21207), pad]));
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it('rescue has the converters for dead formats and pandoc (#114), and builds before the big tex-full', () => {
+    expect(sets.rescue.packages).toEqual(['libwpd-tools', 'libmspub-tools', 'libwps-tools', 'libmwaw-tools', 'mdbtools', 'pandoc']);
+    // LibreOffice is not in it: 163 more packages, and soffice is untested under Blink
+    expect(sets.rescue.packages.join(' ')).not.toMatch(/libreoffice/);
+    // The builder goes in file order and stops at a failure: the set most likely to fail goes last
+    expect(Object.keys(sets).at(-1)).toBe('tex-full');
+  });
+
+  it('the builder reads prepare steps as the set wrote them', () => {
+    expect(builder('go', 'prepare').split('\n')).toEqual(sets.go.prepare);
+    expect(JSON.parse(builder('go', 'prepare-json'))).toEqual(sets.go.prepare);
+    expect(builder('c', 'prepare')).toBe('');
+    expect(builder('c', 'prepare-json')).toBe('[]');
+  });
+});
+
 /** A tree with one more package, tc-hello (and its dependency tc-lib), "installed" the way dpkg would leave it. */
 function addFakePackages(root: string): void {
   const w = (p: string, text: string, mode = 0o644) => {
@@ -84,8 +162,15 @@ describe.skipIf(!haveRootfs)('toolchain layers', () => {
     addFakePackages(tree);
     const baseId = JSON.parse(readFileSync(join(ROOT, 'public/debian/rootfs.json'), 'utf8')).id;
     const spec = join(dir, 'spec.json');
-    writeFileSync(spec, JSON.stringify({ format: 1, layers: { hello: { title: 'Hello', description: 'test layer', packages: ['tc-hello'], check: 'tc-hello' } } }));
-    execFileSync('node', [join(ROOT, 'scripts/debian/pack-layer.mjs'), base, tree, out, '--id', 'hello', '--base-id', baseId, '--snapshot', 'test', '--recipe', 'test']);
+    // tex and tex-full are real set ids (`toolchain install` takes only those), here with the test tree
+    writeFileSync(spec, JSON.stringify({ format: 1, layers: {
+      hello: { title: 'Hello', description: 'test layer', packages: ['tc-hello'], check: 'tc-hello' },
+      tex: { title: 'LaTeX', description: 'test layer', packages: ['tc-lib'] },
+      'tex-full': { title: 'LaTeX, full', description: 'test layer', extends: 'tex', packages: ['tc-hello'] },
+    } }));
+    for (const id of ['hello', 'tex', 'tex-full']) {
+      execFileSync('node', [join(ROOT, 'scripts/debian/pack-layer.mjs'), base, tree, out, '--id', id, '--base-id', baseId, '--snapshot', 'test', '--recipe', 'test']);
+    }
     execFileSync('node', [join(ROOT, 'scripts/debian/pack-layer.mjs'), '--catalog', out, '--spec', spec]);
     process.env.TABCOMPUTER_DEBIAN_LAYERS_URL = 'file://' + out + '/';
   }, 120000);
@@ -111,6 +196,40 @@ describe.skipIf(!haveRootfs)('toolchain layers', () => {
     expect(Object.keys(ix.merged).sort()).toEqual(['/var/lib/apt/extended_states', '/var/lib/dpkg/diversions']);
     const cat = JSON.parse(readFileSync(join(dir, 'layers/index.json'), 'utf8'));
     expect(cat.layers[0]).toMatchObject({ name: 'hello', title: 'Hello', requested: ['tc-hello'] });
+    expect(cat.layers[0].extends).toBeUndefined();
+    expect(cat.layers.find((l: any) => l.name === 'tex-full')).toMatchObject({ extends: 'tex', requested: ['tc-hello'] });
+  });
+
+  // #109: work left for dpkg would run in the tab at the user's next apt
+  // install (tex-common's triggers rebuild every TeX format under Blink)
+  it('refuses a tree where dpkg still has triggers to run', () => {
+    const base = join(dir, 'base'), tree = join(dir, 'tree');
+    const pack = () => {
+      try {
+        execFileSync('node', [join(ROOT, 'scripts/debian/pack-layer.mjs'), base, tree, join(dir, 'refused'), '--id', 'hello', '--base-id', 'x', '--snapshot', 'test', '--recipe', 'test'], { stdio: 'pipe' });
+        return '';
+      } catch (e: any) { return String(e.stderr); }
+    };
+    const status = join(tree, 'var/lib/dpkg/status');
+    const unincorp = join(tree, 'var/lib/dpkg/triggers/Unincorp');
+    const clean = readFileSync(status, 'utf8');
+    try {
+      // Activated (dpkg-trigger in a prepare step), not yet incorporated
+      writeFileSync(unincorp, 'texmf-format tc-hello\n');
+      expect(pack()).toMatch(/triggers were activated and never run .*texmf-format tc-hello/);
+      writeFileSync(unincorp, '');
+      // Incorporated, not yet run: the state `dpkg --unpack` or an interrupted apt leaves
+      writeFileSync(status, clean.replace('Package: tc-lib\nStatus: install ok installed\n', 'Package: tc-lib\nStatus: install ok triggers-pending\nTriggers-Pending: texmf-format\n'));
+      expect(pack()).toMatch(/tc-lib:all is "install ok triggers-pending"/);
+      writeFileSync(status, clean.replace('Package: tc-hello\nStatus: install ok installed\n', 'Package: tc-hello\nStatus: install ok triggers-awaited\nTriggers-Awaited: tc-lib\n'));
+      expect(pack()).toMatch(/tc-hello:all is "install ok triggers-awaited"/);
+      writeFileSync(status, clean);
+      expect(pack()).toBe('');
+    } finally {
+      writeFileSync(status, clean);
+      rmSync(unincorp, { force: true });
+    }
+    expect(existsSync(join(dir, 'refused/hello/layer.json'))).toBe(true);
   });
 
   it('applies onto a fresh rootfs; dpkg and apt agree, and apt installs a package on top', async () => {
@@ -168,6 +287,25 @@ describe.skipIf(!haveRootfs)('toolchain layers', () => {
     expect(inst.exitCode).toBe(0);
     expect((await run(shell, 'tc-extra')).output).toBe('hello from the layer: layered\n');
     expect((await run(shell, 'dpkg --audit')).output).toBe('');
+  }, 900000);
+
+  // tex-full extends tex (#111): its layer is a superset, applied instead of
+  // tex's. (This machine is the one above: test shells share a filesystem.)
+  it('a set that extends another replaces it: the smaller set is then already installed', async () => {
+    const { fs, shell } = await createTestShell();
+    const { appliedLayers } = await import('@shiro/debian/layers');
+    expect((await run(shell, 'toolchain list')).output).toMatch(/^tex-full +no +\d+ MB +LaTeX, full: /m);
+    const full = await run(shell, 'toolchain install tex-full');
+    expect(full.output).toMatch(/LaTeX, full: \d+ packages installed in /);
+    expect(full.exitCode).toBe(0);
+    expect(Object.keys(await appliedLayers(fs))).toContain('tex-full');
+    // tex's own copy of the files no package owns (ls-R, formats) would name
+    // less than tex-full's: it is not applied over them
+    const tex = await run(shell, 'toolchain install tex');
+    expect(tex.output).toContain('LaTeX: already installed, as part of tex-full.');
+    expect(tex.exitCode).toBe(0);
+    expect(Object.keys(await appliedLayers(fs))).not.toContain('tex');
+    expect((await run(shell, '/usr/bin/tc-hello')).output).toBe('hello from the layer: layered\n');
   }, 900000);
 });
 

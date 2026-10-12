@@ -33,7 +33,7 @@ if (catalogDir) {
     if (!existsSync(f)) continue;
     const m = JSON.parse(readFileSync(f, 'utf8'));
     const s = spec.layers[id];
-    layers.push({ ...m, title: s.title, description: s.description, requested: s.packages, check: s.check });
+    layers.push({ ...m, title: s.title, description: s.description, requested: s.packages, check: s.check, ...(s.extends ? { extends: s.extends } : {}) });
   }
   const tmp = join(catalogDir, 'index.json.tmp');
   writeFileSync(tmp, JSON.stringify({ format: 1, layers }, null, 2) + '\n');
@@ -116,7 +116,8 @@ function parseStatus(text) {
     if (!stanza.trim()) continue;
     const f = (k) => (stanza.match(new RegExp(`^${k}: (.*)$`, 'm')) || [])[1] || '';
     const name = f('Package'), arch = f('Architecture');
-    m.set(`${name}:${arch}`, { name, arch, version: f('Version'), status: f('Status'), multiArch: f('Multi-Arch'), text: stanza.trim() + '\n' });
+    const triggers = ['Triggers-Pending', 'Triggers-Awaited'].filter((k) => f(k)).map((k) => `${k}: ${f(k)}`).join('; ');
+    m.set(`${name}:${arch}`, { name, arch, version: f('Version'), status: f('Status'), multiArch: f('Multi-Arch'), triggers, text: stanza.trim() + '\n' });
   }
   return m;
 }
@@ -126,12 +127,24 @@ const root = walk(rootTree);
 const baseStatus = parseStatus(readFileSync(join(baseTree, STATUS), 'utf8'));
 const rootStatus = parseStatus(readFileSync(join(rootTree, STATUS), 'utf8'));
 
+// A layer ships with nothing left for dpkg to do (#109): the user's next apt
+// run would do it in the tab, under Blink (tex-common's triggers rebuild
+// every TeX format). So no package may be half configured or have triggers
+// pending (checked per package below), and no trigger may be activated and
+// not yet incorporated: that file is never carried, so the activation would
+// be lost rather than late. build-layers.sh runs both before packing.
+const unincorp = join(rootTree, 'var/lib/dpkg/triggers/Unincorp');
+if (existsSync(unincorp) && readFileSync(unincorp, 'utf8').trim()) {
+  throw new Error(`triggers were activated and never run (dpkg --triggers-only --pending): ${readFileSync(unincorp, 'utf8').trim().split('\n').join(', ')}`);
+}
+
 // The layer's packages: new, or a different version/state than the base's
 const packages = [];
 for (const [key, p] of rootStatus) {
   const b = baseStatus.get(key);
   if (b && b.version === p.version && b.status === p.status) continue;
   if (!/ installed$/.test(p.status)) throw new Error(`${key} is "${p.status}" after the install`);
+  if (p.triggers) throw new Error(`${key} has triggers pending after the install (${p.triggers})`);
   packages.push({ name: p.name, arch: p.arch, version: p.version, multiArch: p.multiArch, replaces: b ? b.version : undefined, status: p.text });
 }
 for (const [key] of baseStatus) if (!rootStatus.has(key)) throw new Error(`${key} was removed by the install; layers only add packages`);

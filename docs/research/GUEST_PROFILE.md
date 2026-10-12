@@ -169,14 +169,14 @@ kept in a query parameter or in storage would be the guest's to edit.
 - URL on the main origin: `?guest` (thrown away), `?guest=NAME` (kept),
   `&nonet`. Handled first in `main()`, before the filesystem opens; the other
   parameters and the path go along.
-- **Hook for run links** (`unix/run-links`): a recipe asks for a guest by
-  carrying `guest` (and `nonet`) in its link, or calls `guestUrl()` /
-  `openGuest()` from `src/guest.ts`. Two rules for that side: (1) `main()`
-  returns before boot when it redirects, so check nothing earlier; (2) when a
-  link asked for a guest and the server has none, `guestUnavailable()` is true
-  and the recipe must not run. Recommended on top: a run link from outside
-  goes to a guest unless the user picks the main profile in the main
-  profile's UI.
+- **Run links** (docs/RUN_LINKS.md): a link asks for a guest by carrying
+  `guest` (and `nonet`): `?run=untrusted-repo&url=…&guest`. `main()` goes to
+  the guest before boot, so nothing of the link is fetched or shown in the
+  main profile; the Run / Cancel window then appears in the guest. When the
+  link asked for a guest and the server has none, `guestUnavailable()` is
+  true and `main.ts` does not start the run. Not done, and recommended once
+  the site has guests: `gh:` and `sh:` links go to a guest by themselves, and
+  the gallery's `claude-sandbox` and `untrusted-repo` links carry `&guest`.
 - `/s/<id>` and `/<user>/<repo>` on the main origin open in a guest when the
   server has guests (a seed in a kept guest named after it, a repository in a
   thrown-away one).

@@ -884,7 +884,8 @@ async function main() {
   }
 
   // A run link (?run=, src/run-url.ts, docs/RUN_LINKS.md): its script in a new Terminal
-  if (!safe && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
+  // (never here when the link asked for a guest and the server has none: src/guest.ts)
+  if (!safe && !guestUnavailable() && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
     void startRunLink();
   }
 

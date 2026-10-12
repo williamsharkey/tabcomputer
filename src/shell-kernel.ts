@@ -18,6 +18,7 @@ import type { OpenFile } from './kernel/fd';
 import * as A from './kernel/abi';
 import { TIMEOUT_EXPIRED_EVENT } from './kernel/signals';
 import { packageOfPath, packageShadows, packageKernelProgram } from './pkg-manager';
+import { debconfEnv } from './debian/apt-guard';
 import { nodeKernelProgram } from './node-worker/boot';
 import { elfInterpreter, missingInterpreterMessage } from './elf-interp';
 
@@ -302,8 +303,10 @@ export async function runKernelPipeline(shell: Shell, programs: KernelProgram[],
     let nextInput: OpenFile | null = null;
     if (i === programs.length - 1) out = lastOut;
     else [nextInput, out] = createPipe();
+    // (apt and dpkg with no terminal to ask on don't try debconf's interactive frontends)
+    const stageEnv = debconfEnv(p.argv[0], env, !!tty || !!host?.ctty);
     const spawn = {
-      path: p.path ?? p.argv[0], argv: p.argv, env: p.env ? { ...p.env, ...env } : env, cwd: opts.cwd,
+      path: p.path ?? p.argv[0], argv: p.argv, env: p.env ? { ...p.env, ...stageEnv } : stageEnv, cwd: opts.cwd,
       fds: { ...extra, 0: input, 1: out, 2: errOut }, run: p.run,
       // children of a hosted shell stay in its process group, under it
       pgid: jobGroup ?? (host && !shell.options.has('monitor') && !ownGroup ? undefined : procs.length ? procs[0].pgid : 0),

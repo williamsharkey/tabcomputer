@@ -3,9 +3,10 @@ import type { Command, CommandContext } from './index';
 /**
  * Prebuilt toolchains (docs/DEBIAN.md "Toolchain layers"):
  *   toolchain list                 the sets, their size, whether installed
- *   toolchain install ID... [--check] [--apt]
+ *   toolchain install ID... [--check] [--apt] [-v]
  *                                  apply prebuilt layers (Debian packages, so apt and
- *                                  dpkg know them); --apt installs with apt instead
+ *                                  dpkg know them); --apt installs with apt instead;
+ *                                  -v lists each overlay change
  *   toolchain check ID...          run each set's smoke test
  * Debian is installed first if it isn't.
  */
@@ -76,7 +77,8 @@ export const toolchainCmd: Command = {
     }
 
     if (sub === 'install' || sub === 'add') {
-      if (!ids.length) { err('usage: toolchain install ID... [--check] [--apt]   (toolchain list shows the IDs)\n'); return 2; }
+      if (!ids.length) { err('usage: toolchain install ID... [--check] [--apt] [-v]   (toolchain list shows the IDs)\n'); return 2; }
+      const verbose = flags.has('-v') || flags.has('--verbose');
       const all = await listToolchains(ctx.fs);
       for (const id of ids) if (!all.some((t) => t.id === id)) { err(`toolchain: no toolchain named ${id} (toolchain list)\n`); return 1; }
 
@@ -85,7 +87,7 @@ export const toolchainCmd: Command = {
       const rootfs = await import('../debian/rootfs');
       if (!await rootfs.installedRootfs(ctx.fs)) {
         out('Installing Debian first (debian install)...\n');
-        const code = await runShell(ctx, 'debian install', out, err);
+        const code = await runShell(ctx, verbose ? 'debian install -v' : 'debian install', out, err);
         if (code) return code;
       }
       const layers = await import('../debian/layers');
@@ -109,7 +111,7 @@ export const toolchainCmd: Command = {
           out(`${t.title}: installed with apt in ${((Date.now() - t0) / 1000).toFixed(0)} s.\n`);
         }
         await overlay.enableDebianShadows(ctx.fs, (n) => !!ctx.shell.commands.get(n));
-        for (const c of await overlay.applyDefaults(ctx.fs)) out(`  overlay: ${c}\n`);
+        for (const l of overlay.overlayReport(await overlay.applyDefaults(ctx.fs), verbose)) out(l + '\n');
         await overlay.refreshShadows(ctx.fs);
         if (flags.has('--check') && t.check) status ||= await check(ctx, t, out, err);
       }
@@ -128,7 +130,7 @@ export const toolchainCmd: Command = {
       return status;
     }
 
-    err('usage: toolchain list | install ID... [--check] [--apt] | check [ID...]\n');
+    err('usage: toolchain list | install ID... [--check] [--apt] [-v] | check [ID...]\n');
     return 2;
   },
 };

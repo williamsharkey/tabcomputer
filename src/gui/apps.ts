@@ -624,6 +624,10 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   if (instance !== name) ids.appIdAliases.set(instance, name);
   ids.setParentPid((pid) => kernel.procs.get(pid)?.ppid);
   if (app.home) await writeHomeDefaults(kernel, app.home);
+  // Xlib keeps its parsed Compose table in ~/.compose-cache when that directory exists; without it every
+  // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
+  // and Dillo's launch: docs/GUI_LAUNCH.md)
+  await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
   const bus = await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
   // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile

@@ -263,3 +263,23 @@ after the close button.
 exits (`kernel.waitpid(pid, WNOHANG)`, as the shell's and the WASI runners
 do). Test: `gui-apps.test.ts` "quitting (#118)"; the benchmark's quit column
 reports zombies for every launch.
+
+### Xlib's Compose cache
+
+Xlib keeps its parsed Compose table in `~/.compose-cache/` when that
+directory exists, and parses the locale's Compose file at every start when
+it doesn't (shared cost 7). `launchApp` now makes the directory. Baseline
+build against this one, three rounds each, interleaved (medians, ms from the
+click to the usable window):
+
+| App | Pass | Before | After | |
+|---|---|---:|---:|---:|
+| xterm | warm | 462 | 352 | −24% |
+| xterm | reload | 582 | 493 | −15% |
+| dillo | warm | 784 | 671 | −14% |
+| dillo | reload | 1112 | 832 | −25% |
+| xeyes | warm | 187 | 172 | (no input method: unchanged within noise) |
+
+The cold launch is the one that writes the cache: unchanged (xterm 1532 →
+1523, dillo 1942 → 1969). GTK and Qt apps have their own input methods and
+don't read the file. No layer or engine rebuild: it ships with the page.

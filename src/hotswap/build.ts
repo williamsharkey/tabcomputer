@@ -115,8 +115,8 @@ export async function buildSwap(fs: HotswapFs, opts: BuildOptions): Promise<Buil
 /**
  * Build a vitest suite from the checkout to run in the page (test-runner.ts).
  * Unlike a swap, every module comes from the checkout: the suite tests the
- * source as edited, in fresh module instances. Their IndexedDB and
- * localStorage go to the runner's isolated stand-ins (`__tcTestEnv`), never
+ * source as edited, in fresh module instances. Their IndexedDB, localStorage
+ * and `document` go to the runner's isolated stand-ins (`__tcTestEnv`), never
  * the page's. `vitest` is the runner's API; `@shiro/x` is src/x; npm imports
  * are the page's live ones where it has them; node:path, node:os, node:fs (in
  * memory over a snapshot, test-fs.ts), node:url, node:buffer and node:process are the
@@ -126,7 +126,7 @@ export async function buildTest(fs: HotswapFs, opts: TestBuildOptions): Promise<
   return bundle(fs, { ...opts, files: [] }, opts.file);
 }
 
-const TEST_GLOBALS = ['indexedDB', 'localStorage', 'sessionStorage'];
+const TEST_GLOBALS = ['indexedDB', 'localStorage', 'sessionStorage', 'document'];
 /** node's globals the page lacks, given to the tests' own files (test-fs.ts) */
 const NODE_GLOBALS = ['Buffer', 'process'];
 

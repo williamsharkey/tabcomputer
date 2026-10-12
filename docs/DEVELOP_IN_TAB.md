@@ -99,8 +99,9 @@ run outside the tab instead.
 
 `hotswap test SUITE...` builds a vitest suite from the checkout and runs it in the tab.
 A SUITE is a name under `tests/tests/shiro-vitest/` or a path. The suite tests the source
-as you edited it, whether or not it's swapped in. Its IndexedDB and localStorage are
-separate from the tab's.
+as you edited it, whether or not it's swapped in. Its IndexedDB, localStorage and
+`document` are separate from the tab's, so a suite that clears `document.body` leaves
+the desktop alone.
 
 ```console
 $ hotswap test byte-text

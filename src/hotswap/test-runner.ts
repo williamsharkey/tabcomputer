@@ -346,6 +346,25 @@ class MemoryStorage {
   clear() { this.m.clear(); }
 }
 
+/**
+ * The run's `document`: one of its own, in no window, so a suite's
+ * `document.body.innerHTML = ''` or a terminal it appends to the body never
+ * reaches the desktop (#98). Relative URLs resolve as the page's do (asset
+ * URLs come from document.baseURI). The page's document where there is no
+ * DOM implementation to make one.
+ */
+function testDocument(): Document | undefined {
+  const page: Document | undefined = (globalThis as any).document;
+  const doc = page?.implementation?.createHTMLDocument?.('');
+  if (!page || !doc) return page;
+  if (page.baseURI) {
+    const base = doc.createElement('base');
+    base.setAttribute('href', page.baseURI);
+    doc.head.appendChild(base);
+  }
+  return doc;
+}
+
 function isolatedEnv(runId: string) {
   const real: IDBFactory | undefined = (globalThis as any).indexedDB;
   const prefix = `${TEST_DB_PREFIX}${runId}:`;
@@ -381,7 +400,7 @@ function isolatedEnv(runId: string) {
     for (const db of open) { db.onclose = null; db.onversionchange = null; try { db.close(); } catch { /* closed */ } }
     open.clear();
   };
-  return { indexedDB, localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(), end };
+  return { indexedDB, localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(), document: testDocument(), end };
 }
 
 /** Delete test databases (this run's, and any a crashed run left) without waiting on open connections */

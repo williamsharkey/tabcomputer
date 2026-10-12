@@ -10,6 +10,7 @@
 import type { WindowManager } from './wm';
 import type { FileSystem } from '../filesystem';
 import { GLYPHS } from './icons';
+import { guestInfo } from '../guest';
 import { glyphFor } from './iconsets';
 import { networkCredential, onNetworkStatus } from '../net-signin';
 import { openSignIn, signedInAccount, signOut } from './network';
@@ -43,6 +44,9 @@ export function claudeStateText(a: ClaudeAccount): string {
   const plan = planName(a.plan);
   return `Signed in${who ? ` as ${who}` : ''}${plan ? ` · ${plan}` : ''}`;
 }
+
+/** Shown above the accounts in a guest (src/guest.ts) */
+export const GUEST_SIGNIN_NOTE = 'This is a guest. A sign-in made here can be used by everything that runs here.';
 
 export interface AccountsOptions {
   wm: WindowManager;
@@ -86,6 +90,7 @@ export function renderAccounts(host: HTMLElement, opts: AccountsOptions): () => 
     if (!alive) return;
     const ghSigned = !!networkCredential();
     host.innerHTML =
+      (guestInfo() ? `<div class="sd-small sd-muted sd-acct-guest">${GUEST_SIGNIN_NOTE}</div>` : '') +
       row('github', GITHUB_ICON, 'GitHub', ghSigned ? (gh ? `Signed in as @${gh}` : 'Signed in') : (compact ? 'Not signed in' : 'Not signed in. Lets programs here reach the internet.'), ghSigned, 'Sign In…') +
       row('claude', CLAUDE_ICON, 'Claude', compact && !claude.signedIn ? 'Not signed in' : claudeStateText(claude), claude.signedIn, 'Sign In…');
     host.querySelector<HTMLElement>('.sd-acct-confirm .sd-danger')?.focus();

@@ -20,6 +20,7 @@ if (!(Symbol as any).dispose) Object.defineProperty(Symbol, 'dispose', { value: 
 if (!(Symbol as any).asyncDispose) Object.defineProperty(Symbol, 'asyncDispose', { value: Symbol.for('Symbol.asyncDispose') });
 
 import { isSafeMode } from './safe-mode';
+import { guestDiscarding } from './guest';
 
 export type ConsoleLevel ='error' | 'warn' | 'log' | 'info' | 'debug';
 
@@ -139,7 +140,7 @@ function install(): void {
   });
 
   const persist = () => {
-    if (!dirty) return;
+    if (!dirty || guestDiscarding()) return;
     dirty = false;
     const tail: ConsoleEntry[] = [];
     let chars = 0;

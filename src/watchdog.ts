@@ -26,6 +26,7 @@
  */
 
 import { isSafeMode } from './safe-mode';
+import { guestDiscarding } from './guest';
 import { kernelDiagnostics } from './kernel-diag';
 import type { RelayInfo } from './remote-relay';
 
@@ -417,7 +418,7 @@ function idbTake(before: number): Promise<WedgeRecord | null> {
 const PERSIST_MIN_MS = 3000;
 let lastPersist = 0;
 function persist(force = false): void {
-  if (!dirty || safe) return;
+  if (!dirty || safe || guestDiscarding()) return;
   const now = Date.now();
   if (!force && now - lastPersist < PERSIST_MIN_MS) return;
   lastPersist = now;

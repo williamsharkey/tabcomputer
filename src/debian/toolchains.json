@@ -4,8 +4,7 @@
   "layers": {
     "c": {
       "title": "C and C++",
-      "description": "gcc, g++, make, cmake, pkg-config (build-essential)",
-      "note": "gdb is installed but can't run programs yet (no ptrace, tabcomputer#108)",
+      "description": "gcc, g++, make, cmake, gdb, pkg-config (build-essential)",
       "packages": [
         "build-essential",
         "gdb",

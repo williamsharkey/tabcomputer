@@ -8,6 +8,7 @@
  * /usr/bin keeps PATH (pkg removes the shim of a command it provides).
  * /bin/sh, /bin/bash and /usr/bin/env exist so stat() checks pass.
  */
+import { GDBINIT, GDBINIT_PATH } from './x86-engine/gdbinit';
 import type { FileSystem } from './filesystem';
 
 export const SHIM_COMMANDS = [
@@ -32,7 +33,7 @@ export const SHIM_COMMANDS = [
  * the kernel runs the builtin of that name (kernel.ts builtinLoader) and
  * Debian's sh is never involved; Debian's install leaves them in place.
  */
-export const ALWAYS_SHIMS = ['xdg-open', 'sensible-browser', 'xclip', 'xsel', 'pbcopy', 'pbpaste', 'wl-copy'];
+export const ALWAYS_SHIMS = ['xdg-open', 'sensible-browser', 'xclip', 'xsel', 'pbcopy', 'pbpaste', 'wl-copy', 'tabcomputer-gdbserver'];
 /** The `#!` of those files: no such program, so the kernel and the shell run the builtin the file is named after. */
 export const BUILTIN_SHIM_INTERP = '/usr/libexec/tabcomputer/builtin';
 /** Is `path` a builtin's shim file (`#!/usr/libexec/tabcomputer/builtin`) rather than a program? Small files only. */
@@ -46,6 +47,11 @@ const alwaysShim = (cmd: string) => `#!${BUILTIN_SHIM_INTERP}\n# The kernel runs
 
 export async function installAlwaysShims(fs: FileSystem): Promise<void> {
   await fs.mkdir('/usr/local/bin', { recursive: true });
+  // gdb's `run` goes through tabcomputer-gdbserver (docs/research/GDB.md)
+  if ((await fs.readFile(GDBINIT_PATH, 'utf8').catch(() => null)) !== GDBINIT) {
+    await fs.mkdir(GDBINIT_PATH.slice(0, GDBINIT_PATH.lastIndexOf('/')), { recursive: true });
+    await fs.writeFile(GDBINIT_PATH, GDBINIT);
+  }
   for (const cmd of ALWAYS_SHIMS) {
     const p = `/usr/local/bin/${cmd}`;
     const text = await fs.readFile(p, 'utf8').catch(() => null);

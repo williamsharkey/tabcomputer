@@ -84,6 +84,7 @@ import { installNet } from './kernel/net';
 import { attachKernelTty } from './kernel/pty';
 import { sudoCmd } from './commands/sudo';
 import { shiroAptCmd, shiroAptMethodCmd, shiroAptStoreCmd, shiroPreconfigureCmd } from './commands/debian';
+import { gdbserverCmd } from './commands/gdbserver';
 import { iframeServer } from './iframe-server';
 import { unixCommands } from './commands/unix';
 import { ShiroTerminal } from './terminal';
@@ -479,6 +480,7 @@ async function main() {
   registerCommand(commands, lazyCommand('shiro-alternatives', 'Old name of tabcomputer-alternatives',
     () => import('./commands/debian').then(m => m.shiroAlternativesCmd)), 'src/commands/debian.ts');
   registerCommand(commands, shiroAptMethodCmd, 'src/commands/debian.ts');
+  registerCommand(commands, gdbserverCmd, 'src/commands/gdbserver.ts');
   registerCommand(commands, shiroAptStoreCmd, 'src/commands/debian.ts');
   registerCommand(commands, shiroPreconfigureCmd, 'src/commands/debian.ts');
   registerCommand(commands, shiroAptCmd, 'src/commands/debian.ts');

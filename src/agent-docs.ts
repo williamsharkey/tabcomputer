@@ -69,7 +69,7 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     workaround: 'Run the install again.',
   },
   {
-    issue: "gdb can't run a program: ptrace is not implemented (tabcomputer#108).",
+    issue: 'gdb debugs a program\'s main thread only (breakpoints in other threads are not hit), and `attach`, `strace` and anything else that needs ptrace fail: the x86-64 emulator has no ptrace, gdb goes through its own debug stub.',
   },
   {
     issue: '`gh issue view --comments` is not implemented (an unknown-flag error).',
@@ -167,7 +167,7 @@ ${bootSection(ctx, name)}
   45 s) and \`sudo apt install -y NAME\` (Debian's own apt and dpkg, x86-64 in the
   emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
   popcon's top 2000 packages pass a smoke test.
-- Whole toolchains: \`toolchain install c\` (gcc, g++, make, cmake), \`python\`,
+- Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\`
   or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
   dpkg knows them, so apt keeps working. \`toolchain list\` shows the sets. The first run of each program

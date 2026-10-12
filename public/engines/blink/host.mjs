@@ -36,7 +36,7 @@ const onMessage = (fn) => (isNode ? port.on('message', fn) : port.addEventListen
 // ── Kernel channel (docs/KERNEL_ABI.md; constants from src/kernel/abi.ts) ──
 const CH_STATE = 0, CH_SYSNO = 1, CH_RESULT = 2, CH_SIGNAL = 3, CH_ARGS = 4, CH_NARGS = 12, CH_DATA = 64;
 const SYS = {
-  read: 0, write: 1, close: 3, lstat: 6, pread64: 17, poll: 7, rt_sigaction: 13, rt_sigreturn: 15, ioctl: 16, getpid: 39, kill: 62, rename: 82, mkdir: 83, rmdir: 84,
+  read: 0, write: 1, close: 3, lstat: 6, pread64: 17, poll: 7, rt_sigaction: 13, rt_sigprocmask: 14, rt_sigreturn: 15, ioctl: 16, getpid: 39, kill: 62, rename: 82, mkdir: 83, rmdir: 84,
   unlink: 87, readlink: 89, getdents64: 217, exit_group: 231, openat: 257,
 };
 // Negative Linux errno → emscripten's (WASI) errno numbering.
@@ -827,6 +827,17 @@ async function run(msg) {
       shiroKill: (sig) => {
         if (exiting) return;
         sigaction(sig, 0 /* SIG_DFL */);
+        // Unblocked in the kernel too: Blink acts on a signal by its own
+        // mask, and the kernel's copy can be older (musl's abort() raises
+        // with every signal blocked and dies as it restores the mask, before
+        // the kernel hears of that). Left blocked, the kernel held the
+        // signal and the process never ended.
+        if (sig >= 1 && sig <= 64) {
+          const dv = new DataView(data.buffer, data.byteOffset, 8);
+          dv.setUint32(0, sig <= 32 ? (1 << (sig - 1)) >>> 0 : 0, true);
+          dv.setUint32(4, sig > 32 ? (1 << (sig - 33)) >>> 0 : 0, true);
+          sys(SYS.rt_sigprocmask, 1 /* SIG_UNBLOCK */, 1, 0, 0);
+        }
         if (sys(SYS.kill, msg.pid, sig) < 0) exitGuest(128 + sig);
         exiting = true;
       },
@@ -892,6 +903,9 @@ async function run(msg) {
       M.HEAPU8.set(snap, ptr);
       M._blink_shiro_set_restore(ptr, snap.length);
     }
+    // Started by tabcomputer-gdbserver: Blink's debug agent holds the main
+    // thread before its first instruction (Blink patch 0550, src/x86-engine/gdbserver.ts)
+    if (msg.gdb) M._blink_shiro_gdb?.(1);
     const argv = msg.argv && msg.argv.length ? msg.argv : [msg.path];
     // blink -0 PROGRAM ARGV0 ARGS...: load PROGRAM (the resolved path, never
     // a PATH search of argv[0]) and give the guest argv[0] as invoked.

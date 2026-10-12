@@ -51,6 +51,7 @@ import { sshCmd } from '@shiro/commands/ssh';
 import { scpCmd } from '@shiro/commands/scp';
 import { sudoCmd } from '@shiro/commands/sudo';
 import { debianCmd, shiroAlternativesCmd, shiroAptCmd, shiroAptMethodCmd } from '@shiro/commands/debian';
+import { gdbserverCmd } from '@shiro/commands/gdbserver';
 import { toolchainCmd } from '@shiro/commands/toolchain';
 
 /** Variables every createTestShell() shell starts with (node-worker-suites.test.ts sets TABCOMPUTER_NODE_WORKER) */
@@ -133,7 +134,7 @@ export async function createTestShell(): Promise<{ fs: FileSystem; shell: Shell 
   commands.register(dmesgCmd);
   commands.register(sshCmd);
   commands.register(scpCmd);
-  commands.registerAll([sudoCmd, debianCmd, shiroAlternativesCmd, shiroAptCmd, shiroAptMethodCmd, toolchainCmd]);
+  commands.registerAll([sudoCmd, debianCmd, shiroAlternativesCmd, shiroAptCmd, shiroAptMethodCmd, toolchainCmd, gdbserverCmd]);
 
   const shell = new Shell(fs, commands);
   Object.assign(shell.env, testShellEnv);

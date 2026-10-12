@@ -181,7 +181,24 @@ function htmlFromPubXhtml(file) {
     .replace(/<(\/?)svg:/g, '<$1').replace(/\sxmlns:svg="[^"]*"/g, '')
     .replace(/<svg /g, '<svg xmlns="http://www.w3.org/2000/svg" ');
   const title = path.basename(file, '.html').replace(/[<&]/g, '');
-  fs.writeFileSync(file, `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${title}</title>\n<style>body{margin:0;background:#888}svg{display:block;margin:12px auto;background:#fff;box-shadow:0 1px 6px #0006;max-width:100%;height:auto}</style></head>\n<body>\n${body}\n</body></html>\n`);
+  // Its font sizes are inches in a drawing measured in points (14 pt comes out as 0.1944): ×72.
+  // Each text frame is still one unwrapped line at the frame's corner, so the words are also
+  // given as plain paragraphs under each page: that part is what can be read and copied.
+  const pages = body.split(/(?=<svg xmlns)/).filter((p) => p.includes('<svg'));
+  const out = pages.map((p, i) => {
+    const drawing = p.replace(/font-size="([\d.]+)"/g, (m, v) => `font-size="${(parseFloat(v) * 72).toFixed(2)}"`);
+    const paras = [];
+    for (const t of p.match(/<text[\s\S]*?<\/text>/g) || []) {
+      let cur = '';
+      for (const s of t.match(/<tspan[^>]*>[\s\S]*?<\/tspan>/g) || []) {
+        const words = s.replace(/<[^>]+>/g, '').replace(/^\n/, '');
+        if (!words.trim()) { if (cur.trim()) paras.push(cur); cur = ''; } else cur += words;
+      }
+      if (cur.trim()) paras.push(cur);
+    }
+    return `<section class="page">\n${drawing}\n<div class="words"><h2>Page ${i + 1}: the words</h2>\n${paras.map((x) => `<p>${x}</p>`).join('\n') || '<p><i>No text on this page.</i></p>'}\n</div></section>`;
+  }).join('\n');
+  fs.writeFileSync(file, `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${title}</title>\n<style>body{margin:0;background:#888;font:15px/1.5 system-ui,sans-serif}svg{display:block;margin:12px auto;background:#fff;box-shadow:0 1px 6px #0006;max-width:100%;height:auto}.words{max-width:46em;margin:0 auto 24px;background:#fff;padding:8px 20px}.words h2{font-size:15px;color:#555}</style></head>\n<body>\n<p class="words">Converted from Microsoft Publisher by pub2xhtml. The drawing keeps where things were on the page; long text does not wrap in it and some pictures are missing. The words of each page follow its drawing.</p>\n${out}\n</body></html>\n`);
 }
 
 async function convert(job, rel, to) {

@@ -197,6 +197,16 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   launches.on((ev, l) => {
     if (l.info.placeholder) launchUI ??= import('./launch-ui').then(m => m.initLaunchUI(wm, launches, { toast: (text) => showToast(root, toastText(text), 9000) }));
     if (ev === 'request' || ev === 'end' || (ev === 'stage' && !l.active)) queueDock();
+    // Its tile's tooltip says the stage it is in
+    else if ((ev === 'stage' || ev === 'progress') && l.active) {
+      const tip = dock.querySelector(`:scope > .sd-dock-item[data-app="${CSS.escape(l.id)}"] > .sd-dock-tip`);
+      if (tip) tip.textContent = `${l.info.name} — ${l.text()}`;
+    }
+    // A phone's dock scrolls: bring the tile that just got its mark into view
+    if (ev === 'request' && wm.compact) setTimeout(() => {
+      const tile = dock.querySelector<HTMLElement>('.sd-starting');
+      if (tile) dock.scrollTo({ left: tile.offsetLeft - (dock.clientWidth - tile.offsetWidth) / 2 });
+    }, 0);
   });
 
   // ── Terminal ──
@@ -378,7 +388,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       if (l.active) { b.setAttribute('aria-busy', 'true'); b.style.setProperty('--sd-start-phase', `${-((Date.now() - l.startedAt) % 1600)}ms`); }
       b.setAttribute('aria-label', label === name ? words : `${label}: ${words}`);
       const tip = b.querySelector(':scope > .sd-dock-tip');
-      if (tip && label === name) tip.textContent = l.active ? `${name} — starting…` : `${name} — did not start`;
+      if (tip && label === name) tip.textContent = l.active ? `${name} — ${l.text()}` : `${name} — did not start`;
       return true;
     };
     // Each dock tile's place in the row (sets whose hue or sky runs along the dock)

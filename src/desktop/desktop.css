@@ -702,7 +702,7 @@ a.sd-gh-row:hover { background: var(--sd-hover); }
 .sd-compact .sd-dock { overflow-x: auto; scrollbar-width: none; justify-content: flex-start; padding: 6px 8px; border-radius: 18px; }
 .sd-compact .sd-dock-item { width: 44px; height: 44px; }
 .sd-compact .sd-dock-item:hover { transform: none; }
-.sd-compact .sd-dock-item.sd-starting::after, .sd-compact .sd-dock-item.sd-start-failed::after { bottom: -5px; width: 5px; height: 5px; margin-left: -2.5px; }
+.sd-compact .sd-dock-item.sd-starting::after, .sd-compact .sd-dock-item.sd-start-failed::after { bottom: -4px; width: 5px; height: 5px; margin-left: -2.5px; }
 .sd-compact .sd-dock-tip { display: none; }
 .sd-compact .sd-win { border-radius: 12px; }
 .sd-compact .sd-sidebar { flex-basis: 112px; padding: 8px 4px; }

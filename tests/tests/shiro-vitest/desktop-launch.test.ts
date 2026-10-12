@@ -339,7 +339,7 @@ describe('the Debian GUI launch path, with a stand-in installer and process', ()
     expect(wm.windows()[0]).toBe(ph);
     expect(wm.focused()).toBe(term);
     expect([ph.options.skipTaskbar, ph.appId, ph.element.classList.contains('sd-launch-win')]).toEqual([true, 'gimp', true]);
-    expect([text('.sd-launch-name'), text('.sd-launch-stage')]).toEqual(['GIMP', 'Installing…']);
+    expect([text('.sd-launch-name'), text('.sd-launch-stage'), ph.title]).toEqual(['GIMP', 'Installing…', 'GIMP — Installing…']);
     const bar = el('.sd-launch-bar')!;
     expect([bar.classList.contains('sd-indeterminate'), bar.hasAttribute('aria-valuenow')]).toEqual([true, false]);
 

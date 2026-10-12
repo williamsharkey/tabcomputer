@@ -7,7 +7,9 @@
  * fills the screen), is partly transparent, and shows the app's icon and
  * name, the stage in words, a progress bar (a real fraction or an
  * indeterminate one, never a made-up number) and the newest output line with
- * the rest under "Show details".
+ * the rest under "Show details". Its title bar repeats the stage, with a thin
+ * progress line under it: behind a window that covers its middle, that strip
+ * is what still shows.
  *
  * When the app's first window is created it takes the placeholder's place in
  * the same task (no frame shows both or neither): its position always, its
@@ -33,7 +35,15 @@ const CSS = `
   box-shadow: var(--sd-shadow-blur), 0 0 0 .5px var(--sd-window-border);
 }
 .sd-launch-win > .sd-titlebar, .sd-launch-win.sd-focused > .sd-titlebar { background: transparent; border-bottom-color: transparent; }
-.sd-launch-win > .sd-titlebar .sd-title { opacity: 0; }
+/* The title bar says the stage too, with a thin progress line under it: when another window
+   covers the middle of the placeholder, this strip is usually what still shows */
+.sd-launch-win > .sd-titlebar .sd-title, .sd-launch-win.sd-focused > .sd-titlebar .sd-title { font-weight: 400; color: var(--sd-text-2); }
+.sd-launch-line { position: absolute; left: 0; right: 0; top: 36px; height: 2px; overflow: hidden; pointer-events: none; background: var(--sd-sep); }
+.sd-launch-line > i { display: block; height: 100%; background: linear-gradient(90deg, var(--sd-accent-2), var(--sd-accent)); transition: width .3s var(--sd-ease); }
+.sd-launch-line.sd-indeterminate > i { width: 30%; animation: sd-launch-slide 1.5s ease-in-out infinite; }
+/* in front, the body says it all: no second stage line, one bar */
+.sd-launch-win.sd-focused > .sd-titlebar .sd-title { opacity: 0; }
+.sd-launch-win.sd-focused > .sd-launch-line, .sd-launch-win.sd-launch-failed > .sd-launch-line { display: none; }
 .sd-launch-win.sd-launch-failed { background: color-mix(in srgb, var(--sd-window) 88%, transparent); }
 .sd-launch-win.sd-launch-flash { animation: sd-launch-flash .5s var(--sd-ease) 2; }
 @keyframes sd-launch-flash { 50% { box-shadow: var(--sd-shadow-blur), 0 0 0 3px var(--sd-accent); } }
@@ -72,7 +82,7 @@ const CSS = `
 @container (max-height: 190px) { .sd-launch-icon, .sd-launch-last { display: none; } }
 /* No motion: the bar of an unknown amount is a still, striped track */
 @media (prefers-reduced-motion: reduce) {
-  .sd-launch-bar.sd-indeterminate > i {
+  .sd-launch-bar.sd-indeterminate > i, .sd-launch-line.sd-indeterminate > i {
     width: 100%; opacity: .55; transform: none;
     background: repeating-linear-gradient(115deg, var(--sd-accent) 0 6px, transparent 6px 12px);
   }
@@ -96,6 +106,18 @@ interface Placeholder {
 export interface LaunchUIDeps {
   /** One sentence to the person (what cancelling did) */
   toast(text: string): void;
+}
+
+/** True when no part of the window's title bar can be seen (other windows are over all of it) */
+function titleHidden(win: DesktopWindow): boolean {
+  if (typeof document.elementFromPoint !== 'function') return false;
+  const r = win.element.getBoundingClientRect();
+  if (!r.width) return false;
+  for (const f of [0.08, 0.3, 0.5, 0.7, 0.92]) {
+    const hit = document.elementFromPoint(r.left + r.width * f, r.top + 19);
+    if (hit && win.element.contains(hit)) return false;
+  }
+  return true;
 }
 
 function esc(s: string): string {
@@ -161,7 +183,19 @@ export function initLaunchUI(wm: WindowManager, tracker: LaunchTracker, deps: La
     });
     win.element.classList.add('sd-launch-win');
     win.element.dataset.launch = l.id;
+    const line = document.createElement('div');
+    line.className = 'sd-launch-line';
+    line.setAttribute('aria-hidden', 'true');
+    line.appendChild(document.createElement('i'));
+    win.element.appendChild(line);
     p = { launch: l, win, remembered: g.remembered, touched: false, details: false, said: '', paint: () => paint(p, body) };
+    // A guessed spot whose title bar would be hidden under another window: the top of the work
+    // area instead, if the title bar shows there (a remembered spot is the app's own: it stays)
+    if (!g.remembered && !front && win.state === 'normal' && titleHidden(win)) {
+      const at = win.geometry();
+      win.move(at.x, 0);
+      if (titleHidden(win)) win.move(at.x, at.y);
+    }
     win.on('move', () => { p.touched = true; });
     win.on('resize', () => { p.touched = true; });
     body.addEventListener('click', (e) => {
@@ -209,6 +243,11 @@ export function initLaunchUI(wm: WindowManager, tracker: LaunchTracker, deps: La
     bar.classList.toggle('sd-indeterminate', f === null);
     const fill = bar.firstElementChild as HTMLElement;
     if (f === null) { fill.style.width = ''; bar.removeAttribute('aria-valuenow'); } else { fill.style.width = `${(f * 100).toFixed(1)}%`; bar.setAttribute('aria-valuenow', String(Math.round(f * 100))); }
+    const line = p.win.element.querySelector<HTMLElement>(':scope > .sd-launch-line');
+    if (line) {
+      line.classList.toggle('sd-indeterminate', f === null);
+      (line.firstElementChild as HTMLElement).style.width = f === null ? '' : `${(f * 100).toFixed(1)}%`;
+    }
     bar.setAttribute('aria-label', `${l.info.name}: ${words}`);
     const amount = q('.sd-launch-amount');
     amount.textContent = failed ? '' : l.amountText() || (timed ? elapsedText(took) : '');
@@ -236,7 +275,7 @@ export function initLaunchUI(wm: WindowManager, tracker: LaunchTracker, deps: La
     q('[data-act=cancel]').hidden = failed;
     q('[data-act=close]').hidden = !failed;
     q('[data-act=retry]').hidden = !failed || !l.info.retry;
-    p.win.setTitle(failed ? `${l.info.name} did not start` : `${l.info.name} is starting`);
+    p.win.setTitle(failed ? `${l.info.name} did not start` : `${l.info.name} — ${words}`);
   };
 
   /** The app's first window takes the placeholder's place, in this task */
@@ -248,8 +287,12 @@ export function initLaunchUI(wm: WindowManager, tracker: LaunchTracker, deps: La
         real.move(g.x, g.y);
         // its own last size, or the size the person gave the placeholder; never a guess forced on the app
         if ((p.remembered || p.touched) && real.options.resizable !== false) real.resize(g.width, g.height);
-        // in place at once, not growing out of the placeholder's spot
-        real.element.classList.remove('sd-opening');
+        // in place at once: no opening animation (it would start from the styles computed so far)
+        const el = real.element;
+        el.style.transition = 'none';
+        el.classList.remove('sd-opening');
+        void el.offsetWidth;
+        el.style.transition = '';
       }
       follow(l.id, real);
     }

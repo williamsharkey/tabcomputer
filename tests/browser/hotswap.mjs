@@ -104,6 +104,8 @@ check(/git version 2\.47\.0/.test((await sh(page, 'git --version')).out), 'rever
 r = await sh(page, 'cd /home/user/tabcomputer && reload commands/git src/commands/git.ts');
 check(r.code === 0 && /Hot-reloaded 'commands\/git'/.test(r.out), 'reload of a command with relative imports', r.out);
 check(/9\.9\.9-swapped/.test((await sh(page, 'git --version')).out), 'git runs the reloaded code');
+// (the checkout as it was: a later `hotswap test --changed` is about src/shell.ts alone)
+await sh(page, `cd /home/user/tabcomputer && sed -i 's/git version 9\\.9\\.9-swapped/git version 2.47.0/' src/commands/git.ts && reload commands/git src/commands/git.ts`);
 
 // Generated tables aren't live (NOT_LIVE): a module importing them builds with its own copy
 r = await sh(page, 'cd /home/user/tabcomputer && hotswap build src/gl/exec.ts');

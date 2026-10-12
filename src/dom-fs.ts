@@ -145,11 +145,13 @@ export class DomProvider implements VirtualFSProvider {
     const fn = (e: Event) => emit(describeEvent(e));
     this.recording.set(type, fn);
     window.addEventListener(type, fn, true);
+    // (a document in no window, as an in-tab test run's is, sends its events no further than itself)
+    if (document.defaultView !== window) document.addEventListener(type, fn, true);
   }
 
   /** Stop all listeners (tests). */
   dispose(): void {
-    for (const [type, fn] of this.recording) if (type !== 'window') window.removeEventListener(type, fn, true);
+    for (const [type, fn] of this.recording) if (type !== 'window') { window.removeEventListener(type, fn, true); document.removeEventListener(type, fn, true); }
     this.recording.clear();
     this.desktopUnsub?.();
   }

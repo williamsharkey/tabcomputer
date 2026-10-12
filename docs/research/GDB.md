@@ -88,13 +88,16 @@ never calls ptrace or wait.
   breakpoint list, runs one instruction in the interpreter, and stops when
   told to. A stop is a loop of kernel calls (`SYS_shiro_debug`, 1050): the
   thread reports the stop, the kernel answers with a command (read or write
-  memory, read or write registers, add or remove a breakpoint, continue,
-  step, detach), the thread carries it out and reports back. Signals
+  memory, read or write registers, add or remove a breakpoint or a
+  watchpoint, continue, step, detach), the thread carries it out and reports
+  back. A watchpoint is memory compared after each instruction; a step can
+  carry an address range (gdb's range stepping), so `next` over a line is
+  one request however many instructions the line runs. Signals
   (pending ones, and faults raised by an instruction) become stops instead
   of being delivered; the resume command says whether to deliver the
-  signal, as with ptrace. A blocking kernel call interrupted by a signal is
-  abandoned and its instruction run again after the stop, so Ctrl-C during
-  `scanf` does not make the read fail with EINTR.
+  signal, as with ptrace. A blocking kernel call a signal interrupts stops
+  where it is, and when the debugger keeps the signal the call is made
+  again, so Ctrl-C during `scanf` does not make the read fail with EINTR.
 - **In the page (`src/x86-engine/gdbserver.ts`)**: `tabcomputer-gdbserver`,
   a kernel program that speaks the remote protocol on fds 0/1. gdb starts
   it with `target extended-remote | tabcomputer-gdbserver`. On `vRun` it
@@ -103,9 +106,10 @@ never calls ptrace or wait.
   and answers `g`/`m`/`Z0`/`vCont` by handing commands to the stopped
   thread's pending `SYS_shiro_debug` call. Register layout, the target
   description, the auxv and the packet framing are TypeScript.
-- **`/etc/gdb/gdbinit.d/tabcomputer.gdb`** (written in Debian mode):
-  `set sysroot /`, and `hook-run`/`hook-start`/`hook-starti` that connect
-  and set the remote exec-file.
+- **`/etc/gdb/gdbinit.d/tabcomputer.gdb`** (`src/x86-engine/gdbinit.ts`,
+  written at boot with the PATH shims): `set sysroot /`, and
+  `hook-run`/`hook-start`/`hook-starti` that connect and set the remote
+  exec-file.
 
 Why this one:
 
@@ -118,8 +122,11 @@ Why this one:
 - Cost when no debugger is attached: none in the instruction loop. The
   hooks are in `CheckForSignals` (already the slow path, entered only when
   `attention` is set), in `ConsumeSignal` and `DeliverSignalToUser` (signal
-  delivery), and where a kernel call returns EINTR; each is one load of a
-  global that is false. The wasm JIT is untouched; a debugged process runs
+  delivery) and in a thread's `tkill` of itself; each is one load of a
+  global that is false. Measured (a sieve, 100,000 `getppid` calls, 20,000
+  `raise` calls with a handler and a 30M-iteration loop, static musl, under
+  Node, three alternating rounds against the engine before the patch): no
+  difference beyond run-to-run noise in any of the four. The wasm JIT is untouched; a debugged process runs
   in the interpreter, undebugged ones as before.
 - The protocol half is TypeScript and is tested without the engine (a
   scripted client against a fake tracee), and with it (a scripted client
@@ -133,7 +140,84 @@ Costs accepted:
 - One thread: only the main thread is debugged; other threads run freely
   and gdb is told there is one thread. Children of the program (fork, exec)
   are not debugged.
-- `attach PID`, hardware watchpoints (`watch` falls back to gdb's
-  single-stepping software watchpoints), `catch syscall`, core files and
-  reverse debugging are not provided.
+- `attach PID`, read and access watchpoints (`rwatch`, `awatch`), `catch
+  syscall`, core files and reverse debugging are not provided.
 - strace and anything else that calls ptrace still get ENOSYS.
+
+## Where it stands
+
+How each thing was checked: `tests/tests/shiro-vitest/gdb.test.ts`. "gdb"
+is Debian's gdb 16.3 from the `c` toolchain layer, run under Node by the
+test with `TABCOMPUTER_TEST_LAYERS=DIR` (a copy of the layer), in batch mode
+and typed at a pty; the program is `fixtures/x86/gdbdemo.c` built in the
+test by Debian's gcc, a dynamically linked PIE. "client" is a scripted
+remote-protocol client against the same program built static, which runs
+wherever the fixture can be built (gcc, or `zig cc`). Not checked in a
+browser.
+
+| | gdb | client |
+|---|---|---|
+| `break` by function and by file:line, `tbreak`, `run`, `start`, `continue` to the exit, a second `run` | yes | yes |
+| `bt`, `up`/`down`, `info frame`, `info locals`, `print` of ints, doubles, structs, arrays, strings, `x`, `ptype`, `info registers`, `$xmm0` | yes | registers, memory |
+| `next`, `step`, `finish`, `until`, `stepi`, `nexti` (a source line is one request: range stepping) | yes | yes |
+| `set var`, `print f(1, 2)` (a call in the program) | yes | register and memory writes |
+| `watch` (the engine compares the memory after each instruction) | yes | yes |
+| a segfault, a division by zero, `abort()`: a stop with a backtrace, then the program's death by that signal | yes | yes |
+| Ctrl-C while it computes and while it reads the terminal; the read goes on after `continue`; a Ctrl-C at the prompt is gdb's alone | yes (pty) | yes |
+| the program reads what is typed at the terminal | yes (pty) | |
+| `run ARGS`, `run < in > out 2>&1`, `--args` | yes | |
+| `kill`, `quit` with a live program | yes | yes |
+| a breakpoint in libc (`break printf`), `info sharedlibrary` | by hand | |
+| C++ (`break`, `bt`, `finish` in a program using `<vector>`, `<iostream>`) | by hand | |
+
+"By hand": run once from a scratch test, not kept as a test.
+
+## What remains, in order
+
+1. **A browser run.** Everything above ran under Node. The pieces that
+   differ in a page (the Worker, `TextDecoder` on shared memory, the
+   terminal) are the ones every Blink process already uses, but
+   `gdb ./prog` typed into a tab is unverified.
+2. **Threads.** Only the thread the program starts with is debugged. Other
+   threads run freely: a breakpoint in a function they run is not hit, and
+   they keep running while the main thread is stopped. gdb is told there is
+   one thread. Doing it properly means stopping every thread at a stop
+   (they would each take the `attention` path and park), thread ids in stop
+   replies, and `qXfer:threads:read`.
+3. **Children.** A fork or exec child is not debugged (`set follow-fork-mode
+   child` has no effect), and a program that execs runs on undebugged.
+4. **Speed of a debugged program.** It runs in the interpreter with a
+   check per instruction: fine for class programs, slow for a long
+   computation between breakpoints. With no breakpoint or watchpoint set
+   and no step in progress, the thread could go back to compiled code and
+   come back for signals only.
+5. **Libraries' pretty-printers.** gdb reports `No module named
+   'libstdcxx'` once for a C++ program; `print v` of a `std::vector` shows
+   the raw members. (The same gdb would do that on any target here.)
+6. **`attach PID`, `strace`, `ltrace`, `catch syscall`, core files.** These
+   need ptrace or kernel support that isn't there; `attach` fails with
+   gdb's ptrace error.
+7. **gdb's TUI (`gdb -tui`, `layout src`)** is untested.
+8. `info proc mappings` warns: gdb reads `/proc/PID/maps`, which exists for
+   a process's own pid only.
+
+## Found on the way
+
+- A statically linked musl program's `abort()` never ended the process,
+  with or without a debugger: musl raises SIGABRT with every signal
+  blocked, the engine acts on it by its own mask when the mask is restored,
+  and the kernel, last told the blocking mask, held the signal the engine
+  killed itself with. host.mjs's `shiroKill` now unblocks the signal in the
+  kernel first (covered by gdb.test.ts).
+
+## Building the engine on macOS
+
+`vendor/blink/build.sh` assumes Linux. On this Mac (Apple Silicon) it ran
+with: emsdk 6.0.11 installed in a scratch directory (Homebrew's emcc is a
+different version and needs a newer Python than the system's), GNU make
+4.4.1 built from source (the Makefile refuses 3.81), Blink's
+`tool/flock.c` compiled natively onto PATH (configure otherwise builds it
+with emcc), `BLINK_WORK` in a scratch directory, and one line after
+`./configure` to define `HAVE_SEEKDIR` in `config.h` (the probe runs under
+node with the host's `/tmp`, a symlink on macOS, and comes out wrong). With
+that, unmodified main rebuilds to a blink.wasm of the committed size.

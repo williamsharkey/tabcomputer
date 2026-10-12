@@ -51,8 +51,11 @@ export interface Tracee {
   wait(): Promise<TraceeEvent>;
   /** While stopped: one command; resolves with the thread's answer. */
   command(cmd: number, payload?: Uint8Array): Promise<{ status: number; data: Uint8Array }>;
-  /** While stopped: let it run (`step`: one instruction), delivering `sig` if not 0. */
-  resume(step: boolean, sig: number): void;
+  /**
+   * While stopped: let it run, delivering `sig` if not 0. `step`: one
+   * instruction, or with `range` until it is outside [range[0], range[1]).
+   */
+  resume(step: boolean, sig: number, range?: [bigint, bigint]): void;
   /** Ask a running program to stop (it reports SIGINT). */
   interrupt(): void;
   kill(): Promise<void>;
@@ -86,6 +89,8 @@ export class BlinkTracee implements Tracee {
   /** The stopped thread's pending call: its data area and the reply. */
   private call: { data: Uint8Array; reply: (r: number) => void } | null = null;
   private result: ((r: { status: number; data: Uint8Array }) => void) | null = null;
+  /** A command sent while the thread was between an interrupted call and making it again. */
+  private queued: { cmd: number; payload?: Uint8Array } | null = null;
   private lastSeq = -1;
   private exited = false;
 
@@ -118,8 +123,14 @@ export class BlinkTracee implements Tracee {
       const onAbort = () => { if (this.call === call) { this.call = null; reply(-EINTR); } };
       if (interrupted.aborted) onAbort(); else interrupted.addEventListener('abort', onAbort, { once: true });
     });
-    if (seq === this.lastSeq) return pending; // the same report again (its call was interrupted)
+    if (seq === this.lastSeq) { // the same report again (its call was interrupted)
+      const q = this.queued;
+      this.queued = null;
+      if (q) this.send(q.cmd, q.payload);
+      return pending;
+    }
     this.lastSeq = seq;
+    this.queued = null;
     const len = Math.max(0, Math.min(args[4], data.length));
     if (op === OP_STOP) {
       const watch = args[3] === StopKind.Watchpoint ? new DataView(data.buffer, data.byteOffset).getBigUint64(AGENT_REGS, true) : undefined;
@@ -146,7 +157,12 @@ export class BlinkTracee implements Tracee {
 
   private send(cmd: number, payload?: Uint8Array): boolean {
     const c = this.call;
-    if (!c) return false;
+    if (!c) {
+      // its call ended with EINTR and it is about to make it again: then
+      if (this.exited) return false;
+      this.queued = { cmd, payload };
+      return true;
+    }
     this.call = null;
     if (payload) c.data.set(payload);
     c.reply(cmd);
@@ -160,10 +176,11 @@ export class BlinkTracee implements Tracee {
     });
   }
 
-  resume(step: boolean, sig: number): void {
-    const p = new Uint8Array(12);
+  resume(step: boolean, sig: number, range?: [bigint, bigint]): void {
+    const p = new Uint8Array(28);
     const dv = new DataView(p.buffer);
     dv.setInt32(0, sig, true);
+    if (range) { dv.setBigUint64(12, range[0], true); dv.setBigUint64(20, range[1], true); }
     // A Ctrl-C typed while the program was stopped went to gdb, which shares
     // the program's terminal and process group: the program doesn't get it too
     if (this.proc.ctty && sig !== SIGINT) dv.setUint32(4, 1 << (SIGINT - 1), true);
@@ -495,11 +512,13 @@ export class GdbServer {
 
   private async resume(action: string): Promise<string> {
     if (!this.tracee) return 'E01';
-    // c, s, Csig, Ssig (vCont's first action; a `:thread` suffix means the one thread)
+    // c, s, Csig, Ssig, rSTART,END (vCont's first action; a `:thread` suffix means the one thread)
+    const r = /^r([0-9a-f]+),([0-9a-f]+)/.exec(action);
     const m = /^([cCsS])([0-9a-f]{2})?/.exec(action);
-    if (!m) return 'E01';
+    if (!m && !r) return 'E01';
     this.regs = null;
-    this.tracee.resume(m[1] === 's' || m[1] === 'S', m[2] ? parseInt(m[2], 16) : 0);
+    if (r) this.tracee.resume(true, 0, [BigInt('0x' + r[1]), BigInt('0x' + r[2])]);
+    else this.tracee.resume(m![1] === 's' || m![1] === 'S', m![2] ? parseInt(m![2], 16) : 0);
     return this.stopReply();
   }
 
@@ -578,7 +597,7 @@ export class GdbServer {
   }
 
   private async handleV(p: string): Promise<string | null> {
-    if (p === 'vCont?') return 'vCont;c;C;s;S';
+    if (p === 'vCont?') return 'vCont;c;C;s;S;r'; // (r: gdb steps a source line in one request)
     if (p.startsWith('vCont;')) return this.resume(p.slice(6));
     if (p.startsWith('vKill')) {
       const t = this.tracee;

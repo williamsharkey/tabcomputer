@@ -25,6 +25,7 @@ import { GdbServer, BlinkTracee, wireKernel, agentToG, gToAgent, toHex, fromHex,
 import { GDBINIT, GDBINIT_PATH } from '@shiro/x86-engine/gdbinit';
 import { installAlwaysShims } from '@shiro/path-shims';
 import { TtySession } from '@shiro/kernel/pty';
+import { kernelDiagnostics } from '@shiro/kernel-diag';
 
 const ROOT = resolve(__dirname, '../../..');
 const FIX = resolve(__dirname, 'fixtures/x86');
@@ -135,8 +136,8 @@ describe('gdbserver: the protocol', () => {
         if (cmd === 11) log.push(`unwatch ${pv.getBigUint64(0, true).toString(16)} ${pv.getUint32(8, true)}`);
         return { status: 0, data: new Uint8Array(0) };
       },
-      resume(step, sig) {
-        log.push(`${step ? 'step' : 'cont'} ${sig}`);
+      resume(step, sig, range) {
+        log.push(`${step ? 'step' : 'cont'} ${sig}${range ? ` ${range[0].toString(16)}-${range[1].toString(16)}` : ''}`);
         if (step) push({ type: 'stop', sig: 5, kind: 3, regs });
       },
       interrupt() { log.push('interrupt'); push({ type: 'stop', sig: 2, kind: 1, regs }); },
@@ -173,7 +174,7 @@ describe('gdbserver: the protocol', () => {
     expect(await c.cmd('qsThreadInfo')).toBe('l');
     expect(await c.cmd('qC')).toBe('QC1');
     expect(await c.cmd('qAttached')).toBe('0');
-    expect(await c.cmd('vCont?')).toBe('vCont;c;C;s;S');
+    expect(await c.cmd('vCont?')).toBe('vCont;c;C;s;S;r');
     expect(await c.cmd('Z1,401000,1')).toBe('');       // no hardware breakpoints
     expect(await c.cmd('Z3,1000,4')).toBe('');         // nor read watchpoints
     expect(await c.cmd('qTStatus')).toBe('');
@@ -240,6 +241,8 @@ describe('gdbserver: the protocol', () => {
     expect(log.splice(0)).toEqual(['watch 1010 4', 'cont 0', 'unwatch 1010 4']);
     expect(await c.cmd('vCont;s:1')).toMatch(/^T05thread:1;/);
     expect(await c.cmd('s')).toMatch(/^T05thread:1;/);
+    expect(await c.cmd('vCont;r401000,401020:1;c')).toMatch(/^T05thread:1;/); // a source line's range
+    expect(log.pop()).toBe('step 0 401000-401020');
     // continue; an interrupt request is acted on only if the program hasn't stopped by itself
     c.post('vCont;C0e:1;c');
     await new Promise((r) => setTimeout(r, 20));
@@ -349,15 +352,26 @@ describe.skipIf(!haveBin || !blinkHasGdb)('gdbserver: a program in Blink under t
       seen.add(gReg(await c.cmd('g'), RIP));
     }
     expect(seen.size).toBe(4);
-    // on to add(3, 4)
-    expect(await c.cmd('vCont;c')).toMatch(/^T05swbreak:;thread:1;/);
+    // a range step runs until it is outside the range (a call out of main,
+    // or the breakpoint in add), however many instructions that takes
+    const mainEnd = mainAddr + 0x400n;
+    expect(await c.cmd(`vCont;r${hex64(mainAddr)},${hex64(mainEnd)}:1`)).toMatch(/^T05(swbreak:;)?thread:1;/);
+    const outside = gReg(await c.cmd("g"), RIP);
+    expect(outside < mainAddr || outside >= mainEnd).toBe(true);
+    if (outside !== addAddr) expect(await c.cmd('vCont;c')).toMatch(/^T05swbreak:;thread:1;/);
+    expect(gReg(await c.cmd('g'), RIP)).toBe(addAddr);
+    // and one over add's first bytes ends inside add, past them
+    expect(await c.cmd(`vCont;r${hex64(addAddr)},${hex64(addAddr + 2n)}:1`)).toMatch(/^T05thread:1;/);
+    const left = gReg(await c.cmd('g'), RIP);
+    expect(left >= addAddr + 2n && left < addAddr + 0x40n).toBe(true);
+    // (still in add(3, 4), past its first instructions)
     g = await c.cmd('g');
-    expect(gReg(g, RIP)).toBe(addAddr);
     expect(gReg(g, RDI) & 0xffffffffn).toBe(3n);
     expect(gReg(g, RSI) & 0xffffffffn).toBe(4n);
-    // the return address on the stack is in main
-    const ret = le64(await c.cmd(`m${hex64(gReg(g, RSP))},8`));
-    expect(ret > mainAddr && ret < mainAddr + 0x200n).toBe(true);
+    // main's return address is on the stack
+    const stack = fromHex(await c.cmd(`m${hex64(gReg(g, RSP))},20`));
+    const words = [0, 8, 16, 24].map((o) => new DataView(stack.buffer).getBigUint64(o, true));
+    expect(words.some((w) => w > mainAddr && w < mainAddr + 0x200n)).toBe(true);
     // change a variable and an argument, remove the breakpoints, run on
     expect(await c.cmd(`M${hex64(counter)},4:64000000`)).toBe('OK'); // counter = 100
     expect(await c.cmd(`P5=${'0a00000000000000'}`)).toBe('OK');      // rdi = 10
@@ -471,7 +485,10 @@ describe.skipIf(!haveRootfs || !realLayers || !blinkHasGdb)("Debian's gdb (TABCO
   let shell: Awaited<ReturnType<typeof createTestShell>>['shell'];
   const gdb = async (cmds: string[], args = '') => {
     await fs.writeFile('/home/user/dbg/g.cmd', cmds.join('\n') + '\n');
+    // GDB_TEST_DIAG=1: what every kernel process is doing if gdb hasn't finished in 45 s
+    const stuck = process.env.GDB_TEST_DIAG ? setTimeout(() => console.log('GDBDIAG ' + cmds.join('; ') + ' ' + JSON.stringify(kernelDiagnostics())), 45_000) : undefined;
     const r = await run(shell, `cd /home/user/dbg && gdb -q -batch -x g.cmd --args ./demo ${args} 2>&1`);
+    clearTimeout(stuck);
     if (process.env.GDB_TEST_SHOW) console.log(r.output);
     return r;
   };

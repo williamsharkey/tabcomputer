@@ -1,6 +1,6 @@
-From 79ddec399e1b8817212154fc4ccb7a71d0db5012 Mon Sep 17 00:00:00 2001
+From 015005c7d0cd676c639a083d08bf86086896fdf3 Mon Sep 17 00:00:00 2001
 From: shiro <build@shiro>
-Date: Mon, 12 Oct 2026 05:51:46 -0400
+Date: Mon, 12 Oct 2026 05:54:35 -0400
 Subject: [PATCH] Shiro: a debug agent for gdb: stops, registers, memory,
  breakpoints, steps over a kernel call (1050)
 
@@ -44,11 +44,11 @@ DeliverSignalToUser.
  blink/blink.c      |   3 +
  blink/machine.h    |   7 +
  blink/shiro.inc    |   2 +
- blink/shirogdb.inc | 341 +++++++++++++++++++++++++++++++++++++++++++++
+ blink/shirogdb.inc | 345 +++++++++++++++++++++++++++++++++++++++++++++
  blink/signal.c     |   8 ++
  blink/syscall.c    |   5 +-
  blink/throw.c      |   2 +
- 7 files changed, 367 insertions(+), 1 deletion(-)
+ 7 files changed, 371 insertions(+), 1 deletion(-)
  create mode 100644 blink/shirogdb.inc
 
 diff --git a/blink/blink.c b/blink/blink.c
@@ -95,10 +95,10 @@ index 670e1f4..f575bf6 100644
 +#include "blink/shirogdb.inc"
 diff --git a/blink/shirogdb.inc b/blink/shirogdb.inc
 new file mode 100644
-index 0000000..84b0bd5
+index 0000000..75d4a54
 --- /dev/null
 +++ b/blink/shirogdb.inc
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,345 @@
 +// ── Debug agent (gdb: docs/research/GDB.md) ─────────────────────────────
 +// Included by shiro.inc.
 +//
@@ -126,7 +126,8 @@ index 0000000..84b0bd5
 +  struct Machine *m;
 +  bool started;  // the stop before the first instruction was reported
 +  bool passing;  // the debugger passed a signal on: deliver it
-+  bool step;     // stop after one instruction
++  bool step;     // stop after one instruction...
++  u64 rlo, rhi;  // ...that leaves ip outside [rlo, rhi) (gdb's range stepping: a source line)
 +  bool stepped;  // which has run
 +  bool skip;     // resumed at a breakpoint: run its instruction
 +  int fault;     // a fault an instruction raised, not yet reported
@@ -293,6 +294,8 @@ index 0000000..84b0bd5
 +        // (the debugger may have written to watched memory)
 +        for (i = 0; i < (u32)g_gdb.nwp; ++i) ShiroGdbWatched(m, g_gdb.wp + i);
 +        g_gdb.step = r == 2;
++        g_gdb.rlo = r == 2 ? Read64(b + 12) : 0;
++        g_gdb.rhi = r == 2 ? Read64(b + 20) : 0;
 +        g_gdb.skip = true;
 +        m->sigmask = mask;
 +        return sig;
@@ -423,7 +426,8 @@ index 0000000..84b0bd5
 +    ShiroGdbStop(m, 5, 0);
 +  } else if (g_gdb.wphit) {
 +    ShiroGdbStop(m, 5, 4);
-+  } else if (g_gdb.step && g_gdb.stepped) {
++  } else if (g_gdb.step && g_gdb.stepped &&
++             !(m->ip >= g_gdb.rlo && m->ip < g_gdb.rhi)) {
 +    ShiroGdbStop(m, 5, 3);
 +  } else if (g_gdb.nbp && !g_gdb.skip && ShiroGdbFindBp(m->ip) >= 0) {
 +    ShiroGdbStop(m, 5, 2);

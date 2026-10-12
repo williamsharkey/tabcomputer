@@ -44,7 +44,7 @@ export function walk(dir, base = dir, out = []) {
 }
 /** Copy the app (server.js, public/) into the tab's filesystem */
 export async function putApp(page, tabDir = '/home/user/apps/converter') {
-  const files = walk(APP).filter((rel) => rel === 'server.js' || rel === 'app.json' || rel.startsWith('public/')).map((rel) => ({ rel, b64: readFileSync(join(APP, rel)).toString('base64') }));
+  const files = walk(APP).filter((rel) => rel === 'server.js' || rel === 'app.json' || rel === 'package.json' || rel.startsWith('public/')).map((rel) => ({ rel, b64: readFileSync(join(APP, rel)).toString('base64') }));
   await page.evaluate(async ([files, tabDir]) => {
     const fs = window.__tabcomputer.fs;
     for (const f of files) {

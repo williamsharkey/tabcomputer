@@ -7,8 +7,8 @@
 // 3. The TTL runs out unconfirmed: the change reverts by itself.
 // 4. Apply, `hotswap confirm --persist`, reload: the swap is back; ?safe=1 skips it; revert clears it.
 // 5. `hotswap apply src/commands/git.ts` patches the lazy git command (#47); revert; then `reload` it.
-// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage;
-//    their node:fs reads the checkout (fixtures included) and writes only in memory.
+// 6. `hotswap test` runs shell suites from the checkout in the tab, without touching the tab's own storage
+//    or its DOM; their node:fs reads the checkout (fixtures included) and writes only in memory.
 // 7. `hotswap watch -d`: each save of src/shell.ts is live in the main shell without long tasks; --wait reports;
 //    a broken save changes nothing; --test runs a suite after a save.
 import { createRequire } from 'node:module';
@@ -110,6 +110,8 @@ r = await sh(page, 'cd /home/user/tabcomputer && hotswap build src/gl/exec.ts');
 check(r.code === 0 && /src\/gl\/gen\/enums\.ts is generated or vendored/.test(r.out), 'hotswap build of a module importing generated tables', r.out);
 
 // 6. Suites from the checkout, in the tab
+const lostStorage = [];
+page.on('console', (m) => { if (/browser storage was deleted/.test(m.text())) lostStorage.push(m.text()); });
 await page.evaluate(async () => {
   await window.__tabcomputer.fs.writeFile('/home/user/keep.txt', 'mine');
   localStorage.setItem('hotswap-check', 'mine');
@@ -146,6 +148,18 @@ const kept = await page.evaluate(async () => ({
   dbs: (await indexedDB.databases()).map((d) => d.name).filter((n) => n.startsWith('tabcomputer-test-')).length,
 }));
 check(kept.file === 'mine' && kept.ls === 'mine', "the tab's own files and localStorage are untouched", JSON.stringify(kept));
+// A suite's document is its own (#98): desktop-session clears document.body, and kernel-std-redirect's
+// createTestOS() appends a terminal to it. The page keeps what it had
+const pageDom = () => page.evaluate(() => ({ body: document.body.children.length, xterms: document.querySelectorAll('.xterm').length }));
+const domBefore = await pageDom();
+r = await sh(page, 'cd /home/user/tabcomputer && hotswap test desktop-session kernel-std-redirect');
+const domAfter = await pageDom();
+check(/PASS .*desktop-session\.test\.ts: \d+ passed/.test(r.out) && /PASS .*kernel-std-redirect\.test\.ts: \d+ passed/.test(r.out)
+  && domBefore.xterms > 0 && JSON.stringify(domAfter) === JSON.stringify(domBefore),
+  "suites that change document.body leave the page's DOM alone", `${JSON.stringify(domBefore)} -> ${JSON.stringify(domAfter)}\n${r.out}`);
+// (a suite's FileSystem reopens 100 ms after its database goes: #99's false report came then)
+await wait(500);
+check(lostStorage.length === 0, 'no "browser storage was deleted" report after the test runs', lostStorage.join('\n'));
 
 // 7. The save loop: `hotswap watch -d`, edit, `hotswap watch --wait`
 r = await sh(page, 'cd /home/user/tabcomputer && hotswap revert --all >/dev/null; hotswap watch -d --ttl 20s');

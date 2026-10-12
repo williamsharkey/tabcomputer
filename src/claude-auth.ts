@@ -1,6 +1,7 @@
 import type { FileSystem } from './filesystem';
 import { DEFAULT_CLAUDE_THEME, ensureClaudeBootstrap } from './claude-config';
 import { getShiroOrigin } from './utils/shiro-origin';
+import { privateFetch } from './net-private';
 
 type JsonRecord = Record<string, any>;
 
@@ -95,7 +96,8 @@ function mapSubscriptionType(profile: OAuthProfileResponse | null | undefined): 
 
 async function fetchJson<T>(url: string, headers: Record<string, string>): Promise<T | null> {
   try {
-    const resp = await fetch(url, { headers });
+    // (private network mode: the API itself, over the relay; net-private.ts)
+    const resp = await privateFetch(url, { headers }, { siteOrigin: getShiroOrigin() });
     if (!resp.ok) return null;
     return await resp.json() as T;
   } catch {

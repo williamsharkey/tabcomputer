@@ -329,6 +329,8 @@ Save your work
 Privacy
   dataflow               where your files, sign-ins and traffic go, and what the
                          server can read, for this tab as it is now
+  netmode private        keep tokens, code and prompts from this site's server
+                         (slower); netmode proxy is the default
   guest                  a separate tabcomputer for code you don't trust
 
 Something wrong?

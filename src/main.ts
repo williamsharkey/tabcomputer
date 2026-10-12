@@ -557,6 +557,8 @@ async function main() {
     () => import('./commands/ipcs').then(m => m.ipcrmCmd)), 'src/commands/ipcs.ts');
   registerCommand(commands, safeModeCmd, 'src/commands/safe-mode.ts');
   registerCommand(commands, guestCmd, 'src/commands/guest.ts');
+  registerCommand(commands, lazyCommand('netmode', "Network mode: proxy (this site's server makes requests) or private (it cannot read them)",
+    () => import('./commands/netmode').then(m => m.netmodeCmd)), 'src/commands/netmode.ts');
   registerCommand(commands, lazyCommand('dataflow', 'How your data flows: what leaves this tab, by which path, and what the server can read',
     () => import('./commands/dataflow').then(m => m.dataflowCmd)), 'src/commands/dataflow.ts');
   registerCommand(commands, lazyCommand('doctor', 'Check this tab (deploy, browser, engine, network, sign-ins, storage) for a bug report',

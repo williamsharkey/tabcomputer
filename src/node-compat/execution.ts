@@ -4,6 +4,8 @@
  * Extracted from node-cmd.ts exec() body.
  */
 
+import { networkMode } from '../net-mode';
+import { goesPrivate, privateFetch } from '../net-private';
 import type { NodeArgs } from '../commands/jseval/node-args';
 import { attachProcessIpc } from './ipc';
 import { createActivity } from './activity';
@@ -628,7 +630,10 @@ export async function executeNodeScript(
       ['https://mcp-proxy.anthropic.com/', '/api/mcp-proxy/'],
       ['https://generativelanguage.googleapis.com/', '/api/gemini/'],
     ];
+    // Private network mode (net-mode.ts): none of these go to this site's proxies
+    const privateNet = networkMode(ctx.env) === 'private';
     const rewriteUrl = (u: string): string => {
+      if (privateNet) return u;
       for (const [prefix, proxy] of corsProxyMap) {
         if (u.startsWith(prefix)) return corsProxyOrigin + proxy + u.slice(prefix.length);
       }
@@ -669,6 +674,18 @@ export async function executeNodeScript(
               { status: vResp.status || 200, statusText: vResp.statusText || 'OK', headers: vResp.headers || {} },
             ));
           }
+        }
+        if (privateNet && goesPrivate(url, { env: ctx.env, siteOrigin: corsProxyOrigin })) {
+          // the real host, encrypted here and carried by the relay (or GitHub's API, directly)
+          const sockets = typeof window === 'undefined' ? nodeGuestOf(ctx)?.netStack as import('../commands/relay-fetch').SocketStack | undefined : undefined;
+          const req = input instanceof Request ? input : null;
+          return (async () => privateFetch(url, {
+            method: init?.method ?? req?.method,
+            headers: init?.headers ?? req?.headers,
+            body: init?.body ?? (req && req.method !== 'GET' && req.method !== 'HEAD' ? new Uint8Array(await req.clone().arrayBuffer()) : undefined),
+            redirect: init?.redirect ?? req?.redirect,
+            signal: init?.signal ?? req?.signal,
+          }, { env: ctx.env, siteOrigin: corsProxyOrigin, guest: sockets ? { sockets, fetch: _origFetch } : null, fetchImpl: _origFetch }))();
         }
         const rewritten = rewriteUrl(url);
         if (rewritten !== url) {

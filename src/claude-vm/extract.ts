@@ -94,13 +94,15 @@ export function launcherSource(): string {
  * the URL, headers and protocols sent here as the first message (not in the
  * URL: tokens stay out of access logs), answers `{"type":"open"}` (or why
  * not), and then passes every frame both ways. `TABCOMPUTER_VM_WS_PROXY`
- * names another origin for that route (tests).
+ * names another origin for that route (tests). Private network mode
+ * (net-mode.ts) has no such route, so voice input is off there.
  */
 export function wsShimSource(): string {
   // (no backslashes, backticks or dollar-braces below: this is a template literal)
   return `const { EventEmitter } = require('events');
 const PROXIED = /^wss:[/][/]api[.]anthropic[.]com(:443)?[/]/i;
 function proxyUrl() {
+  if (process.env.TABCOMPUTER_NETWORK_MODE === 'private' && !process.env.TABCOMPUTER_VM_WS_PROXY) return null;
   let o = process.env.TABCOMPUTER_VM_WS_PROXY || '';
   if (!o) { try { o = require('tabcomputer:claude-vm').origin() || ''; } catch (e) { o = ''; } }
   return o ? o.replace(/[/]+$/, '').replace(/^http/, 'ws') + '/api/ws-proxy' : null;

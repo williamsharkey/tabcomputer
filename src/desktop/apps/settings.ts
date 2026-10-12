@@ -13,6 +13,7 @@ import type { DesktopWindow } from '../wm';
 import { GLYPHS, ICONS } from '../icons';
 import { ICON_SETS, appIconIn, glyphFor, paintPixelTiles, type IconSetId } from '../iconsets';
 import { networkCredential, networkStatus, onNetworkStatus, ownRelay, setOwnRelay } from '../../net-signin';
+import { networkMode, setNetworkMode } from '../../net-mode';
 import { openSignIn, probeRelay, signedInAccount, signOut, statusText, testOwnRelay } from '../network';
 import { BRAND } from '../../brand';
 import buildNumber from '../../../build-number.txt?raw';
@@ -214,6 +215,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       const s = networkStatus();
       const own = ownRelay();
       const signed = !!networkCredential();
+      const priv = networkMode() === 'private';
       const dot = s === 'signed-in' || s === 'online' ? 'ok' : s === 'needs-sign-in' ? 'warn' : 'off';
       panel.innerHTML = `
         <h2>Network</h2><p class="sd-muted">Programs reach the internet through a relay: this site's, or one you run. Downloads from this site (packages, Debian) need no relay.</p>
@@ -241,6 +243,16 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
             <div class="sd-small sd-muted">Any relay speaking tabcomputer's protocol works — <code>TABCOMPUTER_TCP_RELAY=1 node server.mjs</code> from the repository, with this site in <code>TABCOMPUTER_TCP_ORIGINS</code>. Your GitHub sign-in is never sent to it.</div>
           </div>` : ''}
         </div>
+        <h3>Privacy</h3>
+        <div class="sd-card">
+          <div class="sd-row"><span class="sd-grow">What this site's server may read<div class="sd-small sd-muted">${priv
+            ? "Private: git and gh call GitHub from this browser. Sign-in, other git hosts and Claude are encrypted here and carried by the relay, which sees a host name and sizes. Slower; Claude's voice input is off."
+            : "Proxy: this site's server makes the requests for git, gh and Claude. It is the faster and more dependable way, and the server can read what passes (it stores none of it)."}</div></span>
+            <div class="sd-seg" role="radiogroup" aria-label="Network mode">
+              <button data-netmode="proxy" role="radio" class="${priv ? '' : 'sd-active'}" aria-checked="${!priv}">Proxy</button>
+              <button data-netmode="private" role="radio" class="${priv ? 'sd-active' : ''}" aria-checked="${priv}">Private</button>
+            </div></div>
+        </div>
         <h3>Account</h3>
         <div class="sd-card">
           <div class="sd-row"><span class="sd-grow">${signed ? (account ? `Signed in with GitHub as <b>@${esc(account)}</b>` : 'Signed in with GitHub') : 'Not signed in'}
@@ -260,9 +272,10 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     render();
     cleanup = onNetworkStatus(() => { readDraft(); render(); });
     panel.onclick = async (e) => {
-      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act], [data-mode]');
+      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act], [data-mode], [data-netmode]');
       if (!el) return;
       readDraft();
+      if (el.dataset.netmode === 'proxy' || el.dataset.netmode === 'private') { setNetworkMode(el.dataset.netmode); render(); return; }
       if (el.dataset.mode === 'site') { mode = 'site'; relayMsg = ''; if (ownRelay()) setOwnRelay(null); render(); return; }
       if (el.dataset.mode === 'own') { mode = 'own'; render(); panel.querySelector<HTMLInputElement>('#sd-relay-url')?.focus(); return; }
       const act = el.dataset.act;

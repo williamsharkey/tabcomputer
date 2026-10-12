@@ -5,6 +5,7 @@
  * calls really block. Needs a blocking channel (a cross-origin isolated
  * page); otherwise node runs in the page as before.
  */
+import { networkMode } from '../net-mode';
 import type { CommandContext } from '../commands/index';
 import * as A from '../kernel/abi';
 import { BufferFile, type OpenFile } from '../kernel/fd';
@@ -91,7 +92,7 @@ function wire(w: GuestWorker, proc: Process, kernel: Kernel): void {
             return tw;
           }, {
             dataSize: 1 << 20,
-            startData: { pageOrigin: getShiroOrigin(), nodeThread: { file: m.file, eval: m.eval, workerData: m.workerData, argv: m.argv, env: m.env, threadId: m.threadId, stdout: m.stdout, stderr: m.stderr } },
+            startData: { pageOrigin: getShiroOrigin(), networkMode: networkMode(), nodeThread: { file: m.file, eval: m.eval, workerData: m.workerData, argv: m.argv, env: m.env, threadId: m.threadId, stdout: m.stdout, stderr: m.stderr } },
           });
         } catch (e: any) {
           ev('error', { message: String(e?.message ?? e) });
@@ -241,7 +242,7 @@ export function nodeWorkerRunner(): Runner {
     const w = lease(pooledWorker());
     wire(w, p, kernel);
     return w;
-  }, { dataSize: 1 << 20, startData: { pageOrigin: getShiroOrigin() } })(proc, kernel));
+  }, { dataSize: 1 << 20, startData: { pageOrigin: getShiroOrigin(), networkMode: networkMode() } })(proc, kernel));
 }
 
 /** `#!/usr/bin/env node`, `#!/usr/bin/env -S node --flag`, `#!/usr/local/bin/node`: the flags after node, or null */

@@ -39,6 +39,8 @@ There are three places: **this tab** (your browser, this site's origin), **the s
 
 **Browse origins** (`{key}.web.<domain>`, the Browser app): the server serves four fixed scripts and a bootstrap page there, nothing else. Page content comes from the app in your tab, fetched over `/tcp` with TLS in the tab, so the server sees hosts and sizes, not pages. A server-side fetch that would see plaintext exists for measurement only and is off unless `TABCOMPUTER_BROWSE_SERVER_FETCH=1` (`server.mjs`).
 
+**Private mode** (Settings → Network → Privacy, or `netmode private`; `src/net-mode.ts`, docs/NETWORKING.md "Private mode") takes the "everything" rows away from the server. `gh`, the Git app and git on github.com call `api.github.com` straight from the browser. GitHub sign-in, git on other hosts, repositories too large for the API, and the Claude and Gemini routes are encrypted in the tab and go by `/tcp`, so the server sees a host name and byte counts. `/api/ws-proxy` has no private route: Claude's voice input is off in that mode. The mode is off by default.
+
 ## Straight from the browser, not through the server
 
 The browser itself connects to these, so they see your address and the request, like any website:

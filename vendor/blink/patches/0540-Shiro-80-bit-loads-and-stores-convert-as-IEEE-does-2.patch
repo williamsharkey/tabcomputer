@@ -1,0 +1,136 @@
+From bc06ceba0f0af0104fb39b7936e91405a8476b93 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 12 Oct 2026 01:20:07 -0400
+Subject: [PATCH] Shiro: 80-bit loads and stores convert as IEEE does (2-ulp
+ loaded as 1, past DBL_MAX as NaN)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The x87 registers are doubles, so fldt/fstpt (and fxsave, fnsave and
+signal frames) convert. The conversion had four faults:
+
+- The rounding carry was OR-ed into the exponent field: a significand of
+  all ones with an odd biased exponent (0x3fff'ffffffffffffffff, just
+  under 2) loaded as half its value (1).
+- A finite value past DBL_MAX loaded as infinity only when its fraction
+  was zero; with any fraction bit it was NaN (a likely source of the
+  "invalid value encountered" warnings from numpy's long double limits,
+  tabcomputer #110 item 6; not confirmed against numpy).
+- A value under DBL_MIN loaded as its fraction bits at exponent zero
+  (1.5 * 2^-2000 became 2^-1023), not as the nearest subnormal or zero.
+- A subnormal double was stored with exponent 0, which in the 80-bit
+  format is 2^-16382, so a store and a load of the same register (a
+  signal frame, fxsave) did not give the value back.
+
+Now: round to nearest even, ±infinity past double's range, the nearest
+subnormal or ±0 below it, and subnormal doubles stored normalized. Values
+within double's range and precision convert as before.
+
+The registers stay doubles: long double still has double's range and 53
+bits, so exp2l(-16382) is 0 and LDBL_MAX is infinity.
+---
+ blink/ldbl.c | 76 ++++++++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 65 insertions(+), 11 deletions(-)
+
+diff --git a/blink/ldbl.c b/blink/ldbl.c
+index 346e06a..dbd7a63 100644
+--- a/blink/ldbl.c
++++ b/blink/ldbl.c
+@@ -22,28 +22,82 @@
+ #include "blink/macros.h"
+ #include "blink/pun.h"
+ 
++// The x87 registers are doubles (Blink's design), so an 80-bit value is
++// converted when it is loaded and stored. The conversion is IEEE's: round
++// to nearest even; past double's range ±infinity, below it a subnormal or
++// ±0; a subnormal double is stored normalized. (It was: the rounding carry
++// OR-ed into the exponent, so 0x3fff'ffffffffffffffff, just under 2, loaded
++// as 1; a finite value past DBL_MAX with any fraction bit loaded as NaN; a
++// value under DBL_MIN loaded as its fraction bits at exponent zero; and a
++// subnormal double was stored with exponent 0, which there is 2^-16382.)
+ u8 *SerializeLdbl(u8 b[10], double f) {
+   int e;
++  u64 m;
+   union DoublePun u = {f};
+   e = (u.i >> 52) & 0x7ff;
+-  if (!e) {
+-    e = 0;
+-  } else if (e == 0x7ff) {
++  m = u.i & 0x000fffffffffffff;
++  if (e == 0x7ff) {
+     e = 0x7fff;
+-  } else {
+-    e -= 0x3ff;
+-    e += 0x3fff;
++    m = m << 11 | (u64)1 << 63;
++  } else if (e) {
++    e += 0x3fff - 0x3ff;
++    m = m << 11 | (u64)1 << 63;
++  } else if (m) {
++    int k = __builtin_clzll(m);  // 12..63: normalize the subnormal
++    m <<= k;
++    e = 0x3fff - 1022 - (k - 11);
+   }
+   Write16(b + 8, e | u.i >> 63 << 15);
+-  Write64(b, (u.i & 0x000fffffffffffff) << 11 | (u64) !!u.f << 63);
++  Write64(b, m);
+   return b;
+ }
+ 
+ double DeserializeLdbl(const u8 b[10]) {
+   union DoublePun u;
+-  u.i = (u64)(MAX(-1023, MIN(1024, ((Read16(b + 8) & 0x7fff) - 0x3fff))) + 1023)
+-            << 52 |
+-        ((Read64(b) & 0x7fffffffffffffff) + (1 << (11 - 1))) >> 11 |
+-        (u64)(b[9] >> 7) << 63;
++  u64 m = Read64(b);
++  u64 sign = (u64)(b[9] >> 7) << 63;
++  int e = Read16(b + 8) & 0x7fff;
++  if (e == 0x7fff) {
++    if (m << 1) {
++      u.i = sign | 0x7ff8000000000000 | (m << 1) >> 12;  // NaN, quiet, its payload's top bits
++    } else {
++      u.i = sign | 0x7ff0000000000000;
++    }
++    return u.f;
++  }
++  if (!m) {
++    u.i = sign;
++    return u.f;
++  }
++  if (!e) e = 1;  // denormals and pseudo-denormals have exponent 1 - 16383
++  if (!(m >> 63)) {
++    int k = __builtin_clzll(m);
++    m <<= k;
++    e -= k;
++  }
++  e -= 0x3fff;  // the value is 1.xxx * 2^e
++  if (e > 1023) {
++    u.i = sign | 0x7ff0000000000000;
++  } else if (e >= -1022) {
++    u64 mant = m >> 11, rem = m & 0x7ff;
++    if (rem > 0x400 || (rem == 0x400 && (mant & 1))) ++mant;
++    // mant has the implicit bit (2^52), which adds one to the exponent
++    // field; a carry out of the rounding adds another, up to infinity
++    u.i = sign | (((u64)(e + 1022) << 52) + mant);
++  } else {
++    int shift = 11 + (-1022 - e);  // > 11
++    u64 mant, rem, half;
++    if (shift > 64) {
++      mant = 0;
++    } else if (shift == 64) {
++      mant = m > (u64)1 << 63;
++    } else {
++      mant = m >> shift;
++      rem = m & (((u64)1 << shift) - 1);
++      half = (u64)1 << (shift - 1);
++      if (rem > half || (rem == half && (mant & 1))) ++mant;
++    }
++    u.i = sign | mant;  // a carry makes DBL_MIN
++  }
+   return u.f;
+ }
+-- 
+2.39.5 (Apple Git-154)
+

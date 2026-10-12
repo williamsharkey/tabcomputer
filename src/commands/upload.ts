@@ -1,9 +1,19 @@
 import { Command } from './index';
 
+const UPLOAD_USAGE = `Usage: upload [DIR]
+Pick files on this device and copy them into DIR (default: the current directory).
+`;
+const DOWNLOAD_USAGE = `Usage: download [FILE]...
+Save each FILE to this device. With no FILE, pick one from a file browser.
+A folder: zip -r work.zip DIR, then download work.zip.
+`;
+const wantsHelp = (args: string[]) => args[0] === '-h' || args[0] === '--help';
+
 export const uploadCmd: Command = {
   name: 'upload',
   description: 'Upload files from host machine into virtual filesystem',
   async exec(ctx) {
+    if (wantsHelp(ctx.args)) { ctx.stdout = UPLOAD_USAGE; return 0; }
     const targetDir = ctx.args[0] || '.';
 
     return new Promise<number>((resolve) => {
@@ -25,7 +35,7 @@ export const uploadCmd: Command = {
         const outputs: string[] = [];
         for (const file of Array.from(files)) {
           try {
-            const content = await file.text();
+            const content = new Uint8Array(await file.arrayBuffer());
             const destPath = targetDir === '.'
               ? ctx.fs.resolvePath(file.name, ctx.cwd)
               : ctx.fs.resolvePath(`${targetDir}/${file.name}`, ctx.cwd);
@@ -57,8 +67,8 @@ export const uploadCmd: Command = {
   },
 };
 
-function triggerDownload(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'application/octet-stream' });
+function triggerDownload(content: Uint8Array, filename: string) {
+  const blob = new Blob([content as BlobPart], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -73,13 +83,14 @@ export const downloadCmd: Command = {
   name: 'download',
   description: 'Download files from virtual filesystem to host machine',
   async exec(ctx) {
+    if (wantsHelp(ctx.args)) { ctx.stdout = DOWNLOAD_USAGE; return 0; }
     // Direct download with arguments
     if (ctx.args.length > 0) {
       const outputs: string[] = [];
       for (const filePath of ctx.args) {
         try {
           const resolvedPath = ctx.fs.resolvePath(filePath, ctx.cwd);
-          const content = await ctx.fs.readFile(resolvedPath, 'utf8') as string;
+          const content = await ctx.fs.readFile(resolvedPath) as Uint8Array;
           triggerDownload(content, filePath.split('/').pop() || 'file');
           outputs.push(`Downloaded: ${filePath}`);
         } catch (err: any) {
@@ -200,7 +211,7 @@ async function showFileBrowser(ctx: import('./index').CommandContext): Promise<n
         } else {
           row.onclick = async () => {
             try {
-              const content = await ctx.fs.readFile(fullPath, 'utf8') as string;
+              const content = await ctx.fs.readFile(fullPath) as Uint8Array;
               triggerDownload(content, name);
               ctx.stdout = `Downloaded: ${fullPath}\n`;
             } catch (e: any) {

@@ -420,6 +420,8 @@ async function installTree(
           await ctx.fs.symlink(target, link);
         } catch { /* skip */ }
       }
+      // npm marks a bin's file executable: Debian's `which`, bash and execvp ask for the x bit
+      await ctx.fs.chmod(`${base}/${n.dir}/${clean}`, 0o755).catch(() => {});
     }
   }
   if (!opts.ignoreScripts) await runInstallScripts(ctx, base, fresh);

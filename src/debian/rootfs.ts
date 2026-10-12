@@ -313,6 +313,22 @@ export async function writeEngineWorkarounds(fs: FileSystem): Promise<void> {
   } catch { /* no resolv.conf */ }
   await keepManPages(fs);
   await noServicesFromPackages(fs);
+  await pipInstallsPackages(fs);
+}
+
+/**
+ * /etc/pip.conf with break-system-packages: `pip install NAME` installs, as
+ * tutorials say, where Debian's python3 refuses with PEP 668's
+ * "externally-managed-environment" (this machine has one user and no system
+ * that depends on its Python). Files here are the user's, so pip writes to
+ * /usr/local (scripts in /usr/local/bin, on PATH) without sudo or --user.
+ * The setting does nothing in a venv; `user = true` would be an error there.
+ * A pip.conf that exists is the user's and is left alone.
+ */
+export async function pipInstallsPackages(fs: FileSystem): Promise<void> {
+  const p = '/etc/pip.conf';
+  if (await fs.exists(p)) return;
+  await fs.writeFile(p, '# Written by tabcomputer (src/debian/rootfs.ts): pip install works without a venv; see docs/DEBIAN.md\n[global]\nbreak-system-packages = true\n');
 }
 
 /**

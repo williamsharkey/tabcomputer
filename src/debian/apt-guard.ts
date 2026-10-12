@@ -28,6 +28,20 @@ const CHANGES = new Set(['install', 'reinstall', 'remove', 'purge', 'upgrade', '
 /** dpkg statuses that mean an operation stopped part-way (dpkg --audit lists these). */
 const BROKEN = /^(half-installed|unpacked|half-configured)$/;
 
+/** Programs that configure packages through debconf (Debian's own behind the overlay too). */
+const DEBCONF_PROGRAMS = /^(?:apt|apt-get|aptitude|dpkg|dpkg-reconfigure)(?:\.debian)?$/;
+
+/**
+ * The environment for apt or dpkg started without a terminal:
+ * DEBIAN_FRONTEND=noninteractive unless the user set one. debconf can't ask
+ * there; it tries each frontend and says so on every install ("unable to
+ * initialize frontend: Readline ... falling back to frontend: Noninteractive").
+ */
+export function debconfEnv(program: string, env: Record<string, string>, hasTty: boolean): Record<string, string> {
+  if (hasTty || env.DEBIAN_FRONTEND !== undefined || !DEBCONF_PROGRAMS.test(program.slice(program.lastIndexOf('/') + 1))) return env;
+  return { ...env, DEBIAN_FRONTEND: 'noninteractive' };
+}
+
 /** The apt subcommand: the first argument that isn't an option (or an option's value). */
 export function aptSubcommand(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -124,8 +138,10 @@ export async function aptGuard(io: AptGuardIO, product = 'tabcomputer'): Promise
 
 /** Runner for `shiro-apt` as a kernel program (the stub's argv is [interp, /usr/bin/apt-get, ...args]). */
 export async function aptGuardProgram(proc: Process, kernel: Kernel, product = 'tabcomputer'): Promise<number> {
+  // (started by a program rather than the shell: the shell's own runs get this in runKernelPipeline)
+  const env = debconfEnv('apt', proc.env, !!proc.ctty);
   const run = async (path: string, argv: string[]): Promise<number> => {
-    const child = kernel.spawn({ path, argv, env: proc.env, cwd: proc.cwd, parent: proc, inheritSignals: true });
+    const child = kernel.spawn({ path, argv, env, cwd: proc.cwd, parent: proc, inheritSignals: true });
     const r = await kernel.waitpid(child.pid, 0, proc);
     if (r.pid < 0) return 127;
     return WIFEXITED(r.status) ? WEXITSTATUS(r.status) : 128 + (r.status & 0x7f);

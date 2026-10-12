@@ -52,7 +52,7 @@ import { setupCmd } from './commands/setup';
 import { psCmd, killCmd } from './commands/ps';
 import { htmlCmd, imgCmd } from './commands/html';
 import { dougCmd } from './commands/doug';
-import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode } from './commands/become';
+import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode, startBecomeServer } from './commands/become';
 import { pageCmd } from './commands/page';
 import { titleCmd } from './commands/title';
 
@@ -863,15 +863,15 @@ async function main() {
       history.replaceState({}, '', '/');
     } else if (pathname === '/' + becomeConfig.slug) {
       // Only re-enter become mode on the slug path, NOT on root /
-      let startResult: number;
-      startResult = await shell.execute(
-          `serve "${becomeConfig.directory}" ${becomeConfig.port}`,
-          () => {}, () => {},
-        );
-        if (startResult === 0) {
-          await activateBecomeMode(becomeConfig);
-        }
-      if (startResult !== 0) {
+      // (the app's own server when `become --start` recorded its command, else a static serve)
+      const started = await startBecomeServer(becomeConfig, (cmd) => {
+        const side = shell.fork();
+        (side as any).terminal = null; // no terminal: the server's output must not paint under the app
+        return side.execute(cmd, () => {}, () => {});
+      });
+      if (started) {
+        await activateBecomeMode(becomeConfig);
+      } else {
         // Server failed to start — clear become config and show terminal
         localStorage.removeItem('tabcomputer-become');
         document.body.classList.remove('become-active');

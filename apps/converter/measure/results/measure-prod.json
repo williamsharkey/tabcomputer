@@ -1,0 +1,1957 @@
+{
+  "url": "https://tabcomputer.com/",
+  "at": "2026-10-12T06:46:18.978Z",
+  "bootFirstMs": 495,
+  "build": "Linux tabcomputer 6.1.0-tabcomputer #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux",
+  "isolated": true,
+  "memBootMB": 12,
+  "copyAppMs": 9,
+  "backendUpMs": 224,
+  "pageInteractiveMs": 93,
+  "pageMarks": {
+    "script": 31,
+    "interactive": 44
+  },
+  "statusBefore": {
+    "ready": false,
+    "outputs": [
+      "html",
+      "csv"
+    ],
+    "checkMs": 6
+  },
+  "pingMs": {
+    "median": 6.1,
+    "p90": 6.3,
+    "min": 2.8
+  },
+  "pingDirectMs": {
+    "median": 6.1,
+    "p90": 6.3
+  },
+  "sampleCount": 49,
+  "firstUse": {
+    "dropToFirstConvertedMs": 26576,
+    "rows": [
+      {
+        "rel": "tika-misc__testWordPerfect.wpd",
+        "status": "done",
+        "totalMs": 138,
+        "uploadMs": 12,
+        "serverMs": 121,
+        "toolMs": 121,
+        "outs": [
+          {
+            "path": "tika-misc__testWordPerfect.html",
+            "size": 851
+          }
+        ]
+      }
+    ],
+    "marks": {
+      "script": 31,
+      "interactive": 44,
+      "firstDrop": 457,
+      "setupStart": 458,
+      "setupMs": 26351,
+      "firstDone": 26947,
+      "allDone": 26947
+    }
+  },
+  "setupLogTail": "Unpacking mdbtools (1.0.1-0.1) ...\r\nSetting up librevenge-0.0-0:amd64 (0.0.5-3+b2) ...\r\nSetting up libatomic1:amd64 (14.2.0-19) ...\r\nSetting up libffi8:amd64 (3.4.8-2) ...\r\nSetting up libicu76:amd64 (76.1-4) ...\r\nSetting up libwpd-0.10-10:amd64 (0.10.3-2+b2) ...\r\nSetting up readline-common (8.2-6) ...\r\nSetting up libwps-0.4-4:amd64 (0.4.14-2+b2) ...\r\nSetting up libmspub-0.1-1:amd64 (0.1.4-3+b5) ...\r\nSetting up libwpd-tools (0.10.3-2+b2) ...\r\nSetting up libmwaw-0.3-3:amd64 (0.3.22-1+b2) ...\r\nSetting up libwps-tools (0.4.14-2+b2) ...\r\nSetting up libmwaw-tools (0.3.22-1+b2) ...\r\nSetting up libglib2.0-0t64:amd64 (2.84.4-3~deb13u5) ...\r\nNo schema files found: doing nothing.\r\nSetting up libreadline8t64:amd64 (8.2-6) ...\r\nSetting up libmdb3t64:amd64 (1.0.1-0.1) ...\r\nSetting up libmspub-tools (0.1.4-3+b5) ...\r\nSetting up libmdbsql3t64:amd64 (1.0.1-0.1) ...\r\nSetting up mdbtools (1.0.1-0.1) ...\r\nProcessing triggers for libc-bin (2.41-12+deb13u4) ...\r\n== Done\n\n== exit 0 after 26.3 s\n",
+  "statusAfter": {
+    "ready": true,
+    "outputs": [
+      "html",
+      "csv"
+    ]
+  },
+  "memAfterSetupMB": 124,
+  "programs": "wpd2html wpd2raw wpd2text pub2raw pub2xhtml wks2csv wks2raw wks2text wps2html wps2raw wps2text mwaw2html mwaw2raw mwaw2text mdb-array mdb-count mdb-export mdb-header mdb-hexdump mdb-import mdb-json mdb-parsecsv mdb-prop mdb-queries mdb-schema mdb-sql mdb-tables mdb-ver ",
+  "batchCold": {
+    "wallMs": 6586,
+    "n": 49,
+    "done": 33,
+    "failed": [
+      "lo-mspub__EDB-22310-1.pub: ERROR: Unsupported file format!",
+      "lo-mspub__EDB-22655-1.pub: ERROR: Unsupported file format!",
+      "lo-mspub__EDB-29664-1.pub: ERROR: Unsupported file format!",
+      "lo-mwaw-calc__ClarisWorks_5.0.cwk: exit 1",
+      "lo-mwaw-calc__ClarisWorks_6.0.cwk: exit 1",
+      "lo-mwaw-calc__ClarisWorks_DB.cwk: exit 1",
+      "lo-mwaw-calc__ClarisWorks_DB_5.0.cwk: exit 1",
+      "lo-mwaw-calc__MicrosoftWorks_4.0.wk4: exit 1",
+      "lo-mwaw-calc__MicrosoftWorks_DB_4.0.wdb: exit 1",
+      "lo-wks__Works_2.0.wks: the converter wrote nothing",
+      "lo-wpd__CVE-2007-1735-1.wpd: ERROR: Unsupported file format!",
+      "lo-wpd__CVE-2015-1759-1.wpd: ERROR: Unsupported file format!",
+      "lo-wpd__CVE-2015-1760-1.wpd: ERROR: Unsupported file format!",
+      "lo-wpd__CVE-2015-1760-2.wpd: ERROR: Unsupported file format!",
+      "lo-wpd__EDB-14344-1.wpd: ERROR: Unsupported file format!",
+      "tika-misc__testQuattro.wq2: the converter wrote nothing"
+    ],
+    "marks": {
+      "script": 31,
+      "interactive": 44,
+      "firstDrop": 457,
+      "setupStart": 458,
+      "setupMs": 26351,
+      "firstDone": 26947,
+      "allDone": 26947
+    }
+  },
+  "batchColdRows": [
+    {
+      "rel": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+      "status": "done",
+      "totalMs": 758,
+      "uploadMs": 48,
+      "serverMs": 709,
+      "toolMs": 703,
+      "outs": [
+        {
+          "path": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.html",
+          "size": 1998720
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug130289-Publication_16.pub",
+      "status": "done",
+      "totalMs": 805,
+      "uploadMs": 51,
+      "serverMs": 752,
+      "toolMs": 746,
+      "outs": [
+        {
+          "path": "lo-bugs__bug130289-Publication_16.html",
+          "size": 5611234
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug133297-TEST.pub",
+      "status": "done",
+      "totalMs": 358,
+      "uploadMs": 19,
+      "serverMs": 335,
+      "toolMs": 334,
+      "outs": [
+        {
+          "path": "lo-bugs__bug133297-TEST.html",
+          "size": 213260
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug61579-Flyer_04a.pub",
+      "status": "done",
+      "totalMs": 464,
+      "uploadMs": 7,
+      "serverMs": 451,
+      "toolMs": 451,
+      "outs": [
+        {
+          "path": "lo-bugs__bug61579-Flyer_04a.html",
+          "size": 87250
+        }
+      ]
+    },
+    {
+      "rel": "lo-mspub__EDB-22310-1.pub",
+      "status": "failed",
+      "totalMs": 253,
+      "uploadMs": 14,
+      "serverMs": 232,
+      "toolMs": 232,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__EDB-22655-1.pub",
+      "status": "failed",
+      "totalMs": 273,
+      "uploadMs": 19,
+      "serverMs": 249,
+      "toolMs": 249,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__EDB-29664-1.pub",
+      "status": "failed",
+      "totalMs": 289,
+      "uploadMs": 15,
+      "serverMs": 269,
+      "toolMs": 269,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__fdo59355-1.pub",
+      "status": "done",
+      "totalMs": 309,
+      "uploadMs": 11,
+      "serverMs": 290,
+      "toolMs": 289,
+      "outs": [
+        {
+          "path": "lo-mspub__fdo59355-1.html",
+          "size": 1324
+        }
+      ]
+    },
+    {
+      "rel": "lo-mwaw__ClarisWorks_6.0.cwk",
+      "status": "done",
+      "totalMs": 648,
+      "uploadMs": 8,
+      "serverMs": 634,
+      "toolMs": 633,
+      "outs": [
+        {
+          "path": "lo-mwaw__ClarisWorks_6.0.html",
+          "size": 23479
+        }
+      ]
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_5.0.cwk",
+      "status": "failed",
+      "totalMs": 214,
+      "uploadMs": 15,
+      "serverMs": 193,
+      "toolMs": 192,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_6.0.cwk",
+      "status": "failed",
+      "totalMs": 238,
+      "uploadMs": 18,
+      "serverMs": 215,
+      "toolMs": 213,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB.cwk",
+      "status": "failed",
+      "totalMs": 184,
+      "uploadMs": 23,
+      "serverMs": 155,
+      "toolMs": 155,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB_5.0.cwk",
+      "status": "failed",
+      "totalMs": 182,
+      "uploadMs": 20,
+      "serverMs": 154,
+      "toolMs": 154,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_4.0.wk4",
+      "status": "failed",
+      "totalMs": 135,
+      "uploadMs": 18,
+      "serverMs": 111,
+      "toolMs": 111,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_DB_4.0.wdb",
+      "status": "failed",
+      "totalMs": 135,
+      "uploadMs": 18,
+      "serverMs": 111,
+      "toolMs": 111,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-wks__Lotus.wk1",
+      "status": "done",
+      "totalMs": 159,
+      "uploadMs": 20,
+      "serverMs": 134,
+      "toolMs": 134,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus.html",
+          "size": 564
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Lotus123_3.123",
+      "status": "done",
+      "totalMs": 312,
+      "uploadMs": 19,
+      "serverMs": 287,
+      "toolMs": 287,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus123_3.html",
+          "size": 1171
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Lotus123_98.123",
+      "status": "done",
+      "totalMs": 257,
+      "uploadMs": 17,
+      "serverMs": 236,
+      "toolMs": 235,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus123_98.html",
+          "size": 1736
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__QuattroPro.wq1",
+      "status": "done",
+      "totalMs": 182,
+      "uploadMs": 9,
+      "serverMs": 166,
+      "toolMs": 166,
+      "outs": [
+        {
+          "path": "lo-wks__QuattroPro.html",
+          "size": 3857
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wdb",
+      "status": "done",
+      "totalMs": 130,
+      "uploadMs": 3,
+      "serverMs": 120,
+      "toolMs": 120,
+      "outs": [
+        {
+          "path": "lo-wks__Works_2.0.html",
+          "size": 823
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wks",
+      "status": "failed",
+      "totalMs": 161,
+      "uploadMs": 12,
+      "serverMs": 144,
+      "toolMs": 144,
+      "error": "the converter wrote nothing"
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wdb",
+      "status": "done",
+      "totalMs": 144,
+      "uploadMs": 5,
+      "serverMs": 134,
+      "toolMs": 134,
+      "outs": [
+        {
+          "path": "lo-wks__Works_Windows.html",
+          "size": 831
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wks",
+      "status": "done",
+      "totalMs": 163,
+      "uploadMs": 18,
+      "serverMs": 140,
+      "toolMs": 139,
+      "outs": [
+        {
+          "path": "lo-wks__Works_Windows.html",
+          "size": 1197
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__CVE-2007-1735-1.wpd",
+      "status": "failed",
+      "totalMs": 104,
+      "uploadMs": 3,
+      "serverMs": 96,
+      "toolMs": 95,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1759-1.wpd",
+      "status": "failed",
+      "totalMs": 106,
+      "uploadMs": 8,
+      "serverMs": 93,
+      "toolMs": 93,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-1.wpd",
+      "status": "failed",
+      "totalMs": 102,
+      "uploadMs": 6,
+      "serverMs": 90,
+      "toolMs": 89,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-2.wpd",
+      "status": "failed",
+      "totalMs": 110,
+      "uploadMs": 5,
+      "serverMs": 98,
+      "toolMs": 98,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__EDB-14344-1.wpd",
+      "status": "failed",
+      "totalMs": 109,
+      "uploadMs": 7,
+      "serverMs": 96,
+      "toolMs": 95,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__WP1.wpd",
+      "status": "done",
+      "totalMs": 112,
+      "uploadMs": 3,
+      "serverMs": 103,
+      "toolMs": 103,
+      "outs": [
+        {
+          "path": "lo-wpd__WP1.html",
+          "size": 498
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP3.wpd",
+      "status": "done",
+      "totalMs": 129,
+      "uploadMs": 5,
+      "serverMs": 118,
+      "toolMs": 118,
+      "outs": [
+        {
+          "path": "lo-wpd__WP3.html",
+          "size": 865
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP4.wp",
+      "status": "done",
+      "totalMs": 131,
+      "uploadMs": 11,
+      "serverMs": 114,
+      "toolMs": 113,
+      "outs": [
+        {
+          "path": "lo-wpd__WP4.html",
+          "size": 1017
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP5.wp",
+      "status": "done",
+      "totalMs": 107,
+      "uploadMs": 2,
+      "serverMs": 99,
+      "toolMs": 99,
+      "outs": [
+        {
+          "path": "lo-wpd__WP5.html",
+          "size": 454
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP6.wpd",
+      "status": "done",
+      "totalMs": 148,
+      "uploadMs": 14,
+      "serverMs": 128,
+      "toolMs": 128,
+      "outs": [
+        {
+          "path": "lo-wpd__WP6.html",
+          "size": 448
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_2.00A_DOS.wps",
+      "status": "done",
+      "totalMs": 104,
+      "uploadMs": 7,
+      "serverMs": 91,
+      "toolMs": 91,
+      "outs": [
+        {
+          "path": "lo-wps__Works_2.00A_DOS.html",
+          "size": 384
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_3.0.wps",
+      "status": "done",
+      "totalMs": 130,
+      "uploadMs": 16,
+      "serverMs": 108,
+      "toolMs": 107,
+      "outs": [
+        {
+          "path": "lo-wps__Works_3.0.html",
+          "size": 442
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_4.5.wps",
+      "status": "done",
+      "totalMs": 125,
+      "uploadMs": 6,
+      "serverMs": 113,
+      "toolMs": 113,
+      "outs": [
+        {
+          "path": "lo-wps__Works_4.5.html",
+          "size": 492
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_5.0.wps",
+      "status": "done",
+      "totalMs": 124,
+      "uploadMs": 11,
+      "serverMs": 107,
+      "toolMs": 107,
+      "outs": [
+        {
+          "path": "lo-wps__Works_5.0.html",
+          "size": 392
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_6.0.wps",
+      "status": "done",
+      "totalMs": 126,
+      "uploadMs": 8,
+      "serverMs": 112,
+      "toolMs": 112,
+      "outs": [
+        {
+          "path": "lo-wps__Works_6.0.html",
+          "size": 392
+        }
+      ]
+    },
+    {
+      "rel": "mdb__DateTestDatabase.mdb",
+      "status": "done",
+      "totalMs": 403,
+      "uploadMs": 14,
+      "serverMs": 383,
+      "toolMs": 382,
+      "outs": [
+        {
+          "path": "mdb__DateTestDatabase/DateTest.html",
+          "size": 1261
+        },
+        {
+          "path": "mdb__DateTestDatabase/schema.sql",
+          "size": 647
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq1",
+      "status": "done",
+      "totalMs": 483,
+      "uploadMs": 6,
+      "serverMs": 474,
+      "toolMs": 472,
+      "outs": [
+        {
+          "path": "tika-misc__testQuattro.html",
+          "size": 17095
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq2",
+      "status": "failed",
+      "totalMs": 322,
+      "uploadMs": 5,
+      "serverMs": 311,
+      "toolMs": 310,
+      "error": "the converter wrote nothing"
+    },
+    {
+      "rel": "tika-misc__testWordPerfect.wpd",
+      "status": "done",
+      "totalMs": 135,
+      "uploadMs": 16,
+      "serverMs": 113,
+      "toolMs": 112,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect.html",
+          "size": 851
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_0.wp",
+      "status": "done",
+      "totalMs": 208,
+      "uploadMs": 15,
+      "serverMs": 186,
+      "toolMs": 186,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect_5_0.html",
+          "size": 4937
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_1.wp",
+      "status": "done",
+      "totalMs": 237,
+      "uploadMs": 11,
+      "serverMs": 220,
+      "toolMs": 220,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect_5_1.html",
+          "size": 14295
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testACCESS.mdb",
+      "status": "done",
+      "totalMs": 562,
+      "uploadMs": 2,
+      "serverMs": 554,
+      "toolMs": 553,
+      "outs": [
+        {
+          "path": "tika-ms__testACCESS/Titles.html",
+          "size": 449
+        },
+        {
+          "path": "tika-ms__testACCESS/Tracks.html",
+          "size": 331
+        },
+        {
+          "path": "tika-ms__testACCESS/Menus.html",
+          "size": 345
+        },
+        {
+          "path": "tika-ms__testACCESS/Batch.html",
+          "size": 332
+        },
+        {
+          "path": "tika-ms__testACCESS/schema.sql",
+          "size": 1216
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess2_2000.mdb",
+      "status": "done",
+      "totalMs": 496,
+      "uploadMs": 17,
+      "serverMs": 473,
+      "toolMs": 466,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess2_2000/Table1.html",
+          "size": 218182
+        },
+        {
+          "path": "tika-ms__testAccess2_2000/Table2.html",
+          "size": 359
+        },
+        {
+          "path": "tika-ms__testAccess2_2000/schema.sql",
+          "size": 925
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess2_2002-2003.mdb",
+      "status": "done",
+      "totalMs": 503,
+      "uploadMs": 14,
+      "serverMs": 483,
+      "toolMs": 478,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess2_2002-2003/Table1.html",
+          "size": 218182
+        },
+        {
+          "path": "tika-ms__testAccess2_2002-2003/Table2.html",
+          "size": 359
+        },
+        {
+          "path": "tika-ms__testAccess2_2002-2003/schema.sql",
+          "size": 925
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess_V1997.mdb",
+      "status": "done",
+      "totalMs": 845,
+      "uploadMs": 8,
+      "serverMs": 831,
+      "toolMs": 830,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess_V1997/Table1.html",
+          "size": 643
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table2.html",
+          "size": 1785
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table3.html",
+          "size": 301
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table4.html",
+          "size": 307
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/schema.sql",
+          "size": 3118
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testPUBLISHER.pub",
+      "status": "done",
+      "totalMs": 316,
+      "uploadMs": 9,
+      "serverMs": 302,
+      "toolMs": 302,
+      "outs": [
+        {
+          "path": "tika-ms__testPUBLISHER.html",
+          "size": 1787
+        }
+      ]
+    }
+  ],
+  "direct": [
+    {
+      "rel": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+      "ms": 522,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-bugs__bug130289-Publication_16.pub",
+      "ms": 576,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-bugs__bug133297-TEST.pub",
+      "ms": 251,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-bugs__bug61579-Flyer_04a.pub",
+      "ms": 402,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-mspub__EDB-22310-1.pub",
+      "ms": 145,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mspub__EDB-22655-1.pub",
+      "ms": 144,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mspub__EDB-29664-1.pub",
+      "ms": 148,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mspub__fdo59355-1.pub",
+      "ms": 169,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-mwaw__ClarisWorks_6.0.cwk",
+      "ms": 458,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_5.0.cwk",
+      "ms": 109,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_6.0.cwk",
+      "ms": 88,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB.cwk",
+      "ms": 94,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB_5.0.cwk",
+      "ms": 91,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_4.0.wk4",
+      "ms": 60,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_DB_4.0.wdb",
+      "ms": 53,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wks__Lotus.wk1",
+      "ms": 76,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Lotus123_3.123",
+      "ms": 226,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Lotus123_98.123",
+      "ms": 136,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__QuattroPro.wq1",
+      "ms": 119,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wdb",
+      "ms": 80,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wks",
+      "ms": 101,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wdb",
+      "ms": 88,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wks",
+      "ms": 101,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wpd__CVE-2007-1735-1.wpd",
+      "ms": 47,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1759-1.wpd",
+      "ms": 46,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-1.wpd",
+      "ms": 46,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-2.wpd",
+      "ms": 46,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wpd__EDB-14344-1.wpd",
+      "ms": 47,
+      "exit": "1"
+    },
+    {
+      "rel": "lo-wpd__WP1.wpd",
+      "ms": 58,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wpd__WP3.wpd",
+      "ms": 70,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wpd__WP4.wp",
+      "ms": 69,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wpd__WP5.wp",
+      "ms": 55,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wpd__WP6.wpd",
+      "ms": 88,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wps__Works_2.00A_DOS.wps",
+      "ms": 58,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wps__Works_3.0.wps",
+      "ms": 69,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wps__Works_4.5.wps",
+      "ms": 73,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wps__Works_5.0.wps",
+      "ms": 71,
+      "exit": "0"
+    },
+    {
+      "rel": "lo-wps__Works_6.0.wps",
+      "ms": 70,
+      "exit": "0"
+    },
+    {
+      "rel": "mdb__DateTestDatabase.mdb",
+      "ms": 70,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq1",
+      "ms": 389,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq2",
+      "ms": 244,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-misc__testWordPerfect.wpd",
+      "ms": 71,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_0.wp",
+      "ms": 135,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_1.wp",
+      "ms": 167,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-ms__testACCESS.mdb",
+      "ms": 46,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-ms__testAccess2_2000.mdb",
+      "ms": 83,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-ms__testAccess2_2002-2003.mdb",
+      "ms": 71,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-ms__testAccess_V1997.mdb",
+      "ms": 88,
+      "exit": "0"
+    },
+    {
+      "rel": "tika-ms__testPUBLISHER.pub",
+      "ms": 230,
+      "exit": "0"
+    }
+  ],
+  "directTotalMs": 6744,
+  "shellNoopMs": 0,
+  "shellEchoMs": 0,
+  "batchWarm": {
+    "wallMs": 6573,
+    "done": 34,
+    "marks": {
+      "script": 31,
+      "interactive": 44,
+      "firstDrop": 457,
+      "setupStart": 458,
+      "setupMs": 26351,
+      "firstDone": 26947,
+      "allDone": 26947
+    }
+  },
+  "batchWarmRows": [
+    {
+      "rel": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+      "status": "done",
+      "totalMs": 677,
+      "uploadMs": 21,
+      "serverMs": 654,
+      "toolMs": 651,
+      "outs": [
+        {
+          "path": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.html",
+          "size": 1998720
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug130289-Publication_16.pub",
+      "status": "done",
+      "totalMs": 729,
+      "uploadMs": 23,
+      "serverMs": 701,
+      "toolMs": 695,
+      "outs": [
+        {
+          "path": "lo-bugs__bug130289-Publication_16.html",
+          "size": 5611234
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug133297-TEST.pub",
+      "status": "done",
+      "totalMs": 405,
+      "uploadMs": 19,
+      "serverMs": 382,
+      "toolMs": 382,
+      "outs": [
+        {
+          "path": "lo-bugs__bug133297-TEST.html",
+          "size": 213260
+        }
+      ]
+    },
+    {
+      "rel": "lo-bugs__bug61579-Flyer_04a.pub",
+      "status": "done",
+      "totalMs": 498,
+      "uploadMs": 7,
+      "serverMs": 485,
+      "toolMs": 485,
+      "outs": [
+        {
+          "path": "lo-bugs__bug61579-Flyer_04a.html",
+          "size": 87250
+        }
+      ]
+    },
+    {
+      "rel": "lo-mspub__EDB-22310-1.pub",
+      "status": "failed",
+      "totalMs": 304,
+      "uploadMs": 25,
+      "serverMs": 274,
+      "toolMs": 274,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__EDB-22655-1.pub",
+      "status": "failed",
+      "totalMs": 251,
+      "uploadMs": 18,
+      "serverMs": 229,
+      "toolMs": 228,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__EDB-29664-1.pub",
+      "status": "failed",
+      "totalMs": 249,
+      "uploadMs": 13,
+      "serverMs": 230,
+      "toolMs": 230,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-mspub__fdo59355-1.pub",
+      "status": "done",
+      "totalMs": 276,
+      "uploadMs": 4,
+      "serverMs": 266,
+      "toolMs": 266,
+      "outs": [
+        {
+          "path": "lo-mspub__fdo59355-1.html",
+          "size": 1324
+        }
+      ]
+    },
+    {
+      "rel": "lo-mwaw__ClarisWorks_6.0.cwk",
+      "status": "done",
+      "totalMs": 579,
+      "uploadMs": 3,
+      "serverMs": 571,
+      "toolMs": 570,
+      "outs": [
+        {
+          "path": "lo-mwaw__ClarisWorks_6.0.html",
+          "size": 23479
+        }
+      ]
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_5.0.cwk",
+      "status": "failed",
+      "totalMs": 210,
+      "uploadMs": 9,
+      "serverMs": 195,
+      "toolMs": 195,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_6.0.cwk",
+      "status": "failed",
+      "totalMs": 221,
+      "uploadMs": 25,
+      "serverMs": 190,
+      "toolMs": 190,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB.cwk",
+      "status": "failed",
+      "totalMs": 170,
+      "uploadMs": 22,
+      "serverMs": 143,
+      "toolMs": 142,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__ClarisWorks_DB_5.0.cwk",
+      "status": "failed",
+      "totalMs": 160,
+      "uploadMs": 4,
+      "serverMs": 149,
+      "toolMs": 149,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_4.0.wk4",
+      "status": "failed",
+      "totalMs": 132,
+      "uploadMs": 19,
+      "serverMs": 109,
+      "toolMs": 108,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-mwaw-calc__MicrosoftWorks_DB_4.0.wdb",
+      "status": "failed",
+      "totalMs": 101,
+      "uploadMs": 6,
+      "serverMs": 88,
+      "toolMs": 88,
+      "error": "exit 1"
+    },
+    {
+      "rel": "lo-wks__Lotus.wk1",
+      "status": "done",
+      "totalMs": 155,
+      "uploadMs": 13,
+      "serverMs": 135,
+      "toolMs": 134,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus.html",
+          "size": 564
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Lotus123_3.123",
+      "status": "done",
+      "totalMs": 300,
+      "uploadMs": 7,
+      "serverMs": 289,
+      "toolMs": 288,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus123_3.html",
+          "size": 1171
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Lotus123_98.123",
+      "status": "done",
+      "totalMs": 233,
+      "uploadMs": 20,
+      "serverMs": 206,
+      "toolMs": 206,
+      "outs": [
+        {
+          "path": "lo-wks__Lotus123_98.html",
+          "size": 1736
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__QuattroPro.wq1",
+      "status": "done",
+      "totalMs": 206,
+      "uploadMs": 21,
+      "serverMs": 178,
+      "toolMs": 178,
+      "outs": [
+        {
+          "path": "lo-wks__QuattroPro.html",
+          "size": 3857
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wdb",
+      "status": "done",
+      "totalMs": 133,
+      "uploadMs": 5,
+      "serverMs": 121,
+      "toolMs": 120,
+      "outs": [
+        {
+          "path": "lo-wks__Works_2.0.html",
+          "size": 823
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_2.0.wks",
+      "status": "done",
+      "totalMs": 165,
+      "uploadMs": 15,
+      "serverMs": 144,
+      "toolMs": 144,
+      "outs": [
+        {
+          "path": "lo-wks__Works_2.0.html",
+          "size": 1189
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wdb",
+      "status": "done",
+      "totalMs": 143,
+      "uploadMs": 15,
+      "serverMs": 124,
+      "toolMs": 123,
+      "outs": [
+        {
+          "path": "lo-wks__Works_Windows.html",
+          "size": 831
+        }
+      ]
+    },
+    {
+      "rel": "lo-wks__Works_Windows.wks",
+      "status": "done",
+      "totalMs": 178,
+      "uploadMs": 20,
+      "serverMs": 153,
+      "toolMs": 152,
+      "outs": [
+        {
+          "path": "lo-wks__Works_Windows.html",
+          "size": 1197
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__CVE-2007-1735-1.wpd",
+      "status": "failed",
+      "totalMs": 106,
+      "uploadMs": 6,
+      "serverMs": 94,
+      "toolMs": 94,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1759-1.wpd",
+      "status": "failed",
+      "totalMs": 105,
+      "uploadMs": 9,
+      "serverMs": 89,
+      "toolMs": 89,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-1.wpd",
+      "status": "failed",
+      "totalMs": 100,
+      "uploadMs": 8,
+      "serverMs": 88,
+      "toolMs": 88,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__CVE-2015-1760-2.wpd",
+      "status": "failed",
+      "totalMs": 96,
+      "uploadMs": 3,
+      "serverMs": 87,
+      "toolMs": 87,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__EDB-14344-1.wpd",
+      "status": "failed",
+      "totalMs": 97,
+      "uploadMs": 3,
+      "serverMs": 88,
+      "toolMs": 87,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "rel": "lo-wpd__WP1.wpd",
+      "status": "done",
+      "totalMs": 120,
+      "uploadMs": 3,
+      "serverMs": 110,
+      "toolMs": 110,
+      "outs": [
+        {
+          "path": "lo-wpd__WP1.html",
+          "size": 498
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP3.wpd",
+      "status": "done",
+      "totalMs": 121,
+      "uploadMs": 3,
+      "serverMs": 112,
+      "toolMs": 111,
+      "outs": [
+        {
+          "path": "lo-wpd__WP3.html",
+          "size": 865
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP4.wp",
+      "status": "done",
+      "totalMs": 142,
+      "uploadMs": 12,
+      "serverMs": 123,
+      "toolMs": 123,
+      "outs": [
+        {
+          "path": "lo-wpd__WP4.html",
+          "size": 1017
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP5.wp",
+      "status": "done",
+      "totalMs": 99,
+      "uploadMs": 6,
+      "serverMs": 87,
+      "toolMs": 86,
+      "outs": [
+        {
+          "path": "lo-wpd__WP5.html",
+          "size": 454
+        }
+      ]
+    },
+    {
+      "rel": "lo-wpd__WP6.wpd",
+      "status": "done",
+      "totalMs": 138,
+      "uploadMs": 7,
+      "serverMs": 126,
+      "toolMs": 125,
+      "outs": [
+        {
+          "path": "lo-wpd__WP6.html",
+          "size": 448
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_2.00A_DOS.wps",
+      "status": "done",
+      "totalMs": 105,
+      "uploadMs": 7,
+      "serverMs": 92,
+      "toolMs": 92,
+      "outs": [
+        {
+          "path": "lo-wps__Works_2.00A_DOS.html",
+          "size": 384
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_3.0.wps",
+      "status": "done",
+      "totalMs": 140,
+      "uploadMs": 12,
+      "serverMs": 122,
+      "toolMs": 122,
+      "outs": [
+        {
+          "path": "lo-wps__Works_3.0.html",
+          "size": 442
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_4.5.wps",
+      "status": "done",
+      "totalMs": 125,
+      "uploadMs": 5,
+      "serverMs": 113,
+      "toolMs": 113,
+      "outs": [
+        {
+          "path": "lo-wps__Works_4.5.html",
+          "size": 492
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_5.0.wps",
+      "status": "done",
+      "totalMs": 129,
+      "uploadMs": 11,
+      "serverMs": 112,
+      "toolMs": 112,
+      "outs": [
+        {
+          "path": "lo-wps__Works_5.0.html",
+          "size": 392
+        }
+      ]
+    },
+    {
+      "rel": "lo-wps__Works_6.0.wps",
+      "status": "done",
+      "totalMs": 118,
+      "uploadMs": 7,
+      "serverMs": 105,
+      "toolMs": 105,
+      "outs": [
+        {
+          "path": "lo-wps__Works_6.0.html",
+          "size": 392
+        }
+      ]
+    },
+    {
+      "rel": "mdb__DateTestDatabase.mdb",
+      "status": "done",
+      "totalMs": 386,
+      "uploadMs": 14,
+      "serverMs": 365,
+      "toolMs": 365,
+      "outs": [
+        {
+          "path": "mdb__DateTestDatabase/DateTest.html",
+          "size": 1261
+        },
+        {
+          "path": "mdb__DateTestDatabase/schema.sql",
+          "size": 647
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq1",
+      "status": "done",
+      "totalMs": 521,
+      "uploadMs": 14,
+      "serverMs": 501,
+      "toolMs": 501,
+      "outs": [
+        {
+          "path": "tika-misc__testQuattro.html",
+          "size": 17095
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testQuattro.wq2",
+      "status": "failed",
+      "totalMs": 351,
+      "uploadMs": 19,
+      "serverMs": 325,
+      "toolMs": 325,
+      "error": "the converter wrote nothing"
+    },
+    {
+      "rel": "tika-misc__testWordPerfect.wpd",
+      "status": "done",
+      "totalMs": 128,
+      "uploadMs": 2,
+      "serverMs": 121,
+      "toolMs": 121,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect.html",
+          "size": 851
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_0.wp",
+      "status": "done",
+      "totalMs": 228,
+      "uploadMs": 18,
+      "serverMs": 204,
+      "toolMs": 204,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect_5_0.html",
+          "size": 4937
+        }
+      ]
+    },
+    {
+      "rel": "tika-misc__testWordPerfect_5_1.wp",
+      "status": "done",
+      "totalMs": 250,
+      "uploadMs": 14,
+      "serverMs": 231,
+      "toolMs": 231,
+      "outs": [
+        {
+          "path": "tika-misc__testWordPerfect_5_1.html",
+          "size": 14295
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testACCESS.mdb",
+      "status": "done",
+      "totalMs": 548,
+      "uploadMs": 16,
+      "serverMs": 526,
+      "toolMs": 523,
+      "outs": [
+        {
+          "path": "tika-ms__testACCESS/Titles.html",
+          "size": 449
+        },
+        {
+          "path": "tika-ms__testACCESS/Tracks.html",
+          "size": 331
+        },
+        {
+          "path": "tika-ms__testACCESS/Menus.html",
+          "size": 345
+        },
+        {
+          "path": "tika-ms__testACCESS/Batch.html",
+          "size": 332
+        },
+        {
+          "path": "tika-ms__testACCESS/schema.sql",
+          "size": 1216
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess2_2000.mdb",
+      "status": "done",
+      "totalMs": 501,
+      "uploadMs": 7,
+      "serverMs": 488,
+      "toolMs": 481,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess2_2000/Table1.html",
+          "size": 218182
+        },
+        {
+          "path": "tika-ms__testAccess2_2000/Table2.html",
+          "size": 359
+        },
+        {
+          "path": "tika-ms__testAccess2_2000/schema.sql",
+          "size": 925
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess2_2002-2003.mdb",
+      "status": "done",
+      "totalMs": 484,
+      "uploadMs": 6,
+      "serverMs": 473,
+      "toolMs": 468,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess2_2002-2003/Table1.html",
+          "size": 218182
+        },
+        {
+          "path": "tika-ms__testAccess2_2002-2003/Table2.html",
+          "size": 359
+        },
+        {
+          "path": "tika-ms__testAccess2_2002-2003/schema.sql",
+          "size": 925
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testAccess_V1997.mdb",
+      "status": "done",
+      "totalMs": 829,
+      "uploadMs": 10,
+      "serverMs": 814,
+      "toolMs": 813,
+      "outs": [
+        {
+          "path": "tika-ms__testAccess_V1997/Table1.html",
+          "size": 643
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table2.html",
+          "size": 1785
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table3.html",
+          "size": 301
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/Table4.html",
+          "size": 307
+        },
+        {
+          "path": "tika-ms__testAccess_V1997/schema.sql",
+          "size": 3118
+        }
+      ]
+    },
+    {
+      "rel": "tika-ms__testPUBLISHER.pub",
+      "status": "done",
+      "totalMs": 329,
+      "uploadMs": 4,
+      "serverMs": 320,
+      "toolMs": 319,
+      "outs": [
+        {
+          "path": "tika-ms__testPUBLISHER.html",
+          "size": 1787
+        }
+      ]
+    }
+  ],
+  "zip": {
+    "downloaded": true,
+    "wallMs": 389,
+    "marks": {
+      "zipMs": 268,
+      "zipBytes": 3341509
+    }
+  },
+  "memAfterBatchesMB": 157,
+  "resultsSaved": 45,
+  "hwOpen": {
+    "wallMs": 11,
+    "openMs": 0.6
+  },
+  "hardwired": {
+    "wallMs": 4548,
+    "n": 28,
+    "marks": {
+      "open": 95690,
+      "interactive": 95690,
+      "firstDrop": 95706,
+      "firstDone": 96266,
+      "allDone": 100095
+    }
+  },
+  "hardwiredRows": [
+    {
+      "name": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 557,
+      "totalMs": 560
+    },
+    {
+      "name": "lo-bugs__bug130289-Publication_16.pub",
+      "status": "done",
+      "writeMs": 4,
+      "toolMs": 564,
+      "totalMs": 567
+    },
+    {
+      "name": "lo-bugs__bug133297-TEST.pub",
+      "status": "done",
+      "writeMs": 10,
+      "toolMs": 234,
+      "totalMs": 244
+    },
+    {
+      "name": "lo-bugs__bug61579-Flyer_04a.pub",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 379,
+      "totalMs": 381
+    },
+    {
+      "name": "lo-mspub__EDB-22310-1.pub",
+      "status": "failed",
+      "writeMs": 3,
+      "toolMs": 147,
+      "totalMs": 150,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-mspub__EDB-22655-1.pub",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 146,
+      "totalMs": 147,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-mspub__EDB-29664-1.pub",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 145,
+      "totalMs": 147,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-mspub__fdo59355-1.pub",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 173,
+      "totalMs": 175
+    },
+    {
+      "name": "lo-mwaw__ClarisWorks_6.0.cwk",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 475,
+      "totalMs": 477
+    },
+    {
+      "name": "lo-mwaw-calc__ClarisWorks_5.0.cwk",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 114,
+      "totalMs": 116,
+      "error": "exit 1"
+    },
+    {
+      "name": "lo-mwaw-calc__ClarisWorks_6.0.cwk",
+      "status": "failed",
+      "writeMs": 1,
+      "toolMs": 90,
+      "totalMs": 91,
+      "error": "exit 1"
+    },
+    {
+      "name": "lo-mwaw-calc__ClarisWorks_DB.cwk",
+      "status": "failed",
+      "writeMs": 1,
+      "toolMs": 102,
+      "totalMs": 104,
+      "error": "exit 1"
+    },
+    {
+      "name": "lo-mwaw-calc__ClarisWorks_DB_5.0.cwk",
+      "status": "failed",
+      "writeMs": 3,
+      "toolMs": 108,
+      "totalMs": 111,
+      "error": "exit 1"
+    },
+    {
+      "name": "lo-wpd__CVE-2007-1735-1.wpd",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 50,
+      "totalMs": 51,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-wpd__CVE-2015-1759-1.wpd",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 47,
+      "totalMs": 49,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-wpd__CVE-2015-1760-1.wpd",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 47,
+      "totalMs": 49,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-wpd__CVE-2015-1760-2.wpd",
+      "status": "failed",
+      "writeMs": 1,
+      "toolMs": 48,
+      "totalMs": 49,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-wpd__EDB-14344-1.wpd",
+      "status": "failed",
+      "writeMs": 2,
+      "toolMs": 48,
+      "totalMs": 49,
+      "error": "ERROR: Unsupported file format!"
+    },
+    {
+      "name": "lo-wpd__WP1.wpd",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 58,
+      "totalMs": 60
+    },
+    {
+      "name": "lo-wpd__WP3.wpd",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 71,
+      "totalMs": 72
+    },
+    {
+      "name": "lo-wpd__WP6.wpd",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 79,
+      "totalMs": 81
+    },
+    {
+      "name": "lo-wps__Works_2.00A_DOS.wps",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 63,
+      "totalMs": 64
+    },
+    {
+      "name": "lo-wps__Works_3.0.wps",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 72,
+      "totalMs": 73
+    },
+    {
+      "name": "lo-wps__Works_4.5.wps",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 77,
+      "totalMs": 79
+    },
+    {
+      "name": "lo-wps__Works_5.0.wps",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 73,
+      "totalMs": 75
+    },
+    {
+      "name": "lo-wps__Works_6.0.wps",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 72,
+      "totalMs": 74
+    },
+    {
+      "name": "tika-misc__testWordPerfect.wpd",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 71,
+      "totalMs": 73
+    },
+    {
+      "name": "tika-ms__testPUBLISHER.pub",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 214,
+      "totalMs": 216
+    }
+  ],
+  "hardwiredCsvRows": [
+    {
+      "name": "lo-mwaw-calc__MicrosoftWorks_4.0.wk4",
+      "status": "failed",
+      "writeMs": 1,
+      "toolMs": 63,
+      "totalMs": 64
+    },
+    {
+      "name": "lo-wks__Lotus.wk1",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 73,
+      "totalMs": 75
+    },
+    {
+      "name": "lo-wks__Works_2.0.wks",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 113,
+      "totalMs": 115
+    },
+    {
+      "name": "lo-wks__Works_Windows.wks",
+      "status": "done",
+      "writeMs": 2,
+      "toolMs": 105,
+      "totalMs": 107
+    }
+  ],
+  "memEndMB": 142
+}

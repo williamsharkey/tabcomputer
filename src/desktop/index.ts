@@ -266,6 +266,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'browser', name: 'Browser', icon: ICONS.browser, order: 4, launch: focusOrLaunch('browser', lazy(() => import('./apps/browser'))) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
+    // The hardwired half of the app-maker comparison (docs/research/APP_MAKER.md): not in the dock
+    { id: 'converter', name: 'Converter', icon: ICONS.files, order: 91, dock: false, launch: focusOrLaunch('converter', lazy(() => import('./apps/converter'))) },
   ];
   for (const a of apps) wm.registerApp(a);
 

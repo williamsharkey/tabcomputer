@@ -1,0 +1,83 @@
+{
+  "url": "https://tabcomputer.com/",
+  "at": "2026-10-12T07:29:03.458Z",
+  "deployed": "2151f107d733044793138751b066e8720f438759",
+  "previewTyped": {
+    "ready": true,
+    "windows": [
+      "preview:snapped-right:localhost:4780/",
+      "terminal:snapped-left:user@tabcomputer: ~/apps/converter"
+    ]
+  },
+  "previewConverted": [
+    "done",
+    "done",
+    "done"
+  ],
+  "previewAfterReload": {
+    "ms": 8422,
+    "portUp": false,
+    "windows": [
+      "terminal:snapped-left:user@tabcomputer: ~/apps/converter"
+    ],
+    "stoppedNotice": false,
+    "frameReady": false,
+    "terminalTail": ""
+  },
+  "phone": {
+    "rows": [
+      "done",
+      "done"
+    ],
+    "app": {
+      "w": 360,
+      "h": 551,
+      "scrollW": 360
+    },
+    "page": {
+      "w": 360,
+      "scrollW": 360
+    },
+    "windows": [
+      "preview:maximized:localhost:4780/",
+      "terminal:maximized:user@tabcomputer: ~"
+    ]
+  },
+  "offlineConvert": {
+    "rows": [
+      "done",
+      "done",
+      "done",
+      "done",
+      "done",
+      "done"
+    ],
+    "ms": 1909
+  },
+  "offlineZip": true,
+  "offlineNeverUsedProgram": {
+    "code": 0,
+    "out": "Wrong number of arguments.\n\nrc=0\n",
+    "ms": 50
+  },
+  "offlineReload": {
+    "result": "no: page.goto: net::ERR_INTERNET_DISCONNECTED at https://tabcomputer.com/",
+    "ms": 7
+  },
+  "become": {
+    "out": "Became \"converter\" — full-screen app mode\nRun __tabcomputer.unbecome() in browser console to return.",
+    "ready": false,
+    "ms": 20060,
+    "address": "https://tabcomputer.com/converter",
+    "frameUrl": "about:srcdoc",
+    "title": "Converter"
+  },
+  "becomeAfterReload": {
+    "ms": 15082,
+    "appReady": false,
+    "address": "https://tabcomputer.com/converter",
+    "frameText": "404 Not Found\n\nThe requested path \"/\" was not found.",
+    "servers": "Active servers:\n  :4780 static /tmp\n    iframe: not open"
+  },
+  "unbecome": false
+}

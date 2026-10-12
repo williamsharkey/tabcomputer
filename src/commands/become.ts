@@ -1,10 +1,18 @@
 // become.ts - App mode: make Shiro "become" a served app full-screen
-// Usage: become [port] [slug]   — activate app mode
-//        unbecome               — return to terminal
+// Usage: become [port] [slug] [--start CMD]   — activate app mode
+//        unbecome                             — return to terminal
+//
+// The app's page is a real document at /__preview/<tab>/<port>/ where service
+// workers work (as in a Preview window: its fetches carry bytes both ways and
+// its links navigate by themselves), else a srcdoc copy. --start names the
+// command that starts the app's own server (`node server.js 4780`), run again
+// in the directory `become` was typed in when the tab is reloaded; without it a
+// reload can only bring back a static `serve DIR`.
 
 import { Command, CommandContext } from './index';
 import { getActiveServers, injectIframeScripts } from './serve';
 import { iframeServer } from '../iframe-server';
+import { previewUrl } from '../preview-sw-host';
 
 const STORAGE_KEY = 'tabcomputer-become';
 
@@ -13,6 +21,31 @@ export interface BecomeConfig {
   port: number;
   slug: string;
   title: string;
+  /** The command that starts the app's server, and where to run it (a reload runs it again) */
+  start?: string;
+  cwd?: string;
+}
+
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Bring the app's server back after a reload: its own start command when
+ * `become --start` recorded one, else a static `serve` of its directory.
+ * `run` executes a shell line; a server that stays in the foreground never
+ * returns, so the port coming up is what counts. False: nothing is listening.
+ */
+export async function startBecomeServer(config: BecomeConfig, run: (cmd: string) => Promise<number>, waitMs = 20_000): Promise<boolean> {
+  if (iframeServer.isPortInUse(config.port)) return true;
+  if (!config.start) return (await run(`serve ${shq(config.directory)} ${config.port}`)) === 0;
+  let exited = false;
+  void run(`cd ${shq(config.cwd || config.directory)} && ${config.start}`).then(() => { exited = true; }, () => { exited = true; });
+  return new Promise<boolean>((resolve) => {
+    const done = (ok: boolean) => { off(); clearInterval(poll); clearTimeout(timer); resolve(ok); };
+    const off = iframeServer.onPortChange((p, up) => { if (p === config.port && up) done(true); });
+    // (the command ending without a listener is a failure: stop waiting)
+    const poll = setInterval(() => { if (iframeServer.isPortInUse(config.port)) done(true); else if (exited) done(false); }, 100);
+    const timer = setTimeout(() => done(iframeServer.isPortInUse(config.port)), waitMs);
+  });
 }
 
 /** Read become config from localStorage (synchronous) */
@@ -45,7 +78,19 @@ export async function activateBecomeMode(config: BecomeConfig): Promise<void> {
   container.innerHTML = '';
   container.appendChild(iframe);
 
+  // A real document where service workers work: bytes both ways, its own navigation
+  const swUrl = await previewUrl(config.port, '/').catch(() => null);
+  if (swUrl) {
+    iframe.setAttribute('data-preview-sw', '');
+    iframe.setAttribute('data-virtual-port', String(config.port));
+    iframe.src = swUrl;
+    history.pushState({}, '', '/' + config.slug);
+    document.title = config.title || config.slug;
+    return;
+  }
+
   // Fetch content from the virtual server
+  iframeServer.ensureResourceProxy();
   try {
     const response = await iframeServer.fetch(config.port, '/');
     let html: string;
@@ -83,34 +128,6 @@ export async function activateBecomeMode(config: BecomeConfig): Promise<void> {
       } catch {}
     }
 
-    // Handle vfs-fetch requests from iframe
-    if (event.source === iframe.contentWindow && event.data?.type === 'vfs-fetch') {
-      const { id, port: fetchPort, url, method, headers, body: reqBody } = event.data;
-      try {
-        const resp = await iframeServer.fetch(fetchPort || config.port, url, {
-          method: method || 'GET',
-          headers: headers || {},
-          body: reqBody || null,
-        });
-        let body = '';
-        if (typeof resp.body === 'string') body = resp.body;
-        else if (resp.body instanceof Uint8Array) body = new TextDecoder().decode(resp.body);
-        iframe.contentWindow?.postMessage({
-          type: 'vfs-resource-response',
-          id,
-          status: resp.status || 200,
-          headers: resp.headers || {},
-          body,
-        }, '*');
-      } catch {
-        iframe.contentWindow?.postMessage({
-          type: 'vfs-resource-response',
-          id,
-          status: 500,
-          body: '',
-        }, '*');
-      }
-    }
   };
   window.addEventListener('message', navHandler);
   (container as any)._navCleanup = () => window.removeEventListener('message', navHandler);
@@ -155,21 +172,28 @@ export const becomeCmd: Command = {
 
     let port: number;
     let slug: string | undefined;
+    // --start CMD: how to start the app's server again after a reload
+    let start: string | undefined;
+    const at = args.indexOf('--start');
+    if (at >= 0) {
+      start = args.slice(at + 1).join(' ').trim();
+      args.splice(at);
+      if (!start) { ctx.stderr = 'become: --start needs the command that starts the server\n'; return 1; }
+    }
 
     if (args.length === 0) {
       // No args: use the only active server
-      if (servers.size === 0) {
+      const ports = iframeServer.list().map((s) => s.port);
+      if (ports.length === 0) {
         ctx.stderr = 'become: no active servers. Run "serve <dir> <port>" first.\n';
         return 1;
       }
-      if (servers.size > 1) {
+      if (ports.length > 1) {
         ctx.stderr = 'become: multiple servers running. Specify port: become <port> [slug]\n';
-        for (const [p, info] of servers) {
-          ctx.stderr += `  :${p} ${info.directory || ''}\n`;
-        }
+        for (const p of ports) ctx.stderr += `  :${p} ${servers.get(p)?.directory || ''}\n`;
         return 1;
       }
-      port = servers.keys().next().value!;
+      port = ports[0];
     } else {
       port = parseInt(args[0]);
       if (isNaN(port)) {
@@ -185,7 +209,8 @@ export const becomeCmd: Command = {
     }
 
     const serverInfo = servers.get(port);
-    const directory = serverInfo?.directory || '/tmp';
+    // A server `serve` didn't start (node, a guest program): the app's directory is where become was typed
+    const directory = serverInfo?.directory || (start ? ctx.cwd : '/tmp');
 
     // Derive slug from directory basename if not provided
     if (!slug) {
@@ -197,10 +222,12 @@ export const becomeCmd: Command = {
       port,
       slug,
       title: slug.charAt(0).toUpperCase() + slug.slice(1),
+      ...(start ? { start, cwd: ctx.cwd } : {}),
     };
 
     await activateBecomeMode(config);
     ctx.stdout = `Became "${config.slug}" — full-screen app mode\n`;
+    if (!serverInfo && !start) ctx.stdout += `Note: the server on ${port} was not started by serve; a reload cannot restart it. Use: become ${port} ${slug} --start 'COMMAND'\n`;
     ctx.stdout += `Run __tabcomputer.unbecome() in browser console to return.\n`;
     return 0;
   },

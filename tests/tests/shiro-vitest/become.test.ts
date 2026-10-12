@@ -3,7 +3,7 @@ import { createTestShell, run } from './helpers';
 import { Shell } from '@shiro/shell';
 import { FileSystem } from '@shiro/filesystem';
 import { serveCmd, serversCmd, getActiveServers } from '@shiro/commands/serve';
-import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode } from '@shiro/commands/become';
+import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode, startBecomeServer } from '@shiro/commands/become';
 import { iframeServer } from '@shiro/iframe-server';
 
 // Polyfill localStorage — Node.js may have a partial one without removeItem
@@ -281,6 +281,58 @@ describe('Become / Unbecome — App Mode', () => {
 
       deactivateBecomeMode();
       await run(shell, 'serve stop 8000');
+    });
+  });
+
+  // An app with its own backend (a node server, not `serve DIR`): what a reload needs
+  describe('become --start: an app with its own server', () => {
+    const fakeBackend = (port: number) => iframeServer.serve(port, () => ({ status: 200, body: '<h1>app</h1>' }), 'node');
+
+    it('records the start command and the directory it was typed in', async () => {
+      await fs.mkdir('/home/user/myapp', { recursive: true });
+      fakeBackend(4780);
+      const r = await run(shell, "cd /home/user/myapp && become 4780 converter --start node server.js 4780");
+      expect(r.exitCode).toBe(0);
+      expect(getBecomeConfig()).toMatchObject({ port: 4780, slug: 'converter', start: 'node server.js 4780', cwd: '/home/user/myapp', directory: '/home/user/myapp' });
+    });
+
+    it('says a reload cannot restart a server that serve did not start', async () => {
+      fakeBackend(4781);
+      const r = await run(shell, 'become 4781 app');
+      expect(r.exitCode).toBe(0);
+      expect(r.output).toContain("--start 'COMMAND'");
+      expect(getBecomeConfig()?.start).toBeUndefined();
+    });
+
+    it('with no arguments takes the only server, whoever started it', async () => {
+      fakeBackend(4782);
+      const r = await run(shell, 'become');
+      expect(r.exitCode).toBe(0);
+      expect(getBecomeConfig()?.port).toBe(4782);
+    });
+
+    it('startBecomeServer runs the start command in its directory and waits for the port', async () => {
+      const ran: string[] = [];
+      const ok = await startBecomeServer(
+        { directory: '/home/user/my app', cwd: "/home/user/my app", port: 4783, slug: 'x', title: 'X', start: 'node server.js 4783' },
+        (cmd) => { ran.push(cmd); setTimeout(() => fakeBackend(4783), 50); return new Promise<number>(() => {}); }, // a server stays in the foreground
+        5000,
+      );
+      expect(ok).toBe(true);
+      expect(ran).toEqual(["cd '/home/user/my app' && node server.js 4783"]);
+    });
+
+    it('startBecomeServer gives up when the command ends without listening', async () => {
+      const ok = await startBecomeServer({ directory: '/tmp', port: 4784, slug: 'x', title: 'X', start: 'false' }, async () => 1, 5000);
+      expect(ok).toBe(false);
+    });
+
+    it('startBecomeServer without a start command serves the directory, as before', async () => {
+      await fs.mkdir('/home/user/site', { recursive: true });
+      await fs.writeFile('/home/user/site/index.html', '<h1>static</h1>');
+      const ok = await startBecomeServer({ directory: '/home/user/site', port: 4785, slug: 'site', title: 'Site' }, async (cmd) => (await run(shell, cmd)).exitCode);
+      expect(ok).toBe(true);
+      expect(iframeServer.isPortInUse(4785)).toBe(true);
     });
   });
 });

@@ -140,6 +140,11 @@ export interface OwnRelay {
   url: string;
   /** POST endpoint returning {token, expires}, if that relay wants one */
   tokenUrl?: string;
+  /**
+   * The user said this relay may have their GitHub sign-in when it asks for
+   * one (its token endpoint answers 401 signin_required). Off unless set.
+   */
+  sendSignin?: boolean;
 }
 
 const RELAY_KEY = 'tabcomputer_relay';
@@ -149,7 +154,8 @@ const relayListeners = new Set<(r: OwnRelay | null) => void>();
 export function ownRelay(): OwnRelay | null {
   try {
     const r = JSON.parse(localStorage.getItem(RELAY_KEY) || 'null');
-    return r && typeof r.url === 'string' && /^wss?:\/\//.test(r.url) ? { url: r.url, ...(r.tokenUrl ? { tokenUrl: String(r.tokenUrl) } : {}) } : null;
+    return r && typeof r.url === 'string' && /^wss?:\/\//.test(r.url)
+      ? { url: r.url, ...(r.tokenUrl ? { tokenUrl: String(r.tokenUrl) } : {}), ...(r.sendSignin === true ? { sendSignin: true } : {}) } : null;
   } catch { return null; }
 }
 
@@ -172,13 +178,15 @@ export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
 
 /**
  * NetStack settings for the current choice: the user's relay (no token unless
- * they gave a URL, and never their GitHub sign-in), or this site's /tcp.
+ * they gave a URL, and their GitHub sign-in only if they turned that on for
+ * it), or this site's /tcp. `credentials` allows the sign-in to be sent once
+ * the relay's token endpoint has answered 401 signin_required, never before.
  */
 export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean } {
   // A no-network guest (src/guest.ts) has no relay, the user's own included
   if (guestInfo()?.noNetwork) return { relayUrl: null, tokenUrl: null, credentials: false };
   const own = ownRelay();
-  if (own) return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? null, credentials: false };
+  if (own) return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? null, credentials: own.sendSignin === true };
   const web = (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host;
   return {
     relayUrl: web ? `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/tcp` : null,

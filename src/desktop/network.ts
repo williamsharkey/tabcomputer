@@ -100,8 +100,10 @@ export async function probeRelay(): Promise<NetworkStatus> {
     return s;
   }
   const cred = networkCredential();
-  // A 2xx is not enough: a server with no relay answers this path with the app shell
-  const probe = await probeRelayToken('/tcp/token', { credential: cred });
+  // A 2xx is not enough: a server with no relay answers this path with the app shell.
+  // The sign-in goes along only after the relay asked for one (a 401).
+  let probe = await probeRelayToken('/tcp/token');
+  if (probe === 'signin' && cred) probe = await probeRelayToken('/tcp/token', { credential: cred });
   const s: NetworkStatus = probe === 'on' ? (cred ? 'signed-in' : 'online')
     : probe === 'signin' ? 'needs-sign-in'
     : probe === 'unknown' ? 'offline'
@@ -177,7 +179,7 @@ function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | nu
       <div class="sd-other sd-small sd-muted" hidden style="margin-top:10px">
         Use your own connection: point this computer at a TCP relay you run
         (<button class="sd-link" data-act="own" type="button">set it up in Settings</button>);
-        your GitHub sign-in is never sent to it. Downloads from this site
+        your GitHub sign-in is not sent to it unless you say so there. Downloads from this site
         (like <code>apt install</code>) never need a sign-in.
       </div>`;
     sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();

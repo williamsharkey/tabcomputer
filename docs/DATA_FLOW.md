@@ -35,7 +35,7 @@ There are three places: **this tab** (your browser, this site's origin), **the s
 | `/api/ws-proxy` | `claude --vm` voice input | everything: the headers the tab sends (with the Claude token) and the audio frames. Only `wss://api.anthropic.com` is reachable | your address, the path, the close code, duration |
 | `/api/github`, `/api/github-login` | `gh`, the Git app, the menu bar's account check, GitHub sign-in (device flow) | everything: the GitHub token in the `Authorization` header, requests and replies; during sign-in, the new token in GitHub's reply. Not stored | method, path, status |
 | `/git-proxy/…` | `git clone`, `fetch`, `pull`, `push` (isomorphic-git, `src/commands/git.ts`) | everything: the GitHub token (basic auth, github.com remotes only) and the repository data. Reaches any public http(s) host on ports 80 and 443 | the URL, on an error |
-| `/tcp/token` with a saved GitHub token | each relay token request (`relayToken` in `src/kernel/net.ts`) | the GitHub token, sent as `Authorization: Bearer`. tabcomputer.com does not require or check it today (`TABCOMPUTER_TCP_REQUIRE_SIGNIN=0`), but the page sends it anyway | nothing |
+| `/tcp/token` on a server that requires a sign-in (`TABCOMPUTER_TCP_REQUIRE_SIGNIN=1`; tabcomputer.com does not) | each relay token request (`relayToken` in `src/kernel/net.ts`) | the GitHub token, as `Authorization: Bearer`; the server checks it with GitHub (`githubSigninVerifier`) and keeps a hash of it in memory for 10 minutes. The page asks without it first and sends it only after the server answered `401 {"error":"signin_required"}`; a server that issues tokens to anyone never receives it | nothing |
 
 **Browse origins** (`{key}.web.<domain>`, the Browser app): the server serves four fixed scripts and a bootstrap page there, nothing else. Page content comes from the app in your tab, fetched over `/tcp` with TLS in the tab, so the server sees hosts and sizes, not pages. A server-side fetch that would see plaintext exists for measurement only and is off unless `TABCOMPUTER_BROWSE_SERVER_FETCH=1` (`server.mjs`).
 
@@ -73,7 +73,7 @@ A guest is the app on another origin, `guest--<name>[--t][x].<base>` (`src/guest
 
 ## Using your own relay or server
 
-**What can be changed in the app:** the TCP relay. Settings → Network → Connection → "My relay" takes a `ws://` or `wss://` relay URL and a token URL, saved in `localStorage.tabcomputer_relay` (`ownRelay`, `setOwnRelay`, `relayNetConfig` in `src/net-signin.ts`). Programs' sockets then go through your relay, and the site's server no longer sees those hosts and sizes. Your GitHub token is not sent to it.
+**What can be changed in the app:** the TCP relay. Settings → Network → Connection → "My relay" takes a `ws://` or `wss://` relay URL and a token URL, saved in `localStorage.tabcomputer_relay` (`ownRelay`, `setOwnRelay`, `relayNetConfig` in `src/net-signin.ts`). Programs' sockets then go through your relay, and the site's server no longer sees those hosts and sizes. Your GitHub token is not sent to it, unless you tick the box 'Give this relay my GitHub sign-in if it asks for one' (`sendSignin`); then it is sent after that relay's token URL answered `401 signin_required`, as with the site's.
 
 To run one:
 

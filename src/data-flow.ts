@@ -31,8 +31,12 @@ export interface DataFlowInputs {
   remoteCode: boolean;
   /** The relay the user saved in Settings → Network, as saved; only its host is kept */
   ownRelayUrl: string | null;
+  /** The user let their own relay have the GitHub sign-in when it asks (OwnRelay.sendSignin) */
+  ownRelaySignin?: boolean;
   /** Whether this site's /tcp relay answered */
   siteRelay: 'on' | 'off' | 'unknown';
+  /** This site's relay asked for a sign-in (its token endpoint answered 401) */
+  siteRelaySignin?: boolean;
   /** navigator.storage.persisted(); null when the browser can't say */
   persisted: boolean | null;
 }
@@ -54,6 +58,8 @@ export interface DataFlowState {
     ownIgnored?: boolean;
     /** Whether the site's relay was seen to answer */
     seen: boolean;
+    /** The relay in use is given the GitHub sign-in: it asked for one (the site's), or the user allowed it (their own) */
+    signin?: boolean;
   };
   persisted: boolean | null;
 }
@@ -77,9 +83,9 @@ export function dataFlowState(i: DataFlowInputs): DataFlowState {
   let relay: DataFlowState['relay'];
   if (guest && !guest.network) relay = { kind: 'none', host: null, why: 'guest', seen: false };
   // Only the desktop applies a relay of the user's own (initNetwork in desktop/network.ts)
-  else if (ownHost && i.ui === 'desktop') relay = { kind: 'own', host: ownHost, seen: false };
+  else if (ownHost && i.ui === 'desktop') relay = { kind: 'own', host: ownHost, seen: false, ...(i.ownRelaySignin ? { signin: true } : {}) };
   else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true, ...(ownHost ? { ownIgnored: true } : {}) };
-  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(ownHost ? { ownIgnored: true } : {}) };
+  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(i.siteRelaySignin ? { signin: true } : {}), ...(ownHost ? { ownIgnored: true } : {}) };
   return { host: i.host, ui: i.ui, profile: guest ? 'guest' : 'main', guest, guestsOffered: i.guestsOffered, secrets, relay, persisted: i.persisted };
 }
 
@@ -254,7 +260,9 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     tcp.to = `your relay (${s.relay.host}), then the hosts it allows`;
     tcp.reads = 'nothing';
     tcp.readsText = 'This site\'s server sees none of it. Your relay sees the host name, port and byte counts.';
-    tcp.detail = 'Programs\' connections go to the relay you set in Settings → Network. TLS and SSH are done in the tab, so it carries ciphertext too. Your GitHub token is not sent to it.';
+    tcp.detail = 'Programs\' connections go to the relay you set in Settings → Network. TLS and SSH are done in the tab, so it carries ciphertext too. '
+      + (s.relay.signin ? 'You let it have your GitHub token when it asks for a sign-in.' : 'Your GitHub token is not sent to it.');
+    if (s.relay.signin && s.secrets.github) tcp.carries.push('GitHub token');
   } else if (s.relay.kind === 'none') {
     tcp.status = 'off';
     tcp.note = s.relay.why === 'guest'
@@ -262,9 +270,14 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
       : 'Off: this server has no relay. Programs here cannot open connections.';
   }
   if (s.relay.ownIgnored) tcp.note = `${tcp.note ? tcp.note + ' ' : ''}A relay of your own is saved, but the terminal UI does not use it.`;
-  if (s.relay.kind === 'site' && s.secrets.github) {
-    tcp.carries.push('GitHub token');
-    tcp.detail += ' Your GitHub token is sent with each request for a relay token; this server does not need it unless it requires a sign-in.';
+  if (s.relay.kind === 'site') {
+    // relayToken (src/kernel/net.ts): the sign-in follows a 401 signin_required, never before
+    if (s.relay.signin) {
+      tcp.detail += ' This relay requires a sign-in, so your GitHub token is sent with each request for a relay token.';
+      if (s.secrets.github) tcp.carries.push('GitHub token');
+    } else {
+      tcp.detail += ' A GitHub token is sent to the relay only if it asks for a sign-in; this one does not.';
+    }
   }
   flows.push(tcp);
 
@@ -449,9 +462,9 @@ function has(key: string): boolean {
 }
 
 /** Ask this site's relay for a token: 'on' when it issues one or wants a sign-in first. Sends no credential. */
-async function probeSiteRelay(fetchImpl: typeof fetch, probe: typeof import('./net-signin').probeRelayToken, timeoutMs = 3000): Promise<'on' | 'off' | 'unknown'> {
+async function probeSiteRelay(fetchImpl: typeof fetch, probe: typeof import('./net-signin').probeRelayToken, timeoutMs = 3000): Promise<{ relay: 'on' | 'off' | 'unknown'; signin: boolean }> {
   const r = await probe('/tcp/token', { fetch: fetchImpl, timeoutMs });
-  return r === 'on' || r === 'signin' ? 'on' : r === 'off' ? 'off' : 'unknown';
+  return { relay: r === 'on' || r === 'signin' ? 'on' : r === 'off' ? 'off' : 'unknown', signin: r === 'signin' };
 }
 
 /** What this tab is and holds, as presence only. */
@@ -468,7 +481,7 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     guestConfig(),
     hasClaudeCredentials(fs as never).catch(() => false),
     (async () => { try { return (await navigator.storage?.persisted?.()) ?? null; } catch { return null; } })(),
-    skipProbe ? Promise.resolve('unknown' as const) : probeSiteRelay(fetchImpl, probeRelayToken),
+    skipProbe ? Promise.resolve({ relay: 'unknown' as const, signin: false }) : probeSiteRelay(fetchImpl, probeRelayToken),
   ]);
   const same = !!guest && !!cfg.guest && cfg.guest.name === guest.name && cfg.guest.noNetwork === guest.noNetwork && cfg.guest.ephemeral === guest.ephemeral;
   return {
@@ -482,7 +495,9 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     apiKeys: API_KEYS.filter(([, keys]) => keys.some(has)).map(([name]) => name),
     remoteCode: has('tabcomputer-remote-code'),
     ownRelayUrl: own?.url ?? null,
-    siteRelay,
+    ownRelaySignin: own?.sendSignin === true,
+    siteRelay: siteRelay.relay,
+    siteRelaySignin: siteRelay.signin,
     persisted,
   };
 }

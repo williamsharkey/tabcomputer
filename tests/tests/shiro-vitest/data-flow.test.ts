@@ -104,9 +104,15 @@ describe('data flow: what each flow says', () => {
     expect(flow({}, 'api').carries).toEqual([]);
     expect(flow({ claude: true, apiKeys: ['OpenAI'] }, 'api').carries).toEqual(['Claude credentials', 'OpenAI API key']);
     expect(flow({ github: true }, 'github').carries).toEqual(['GitHub token']);
-    // the page sends the GitHub token with each relay token request to this site's relay
-    expect(flow({ github: true }, 'tcp').carries).toEqual(['GitHub token']);
+    // the GitHub token goes to this site's relay only when it asked for a sign-in (#117)
+    expect(flow({ github: true }, 'tcp').carries).toEqual([]);
+    expect(flow({ github: true }, 'tcp').detail).toContain('only if it asks for a sign-in; this one does not');
+    expect(flow({ github: true, siteRelaySignin: true }, 'tcp').carries).toEqual(['GitHub token']);
+    expect(flow({ github: false, siteRelaySignin: true }, 'tcp').carries).toEqual([]);
+    // and to a relay of the user's own only when they allowed it
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').carries).toEqual([]);
+    expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').detail).toContain('Your GitHub token is not sent to it');
+    expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp', ownRelaySignin: true }, 'tcp').carries).toEqual(['GitHub token']);
     // a shared seed takes all of them
     expect(flow({ github: true, claude: true }, 'shared').carries).toEqual(['GitHub token', 'Claude credentials']);
   });

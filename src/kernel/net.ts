@@ -117,11 +117,18 @@ export interface NetConfig {
   /** Send loopback connects with no kernel listener to the relay (tests, dev relays that allow 127.0.0.1). */
   relayLoopback: boolean;
   /**
-   * Send the saved sign-in (src/net-signin.ts) with token requests and ask for
-   * one on 401. Only for this site's own relay: a relay the user chose
-   * ("Use my own connection") must never receive their GitHub token.
+   * This relay may be given the saved sign-in (src/net-signin.ts): when its
+   * token endpoint answers 401 signin_required, the request is repeated with
+   * it (or the user is asked to sign in). Never sent before that. True for
+   * this site's own relay; a relay the user chose ("Use my own connection")
+   * gets it only if they turned that on for it (OwnRelay.sendSignin).
    */
   credentials: boolean;
+}
+
+/** A token endpoint's 401 that asks for a sign-in ({error: 'signin_required'}, server.mjs handleToken) */
+async function saysSigninRequired(res: Response): Promise<boolean> {
+  try { return (await res.clone().json())?.error === 'signin_required'; } catch { return false; }
 }
 
 function defaultConfig(): NetConfig {
@@ -1395,11 +1402,14 @@ export class NetStack {
   private nextEphemeral = 32768;
   nextIno = 1;
   private token: { token: string; expires: number } | null = null;
+  /** The token endpoint answered 401 signin_required: later requests carry the sign-in at once */
+  private signinRequired = false;
   private portHostPromise: Promise<PortHost | null> | null = null;
 
   configure(c: Partial<NetConfig>): void {
     this.config = { ...this.config, ...c };
     this.token = null;
+    this.signinRequired = false;
     if ('portHost' in c) this.portHostPromise = null;
   }
 
@@ -1683,7 +1693,6 @@ export class NetStack {
     if (!tokenUrl) return null;
     if (this.token && this.token.expires - 30_000 > Date.now()) return this.token.token;
     const f = this.config.fetch ?? fetch;
-    // A saved sign-in goes along, so a relay that requires one connects silently
     const post = (cred: string | null) => f(tokenUrl, {
       method: 'POST', credentials: 'same-origin' as RequestCredentials,
       ...(cred ? { headers: { Authorization: `Bearer ${cred}` } } : {}),
@@ -1694,10 +1703,16 @@ export class NetStack {
         throw new Error(`token request failed: ${(e as Error)?.message ?? e}`);
       }
     };
-    let res = await fetchToken(own ? networkCredential() : null);
+    // The saved sign-in (a GitHub token) is sent only to a relay that said it
+    // requires one: the first request goes without it, and a 401
+    // signin_required (server.mjs with TABCOMPUTER_TCP_REQUIRE_SIGNIN=1) is
+    // what brings it along, then and for later requests. A relay that issues
+    // tokens to anyone never sees it.
+    let res = await fetchToken(own && this.signinRequired ? networkCredential() : null);
     let signedIn = false;
-    if (res.status === 401 && own) {
-      // The relay wants a signed-in user: ask once (src/net-signin.ts), then retry
+    if (res.status === 401 && own && (this.signinRequired || await saysSigninRequired(res))) {
+      this.signinRequired = true;
+      // The relay wants a signed-in user: the saved one, or ask once (src/net-signin.ts), then retry
       const cred = await requireNetworkSignIn({ reason: 'A program wants to connect to the internet' });
       if (!cred) { setNetworkStatus('needs-sign-in'); throw new Error('sign-in required (token 401)'); }
       res = await fetchToken(cred);

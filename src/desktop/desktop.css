@@ -167,6 +167,23 @@ body.sd-active #shiro-layout { display: none; }
   border-radius: 50%; background: var(--sd-text); opacity: 0; transition: opacity .2s;
 }
 .sd-dock-item.sd-running::after { opacity: .75; }
+/* Starting (launch-state.ts): asked for, no window yet. A larger dot in the text color, on the
+   dock under the tile (so it reads the same in every icon set), with an accent ring that pulses
+   outward. No motion: the same dot with a steady ring. Not started: a hollow amber dot. */
+.sd-dock-item.sd-starting::after, .sd-stack-item.sd-starting::after {
+  opacity: 1; width: 6px; height: 6px; margin-left: -3px; bottom: -7px; transition: none;
+  background: var(--sd-text); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sd-accent) 85%, transparent);
+  animation: sd-start-pulse 1.6s ease-out var(--sd-start-phase, 0s) infinite;
+}
+.sd-dock-item.sd-start-failed::after, .sd-stack-item.sd-start-failed::after {
+  opacity: 1; width: 6px; height: 6px; margin-left: -3px; bottom: -7px; box-sizing: border-box;
+  background: transparent; border: 1.5px solid #ffb340; box-shadow: 0 0 0 1px rgba(0, 0, 0, .25);
+}
+@keyframes sd-start-pulse {
+  0% { transform: scale(.8); box-shadow: 0 0 0 0 color-mix(in srgb, var(--sd-accent) 95%, transparent); }
+  55% { transform: scale(1.15); box-shadow: 0 0 0 5px color-mix(in srgb, var(--sd-accent) 0%, transparent); }
+  100% { transform: scale(.8); box-shadow: 0 0 0 0 color-mix(in srgb, var(--sd-accent) 0%, transparent); }
+}
 /* A tool installing on first use (devtools.ts): a ring that goes round until it's there */
 .sd-dock-item.sd-installing::before {
   content: ''; position: absolute; inset: -3px; border-radius: 28%; z-index: 1; pointer-events: none;
@@ -685,6 +702,7 @@ a.sd-gh-row:hover { background: var(--sd-hover); }
 .sd-compact .sd-dock { overflow-x: auto; scrollbar-width: none; justify-content: flex-start; padding: 6px 8px; border-radius: 18px; }
 .sd-compact .sd-dock-item { width: 44px; height: 44px; }
 .sd-compact .sd-dock-item:hover { transform: none; }
+.sd-compact .sd-dock-item.sd-starting::after, .sd-compact .sd-dock-item.sd-start-failed::after { bottom: -5px; width: 5px; height: 5px; margin-left: -2.5px; }
 .sd-compact .sd-dock-tip { display: none; }
 .sd-compact .sd-win { border-radius: 12px; }
 .sd-compact .sd-sidebar { flex-basis: 112px; padding: 8px 4px; }
@@ -748,6 +766,7 @@ a.sd-gh-row:hover { background: var(--sd-hover); }
 .sd-stack-item.sd-running::after {
   content: ''; position: absolute; left: 50%; top: 52px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--sd-text);
 }
+.sd-stack-item.sd-starting::after, .sd-stack-item.sd-start-failed::after { content: ''; position: absolute; left: 50%; top: 51px; bottom: auto; border-radius: 50%; }
 
 /* ── Touch: extra-keys bar (mobile.ts) ── */
 .sd-keybar {

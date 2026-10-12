@@ -52,6 +52,7 @@ class DesktopCanvasWindow implements CanvasWindow {
       minWidth: opts.minWidth === undefined ? undefined : opts.minWidth / s,
       minHeight: opts.minHeight === undefined ? undefined : opts.minHeight / s,
       focus: !opts.override,
+      splash: !!opts.splash,
       onClose: () => {
         if (this.closing) return true;
         this.emit('close');

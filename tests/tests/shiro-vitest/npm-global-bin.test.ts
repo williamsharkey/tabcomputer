@@ -80,6 +80,18 @@ describe('npm install -g: the command is found by which (#110)', () => {
     expect((await sh(shell, 'if which tc-no-such-command >/dev/null 2>&1; then echo found; else echo missing; fi')).out).toBe('missing\n');
   }, 60_000);
 
+  it('a package installed before modes were kept is unpacked again, once', async () => {
+    const { shell, fs } = await createTestShell();
+    expect((await sh(shell, `npm install -g ${NAME}`)).code).toBe(0);
+    const file = '/usr/local/lib/node_modules/@tcfix/agent/bin/tcagent.js';
+    // as an older build left it: no record, no x bit
+    await fs.unlink('/usr/local/lib/node_modules/.package-modes');
+    await fs.chmod(file, 0o644);
+    expect((await sh(shell, `npm install -g ${NAME}`)).out).toContain('added 1 package');
+    expect((await fs.stat(file)).mode & 0o111).toBe(0o111);
+    expect((await sh(shell, `npm install -g ${NAME}`)).out).toContain('added 0 package');
+  }, 60_000);
+
   it.skipIf(!haveRootfs)("Debian's which (a /bin/sh script asking -f and -x) finds it too", async () => {
     const { shell, fs } = await createTestShell();
     expect((await sh(shell, 'debian install')).code).toBe(0);

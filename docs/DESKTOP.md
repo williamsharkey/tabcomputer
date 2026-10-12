@@ -155,7 +155,18 @@ destroyed), and the next Terminal window adopts it again.
   python`), Claude Code, a Linux GUI app (the Apps window) and Settings.
   Dismissed once per browser (localStorage `tabcomputer-desktop-welcome`);
   after that the module isn't loaded. Help → Welcome shows it again. It
-  drags like a window, by any part that isn't a button.
+  drags like a window, by any part that isn't a button. Its "How your data
+  flows" button opens the window below.
+- **How Your Data Flows** (`apps/dataflow.ts`, drawn from `src/data-flow.ts`;
+  the facts are in [DATA_FLOW.md](DATA_FLOW.md)): three places (this tab,
+  this site's server, the internet) and one lane per kind of traffic, each
+  saying what the server can read of it. It shows this tab as it is: main
+  profile or a guest and its mode, which sign-ins are present (never a
+  value), which relay is in use, whether storage persists. Hovering,
+  tapping or focusing a part explains it; below 640 px of window width the
+  lanes stack. Also under System and Help, in Settings → Network, and as
+  the `dataflow` command (the only form in the terminal UI). Tests:
+  `data-flow.test.ts`, `tests/browser/data-flow.mjs`.
 - **Code** (`code`, the CodeMirror editor in `src/commands/code-editor.ts`)
   opens as a desktop window of the Code app. While it's focused the menu
   bar says Code, and its File menu starts with Open… and Open Folder… (a
@@ -718,8 +729,8 @@ if (!token) return -ENETUNREACH;   // the user said "Not now"
   hook returns `null` for 60 s instead of asking again.
 - **In the classic UI** no handler is registered, so the hook returns `null`
   (or the saved token).
-- **Same-origin requests never call it.** That covers package downloads, the
-  npm registry proxy and `/api/*`. `needsSignIn(url)` tells them apart.
+- **Same-origin requests never call it.** That covers package downloads and
+  `/api/*`. `needsSignIn(url)` tells them apart.
 
 Today the hook has one caller: the TCP relay token request (`relayToken` in
 `src/kernel/net.ts`). That request sends `Authorization: Bearer <token>` when

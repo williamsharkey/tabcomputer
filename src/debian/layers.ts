@@ -45,6 +45,8 @@ export interface LayerInfo extends LayerManifest {
   requested: string[];
   /** A shell command that shows the toolchain works. */
   check?: string;
+  /** The set this layer is a superset of (built with its packages too). */
+  extends?: string;
 }
 
 interface LayerPackage { name: string; arch: string; version: string; multiArch?: string; replaces?: string; status: string }

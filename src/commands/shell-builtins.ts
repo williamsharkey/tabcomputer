@@ -285,7 +285,8 @@ Install software
   sudo apt update        then: sudo apt install -y NAME   (Debian's apt; about a
                          minute per small package, python3 about 4 minutes)
   toolchain install c    a whole Debian toolchain in seconds (also python, tex,
-                         classic, node, java); toolchain list shows them
+                         tex-full, classic, node, java, rescue for old file
+                         formats); toolchain list shows them
   pkg install NAME       tabcomputer's 72 prebuilt programs (WebAssembly or static
                          x86-64): vim, htop, git, python3, jq, ... in about a second;
                          pkg available lists them. Before debian install, apt is pkg.
@@ -324,6 +325,11 @@ Save your work
   download FILE          save a file to this device (no FILE: pick from a list)
   zip -r work.zip DIR    pack a folder, then: download work.zip
   upload [DIR]           copy files from this device into DIR (default: here)
+
+Privacy
+  dataflow               where your files, sign-ins and traffic go, and what the
+                         server can read, for this tab as it is now
+  guest                  a separate tabcomputer for code you don't trust
 
 Something wrong?
   doctor                 check this tab (deploy, browser, network, sign-ins, storage):

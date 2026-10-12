@@ -175,6 +175,56 @@ Sizes are from `.toolchain-build/layers/index.json` (build of 2026-10-09). Nothi
 downloaded at install time beyond the layer's index. A program's chunks are
 fetched the first time it runs.
 
+Sets added since that build, not built yet. These numbers are apt's own for
+the base's snapshot (the `Packages` indexes of 20261001T000000Z resolved
+without Recommends, as the base's apt does; the same sum gives 65, 60, 61 and
+115 packages for `tex`, `python`, `classic` and `c`, which is what the built
+layers have). Chunks are gzip, so a layer comes out 1.1 to 1.5 times its
+`.deb`s:
+
+| id | packages asked for | Debian packages | `.deb`s | unpacked |
+| --- | --- | ---: | ---: | ---: |
+| `rescue` | libwpd-tools, libmspub-tools, libwps-tools, libmwaw-tools, mdbtools, pandoc | 23 | 43 MB | 253 MB (194 MB of it pandoc) |
+| `tex-full` | `tex`'s, and texlive-latex-extra, texlive-pictures, texlive-science, texlive-bibtex-extra, biber, texlive-plain-generic, texlive-fonts-recommended, texlive-fonts-extra, texlive-xetex, texlive-luatex | 222 (157 more than `tex`) | 1019 MB | 2.7 GB |
+
+`tex-full` **extends** `tex`: the builder installs `tex`'s packages and then
+its own, so the layer is a superset of `tex`'s (the packages they share are
+the same chunks) and a tab applies it instead. `toolchain install tex` after
+it says the set is already installed and leaves the files no package owns
+alone (`tex`'s `ls-R`, formats and font maps would name less). When the
+server has `tex` and not yet `tex-full`, `toolchain install tex-full` applies
+`tex` and gets the rest with apt. Most of it is texlive-fonts-extra: 1.7 GB
+unpacked and 103,808 of the roughly 150,000 files, against `tex`'s 8,939.
+Without it the set would be 320 MB of `.deb`s on top of `tex`. It is in
+because thesis templates name its fonts (fourier, in #111). The files
+still download only when TeX opens them, but the index lists every path,
+so expect `toolchain install tex-full` to take longer than the 1.5 s of
+`tex`; that is not measured yet. A set can ask for free disk at build time
+(`disk_gb`, 8 for `tex-full`): the builder skips it on a host with less,
+and the tab uses apt.
+
+`python` gains python3-tk (#112), which the layer built on 2026-10-09 does
+not have: 23 more packages (Tcl/Tk, libX11, fontconfig, the DejaVu fonts),
+7 MB of `.deb`s, 21 MB unpacked. With it `import turtle` works in Debian's
+`python3` and draws in an X11 window on the desktop (`DISPLAY=:0`). The
+built-in WebAssembly `python3` (`pkg`) still has no tkinter.
+
+`rescue` (#114) converts files no current program opens: `wpd2html` and
+`wpd2text` (WordPerfect), `pub2xhtml` (Publisher), `wps2html`, `wks2csv`
+(Works, Lotus 1-2-3), `mwaw2html` (ClarisWorks and other old Mac formats),
+`mdb-tables`, `mdb-export`, `mdb-schema` (Access), and `pandoc` to turn the
+HTML into DOCX, Markdown or EPUB. LibreOffice's headless converter
+(`soffice --headless --convert-to pdf`) is not in it. By the same sum,
+libreoffice-writer-nogui, -calc-nogui, -impress-nogui and -draw-nogui are
+163 more packages, 122 MB of `.deb`s and 394 MB unpacked on top of `rescue`
+(174 packages, 138 MB and 450 MB alone), four times the rest of the set,
+and whether `soffice` starts under Blink has not been tried. If it does, it
+belongs in a set of its own that extends `rescue`.
+
+Not in `tex-full`: the LaTeX `svg` package runs Inkscape through `--shell-escape`
+(`sudo apt-get install inkscape`, 133 more packages), and `minted` needs
+`python3-pygments`.
+
 `pip install NAME` works in Debian's python3 without a venv: tabcomputer writes
 `/etc/pip.conf` with `break-system-packages = true` (`pipInstallsPackages` in
 `src/debian/rootfs.ts`) when the file doesn't exist; edit or empty it to get
@@ -204,6 +254,25 @@ index holds:
   `statoverride` and `triggers/*`, and `/etc/passwd`, `group`, `shadow`,
   `gshadow` and `shells`.
 
+A layer ships with nothing left for dpkg to do. apt configures the packages
+and runs their triggers in the chroot (tex-common's: every TeX format, the
+`ls-R` files, updmap's font maps; `ldconfig`; fontconfig's and the MIME
+caches where a set has them), and what they wrote is in the layer. After
+apt and the set's `prepare`, the builder runs `dpkg --configure --pending`
+and `dpkg --triggers-only --pending`, then fails the set if `dpkg --audit`
+reports anything, a status stanza has `Triggers-Pending` or
+`Triggers-Awaited`, or `triggers/Unincorp` isn't empty. `pack-layer.mjs`
+refuses such a tree too (`toolchain-layers.test.ts`). Otherwise the user's
+next `apt install` would do that work in the tab, under Blink (#109).
+
+That does not make a later `apt install texlive-…` fast. Debian's TeX Live
+packages whose postinst runs `update-texmf-config format` (texlive-latex-extra,
+texlive-luatex, texlive-xetex, …) activate tex-common's `texmf-format`
+trigger, and tex-common then rebuilds every format (`fmtutil --sys --all`),
+about ten minutes in the tab. That is what #109 measured; the `tex` layer
+had no trigger pending. The packages people reach for are therefore a layer
+of their own, `tex-full`.
+
 A set can also name `prepare` commands, which run in the chroot after apt
 and are part of the recipe. `go` uses this to run `go build std` with
 `HOME=/home/user` and `CGO_ENABLED=0`, so the layer carries the standard
@@ -216,6 +285,22 @@ compiler) on PATH, turn cgo on for `net` and fail. With it, `go build`
 and `go run` hit the cache and compile only the user's packages.
 One build job at a time costs nothing under Blink, which runs one guest thread at a time. It also avoids a Blink bug: its vfork emulation can take Go's preemption signal (SIGURG) during parallel forks and wedge `go`, leaving its other children as zombies (with perf-blink). `go env -u CGO_ENABLED` turns cgo back on, for example with the `c` set
 installed; the cgo packages then compile once.
+
+`classic` uses `prepare` for a Debian bug (#110). trixie has one libxml2,
+version `2.12.7+dfsg+really2.9.14`: the 2.9.14 library under a 2.12.7
+version number. Debian's libcob4t64 3.2-3 was compiled while the archive
+had the real 2.12.7 and was not rebuilt, so every program `cobc` builds
+calls `xmlCheckVersion(21207)` at start and libxml2 prints "Warning: program
+compiled against libxml 212 using older 209". The set's package list is not
+at fault (apt on any trixie machine gives the same pair), and no package in
+trixie fixes it. So the step changes the version libcob asks for, in
+`libcob.so.4.2.0`, to the one installed (20914): four bytes, at the two
+calls, and only when the library is that libxml2 and has exactly those two
+calls. `dpkg --verify libcob4t64` reports the file as changed, and a
+libcob4t64 from a later Debian update replaces it as usual. Checked on the
+snapshot's own `.deb` (the two `mov $0x52d7,%edi` before `xmlCheckVersion`
+become `$0x51b2`); a COBOL program has not been run against the patched
+library yet.
 
 Go deletes cache entries whose mtime is more than 5 days old (once a day,
 recorded in `trim.txt`), and it ignores a `trim.txt` dated in the future.
@@ -269,7 +354,8 @@ idle I/O, `CPUQuota=50%`, `PRUNE=1`) with `OUT=/opt/tabcomputer/layers`,
 which `server.env` serves. It never fails or delays the deploy, and it
 refuses to start with less than 6 GB free (`MIN_FREE_GB`). The
 first build fetches the packages from snapshot.debian.org. Later deploys
-rebuild only sets whose recipe changed. Downloaded `.deb`s stay in
+rebuild only sets whose recipe changed (every set, when `build-layers.sh` or
+`pack-layer.mjs` changed). Downloaded `.deb`s stay in
 `/opt/tabcomputer/layer-build/debs` for rebuilds. Until a set is built,
 `toolchain install` falls back to apt. Locally:
 

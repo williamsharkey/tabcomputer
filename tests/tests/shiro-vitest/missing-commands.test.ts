@@ -430,9 +430,9 @@ describe('Missing Commands (Claude Code compat)', () => {
       expect(exitCode).toBe(1);
     });
 
-    it('pgrep should fail with no pattern', async () => {
+    it('pgrep should fail with no pattern (a usage error is status 2, as procps)', async () => {
       const { exitCode } = await run(shell, 'pgrep');
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(2);
     });
   });
 

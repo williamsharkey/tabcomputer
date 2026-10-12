@@ -12,7 +12,7 @@ my-app/
 
 A bare script is the rung below: a [run link](RUN_LINKS.md) runs it in a Terminal, and `app new NAME --from script.sh` wraps it as an app.
 
-Code: `src/apps/` (the core: manifest, registry, access checks, the host side of `tab.js`, the supervisor, links), `src/commands/app.ts` (the `app` command), `src/desktop/app-window.ts` (windows and the dock), `public/apphost/` (what an app's own origin serves: `tab.js`, the frame, the service worker). The study this implements is [research/APP_MAKER.md](research/APP_MAKER.md).
+Code: `src/apps/` (the core: manifest, registry, access checks, the host side of `tab.js`, the supervisor, links), `src/commands/app.ts` (the `app` command), `src/apps/window.ts` (windows, the dock, app mode), `public/apphost/` (what an app's own origin serves: `tab.js`, the frame, the service worker). The study this implements is [research/APP_MAKER.md](research/APP_MAKER.md).
 
 ## The manifest
 
@@ -44,7 +44,7 @@ Code: `src/apps/` (the core: manifest, registry, access checks, the host side of
 | --- | --- | --- |
 | `manifest` | The format version. A manifest newer than the build reads is refused. | required |
 | `id` | 2 to 32 of `a-z`, `0-9`, `-`, starting with a letter. The app's folder under `~/Apps`, its dock entry, its `app` name, its address (`/<id>` in app mode). Names tabcomputer uses itself (`terminal`, `files`, `api`, …) are refused. | required |
-| `name` | What the title bar and the dock show. 1 to 60 characters. | required |
+| `name` | What the title bar and the dock show. 1 to 60 characters, without `<` or `>`. | required |
 | `description`, `version` | Text shown by `app list -l` and the install prompt. | empty |
 | `icon` | An `.svg`, `.png`, `.jpg` or `.webp` in the folder (at most 256 KB). | a monogram |
 | `window.width`, `height` | The client area in CSS px, 120 to 10000. | 720 × 560 |
@@ -73,3 +73,173 @@ app.json: access.fs may not be / (the whole filesystem): name the folders the ap
 ```
 
 When both `entry` and `backend` are given, a request for a file that exists under `entry` is answered from it; anything else (and every request that is not a GET) goes to the backend.
+
+## The `app` command
+
+```
+app new NAME [--template T] [--name "Shown name"] [--dir DIR]
+app new NAME --from SCRIPT
+app dev [DIR] [--no-open]
+app install [DIR | ID | gh:OWNER/REPO[/PATH] | URL] [--guest[=NAME]] [--open]
+app open ID [--become] [--new]
+app list [-l]
+app stop ID
+app remove ID [--data]
+app check [DIR]
+app templates
+```
+
+Exit status 0 when it did what was asked, 1 when it could not (the reason on stderr, after `app: `), 2 for a usage mistake. `app help` prints the usage.
+
+- **`app new NAME`** makes the folder `./<id>` from a template. A name with capitals or spaces is kept as the shown name and an id is made from it (`"My Notes"` → `my-notes`). `--from script.sh` wraps a script: the app is a page with a Run button, an arguments box and the script's output as it is written; the script's `# title:` header names it.
+- **`app dev [DIR]`** is the developer loop: the app opens in a window as an installed app would (same frame, same origin rules, same access checks), with its backend started. The Terminal shows the backend's output and what `tab.js` refused. Saving a file under the page's folder reloads the page; saving anything else restarts the backend and then reloads; saving `app.json` reads the manifest again (an invalid one is reported and the last valid one stays). It ends with Ctrl-C or when the window closes. `--no-open` runs the backend and the watcher without a window.
+- **`app install`** copies the app to `~/Apps/<id>/` (replacing an earlier install of that id; `~/.local/share/apps/<id>/`, its data, is kept), lists it in `/var/lib/tabcomputer/apps.json` and puts it in the dock. Then its `toolchains` are installed, with the desktop's launch feedback: the dock entry is marked as starting and a placeholder window shows the installer's output. A folder installs at once. An app from GitHub or an archive is shown first ("Installing" below).
+- **`app open ID`** opens its window (or focuses the one that is open; `--new` for another when the manifest allows several). `--become` makes the tab the app.
+- **`app stop ID`** closes its windows and stops its backend. **`app remove ID`** uninstalls it and keeps its data unless `--data`.
+- **`app check [DIR]`** validates `app.json` and the files it names, and prints what the app asks for in the words the install prompt uses.
+
+### Templates
+
+Each is a small working app in `apps/templates/<name>/` and runs as created: none needs a toolchain, a backend or a folder outside its own data.
+
+| Template | What it is | Uses |
+| --- | --- | --- |
+| `file-tool` (the default) | File in, file out: drop files or a folder, a program runs on each, "Download all" is a zip. The converter's shape. | `tab.files.import`, `tab.run([…], { stdout })`, `tab.download(dir, { zip })` |
+| `form` | A form over a command: the fields are its arguments, its output streams into the page, Stop kills it. | `tab.run([…], { onStdout })`, `.kill()` |
+| `table` | A table over a CSV file in the app's data folder: edit cells, add rows, saved on every edit, reloaded when another program changes the file. (A comment in it shows the SQLite variant.) | `tab.fs.read/write/exists/watch`, `tab.download(file)` |
+| `script` | What `--from` makes: `run.sh`, a Run button, the output. | `tab.run(['sh', …])` |
+
+## Lifecycle
+
+Code: `src/apps/runtime.ts` (`AppInstance`), `src/apps/supervisor.ts`, `src/apps/window.ts`.
+
+- **One instance per app** while it is open. It owns the backend, answers the page's requests and serves its `tab.js` channel.
+- **Before the first start** the manifest's `toolchains` are installed (once: `~/.local/share/apps/<id>/.toolchains` records it) and its `files` are checked. A failure leaves the launch's placeholder showing the reason, with Retry.
+- **The backend belongs to the app, not to a terminal.** It starts when the app opens (with `backend.lazy`, on the page's first request that is not a file of the page), in the app's folder, with `PORT`, `APP_ID`, `APP_DIR` and `APP_DATA` set. "Running" means the port is open and, with `backend.health`, that the path answered 2xx.
+- **It is restarted when it dies.** A start that never becomes ready, or a backend that dies within 10 s of becoming ready, is a failure: the next start waits 0.5 s, then 1, 2, 4, 8 s. After 5 failures in a row the supervisor stops trying; the window covers the page with the error and the backend's last output, and Retry starts over. A backend that ran for 10 s is started again at once when it dies. While it is down the window says "Restarting NAME…".
+- **It stops when the last window closes**, unless `backend.keepAlive`; then `app stop ID` (or closing the tab) stops it.
+- **The window is the app's own:** its name and icon in the title bar and the dock, no toolbar, no `localhost:PORT`, the manifest's size and minimum size. One per app unless `window.multiple`. A click on its dock entry while it starts goes to its placeholder; nothing starts twice.
+- **A reload brings it back.** The window's restore command is `app open ID` (`app dev DIR` for a dev window), so the desktop's session restore reopens it where it was, and opening starts the backend again. Measured on a local build (tests/browser/app-toolkit.mjs): an app with a node backend is interactive 0.24 s after a reload.
+- **App mode** (`app open ID --become`, `?app=ID&become`): the tab is the app, at `/<id>`, with the app's name as the tab's title. A reload comes back to it (0.08 s for the converter, 0.24 s for an app with a node backend, local build). `unbecome` in a shell, or `?unbecome` on the address, returns to the desktop. It reuses `become`'s state (`BecomeConfig.app`, src/commands/become.ts); the page and the backend come back through the toolkit instead of `serve`.
+
+## tab.js
+
+The client library an app's page loads from a fixed path:
+
+```html
+<script src="/__tabcomputer/tab.js"></script>
+```
+
+It defines `tab`. Every call is a message to the tab over one `MessagePort`; the tab checks it against the app's manifest and answers. A refused call rejects with an `Error` whose `code` is `'EACCES'`; other codes are `'EINVAL'`, `'ENOENT'`, `'ENOSYS'`, `'EIO'`. Paths may be absolute, start with `~`, or be relative to the app's data folder.
+
+| Call | What it does |
+| --- | --- |
+| `await tab.ready` | Resolves to `tab.app` once the tab has answered. |
+| `tab.app` | `{ id, name, version, manifest, dir, dataDir, home, confined }`. `dataDir` is `~/.local/share/apps/<id>`, always the app's to read and write. `confined` is true when the page is on an origin of its own. |
+| `tab.run(cmd, opts)` | Run a program. `cmd` is `[program, ...arguments]`: the program must be in `access.commands`, and each argument is one word (no shell reads them). With `access.shell`, `cmd` may be a shell line. `opts`: `cwd` (a folder the app may read; default its data folder), `env`, `stdin` (text), `stdout` / `stderr` (a file the app may write, to send that stream to), `onStdout(text)`, `onStderr(text)` (called as output is produced). Resolves to `{ code, stdout, stderr }` (the text is collected unless the callback took it). The promise has `kill()`. The command gets `APP_ID`, `APP_DIR`, `APP_DATA`. |
+| `tab.commands(names?)` | `{ name: true \| false }`: which of the manifest's commands are installed. |
+| `tab.fs.read(path, { as: 'text' })` | The file's bytes (`Uint8Array`), or its text. `tab.fs.readText(path)` is the short form. |
+| `tab.fs.write(path, data)` | Text, an `ArrayBuffer`, a typed array or a `Blob`. Folders above it are made. |
+| `tab.fs.list(path)` | `[{ name, type: 'file' \| 'dir' \| 'symlink', size, mtime }]`. |
+| `tab.fs.stat(path)`, `tab.fs.exists(path)` | `{ path, type, size, mtime }` or `null`. |
+| `tab.fs.mkdir(path)`, `tab.fs.remove(path, { recursive })`, `tab.fs.rename(from, to)` | |
+| `tab.fs.watch(path, cb)` | `cb({ event, path })` for every change under `path` (`write`, `delete`, `mkdir`, `rename`, `attrib`). Returns `{ close(), ready }`. |
+| `tab.files.import(source, opts)` | Dropped or picked files into the tab's filesystem. `source`: a `DataTransfer` (folders are walked; call it inside the drop event), a `FileList`, or an array of `File`s or `{ file, rel }`. `opts.dir`: a folder the app may write (default a new folder under its data folder). `opts.onProgress({ done, total, file })` as each file lands. Resolves to `{ dir, paths, files: [{ path, rel, size, ms }] }`. |
+| `tab.files.pick({ multiple, directory, accept })` | The browser's file picker, then `import`. |
+| `tab.download(path \| paths, { zip, name })` | Saves to the person's real disk. Several paths, a folder, or `zip: true` give a zip (a folder's contents at its top). Resolves to `{ name, size, zip }`. |
+| `tab.toolchain.ensure(sets?, onProgress)` | Installs the manifest's toolchain sets that are missing; `onProgress({ set, line })`. `tab.toolchain.status(sets?)` says which are installed. |
+| `tab.window.setTitle(text)`, `.resize(width, height)`, `.close()` | The app's own window. |
+| `tab.reveal(path)` | Shows a folder or file in the Files app. |
+
+Output streams: `tab.run(['sh', '-c', 'echo one; sleep 1; echo two'], { onStdout })` calls back with `one`, and a second later with `two` (`app-host.test.ts` measures the gap).
+
+### The protocol
+
+`src/apps/host.ts` is the tab's side. The page sends `{ t: 'call', id, op, a }` and `{ t: 'cancel', id }`; the tab answers `{ t: 'ev', id, e, d }` (output, progress, a change), then `{ t: 'ok', id, v }` or `{ t: 'err', id, code, message }`. The operations are `hello`, `run`, `commands`, `fs.read`, `fs.write`, `fs.list`, `fs.stat`, `fs.mkdir`, `fs.remove`, `fs.rename`, `fs.watch`, `files.put`, `download`, `reveal`, `toolchain.status`, `toolchain.ensure`, `window.set`, `window.close`. Anything else is `ENOSYS`. Nothing in a message says which app is talking: the port does, because the tab handed that port to that app's frame.
+
+How the page finds the tab: `tab.js` posts one end of a `MessageChannel` to its parent frame. On an app origin the parent is the app's frame (`public/apphost/frame.js`), which passes the port on to the tab over its own port. It does not use `parent.__tabcomputer`, which an app's page cannot reach.
+
+## The page's origin
+
+Code: `src/apps/frame.ts`, `public/apphost/` (`frame.js`, `sw.js`, `tab.js`), `server.mjs` ("Apps: app origins").
+
+An app's page is served from an origin of its own, `app--<id>--<16 hex>.<zone>`, where the zone is the Browser app's browse zone (`https://….web.tabcomputer.com` in production, `http://….localhost:PORT` locally). The hex is a hash of the app's id, where it was installed from, and the tab's own host, so two apps with one id from different places, and one app in a guest and in the main profile, never share an origin.
+
+- That host serves only `/__tabcomputer/`: `frame.html`, `frame.js`, `sw.js`, `tab.js`. Never the app shell, `/api`, `/tcp` or anything else of tabcomputer.
+- The tab makes an `<iframe>` of `frame.html`, sandboxed (`allow-scripts allow-same-origin allow-forms allow-modals allow-downloads`, so it keeps its own origin and can never navigate the tab; with `access.network` also `allow-popups`). The frame registers the origin's service worker, tells the tab it is ready, and the tab hands it one `MessagePort`.
+- The frame shows the app's page in a frame of its own. Every request that page makes to its origin goes to the service worker, to the frame, over the port to the tab, which answers from the app's files (`entry`) or its backend. `fetch('/api/x')`, ES modules, images and a streamed response work as on any site; nothing is injected into the page.
+- `access.network: false` adds a Content-Security-Policy to every HTML document of the app (`default-src 'self'`, `connect-src 'self'`, `frame-src 'self'`, `form-action 'self'`), and the frame's own policy (`frame-src 'self'`) keeps the page from navigating itself to another site.
+
+Where a server has no app origins (`/apps/config.json` answers `{ "origin": null }`: `vite dev`, a server with `TABCOMPUTER_BROWSE=0`, a guest without network), the page is a `/__preview/` document of the tab's own origin, as a Preview window's is. `tab.js` works the same, but the page is not confined; the window says so in a line under the page, `tab.app.confined` is false, and the install prompt says so.
+
+Not built: WebSocket and EventSource from the page to its own backend on an app origin (a Preview bridges them; an app page's `fetch`, streamed or not, works). With the same app open in two tabs at once, a link inside a multi-page app is answered by the tab whose page it came from when that can be told, else by either.
+
+## What is confined
+
+| | Real boundary, or a declaration? |
+| --- | --- |
+| The page reading the tab's script, DOM, `localStorage` (the GitHub token, Claude's sign-in), IndexedDB, cookies | **Boundary**, on an app origin: the browser's same-origin policy. Checked in `tests/browser/app-toolkit.mjs` (`parent.__tabcomputer`, `top.localStorage`, `top.document` all throw). No boundary without app origins. |
+| The page navigating the tab away, or opening windows (without `access.network`) | **Boundary**: the frame's `sandbox`. |
+| The page fetching other sites, or the tab's own origin, without `access.network` | **Boundary** for requests, frames and forms (the Content-Security-Policy). It does not stop every channel a determined page could find (a DNS prefetch); it is not a boundary for the backend or for commands. |
+| `tab.fs`, `tab.files`, `tab.download`, `tab.reveal` outside `access.fs` and the data folder | **Boundary** for the page: every path is resolved in the tab (`src/apps/access.ts`): `..` folded, symbolic links followed with the filesystem's `realpath`, and the real path must be inside an allowed folder. A link that leaves the allowed folders, or points at nothing, is refused; removing or renaming a link acts on the link. Read-only folders, and the app's own folder, cannot be written. |
+| `tab.run` of a program not in `access.commands`; a shell line without `access.shell`; a toolchain set not in `toolchains` | **Boundary** for the page: refused in the tab. Arguments are never read by a shell. A page may not set `PATH`, `HOME`, `LD_PRELOAD` and the like for a command. |
+| What a command started by `tab.run` does | **Declaration only.** It is an ordinary process of the profile. `access.commands: ["sh"]`, `["node"]`, `["python3"]` or `access.shell` lets the page do anything a terminal here can, whatever `access.fs` says. Even a narrow command reads whatever path it is given as an argument: `["cat"]` reads any file. List commands the way you would hand someone a tool. |
+| What the backend does | **Declaration only.** `backend.start` is a shell line run as the person: every file, every sign-in, the network. |
+| The app's own files on disk (`~/Apps/<id>`) | Not protected from other programs in the tab, nor from the app's own backend. |
+
+So: an app that is only a page, with no commands or with commands that are safe to hand out, is confined by more than its word. An app with a backend, a shell, or an interpreter among its commands is as trusted as a script you run. **For that, the boundary is a guest** (docs/research/GUEST_PROFILE.md): tabcomputer on another origin of the browser, with its own filesystem and no sign-ins. `app install gh:… --guest[=NAME]` opens the app there instead of installing it here (`--guest` alone is a guest thrown away when its tab closes), and the install prompt offers "Open in a guest" when the server has guests. The guest shows the prompt again, since that is where it is installed.
+
+## Installing
+
+`src/apps/links.ts` (where an app comes from, no DOM), `src/apps/install.ts`, `src/apps/prompt.ts` (the prompt), `src/apps/registry.ts`.
+
+| What | From | Asked first? |
+| --- | --- | --- |
+| `app install DIR` | A folder of this tab | No: they are your files and you typed it. |
+| `app install ID`, `?app=ID` | An app this site ships: `/apps/<id>/`, listed in `/apps/index.json` | No, when it is curated: the list is on the page's own origin and every file fetched has the sha256 the list gives (redirects refused; an HTML answer standing in for a missing file refused). |
+| `app install gh:OWNER/REPO[/PATH]`, `?app=gh:…` | A folder of a public GitHub repository | **Yes.** |
+| `app install https://…/x.zip` (`.tar.gz`, `.tgz`) | An archive with `app.json` at its top or in its one folder | **Yes.** Not as a link: an address never names an archive. |
+
+The prompt shows the app's name, where it comes from (for GitHub, the commit), what it will run (`backend.start`), what it installs (`toolchains`), which commands and folders its page may use, whether it may reach other sites, and the manifest itself. It says which of that is enforced. Its rules are the run link prompt's: everything from the app goes in as text, Cancel has the focus, closing the window is Cancel, Install is off for the first moment, and a click made by script does nothing.
+
+What is shown is what is installed. A repository is read at one commit (its default branch's head when asked): the manifest in the prompt and every file come from that commit, and the manifest is written from the bytes that were shown, not fetched again. Links (mode 120000), submodules and `.git*` are left out; at most 400 files and 32 MB. An archive is downloaded and unpacked in a scratch folder first, and installed from those files. An app whose id belongs to a built-in app is refused.
+
+The apps this site ships are the folders of `apps/` with an `app.json` (not `templates/`): a build copies each to `dist/apps/<id>/` without what only measures or documents it (`measure/`, `README.md`) and writes `dist/apps/index.json` (`vite-plugin-apps.ts`, `scripts/apps/site-apps.mjs`). `apps/converter` is the first.
+
+## Links
+
+```
+https://tabcomputer.com/?app=converter
+https://tabcomputer.com/?app=converter&become
+https://tabcomputer.com/?app=gh:someone/tool
+https://tabcomputer.com/?app=gh:someone/tools/apps/notes&guest
+```
+
+`?app=` is handled by the run links' machinery (docs/RUN_LINKS.md, `src/run-url.ts`), with an app in place of a script: the address is cleaned before anything is fetched (`app`, `become` and every parameter that is not the page's own), a framed page takes no app link, `?safe=1` skips it, and `&guest` (`&guest=NAME`, `&nonet`) moves the whole link to a guest first. A refused link prints `app link: <why>` in the terminal and installs nothing.
+
+A curated app installs and opens. A `gh:` app shows the prompt; once installed, the same link opens it without asking for as long as the repository's head is the commit that was installed, and asks again when it has moved. `&become` makes the tab the app.
+
+## The shared core
+
+The Code app's app mode and a Studio would sit on the same modules the `app` command and the desktop use; none of them has DOM in it except where noted.
+
+| Module | What a tool gets from it |
+| --- | --- |
+| `src/apps/manifest.ts` | `parseManifest`, `validateManifest` (every problem, by key), `manifestText`, `describeManifest` (the prompt's sentences). A manifest editor validates as it is typed with these. |
+| `src/apps/templates.ts` | `TEMPLATES`, `scaffold(fs, dir, id, { template, name, script })`. |
+| `src/apps/registry.ts` | `loadManifest`, `installFromDir`, `installFromFiles`, `listInstalled`, `removeInstalled`. |
+| `src/apps/runtime.ts` | `instanceFor({ manifest, dir, source, dev })` → `AppInstance`: `prepare`, `startBackend`, `fetch`, `supervisor` (state, `restart`, `tail`), `on('state' \| 'log' \| 'views' \| 'reload')`, `setManifest`, `reload`, `attach(view)` / `detach(view)`. |
+| `src/apps/frame.ts` (DOM) | `createAppFrame(instance)` → `{ element, confined, reload, dispose }`: the app's page as an element for any container. A pane in the Code app mounts this and attaches a view of kind `'pane'`. |
+| `src/apps/window.ts` (DOM) | `openAppWindow`, `becomeApp`, the dock entries. |
+| `src/apps/host.ts` | `AppHost`: the `tab.js` operations, for a tool that wants to drive or record them. |
+
+## Tests
+
+- `tests/tests/shiro-vitest/app-manifest.test.ts`: the manifest.
+- `app-host.test.ts`: the `tab.js` protocol and its checks (path escapes, links, undeclared commands, streaming, cancel).
+- `app-supervisor.test.ts`: start, health, restart, backoff, giving up, stop.
+- `app-command.test.ts`: the command, the templates (each runs as created), installing, what a page is served, the backend's life with its views.
+- `app-links.test.ts`: `?app=` parsing, curated and GitHub apps and the attacks on each, the trust decision, the site's app list.
+- `app-origins.test.ts`: what an app host serves and who may frame it.
+- `run-links-gist.test.ts`: `?run=gist:`.
+- `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; 360 px. `tests/browser/app-converter.mjs`: the converter.

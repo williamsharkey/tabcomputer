@@ -20,6 +20,13 @@ full-page terminal (the `shiro` profile's UI) is still there with
 
 All changes are additive. Nothing below renames or removes an earlier name.
 
+- **2026-10-12 (unix/app-toolkit), v1.6.** Optional `unregisterApp(id)` on
+  `DesktopAPI`: an app leaves the dock and the app list (an uninstalled app;
+  check for it before calling). Installed apps (docs/APPS.md) register under
+  their manifest's id with `order` 40, and their windows carry that id as
+  `appId`. `?unbecome` now returns to the desktop on that load (it was the
+  terminal UI until the next one).
+
 - **2026-10-12 (unix/launch-feedback), v1.5.** `WindowOptions.behind` (open
   below the other windows) and `WindowOptions.splash` (a start-up splash
   screen: it doesn't end its app's launch); optional `launches` on
@@ -66,7 +73,7 @@ shiro.computer), since link previews don't run JS.
 | condition | UI |
 |---|---|
 | `?ui=desktop` / `?ui=terminal` | that one, remembered in localStorage `tabcomputer-ui` |
-| `?demo=1`, embedded in another page (seeds), app ("become") mode | terminal |
+| `?demo=1`, embedded in another page (seeds), app ("become") mode (not on the `?unbecome` load that leaves it) | terminal |
 | saved `tabcomputer-ui` | that one |
 | host `shiro.computer` or `*.shiro.computer` | terminal |
 | anything else (tabcomputer.com, localhost) | desktop |

@@ -8,7 +8,9 @@ https://tabcomputer.com/?run=latex-paper&repo=https://github.com/someone/thesis&
 https://tabcomputer.com/?run=gh:someone/project
 ```
 
-Code: `src/run-url.ts` (parsing, the trust decision, the start file), `src/run-prompt.ts` (the Run / Cancel window), called from `src/main.ts` after the first prompt. Tests: `tests/tests/shiro-vitest/run-links.test.ts`, `tests/browser/run-links.mjs`.
+Code: `src/run-url.ts` (parsing, the trust decision, the start file), `src/run-prompt.ts` (the Run / Cancel window), called from `src/main.ts` after the first prompt. Tests: `tests/tests/shiro-vitest/run-links.test.ts`, `run-links-gist.test.ts`, `tests/browser/run-links.mjs`.
+
+An app link, `?app=<id>` or `?app=gh:owner/repo[/path]`, is the same machinery with an app in place of a script: [APPS.md](APPS.md) "Links".
 
 ## Forms
 
@@ -16,10 +18,12 @@ Code: `src/run-url.ts` (parsing, the trust decision, the start file), `src/run-p
 | --- | --- |
 | `?run=<name>` | A curated recipe, served by the site at `/recipes/<name>.sh`. The name has only `a-z`, `0-9` and `-`. |
 | `?run=gh:<owner>/<repo>[/<path>]` | A script in a GitHub repository, `.tabcomputer/run.sh` unless a path is given, fetched from `raw.githubusercontent.com` at the default branch. Public repositories only. |
+| `?run=gist:<user>/<id>[/<file>]` | A file of a public gist, its first file unless one is named, fetched from `gist.githubusercontent.com/<user>/<id>/raw[/<file>]`. `<file>` is one name, never a path. |
+| `?run=gist:<id>` | The same without the user: the owner is looked up with GitHub's API (`api.github.com/gists/<id>`), and only a plain account name is taken from the answer; the raw address is built here. |
 | `?run=sh:<base64url>` | A script carried in the link itself (UTF-8, base64url, at most 64 KB). |
 | `&<name>=<value>` | An argument: the script reads it as `RUN_<NAME>` (`&repo=` is `$RUN_REPO`). |
 
-The script runs in `~/run/<name>/`: the recipe's name, `gh-<owner>-<repo>` or `sh-<hash>`. The page removes `run` and its arguments from the address (`history.replaceState`) before it fetches anything, so a reload does not run it again. `?ui=`, `?profile=` and the page's other parameters stay. `?safe=1` skips run links.
+The script runs in `~/run/<name>/`: the recipe's name, `gh-<owner>-<repo>`, `gist-<user>-<id>` or `sh-<hash>`. The page removes `run` and its arguments from the address (`history.replaceState`) before it fetches anything, so a reload does not run it again. `?ui=`, `?profile=` and the page's other parameters stay. `?safe=1` skips run links.
 
 `/recipes` lists the curated recipes with a Run link each.
 
@@ -28,7 +32,8 @@ The script runs in `~/run/<name>/`: the recipe's name, `gh-<owner>-<repo>` or `s
 A tab can hold Claude and GitHub tokens and the person's files, so a link never runs code that nobody reviewed without asking.
 
 - **Curated recipes run at once.** The Terminal first prints one line, `running recipe c-class (tabcomputer.com/recipes/c-class.sh)`. A recipe is curated only when `/recipes/index.json` on the page's own origin lists its name with the sha256 of the bytes `/recipes/<name>.sh` returned. Both are fetched with redirects refused, and an HTML answer (the app shell standing in for a missing file) is refused.
-- **`gh:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again.
+- **`gh:`, `gist:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again.
+- **A script from GitHub is fetched as exactly the file asked for**: without cookies or a referrer, no redirect followed, and an HTML answer is refused. A gist is never curated, whatever it is named.
 - **The script must be what it looks like.** UTF-8 text without control characters, bidirectional overrides or invisible characters; otherwise it is refused. The prompt puts the script in with `textContent`, so markup in a script stays text.
 - **Arguments are data.** Only the names in the script's `# args:` header are passed, as `RUN_<NAME>` in the Terminal's environment; other parameters are ignored and named in the Terminal. A link can't set `PATH` or any other variable. Values are never written into shell text. A value with control characters, or longer than 2000 characters, stops the run.
 - **A framed page ignores run links**: the page around it could cover the prompt.
@@ -89,7 +94,7 @@ Notes for authors:
 - `gcc`, `python3` and other names are tabcomputer builtins before Debian's are installed, so `command -v gcc` is true on a fresh machine. Ask `toolchain list` instead.
 - After changing a recipe run `node scripts/recipes/gen-index.mjs`: it rewrites `public/recipes/index.json`, and a recipe whose hash is not in the list does not run. `run-links.test.ts` fails when the list is out of date.
 
-A `gh:` or `sh:` script uses the same header keys; only `args` and `on-open` matter to the runner.
+A `gh:`, `gist:` or `sh:` script uses the same header keys; only `args` and `on-open` matter to the runner.
 
 ## A badge for a README
 

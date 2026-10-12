@@ -14,6 +14,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
+| [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
 | [RELEASES.md](RELEASES.md) | Each build shipped to tabcomputer.com: its commit, date and what changed |
 
@@ -49,6 +50,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/GDB.md](research/GDB.md): how gdb debugs programs here (a debug agent in the x86 engine and the remote protocol, not ptrace), what works and what remains.
 - [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
-- [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and a proposed app layer (2026-10-12).
+- [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and the app layer it proposed, built since as [APPS.md](APPS.md) and re-measured (2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

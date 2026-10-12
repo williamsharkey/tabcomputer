@@ -1,0 +1,198 @@
+{
+  "url": "http://localhost:5437/",
+  "at": "2026-10-12T18:49:24.759Z",
+  "converters": "stand-in shell scripts (no Debian)",
+  "install": "Installed Converter (converter) in ~/Apps/converter: 5 files.",
+  "appStart": {
+    "legacy": {
+      "first": {
+        "backendUpMs": 53,
+        "pageInteractiveMs": 62,
+        "totalMs": 115
+      },
+      "later": [
+        {
+          "backendUpMs": 47,
+          "pageInteractiveMs": 60,
+          "totalMs": 107
+        },
+        {
+          "backendUpMs": 47,
+          "pageInteractiveMs": 42,
+          "totalMs": 89
+        },
+        {
+          "backendUpMs": 42,
+          "pageInteractiveMs": 44,
+          "totalMs": 86
+        }
+      ]
+    },
+    "toolkit": {
+      "first": {
+        "pageInteractiveMs": 83,
+        "totalMs": 83
+      },
+      "later": [
+        {
+          "pageInteractiveMs": 35,
+          "totalMs": 35
+        },
+        {
+          "pageInteractiveMs": 36,
+          "totalMs": 36
+        },
+        {
+          "pageInteractiveMs": 32,
+          "totalMs": 32
+        }
+      ]
+    }
+  },
+  "perFile20": {
+    "shell": [
+      {
+        "medianMs": 5,
+        "totalMs": 91
+      },
+      {
+        "medianMs": 5,
+        "totalMs": 81
+      },
+      {
+        "medianMs": 5,
+        "totalMs": 104
+      }
+    ],
+    "hardwired": [
+      {
+        "medianMs": 5,
+        "totalMs": 108
+      },
+      {
+        "medianMs": 5,
+        "totalMs": 93
+      },
+      {
+        "medianMs": 5,
+        "totalMs": 97
+      }
+    ],
+    "legacy": [
+      {
+        "medianMs": 19,
+        "uploadMedianMs": 6,
+        "wallMs": 614,
+        "ok": 20
+      },
+      {
+        "medianMs": 19,
+        "uploadMedianMs": 6,
+        "wallMs": 586,
+        "ok": 20
+      },
+      {
+        "medianMs": 19,
+        "uploadMedianMs": 7,
+        "wallMs": 612,
+        "ok": 20
+      }
+    ],
+    "toolkit": [
+      {
+        "medianMs": 8,
+        "uploadMedianMs": 2,
+        "wallMs": 326,
+        "ok": 20
+      },
+      {
+        "medianMs": 9,
+        "uploadMedianMs": 2,
+        "wallMs": 337,
+        "ok": 20
+      },
+      {
+        "medianMs": 7,
+        "uploadMedianMs": 1,
+        "wallMs": 305,
+        "ok": 20
+      }
+    ]
+  },
+  "perFileSummary": {
+    "shell": "median per file 5–5 ms",
+    "hardwired": "median per file 5–5 ms",
+    "legacy": "median per file 19–19 ms",
+    "toolkit": "median per file 7–9 ms"
+  },
+  "fifty": {
+    "legacy": {
+      "1": {
+        "wallMs": 1614,
+        "medianMs": 20,
+        "ok": 70
+      },
+      "2": {
+        "wallMs": 1364,
+        "medianMs": 24,
+        "ok": 50
+      },
+      "4": {
+        "wallMs": 1213,
+        "medianMs": 38,
+        "ok": 50
+      }
+    },
+    "toolkit": {
+      "1": {
+        "wallMs": 1029,
+        "medianMs": 10,
+        "ok": 50
+      },
+      "2": {
+        "wallMs": 1120,
+        "medianMs": 23,
+        "ok": 50
+      },
+      "4": {
+        "wallMs": 1112,
+        "medianMs": 37,
+        "ok": 50
+      }
+    }
+  },
+  "zip50": {
+    "ms": 13,
+    "name": "converted-2026-10-12-144938.zip"
+  },
+  "becomeReload": {
+    "runs": [
+      {
+        "shellMs": 64,
+        "appInteractiveMs": 130
+      },
+      {
+        "shellMs": 34,
+        "appInteractiveMs": 85
+      },
+      {
+        "shellMs": 32,
+        "appInteractiveMs": 71
+      },
+      {
+        "shellMs": 42,
+        "appInteractiveMs": 77
+      },
+      {
+        "shellMs": 29,
+        "appInteractiveMs": 71
+      },
+      {
+        "shellMs": 45,
+        "appInteractiveMs": 77
+      }
+    ],
+    "medianMs": 77,
+    "rangeMs": "71–130"
+  }
+}

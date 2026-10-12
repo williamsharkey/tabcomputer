@@ -28,15 +28,26 @@ branch's own build served by `server.mjs` with the converter programs stood in
 for by shell scripts. The scripts are in `apps/converter/measure/`, their raw
 output in `apps/converter/measure/results/`.
 
+**Since then (branch unix/app-toolkit).** The app layer proposed below was
+built: [docs/APPS.md](../APPS.md) is its reference (the manifest, the `app`
+command, the supervised backend, `tab.js`, app origins, `?app=` links). The
+converter was ported to it and is `apps/converter/` now: a page and a
+manifest, no server. The first design measured here (the node server and its
+page) is kept in `apps/converter/measure/legacy/` with the thin hardwired
+window (`legacy/hardwired.ts`, no longer a desktop app), so the comparison can
+be run again. "The toolkit version, re-measured" below has its numbers; the
+rest of this document is the study as it was written, with a Toolkit column
+added to its three tables.
+
 ## What was built
 
 | | Where | Size |
 |---|---|---|
-| The app, in user space | `apps/converter/`: `server.js` (node `http`, `fs`, `child_process`; 370 lines), `public/` (a page with plain `fetch`; 300 lines of JS) | no tabcomputer API used |
-| The app, hardwired (thinnest version) | `src/desktop/apps/converter.ts`: a desktop window that writes dropped files with the filesystem object and runs the converter in a forked shell, as Files and Git do. `desktop open converter`; not in the dock | 135 lines |
+| The app, in user space | `apps/converter/measure/legacy/` now (it was `apps/converter/`): `server.js` (node `http`, `fs`, `child_process`; 370 lines), `public/` (a page with plain `fetch`; 300 lines of JS) | no tabcomputer API used |
+| The app, hardwired (thinnest version) | `apps/converter/measure/legacy/hardwired.ts` now (it was `src/desktop/apps/converter.ts`, a desktop app until the toolkit's version replaced it): a desktop window that writes dropped files with the filesystem object and runs the converter in a forked shell, as Files and Git do. `desktop open converter`; not in the dock | 135 lines |
 | A fix it needed | `src/commands/become.ts`, `src/main.ts`: `become PORT SLUG --start CMD`, and the app page as a real document | tests in `become.test.ts` |
 | A browser check | `tests/browser/app-converter.mjs`: 25 checks of both versions against a local server, converters stubbed | |
-| A manifest | `apps/converter/app.json`: the proposal below, written out. Nothing reads it | |
+| A manifest | `apps/converter/app.json`: the proposal below, written out. Nothing read it then; it is the app's real manifest now (docs/APPS.md) | |
 
 The user-space app does what issue #114 asks: drop files or a folder, pick
 HTML or CSV (DOCX and PDF appear when `pandoc` or `soffice` is installed),
@@ -82,15 +93,15 @@ the tab's shell with no app at all.
 
 ### Start
 
-| | User space | Hardwired |
-|---|---|---|
-| The tab itself, first visit, to a working shell | 0.36–0.50 s | same |
-| The tab itself, later visits | 0.12–0.43 s | same |
-| Backend listening (`node server.js`), first visit / later | 0.20–0.22 s / 0.02–0.04 s | none |
-| Window open to interactive page, first visit / later | 0.09–0.24 s / 0.10–0.15 s | 0.6 ms to build the window; 11 ms until it is on screen |
-| App start in a booted tab, later visits (backend + page) | 0.12–0.19 s | about 0.01 s |
-| First use: Debian plus the five packages by apt, drop to first converted file | 26.6 s (setup 26.4 s) | not built; it would be the same apt run |
-| Reload in app mode, to an interactive app with its backend back (local build, this branch) | 0.10 s (0.098–0.115 s over six reloads) | not measured: the thin window does not register a restore command, so the desktop session would not bring it back either |
+| | User space | Hardwired | Toolkit (local build, stand-in converters; see below) |
+|---|---|---|---|
+| The tab itself, first visit, to a working shell | 0.36–0.50 s | same | same tab |
+| The tab itself, later visits | 0.12–0.43 s | same | same tab |
+| Backend listening (`node server.js`), first visit / later | 0.20–0.22 s / 0.02–0.04 s | none | none: the converter has no backend |
+| Window open to interactive page, first visit / later | 0.09–0.24 s / 0.10–0.15 s | 0.6 ms to build the window; 11 ms until it is on screen | 0.08 s / 0.03–0.04 s (`app open` to the page having asked the tab which converters are there) |
+| App start in a booted tab, later visits (backend + page) | 0.12–0.19 s | about 0.01 s | 0.03–0.04 s (the first design on the same build: 0.09–0.11 s) |
+| First use: Debian plus the five packages by apt, drop to first converted file | 26.6 s (setup 26.4 s) | not built; it would be the same apt run | not measured: the same install, started by `app install` instead of the first drop |
+| Reload in app mode, to an interactive app with its backend back (local build, this branch) | 0.10 s (0.098–0.115 s over six reloads) | not measured: the thin window does not register a restore command, so the desktop session would not bring it back either | 0.08 s median (0.07–0.13 s over six reloads); an app with a node backend: 0.24 s |
 
 The hardwired number leaves out the fetch of its lazy chunk, which a built-in
 app pays on first launch; the measurement loaded the module by hand.
@@ -102,6 +113,7 @@ app pays on first launch; the measurement loaded the module by hand.
 | Shell | 70–72 ms | 3.3–3.4 s |
 | Hardwired window | 72–78 ms (1–2 ms of it writing the file) | 3.4–3.5 s |
 | User space | 128–173 ms | 4.5–4.7 s |
+| Toolkit (local build, stand-in converters; see below) | the command plus 2–4 ms (the first design on the same build: plus 14 ms) | not comparable: the stand-in takes 5 ms, not 70 |
 
 Where the user-space 55 ms goes, per file (medians of the last round): 17 ms
 to upload the bytes through the service worker and write them; 6 ms for the
@@ -119,11 +131,49 @@ is free and the cost is the round trip to the node Worker.
 | User space, 2 at a time (the app's default) | 6.8 s | 168 ms |
 | User space, 4 at a time | 4.8 s | 232 ms |
 | Hardwired (one at a time: the thin version has no queue) | 9.4 s | 80 ms |
+| Toolkit, 1 / 2 / 4 at a time (local build, stand-in converters; see below) | 1.0 / 1.1 / 1.1 s (the first design on the same build: 1.6 / 1.4 / 1.2 s) | 10 / 23 / 37 ms |
 
 All 50 converted in every run. The longest gap between timer ticks during a
 50-file run was 20 ms in both the tab and the app's page: the desktop stays
 responsive. The zip of 50 results (9.5 MB) reached the disk in 0.5 s; the
 hardwired zip path is the same command plus one file read.
+
+### The toolkit version, re-measured
+
+`apps/converter/measure/measure-local-toolkit.mjs`, raw output in
+`measure/results/measure-local-toolkit.json`. One tab of a local build of
+branch unix/app-toolkit (headless Chrome on a Mac, `server.mjs`), with all
+four ways of running the converter in it. There is no Debian in that tab:
+every converter is the same stand-in shell script, which takes about 5 ms
+where the real programs take about 70 ms. So the columns can be compared with
+one another, and what they show is the plumbing around a conversion; the
+totals cannot be compared with the production numbers above. The production
+run of the toolkit version has not been done: it needs a deploy.
+
+| | Shell | Hardwired | First design (node server + fetch) | Toolkit (tab.js, no server) |
+|---|---|---|---|---|
+| App start in a booted tab, three later loads | | | 86–107 ms (backend 42–47, page 42–60) | 32–36 ms |
+| The same, first load of the browser profile | | | 115 ms | 83 ms (it registers the app origin's service worker) |
+| Per file, 20 documents (4.0 MB), one at a time, three rounds: median | 5 ms | 5 ms | 19 ms, of it 6–7 ms the upload | 7–9 ms, of it 1–2 ms the upload |
+| The same 20 files, wall time | 0.08–0.10 s | 0.09–0.11 s | 0.59–0.61 s | 0.31–0.34 s |
+| 50 files (11.8 MB), 1 / 2 / 4 at a time, wall time | | | 1.61 / 1.36 / 1.21 s | 1.03 / 1.12 / 1.11 s |
+| The zip of 50 results to the real disk | | | 0.5 s in production (9.5 MB) | 13 ms (the stand-ins' results are a few KB) |
+| Reload in app mode to an interactive page, six reloads | | | 0.10 s (above) | 77 ms median (71–130 ms) |
+
+What changed, per file: the first design costs the command plus 14 ms here
+(an upload through the service worker, a request, and `child_process`); the
+toolkit costs the command plus 2–4 ms (one message with the file's bytes, one
+`tab.run`, one `tab.fs.stat`). With several at a time the toolkit is not
+faster than one at a time on these stand-ins: at 5 ms a conversion, taking the
+files in is what the time goes to. In production the first design lost 37 ms a
+file to `child_process.exec` running a real program; the toolkit runs the same
+command in a forked shell as the hardwired window does, so that cost should be
+gone there too, but that is an expectation until it is measured on a deploy.
+
+The app's backend restart is not in this table because the converter no longer
+has one. An app that does (`tests/browser/app-toolkit.mjs`, a node `http`
+server with a health path) opens in 0.21 s, comes back with its window 0.24 s
+after a reload of the desktop, and is back in app mode 0.24 s after a reload.
 
 ### Memory and storage
 
@@ -248,6 +298,9 @@ Not gaps: bridge latency (6 ms), file transfer (13–25 ms a file whether it is
 64 bytes or 1.8 MB), responsiveness, memory, the phone layout.
 
 ## Proposal: an app layer
+
+Built since, with changes: [docs/APPS.md](../APPS.md) says what exists. The
+proposal is left as it was written.
 
 Each item says whether it was **prototyped** on this branch or is only
 **proposed**.

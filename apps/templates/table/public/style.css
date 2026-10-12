@@ -1,0 +1,15 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; }
+main { padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+h1 { font-size: 20px; margin: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sub { margin: 10px 0 0; opacity: .65; font-size: 13px; overflow-wrap: anywhere; }
+.btn { font: inherit; min-height: 38px; padding: 6px 14px; border-radius: 9px; border: 1px solid #8886; background: transparent; color: inherit; cursor: pointer; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #8885; padding: 6px 9px; text-align: left; min-width: 80px; }
+th { background: #8882; }
+td:focus, th:focus { outline: 2px solid #b0652a; outline-offset: -2px; }
+#status { opacity: .7; font-size: 13px; }

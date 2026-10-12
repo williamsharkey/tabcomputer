@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{name}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>{{name}}</h1>
+  <p class="sub">The form's fields become the arguments of a command that runs in this tab.</p>
+  <form id="form">
+    <label>From <input name="first" type="number" value="1" required></label>
+    <label>Step <input name="step" type="number" value="1" required></label>
+    <label>To <input name="last" type="number" value="10" required></label>
+    <div class="row">
+      <button id="run" class="btn primary" type="submit">Run</button>
+      <button id="stop" class="btn" type="button" disabled>Stop</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+  <pre id="out" aria-label="Output"></pre>
+</main>
+<script src="/__tabcomputer/tab.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

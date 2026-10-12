@@ -255,6 +255,8 @@ export interface DesktopAPI {
   workArea(): Geometry;
   registerContentKind(kind: string, factory: ContentFactory): void;
   registerApp(app: AppDescriptor): void;
+  /** Take an app out of the dock and the app list (an uninstalled app). Additive (API v1.6). */
+  unregisterApp?(id: string): void;
   apps(): AppDescriptor[];
   /** Define (or redefine) a dock group. Additive (API v1.2). */
   registerGroup?(group: DockGroup): void;
@@ -399,6 +401,10 @@ export class WindowManager implements DesktopAPI {
   registerApp(app: AppDescriptor): void {
     this.appMap.set(app.id, app);
     this.emit('apps-changed');
+  }
+
+  unregisterApp(id: string): void {
+    if (this.appMap.delete(id)) this.emit('apps-changed');
   }
 
   private groupMap = new Map<string, DockGroup>();

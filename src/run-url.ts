@@ -6,6 +6,11 @@
  *   ?run=<name>                    a curated recipe, served by this site at /recipes/<name>.sh
  *   ?run=gh:<owner>/<repo>[/path]  a script in a GitHub repository (default .tabcomputer/run.sh)
  *   ?run=sh:<base64url>            a script carried in the link itself
+ *   ?run=gist:<user>/<id>[/file]   a file of a gist (its first file unless one is named); gist:<id> looks the owner up
+ *
+ * `?app=` (src/apps/links.ts, docs/APPS.md) is the same machinery for an app
+ * instead of a script: the trust rule, the cleaned address, the framed-page
+ * refusal, `?safe=1` and guest routing are shared.
  *
  * Trust: a tab can hold tokens and the person's files, so a link never runs
  * code nobody reviewed without asking. A curated recipe (listed in
@@ -24,14 +29,18 @@
  */
 
 /** Query parameters that are the page's own: never arguments, and left in the address */
-export const PAGE_PARAMS = new Set(['run', 'safe', 'ui', 'profile', 'reload', 'hotswap', 'watchdog', 'demo', 'unbecome', 'apps', 'guest', 'nonet']);
+export const PAGE_PARAMS = new Set(['run', 'app', 'become', 'safe', 'ui', 'profile', 'reload', 'hotswap', 'watchdog', 'demo', 'unbecome', 'apps', 'guest', 'nonet']);
+/** The page's parameters that are a link's own: gone from the address once the link is taken */
+const LINK_PARAMS = new Set(['run', 'app', 'become']);
 
 const RECIPE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** `gh-…` and `sh-…` are the directories of scripts that aren't curated */
-const RESERVED_NAME = /^(gh|sh)(-|$)/;
-const GH_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const GH_REPO = /^[A-Za-z0-9._-]{1,100}$/;
-const GH_SEGMENT = /^[A-Za-z0-9._-]{1,100}$/;
+/** `gh-…`, `sh-…` and `gist-…` are the directories of scripts that aren't curated */
+const RESERVED_NAME = /^(gh|sh|gist)(-|$)/;
+export const GH_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const GH_REPO = /^[A-Za-z0-9._-]{1,100}$/;
+export const GH_SEGMENT = /^[A-Za-z0-9._-]{1,100}$/;
+/** A gist's id: hex (older gists: digits) */
+const GIST_ID = /^[0-9a-f]{5,40}$/;
 const ARG_NAME = /^[a-z][a-z0-9_]{0,31}$/;
 export const GH_DEFAULT_PATH = '.tabcomputer/run.sh';
 /** Largest script a link may run (a curated recipe: CURATED_MAX) */
@@ -45,6 +54,8 @@ export const START_FILE = '.run-link';
 export type RunTarget =
   | { kind: 'recipe'; name: string }
   | { kind: 'gh'; name: string; owner: string; repo: string; path: string }
+  /** `user` is '' for gist:<id> (looked up); `file` is '' for the gist's first file */
+  | { kind: 'gist'; name: string; user: string; id: string; file: string }
   | { kind: 'sh'; name: string; bytes: Uint8Array };
 
 export interface ParsedRun {
@@ -105,6 +116,18 @@ export function parseRunUrl(search: string): ParsedRun | null {
     const path = segs.join('/');
     const name = ['gh', slug(owner), slug(repo), ...(path === GH_DEFAULT_PATH ? [] : [slug(path)])].filter(Boolean).join('-').slice(0, 96);
     target = { kind: 'gh', name, owner, repo, path };
+  } else if (run.startsWith('gist:')) {
+    // gist:<id>, gist:<user>/<id>, gist:<user>/<id>/<file>: a file is one name, never a path
+    const parts = run.slice(5).split('/');
+    const [user, id, file] = parts.length === 1 ? ['', parts[0], ''] : [parts[0], parts[1] ?? '', parts[2] ?? ''];
+    if (parts.length > 3 || !GIST_ID.test(id) || (parts.length > 1 && !GH_OWNER.test(user))) {
+      throw new RunLinkError('a gist: link is gist:<user>/<id>[/<file>] or gist:<id>');
+    }
+    if (parts.length === 3 && (!GH_SEGMENT.test(file) || file === '.' || file === '..')) {
+      throw new RunLinkError("the gist: link's file may only have letters, digits, . _ and -");
+    }
+    const name = ['gist', slug(user), id.slice(0, 12), slug(file)].filter(Boolean).join('-').slice(0, 96);
+    target = { kind: 'gist', name, user, id, file };
   } else if (run.startsWith('sh:')) {
     const bytes = base64urlBytes(run.slice(3));
     if (!bytes.length) throw new RunLinkError('the sh: script is empty');
@@ -125,11 +148,11 @@ export function parseRunUrl(search: string): ParsedRun | null {
   return { target, params };
 }
 
-/** The address without the run link: `run` and every parameter that isn't the page's own. */
+/** The address without the link: `run`, `app` (and its `become`) and every parameter that isn't the page's own. */
 export function cleanRunUrl(href: string): string {
   const u = new URL(href);
   for (const k of [...u.searchParams.keys()]) {
-    if (k.toLowerCase() === 'run' || !PAGE_PARAMS.has(k.toLowerCase())) u.searchParams.delete(k);
+    if (LINK_PARAMS.has(k.toLowerCase()) || !PAGE_PARAMS.has(k.toLowerCase())) u.searchParams.delete(k);
   }
   return u.toString();
 }
@@ -180,7 +203,7 @@ export function runEnv(params: Record<string, string>, header: RecipeHeader): { 
   return { env, ignored };
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer));
   return Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -213,18 +236,44 @@ export interface LoadedScript {
   header: RecipeHeader;
 }
 
-type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 /** A same-origin file exactly as the site serves it: no redirect, not the app shell standing in for a missing file. */
-async function fetchSiteFile(url: string, fetchFn: Fetch, max: number, what: string, missing: string): Promise<Uint8Array> {
+export async function fetchSiteFile(url: string, fetchFn: Fetch, max: number, what: string, missing: string, isHtml = false): Promise<Uint8Array> {
   let res: Response;
   try { res = await fetchFn(url, { redirect: 'error', credentials: 'same-origin', cache: 'no-cache' }); } catch { throw new RunLinkError(`could not fetch ${what}`); }
   if (!res.ok) throw new RunLinkError(res.status === 404 ? missing : `could not fetch ${what} (HTTP ${res.status})`);
   if (res.redirected || (res.url && res.url !== url)) throw new RunLinkError(`${what} was redirected`);
-  if (/html/i.test(res.headers.get('content-type') ?? '')) throw new RunLinkError(missing);
+  // (`isHtml`: the file asked for is a page itself, an app's index.html; its sha256 is what proves it)
+  if (!isHtml && /html/i.test(res.headers.get('content-type') ?? '')) throw new RunLinkError(missing);
   const bytes = new Uint8Array(await res.arrayBuffer());
   if (bytes.length > max) throw new RunLinkError(`${what} is too large`);
   return bytes;
+}
+
+/**
+ * A file from a raw-content host (raw.githubusercontent.com, gist.githubusercontent.com),
+ * exactly the one asked for: no cookies, no referrer, no redirect followed, and
+ * never an HTML page standing in for it.
+ */
+export async function fetchRaw(url: string, fetchFn: Fetch, max: number, what: string, missing: string): Promise<Uint8Array> {
+  let res: Response;
+  try { res = await fetchFn(url, { redirect: 'error', credentials: 'omit', cache: 'no-cache', referrerPolicy: 'no-referrer' }); } catch { throw new RunLinkError(`could not fetch ${what}`); }
+  if (!res.ok) throw new RunLinkError(res.status === 404 ? missing : `could not fetch ${what} (HTTP ${res.status})`);
+  if (res.redirected || (res.url && res.url !== url)) throw new RunLinkError(`${what} was redirected`);
+  if (/html/i.test(res.headers.get('content-type') ?? '')) throw new RunLinkError(`${what} is a web page, not a file`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length > max) throw new RunLinkError(`${what} is too large`);
+  return bytes;
+}
+
+/** The account a gist belongs to (GitHub's API): only its login is used, and only if it is a plain name */
+async function gistOwner(id: string, fetchFn: Fetch): Promise<string> {
+  const bytes = await fetchRaw(`https://api.github.com/gists/${id}`, fetchFn, 4 << 20, `gist ${id}`, `gist ${id} does not exist`);
+  let login: unknown;
+  try { login = (JSON.parse(new TextDecoder().decode(bytes)) as { owner?: { login?: unknown } })?.owner?.login; } catch { login = undefined; }
+  if (typeof login !== 'string' || !GH_OWNER.test(login)) throw new RunLinkError(`gist ${id} has no owner to fetch it from: use gist:<user>/<id>`);
+  return login;
 }
 
 /**
@@ -260,6 +309,13 @@ export async function loadScript(target: RunTarget, origin: string, fetchFn: Fet
     if (!res.ok) throw new RunLinkError(res.status === 404 ? `${from} does not exist (or the repository is private)` : `could not fetch ${from} (HTTP ${res.status})`);
     bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length > SCRIPT_MAX) throw new RunLinkError('the script is too long');
+  } else if (target.kind === 'gist') {
+    // (parseRunUrl made these; checked again because the URLs are built from them)
+    if (!GIST_ID.test(target.id) || (target.user && !GH_OWNER.test(target.user)) || (target.file && (!GH_SEGMENT.test(target.file) || target.file === '.' || target.file === '..'))) throw new RunLinkError('no such gist');
+    let user = target.user;
+    if (!user) user = await gistOwner(target.id, fetchFn);
+    from = `gist.github.com/${user}/${target.id}, ${target.file || 'its first file'}`;
+    bytes = await fetchRaw(`https://gist.githubusercontent.com/${user}/${target.id}/raw${target.file ? `/${target.file}` : ''}`, fetchFn, SCRIPT_MAX, from, `${from} does not exist (or the gist is secret and the link has no user)`);
   } else {
     bytes = target.bytes;
     from = 'the link itself';

@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; }
+main { max-width: 600px; margin: 0 auto; padding: 18px 16px 24px; display: flex; flex-direction: column; min-height: 100vh; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { margin: 0 0 14px; opacity: .7; }
+form { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+label { display: flex; flex-direction: column; gap: 3px; font-size: 13px; opacity: .85; }
+input { font: inherit; min-height: 38px; padding: 6px 10px; border-radius: 9px; border: 1px solid #8886; background: transparent; color: inherit; width: 100%; }
+.row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { font: inherit; min-height: 38px; padding: 6px 18px; border-radius: 9px; border: 1px solid #8886; background: transparent; color: inherit; cursor: pointer; }
+.btn.primary { background: #7a4dbf; border-color: transparent; color: #fff; }
+.btn:disabled { opacity: .5; cursor: default; }
+pre { flex: 1; min-height: 120px; margin: 14px 0 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #8884; border-radius: 9px; font: 13px/1.45 ui-monospace, monospace; }

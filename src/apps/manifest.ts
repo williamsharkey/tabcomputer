@@ -152,7 +152,7 @@ export function validateManifest(raw: unknown): AppManifest {
   if (typeof id !== 'string' || !APP_ID.test(id)) bad(`id must be 2 to 32 of a-z, 0-9 and -, starting with a letter (got ${show(id)})`);
   else if (RESERVED_IDS.has(id)) bad(`id ${show(id)} is taken by tabcomputer itself`);
   const name = raw.name;
-  if (typeof name !== 'string' || !name.trim() || name.length > 60 || CONTROL.test(name)) bad(`name must be 1 to 60 characters with no control characters (got ${show(name)})`);
+  if (typeof name !== 'string' || !name.trim() || name.length > 60 || CONTROL.test(name) || /[<>]/.test(name)) bad(`name must be 1 to 60 characters, without control characters, < or > (got ${show(name)})`);
   const text = (key: string, max: number): string => {
     const t = raw[key];
     if (t === undefined) return '';

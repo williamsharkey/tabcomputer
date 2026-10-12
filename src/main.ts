@@ -379,6 +379,8 @@ async function main() {
   registerCommand(commands, dougCmd, 'src/commands/doug.ts');
   registerCommand(commands, becomeCmd, 'src/commands/become.ts');
   registerCommand(commands, unbecomeCmd, 'src/commands/become.ts');
+  registerCommand(commands, lazyCommand('app', 'Apps: make one from a template, try it, install it in the dock, open it',
+    () => import('./commands/app').then(m => m.appCmd)), 'src/commands/app.ts');
   registerCommand(commands, pageCmd, 'src/commands/page.ts');
   registerCommand(commands, titleCmd, 'src/commands/title.ts');
   registerCommand(commands, desktopCmd, 'src/commands/desktop.ts');
@@ -800,6 +802,24 @@ async function main() {
     }).catch((e) => console.warn('[run-link]', e));
   };
 
+  /** The toolkit's core (src/apps/, docs/APPS.md), loaded when an app is asked for */
+  const appsCore = async () => {
+    const runtime = await import('./apps/runtime');
+    try { runtime.appsDeps(); } catch { runtime.configureApps({ fs, shell }); }
+    return runtime;
+  };
+  // An app link (?app=, src/apps/links.ts): the run links' rules, an app instead of a script
+  const startAppLink = async () => {
+    await appsCore();
+    const { startAppLink: handle } = await import('./apps/install');
+    await handle({
+      ready: async () => {
+        for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
+      },
+      report: (message) => terminal.term.writeln(`\r\n\x1b[33mapp link: ${message}\x1b[0m`),
+    }).catch((e) => console.warn('[app-link]', e));
+  };
+
   // Demo mode: lightweight boot for about page iframes
   const isDemo = new URLSearchParams(location.search).get('demo') === '1';
 
@@ -865,6 +885,16 @@ async function main() {
       localStorage.removeItem('tabcomputer-become');
       document.body.classList.remove('become-active');
       history.replaceState({}, '', '/');
+    } else if (pathname === '/' + becomeConfig.slug && becomeConfig.app) {
+      // An installed app (docs/APPS.md): the toolkit brings back its backend and its page
+      await appsCore();
+      const { restoreBecomeApp } = await import('./apps/window');
+      if (!await restoreBecomeApp(becomeConfig.app).catch(() => false)) {
+        localStorage.removeItem('tabcomputer-become');
+        document.body.classList.remove('become-active');
+        history.replaceState({}, '', '/');
+        console.warn(`[tabcomputer] app mode: ${becomeConfig.app} is not installed any more`);
+      }
     } else if (pathname === '/' + becomeConfig.slug) {
       // Only re-enter become mode on the slug path, NOT on root /
       // (the app's own server when `become --start` recorded its command, else a static serve)
@@ -891,6 +921,8 @@ async function main() {
   // (never here when the link asked for a guest and the server has none: src/guest.ts)
   if (!safe && !guestUnavailable() && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
     void startRunLink();
+  } else if (!safe && !guestUnavailable() && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('app')) {
+    void startAppLink();
   }
 
   // Check for shared seed URL: /s/:id

@@ -6,6 +6,7 @@ import { inlineAssets } from './vite-plugin-inline';
 import { hashEngineWasm, versionBlinkEngine } from './vite-plugin-engines';
 import { hotswapLiveModules, hotswapSource } from './vite-plugin-hotswap';
 import { isogitPackOffMainThread } from './vite-plugin-isogit';
+import { siteApps } from './vite-plugin-apps';
 import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,6 +44,7 @@ export default defineConfig({
     versionBlinkEngine(),
     hotswapLiveModules(__dirname),
     hotswapSource(__dirname, buildSha),
+    siteApps(),
   ],
   build: {
     target: 'es2022',

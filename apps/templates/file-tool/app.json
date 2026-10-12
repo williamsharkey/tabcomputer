@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "file-tool",
+  "name": "File tool",
+  "description": "Drop files, run a program on each, download the results.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "window": { "width": 560, "height": 520, "minWidth": 300, "minHeight": 300 },
+  "entry": "public",
+  "access": {
+    "fs": [],
+    "network": false,
+    "commands": ["base64"]
+  }
+}

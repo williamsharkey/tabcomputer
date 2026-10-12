@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "script",
+  "name": "Script",
+  "description": "A script with a Run button: its output on the page as it is written.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "window": { "width": 600, "height": 460, "minWidth": 300, "minHeight": 240 },
+  "entry": "public",
+  "access": {
+    "fs": [],
+    "network": false,
+    "commands": ["sh"]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "form",
+  "name": "Form",
+  "description": "A form over a command: fill it in, run, watch the output.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "window": { "width": 520, "height": 480, "minWidth": 300, "minHeight": 280 },
+  "entry": "public",
+  "access": {
+    "fs": [],
+    "network": false,
+    "commands": ["seq"]
+  }
+}

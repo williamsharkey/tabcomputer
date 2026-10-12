@@ -353,16 +353,24 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     }
     // spawn(…, { env }): the child sees that environment (Gemini CLI relaunches
     // itself with { ...process.env, GEMINI_CLI_NO_RELAUNCH: 'true' })
+    // The child is a shell process of its own, as node's `sh -c` is: its own $$ (it was the
+    // caller's, so `kill -9 $$` in a child killed the command that ran node, #92), only the
+    // exported variables and functions, and a signal it sends itself ends it
+    sh.startProcess();
+    sh.commandStringFlag = true;
     if (env) {
+      const own = sh.env;
       sh.env = {};
       for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== null) sh.env[k] = String(v);
+      // (the shell's own: OPTIND, SHELLOPTS…, which startProcess set)
+      for (const n of sh.localVars) if (n in own) sh.env[n] = own[n];
     }
     // { input }: the child's stdin (execSync, spawnSync, execFileSync)
-    const exitCode = input !== undefined
-      ? await sh.executeWithStdin(normalized, input, (s) => { stdout += s; }, (s) => { stderr += s; })
-      : await sh.execute(normalized, (s) => { stdout += s; }, (s) => { stderr += s; }, false,
-        // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
-        inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined, true);
+    if (input !== undefined) sh.setInjectedStdin(input);
+    const exitCode = await sh.runScriptText(normalized,
+      // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
+      inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined,
+      (s) => { stdout += s; }, (s) => { stderr += s; });
 
     // Refresh fileCache from Shiro FS cache — shell commands may have created,
     // modified, or deleted files that fileCache still has stale entries for.
@@ -383,7 +391,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     stdout = stdout.replace(/\r\n/g, '\n');
     stderr = stderr.replace(/\r\n/g, '\n');
 
-    return { stdout, stderr, exitCode };
+    // (a signal the shell sent itself ended it: `kill -9 $$`)
+    return { stdout, stderr, exitCode, ...(sh.endedBySignal !== undefined ? { signal: sh.endedBySignal } : {}) };
   };
   /**
    * Run `node ARGS` as the child, its stdin a pipe the parent writes into as it
@@ -649,15 +658,32 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
    * exec()/execFile()'s end, as node's: 'exit' then 'close' with (code, signal), exitCode or
    * signalCode, and the callback's error with code, killed and signal
    */
-  const execEnded = (child: any, childEvents: Record<string, Function[]>, r: { stdout: string; stderr: string; exitCode: number; signal?: number | null }, killedWith: number | null, cmd: string, callback?: Function) => {
+  const execEnded = (child: any, childEvents: Record<string, Function[]>, r: { stdout: string; stderr: string; exitCode: number; signal?: number | null }, killedWith: number | null, cmd: string, callback?: Function, opts?: any) => {
     const signal = endedBy(r, killedWith);
     child.exitCode = signal ? null : r.exitCode;
     child.signalCode = signal;
     (childEvents['exit'] || []).forEach(fn => fn(child.exitCode, signal));
     (childEvents['close'] || []).forEach(fn => fn(child.exitCode, signal));
+    // { maxBuffer }: output past it is cut there and is node's error (#106). Only a limit the
+    // caller gave: the output arrives whole at the end here, so node's 1 MiB default isn't applied
+    const max = typeof opts?.maxBuffer === 'number' ? opts.maxBuffer : Infinity;
+    const cut = (t: string) => { const b = new TextEncoder().encode(t); return b.length > max ? new TextDecoder().decode(b.subarray(0, max)) : null; };
+    const outCut = cut(r.stdout), errCut = outCut === null ? cut(r.stderr) : null;
+    if (outCut !== null || errCut !== null) {
+      callback?.(Object.assign(new RangeError(`${outCut !== null ? 'stdout' : 'stderr'} maxBuffer length exceeded`), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', cmd }),
+        outCut ?? r.stdout, errCut ?? r.stderr);
+      return;
+    }
     callback?.(signal || r.exitCode !== 0
       ? Object.assign(new Error(signal ? `Command failed: ${cmd}` : `Exit code ${r.exitCode}`), { code: child.exitCode, killed: child.killed, signal, cmd })
       : null, r.stdout, r.stderr);
+  };
+  /** exec()/execFile()'s { timeout }: killSignal (SIGTERM) to the child when it passes (#106); returns the cancel */
+  const execTimeout = (child: any, opts: any): (() => void) => {
+    const ms = Number(opts?.timeout);
+    if (!(ms > 0)) return () => {};
+    const t = setTimeout(() => child.kill(opts.killSignal ?? 'SIGTERM'), ms);
+    return () => clearTimeout(t);
   };
   /** This process's stdout and stderr: a pipe into them doesn't end them */
   const stdio = () => { const p = deps.getProcess?.(); return [p?.stdout, p?.stderr]; };
@@ -807,22 +833,28 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       let stdout = '';
       let stderr = '';
-      let status = 0;
-      const p = execAsync(fullCmd, undefined, inputOf(opts), undefined, inheritOf(opts)).then(r => { r = inherited(r, opts); stdout = r.stdout; stderr = r.stderr; status = r.exitCode; });
+      let status: number | null = 0;
+      let signal: string | null = null; // the signal that ended it: then status is null, as node's
+      const p = execAsync(fullCmd, undefined, inputOf(opts), undefined, inheritOf(opts)).then(r => {
+        signal = signalName(r.signal);
+        r = inherited(r, opts); stdout = r.stdout; stderr = r.stderr; status = signal ? null : r.exitCode;
+      });
       pendingPromises.push(p);
       return {
         get stdout() { return wrap(stdout); },
         get stderr() { return wrap(stderr); },
         get status() { return status; },
-        get error() { return status !== 0 ? new Error(`spawnSync exited with ${status}`) : undefined; },
+        get signal() { return signal; },
+        get error() { return status !== 0 && !signal ? new Error(`spawnSync exited with ${status}`) : undefined; },
         // awaited (sync-await.ts): the whole result, as node's spawnSync returns it
         then: (resolve: any, reject: any) => p.then(() => resolve({
-          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal: null,
+          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal,
         })).catch(reject),
       };
     },
     exec: (cmd: string, opts: any, cb?: any) => {
       const callback = typeof opts === 'function' ? opts : cb;
+      if (typeof opts === 'function') opts = undefined;
       const childEvents: Record<string, Function[]> = {};
       const child: any = {
         pid: Math.floor(Math.random() * 10000) + 1000,
@@ -839,18 +871,23 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const killer = new AbortController();
       let killedWith: number | null = null;
       child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
-      const p = execAsync(inCwd(cmd, opts), undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
+      const untime = execTimeout(child, opts);
+      const p = execAsync(inCwd(cmd, opts), opts?.env, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
+        untime();
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
-        execEnded(child, childEvents, r, killedWith, cmd, callback);
-      }).catch(e => callback?.(e, '', ''));
+        execEnded(child, childEvents, r, killedWith, cmd, callback, opts);
+      }).catch(e => { untime(); callback?.(e, '', ''); });
       pendingPromises.push(childWait(p));
       return child;
     },
     execFile: (file: string, args: string[], opts: any, cb?: any) => {
+      // execFile(file[, args][, options][, callback])
+      if (!Array.isArray(args) && args != null) { cb = opts; opts = args; args = []; }
       const callback = typeof opts === 'function' ? opts : cb;
+      if (typeof opts === 'function') opts = undefined;
       let cmd: string;
       if (isShellBin(file) && args) {
         cmd = extractShellArgs(args);
@@ -881,14 +918,17 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const cmdP = isClipCmd
         ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(inCwd(cmd, opts), undefined, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
+        : execAsync(inCwd(cmd, opts), opts?.env, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
+      const untime = isClipCmd ? () => {} : execTimeout(child, opts);
       const p = cmdP.then(r => {
+        untime();
         if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
-        execEnded(child, childEvents, r, killedWith, cmd, callback);
+        execEnded(child, childEvents, r, killedWith, cmd, callback, opts);
       }).catch(e => {
+        untime();
         // CRITICAL: Always emit error+close events even when callback is null.
         // Without this, the CLI hangs forever waiting for the child process.
         (childEvents['error'] || []).forEach(fn => fn(e));
@@ -1162,27 +1202,13 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   Object.defineProperty(cpModule, PTY_ACCESS, { value: ptyAccess });
   // Add util.promisify.custom for exec/execFile to return { stdout, stderr }
   const customSym = Symbol.for('nodejs.util.promisify.custom');
-  cpModule.exec[customSym] = (cmd: string, opts?: any) => {
-    const p = execAsync(inCwd(cmd, opts)).then(r => {
-      if (r.exitCode !== 0) throw Object.assign(new Error(`Command failed: ${cmd}`), { code: r.exitCode, stdout: r.stdout, stderr: r.stderr });
-      return { stdout: r.stdout, stderr: r.stderr };
-    });
-    pendingPromises.push(childWait(p.catch(() => {})));
-    return p;
-  };
-  cpModule.execFile[customSym] = (file: string, args?: string[], opts?: any) => {
-    let cmd: string;
-    if (isShellBin(file) && args) {
-      cmd = extractShellArgs(args);
-    } else {
-      cmd = `${file} ${shellQuoteArgs(args || [])}`;
-    }
-    const p = execAsync(inCwd(cmd, opts)).then(r => {
-      if (r.exitCode !== 0) throw Object.assign(new Error(`Command failed: ${cmd}`), { code: r.exitCode, stdout: r.stdout, stderr: r.stderr });
-      return { stdout: r.stdout, stderr: r.stderr };
-    });
-    pendingPromises.push(childWait(p.catch(() => {})));
-    return p;
-  };
+  // (through the callback forms, so env, timeout and maxBuffer apply; a failure's message as before)
+  const promised = (start: (cb: Function) => void) => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => start((err: any, stdout: string, stderr: string) => {
+    if (!err) return resolve({ stdout, stderr });
+    if (err.cmd !== undefined && !(err instanceof RangeError)) err.message = `Command failed: ${err.cmd}`;
+    reject(Object.assign(err, { stdout, stderr }));
+  }));
+  cpModule.exec[customSym] = (cmd: string, opts?: any) => promised((cb) => cpModule.exec(cmd, opts ?? {}, cb));
+  cpModule.execFile[customSym] = (file: string, args?: string[], opts?: any) => promised((cb) => (Array.isArray(args) ? cpModule.execFile(file, args, opts ?? {}, cb) : cpModule.execFile(file, [], args ?? {}, cb)));
   return cpModule;
 }

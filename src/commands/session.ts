@@ -40,7 +40,8 @@ function runChild(ctx: CommandContext, argv: string[], terminal: TerminalLike | 
   const child = ctx.shell.fork();
   child.cwd = ctx.cwd;
   (child as unknown as { terminal?: TerminalLike }).terminal = terminal;
-  return ctx.stdin
+  // (a live fd 0 is the child's as it is: reading ctx.stdin would wait for that pipe to close)
+  return !(ctx.liveStdin && child.kernelStdio) && ctx.stdin
     ? child.executeWithStdin(quoteArgsForShell(argv), ctx.stdin, out, err)
     : child.execute(quoteArgsForShell(argv), out, err, false, terminal, true);
 }

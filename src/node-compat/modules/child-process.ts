@@ -270,8 +270,37 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   };
   // execAsync is the underlying impl — returns a Promise
   // Shell natively handles setopt (no-op), eval (builtin), >| (clobber), /dev/null (virtual file)
-  /** Output as it arrives (a guest's spawn(): data events and stdio 'inherit' don't wait for the end) */
+  /** Output as it arrives (data events and stdio 'inherit' don't wait for the end) */
   type Live = { out: (s: string) => void; err: (s: string) => void };
+  /**
+   * `live` for a child's 'data' listeners: each chunk as the child writes it, on a microtask
+   * and in order, so the parent's listeners run in the parent and not inside the child's write
+   * (as spawnNodeLive's deliver); one that throws is the parent's error. `emit` is false while
+   * a stream has no listener: its chunks wait for one, as a stream's do in node (`flush`, at
+   * the end too). A long install showed nothing until it finished (docs/research/APP_MAKER.md).
+   */
+  const liveTo = (emit: Record<'out' | 'err', (t: string) => boolean>, onError: (e: any) => void): Live & { flush: () => void } => {
+    const held = { out: [] as string[], err: [] as string[] };
+    const drain = (k: 'out' | 'err') => {
+      try { while (held[k].length && emit[k](held[k][0])) held[k].shift(); } catch (e) { held[k].shift(); onError(e); }
+    };
+    const push = (k: 'out' | 'err') => (t: string) => { held[k].push(t); queueMicrotask(() => drain(k)); };
+    return { out: push('out'), err: push('err'), flush: () => { drain('out'); drain('err'); } };
+  };
+  /** liveTo's `onError`: the child's 'error' listeners, else this process's stderr */
+  const listenerError = (events: Record<string, Function[]>) => (e: any) => {
+    if ((events['error'] || []).length) events['error'].forEach((h) => h(e));
+    else deps.getProcess?.()?.stderr?.write(`${e?.stack ?? e}\n`);
+  };
+  /** A page shell's output for `live`: its \r\n line ends as \n, a \r at a chunk's end kept for the next */
+  const lfChunks = () => {
+    let cr = false;
+    return (s: string, last = false): string => {
+      if (cr) s = '\r' + s;
+      cr = !last && s.endsWith('\r');
+      return (cr ? s.slice(0, -1) : s).replace(/\r\n/g, '\n');
+    };
+  };
   /**
    * `inherit`: which of fds 0/1/2 are this process's own for the child (stdio
    * 'inherit'): a guest passes its kernel fds; in the page, all three, with
@@ -295,6 +324,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     if (rgMatch) {
       const rgArgs = rgMatch[2];
       if (rgArgs.includes('--version')) {
+        live?.out('ripgrep 14.0.0 (tabcomputer shim)\n');
         return { stdout: 'ripgrep 14.0.0 (tabcomputer shim)\n', stderr: '', exitCode: 0 };
       }
       // Pass through to Shiro's builtin rg command (handles --files, --sort, all flags)
@@ -367,10 +397,13 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     }
     // { input }: the child's stdin (execSync, spawnSync, execFileSync)
     if (input !== undefined) sh.setInjectedStdin(input);
+    const outLf = lfChunks(), errLf = lfChunks();
+    const liveOut = (t: string) => { if (t) live!.out(t); }, liveErr = (t: string) => { if (t) live!.err(t); };
     const exitCode = await sh.runScriptText(normalized,
       // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
       inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined,
-      (s) => { stdout += s; }, (s) => { stderr += s; });
+      (s) => { stdout += s; if (live) liveOut(outLf(s)); }, (s) => { stderr += s; if (live) liveErr(errLf(s)); });
+    if (live) { liveOut(outLf('', true)); liveErr(errLf('', true)); }
 
     // Refresh fileCache from Shiro FS cache — shell commands may have created,
     // modified, or deleted files that fileCache still has stale entries for.
@@ -665,7 +698,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     (childEvents['exit'] || []).forEach(fn => fn(child.exitCode, signal));
     (childEvents['close'] || []).forEach(fn => fn(child.exitCode, signal));
     // { maxBuffer }: output past it is cut there and is node's error (#106). Only a limit the
-    // caller gave: the output arrives whole at the end here, so node's 1 MiB default isn't applied
+    // caller gave (node's 1 MiB default isn't applied), and at the end: the child isn't stopped at it
     const max = typeof opts?.maxBuffer === 'number' ? opts.maxBuffer : Infinity;
     const cut = (t: string) => { const b = new TextEncoder().encode(t); return b.length > max ? new TextDecoder().decode(b.subarray(0, max)) : null; };
     const outCut = cut(r.stdout), errCut = outCut === null ? cut(r.stderr) : null;
@@ -690,6 +723,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
   /** pipeable() on an exec child's `stdout_`/`stderr_` events */
   const execPipe = (self: () => any, events: Record<string, Function[]>, prefix: string) =>
     pipeable(self, (ev, fn) => { (events[prefix + ev] ??= []).push(fn); }, (ev, fn) => { events[prefix + ev] = (events[prefix + ev] || []).filter((f) => f !== fn); }, stdio);
+  /** liveTo() on an exec child's `stdout_data`/`stderr_data` listeners */
+  const execLive = (events: Record<string, Function[]>) => {
+    const to = (ev: string) => (t: string) => { const l = events[ev] || []; l.forEach((fn) => fn(FakeBuffer.from(t))); return l.length > 0; };
+    return liveTo({ out: to('stdout_data'), err: to('stderr_data') }, listenerError(events));
+  };
   /** stdio 'inherit' (all three: the child gets the terminal, as spawn's does) */
   const inheritOf = (opts: any): [boolean, boolean, boolean] => [0, 1, 2].map((i) => inherits(opts?.stdio, i)) as [boolean, boolean, boolean];
   /** An inherited stream's output is this process's (on its stdout/stderr), not the result's */
@@ -872,11 +910,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       let killedWith: number | null = null;
       child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
       const untime = execTimeout(child, opts);
-      const p = execAsync(inCwd(cmd, opts), opts?.env, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
+      const live = execLive(childEvents);
+      const p = execAsync(inCwd(cmd, opts), opts?.env, undefined, live, undefined, killer, undefined, (pid) => { child.pid = pid; }).then(r => {
         untime();
-        if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
+        live.flush();
         (childEvents['stdout_end'] || []).forEach(fn => fn());
-        if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
         execEnded(child, childEvents, r, killedWith, cmd, callback, opts);
       }).catch(e => { untime(); callback?.(e, '', ''); });
@@ -915,16 +953,16 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const killer = new AbortController();
       let killedWith: number | null = null;
       child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
+      const live = execLive(childEvents);
       const cmdP = isClipCmd
         ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(inCwd(cmd, opts), opts?.env, undefined, undefined, undefined, killer, undefined, (pid) => { child.pid = pid; });
+        : execAsync(inCwd(cmd, opts), opts?.env, undefined, live, undefined, killer, undefined, (pid) => { child.pid = pid; });
       const untime = isClipCmd ? () => {} : execTimeout(child, opts);
       const p = cmdP.then(r => {
         untime();
-        if (r.stdout) (childEvents['stdout_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
+        live.flush();
         (childEvents['stdout_end'] || []).forEach(fn => fn());
-        if (r.stderr) (childEvents['stderr_data'] || []).forEach(fn => fn(FakeBuffer.from(r.stderr)));
         (childEvents['stderr_end'] || []).forEach(fn => fn());
         execEnded(child, childEvents, r, killedWith, cmd, callback, opts);
       }).catch(e => {
@@ -1068,11 +1106,15 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       child.catch = (reject?: (e: any) => any) => _childPromise.catch(reject);
       child.finally = (fn?: () => void) => _childPromise.finally(fn);
       // For clipboard commands, resolve after a microtask to let stdin.write/end happen first
-      // A guest's child: output reaches data listeners (or our stdout, for 'inherit') as it comes
-      const live: Live | undefined = deps.guest && !isClipboardCmd && !stdioOutPath && !stdioErrPath ? {
-        out: (t) => { if (inheritOut) deps.getProcess?.()?.stdout?.write(t); else (stdoutEvents['data'] || []).forEach(fn => fn(FakeBuffer.from(t))); },
-        err: (t) => { if (inheritErr) deps.getProcess?.()?.stderr?.write(t); else (stderrEvents['data'] || []).forEach(fn => fn(FakeBuffer.from(t))); },
-      } : undefined;
+      // Output reaches data listeners (or our stdout, for 'inherit') as it comes
+      const liveStream = (inherit: boolean, own: 'stdout' | 'stderr', evs: Record<string, Function[]>) => (t: string) => {
+        if (inherit) { deps.getProcess?.()?.[own]?.write(t); return true; }
+        const l = evs['data'] || [];
+        l.forEach(fn => fn(FakeBuffer.from(t)));
+        return l.length > 0;
+      };
+      const live = !isClipboardCmd && !stdioOutPath && !stdioErrPath
+        ? liveTo({ out: liveStream(inheritOut, 'stdout', stdoutEvents), err: liveStream(inheritErr, 'stderr', stderrEvents) }, listenerError(events)) : undefined;
       // A guest's child with piped stdin: live pipes both ways, a real process
       if (deps.guest && !isClipboardCmd && !stdioOutPath && !stdioErrPath && !inherits(opts?.stdio, 0) && !ignores(opts?.stdio, 0)) {
         return spawnGuestLive(child, fullCmd, opts, { stdoutEvents, stderrEvents, events, inheritOut, inheritErr, resolve: (v) => _resolveChild?.(v), argv: !opts?.shell && args ? [cmd, ...args.map(String)] : undefined });
@@ -1119,6 +1161,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         if (inheritOut && r.stdout && !live) proc?.stdout?.write(r.stdout);
         if (inheritErr && r.stderr && !live) proc?.stderr?.write(r.stderr);
         return Promise.all(writePromises).then(() => {
+          live?.flush();
           if (r.stdout && !live) (stdoutEvents['data'] || []).forEach(fn => fn(FakeBuffer.from(r.stdout)));
           (stdoutEvents['end'] || []).forEach(fn => fn());
           (stdoutEvents['close'] || []).forEach(fn => fn());

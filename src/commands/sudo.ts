@@ -81,6 +81,6 @@ export const sudoCmd: Command = {
     child.env = env;
     const out = (s: string) => { if (toTerm) (ctx.terminal as any).writeOutput(s); else ctx.stdout += s.replace(/\r\n/g, '\n'); };
     const err = (s: string) => { if (toTerm) (ctx.terminal as any).writeOutput(s); else ctx.stderr += s.replace(/\r\n/g, '\n'); };
-    return child.executeWithStdin(quoteArgsForShell(command), ctx.stdin || '', ctx.streamStdout ?? out, ctx.streamStderr ?? err);
+    return child.executeWithStdinOf(ctx, quoteArgsForShell(command), ctx.streamStdout ?? out, ctx.streamStderr ?? err);
   },
 };

@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 993 | see `git log --grep "^Build 993"` | 2026-10-12 | Dock: Text Editors, Developer Tools and AI agents stacks with logo glyphs (#104), stacks fit a phone on its side; GL: `sampler1DArray`, a 3.0+ compatibility context's version (Krita 5), translated lines in shader errors; node runs an empty script file (#97); this log caught up (979-992) |
 | 992 | 73749ca7 | 2026-10-12 | Browser: Chrome-style tabs, vertical by default (#103), collapsed on narrow windows; `claude --vm`'s Edit tool works (FileHandle.readFile returns a Buffer, #94); restored scrollback isn't written over, the restore note is a shell comment and the command goes on history (#100); docs: nothing is pushed to the shiro repo |
 | 991 | 1cf8314f | 2026-10-11 | Bracketed paste markers reach the foreground program (Claude Code sees a paste: a pasted image becomes [Image #N]) |
 | 990 | 7103d548 | 2026-10-11 | Git opens on your GitHub (repos, notifications, PRs; one-click clone) and sign-in; Files' Repositories always opens with a repo picker and New Repository; session restore offers one short line (#102) |

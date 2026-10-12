@@ -1,10 +1,10 @@
 // The program gdb.test.ts debugs: a breakpoint in add() (arguments 3 and 4,
-// the global `counter`), a fault in crash(), a read that waits, and a loop
-// that only an interrupt ends.
+// the global `counter`), a fault in crash(), a read that waits, a loop that
+// only an interrupt ends, and abort(). (The test names lines of this file.)
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
+#include <stdlib.h>
 volatile int counter = 41;
 
 __attribute__((noinline)) int add(int a, int b) {
@@ -31,6 +31,7 @@ int main(int argc, char **argv) {
     write(1, "spinning\n", 9);
     for (;;) counter++;
   }
+  if (argc > 1 && !strcmp(argv[1], "abort")) abort();
   printf("x=%d counter=%d\n", x, counter);
   return x;
 }

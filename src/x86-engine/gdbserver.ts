@@ -19,7 +19,7 @@
 
 import type { Kernel, Runner } from '../kernel/kernel';
 import type { Process } from '../kernel/process';
-import { SIGINT, SIGKILL, SIGTRAP, ENOSYS, EINTR } from '../kernel/abi';
+import { SIGINT, SIGKILL, SIGTRAP, ENOSYS, EINTR, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND } from '../kernel/abi';
 
 /** The debug agent's kernel call (Blink's ShiroGdbStop). */
 export const SYS_shiro_debug = 1050;
@@ -27,7 +27,7 @@ export const SYS_shiro_debug = 1050;
 // What the stopped thread sends (args[0]) …
 const OP_STOP = 1, OP_RESULT = 2;
 // … and the commands it is answered with
-const CMD_CONT = 1, CMD_STEP = 2, CMD_READ = 3, CMD_WRITE = 4, CMD_GETREGS = 5, CMD_SETREGS = 6, CMD_SETBP = 7, CMD_CLRBP = 8, CMD_DETACH = 9;
+const CMD_CONT = 1, CMD_STEP = 2, CMD_READ = 3, CMD_WRITE = 4, CMD_GETREGS = 5, CMD_SETREGS = 6, CMD_SETBP = 7, CMD_CLRBP = 8, CMD_DETACH = 9, CMD_SETWP = 10, CMD_CLRWP = 11;
 /** Bytes of memory one command moves (the agent's buffer is 8192). */
 const MEM_CHUNK = 4096;
 /** The agent's register block (ShiroGdbGetRegs). */
@@ -37,9 +37,9 @@ const R_IP = 128, R_FLAGS = 136, R_FS = 144, R_GS = 152, R_XMM = 160, R_MXCSR = 
 const GPR = [0, 3, 1, 2, 6, 7, 5, 4, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /** Why the thread stopped (ShiroGdbStop's kind). */
-export const enum StopKind { Start = 0, Signal = 1, Breakpoint = 2, Step = 3 }
+export const enum StopKind { Start = 0, Signal = 1, Breakpoint = 2, Step = 3, Watchpoint = 4 }
 
-export interface StopEvent { type: 'stop'; sig: number; kind: StopKind; regs: Uint8Array }
+export interface StopEvent { type: 'stop'; sig: number; kind: StopKind; regs: Uint8Array; /** StopKind.Watchpoint: the watched address */ watch?: bigint }
 export interface ExitEvent { type: 'exit'; status: number }
 export type TraceeEvent = StopEvent | ExitEvent;
 
@@ -122,7 +122,8 @@ export class BlinkTracee implements Tracee {
     this.lastSeq = seq;
     const len = Math.max(0, Math.min(args[4], data.length));
     if (op === OP_STOP) {
-      this.push({ type: 'stop', sig: args[2], kind: args[3] as StopKind, regs: data.slice(0, AGENT_REGS) });
+      const watch = args[3] === StopKind.Watchpoint ? new DataView(data.buffer, data.byteOffset).getBigUint64(AGENT_REGS, true) : undefined;
+      this.push({ type: 'stop', sig: args[2], kind: args[3] as StopKind, regs: data.slice(0, AGENT_REGS), watch });
     } else if (op === OP_RESULT) {
       const r = this.result;
       this.result = null;
@@ -425,7 +426,8 @@ export class GdbServer {
     const sig = e.kind === StopKind.Signal ? e.sig : SIGTRAP;
     // rbp, rsp and rip go with the reply: gdb needs them at every stop
     const expedite = [6, 7, 16].map((n) => `${n.toString(16).padStart(2, '0')}:${toHex(g.subarray(n * 8, n * 8 + 8))};`).join('');
-    return (this.lastStop = `T${toHex(Uint8Array.of(sig))}${e.kind === StopKind.Breakpoint ? 'swbreak:;' : ''}thread:${this.thread()};${expedite}`);
+    const why = e.kind === StopKind.Breakpoint ? 'swbreak:;' : e.kind === StopKind.Watchpoint ? `watch:${(e.watch ?? 0n).toString(16)};` : '';
+    return (this.lastStop = `T${toHex(Uint8Array.of(sig))}${why}thread:${this.thread()};${expedite}`);
   }
 
   private async readMem(addr: bigint, len: number): Promise<Uint8Array> {
@@ -541,12 +543,16 @@ export class GdbServer {
       }
       case 'Z':
       case 'z': {
-        const m = /^[Zz]([0-9]),([0-9a-f]+),/.exec(p);
+        const m = /^[Zz]([0-9]),([0-9a-f]+),([0-9a-f]+)/.exec(p);
         if (!m || !t) return 'E01';
-        if (m[1] !== '0') return ''; // no hardware breakpoints or watchpoints
-        const a = new Uint8Array(8);
-        new DataView(a.buffer).setBigUint64(0, BigInt('0x' + m[2]), true);
-        return (await t.command(p[0] === 'Z' ? CMD_SETBP : CMD_CLRBP, a)).status === 0 ? 'OK' : 'E01';
+        // breakpoints (0) and write watchpoints (2); no hardware breakpoints, read or access watchpoints
+        if (m[1] !== '0' && m[1] !== '2') return '';
+        const a = new Uint8Array(12);
+        const dv = new DataView(a.buffer);
+        dv.setBigUint64(0, BigInt('0x' + m[2]), true);
+        dv.setUint32(8, parseInt(m[3], 16), true);
+        const cmd = m[1] === '0' ? (p[0] === 'Z' ? CMD_SETBP : CMD_CLRBP) : (p[0] === 'Z' ? CMD_SETWP : CMD_CLRWP);
+        return (await t.command(cmd, a)).status === 0 ? 'OK' : 'E01';
       }
       case 'c': case 's': case 'C': case 'S':
         return this.resume(p);
@@ -645,7 +651,25 @@ export function blinkLauncher(proc: Process, kernel: Kernel, runnerFor: (path: s
       const f = gdb.fds.get(fd);
       if (f) fds[fd] = f;
     }
-    const child = kernel.spawn({ path, argv: [file, ...args], env: proc.env, cwd: gdb.cwd, parent: gdb, fds, run: runnerFor(path) });
+    // `run < input.txt > out.txt`: gdb's own target starts the program with a
+    // shell for these; here the words arrive as arguments
+    const argv: string[] = [];
+    const opened: import('../kernel/fd').OpenFile[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const m = /^(?:([012])?(<|>>|>)|(&>|2>&1))(.*)$/.exec(args[i]);
+      if (!m) { argv.push(args[i]); continue; }
+      if (m[3] === '2>&1' && !m[4]) { if (fds[1]) fds[2] = fds[1]; continue; }
+      const target = m[4] || args[++i];
+      if (!target) return 'syntax error: no file after a redirection';
+      const op = m[3] ?? m[2];
+      const flags = op === '<' ? O_RDONLY : O_WRONLY | O_CREAT | (op === '>>' ? O_APPEND : O_TRUNC);
+      const f = await kernel.open(gdb, target, flags, 0o666);
+      if (typeof f === 'number') { for (const o of opened) void o.close?.(); return `${target}: cannot open (errno ${-f})`; }
+      opened.push(f);
+      if (op === '&>') fds[1] = fds[2] = f;
+      else fds[m[1] ? Number(m[1]) : op === '<' ? 0 : 1] = f;
+    }
+    const child = kernel.spawn({ path, argv: [file, ...argv], env: proc.env, cwd: gdb.cwd, parent: gdb, fds, run: runnerFor(path) });
     return new BlinkTracee(child, kernel, gdb);
   };
 }

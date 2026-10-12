@@ -4,6 +4,20 @@
 
 All changes so far are additive; nothing below renames or removes an earlier name.
 
+- **2026-10-12 (unix/gdb)** — additive: `shiro_debug`, the x86 engine's debug agent's call.
+  - `shiro_debug` 1050 `(op, seq, a2, a3, len)`: a Blink thread stopped for a
+    debugger (Blink patch 0550) reports with it and gets a command back
+    (src/x86-engine/gdbserver.ts registers it; docs/research/GDB.md). op 1:
+    stopped, a2 the signal, a3 why (0 start, 1 signal, 2 breakpoint, 3 step,
+    4 watchpoint), data the register block (512 bytes, then a watchpoint's
+    address). op 2: the last command's result, a2 its errno, data `len`
+    bytes. The reply is the next command (1 continue, 2 step, 3 read memory,
+    4 write memory, 5 read registers, 6 write registers, 7/8 set/remove a
+    breakpoint, 9 detach, 10/11 set/remove a watchpoint) with its operands
+    in data. A signal for the process ends the call with EINTR; the same
+    `seq` again is the same report. ENOSYS (no debugger for this process)
+    turns the agent off.
+
 - **2026-10-11 (unix/vm-bun-apis)** — additive: a spawned session's controlling tty; `shiro_transform`.
   - `SYS_spawn` (and `Kernel.spawn`) take `ctty: N` with `setsid`: the child's
     fd N, a pty, becomes the new session's controlling terminal with the

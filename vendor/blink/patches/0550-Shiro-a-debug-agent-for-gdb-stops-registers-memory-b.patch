@@ -1,6 +1,6 @@
-From 525a2cf6316dd0f13d442e1bcd83bb18cd0c9305 Mon Sep 17 00:00:00 2001
+From 79ddec399e1b8817212154fc4ccb7a71d0db5012 Mon Sep 17 00:00:00 2001
 From: shiro <build@shiro>
-Date: Mon, 12 Oct 2026 04:36:24 -0400
+Date: Mon, 12 Oct 2026 05:51:46 -0400
 Subject: [PATCH] Shiro: a debug agent for gdb: stops, registers, memory,
  breakpoints, steps over a kernel call (1050)
 
@@ -15,7 +15,9 @@ into code, so compiled code needs no invalidation), and the instruction
 runs in the interpreter. A stop is a loop of kernel calls (1050): the
 thread reports the stop with its registers, the kernel answers with a
 command (read or write memory, read or write registers, set or remove a
-breakpoint, continue, step, detach), and the thread reports the result.
+breakpoint or a watchpoint, continue, step, detach), and the thread
+reports the result. A watchpoint is up to 64 bytes of memory compared
+after each instruction (8 of them).
 
 Signals become stops. A pending one is shown to the debugger from
 ConsumeSignal before it is consumed, which is also where a blocking
@@ -23,7 +25,9 @@ kernel call that ended with EINTR looks for it: taken by the debugger,
 the call is made again as if no signal had come, so Ctrl-C during a
 read doesn't fail the read. A fault an instruction raises is held in
 DeliverSignalToUser and reported once HaltMachine has unwound. The
-resume command says whether the guest gets the signal. SIGHUP, SIGINT,
+resume command says whether the guest gets the signal. A debugged
+thread's tkill/tgkill of itself goes pending rather than being acted on
+inside the call, so abort() stops in the debugger first. SIGHUP, SIGINT,
 SIGQUIT, SIGUSR1, SIGUSR2, SIGALRM and SIGTERM with the default action
 come to the guest rather than the kernel ending the process, so they
 reach the debugger.
@@ -38,12 +42,13 @@ are one load of g_shiro_gdb in CheckForSignals, ConsumeSignal and
 DeliverSignalToUser.
 ---
  blink/blink.c      |   3 +
- blink/machine.h    |   6 +
+ blink/machine.h    |   7 +
  blink/shiro.inc    |   2 +
- blink/shirogdb.inc | 282 +++++++++++++++++++++++++++++++++++++++++++++
+ blink/shirogdb.inc | 341 +++++++++++++++++++++++++++++++++++++++++++++
  blink/signal.c     |   8 ++
+ blink/syscall.c    |   5 +-
  blink/throw.c      |   2 +
- 6 files changed, 303 insertions(+)
+ 7 files changed, 367 insertions(+), 1 deletion(-)
  create mode 100644 blink/shirogdb.inc
 
 diff --git a/blink/blink.c b/blink/blink.c
@@ -61,10 +66,10 @@ index f985130..4f2ea4c 100644
  }
  
 diff --git a/blink/machine.h b/blink/machine.h
-index 7582e4d..8cadc46 100644
+index 7582e4d..ee09586 100644
 --- a/blink/machine.h
 +++ b/blink/machine.h
-@@ -738,6 +738,12 @@ long HostPageRefs(u8 *);
+@@ -738,6 +738,13 @@ long HostPageRefs(u8 *);
  bool ShiroTakeSiginfo(struct Machine *, int, u8 *);
  void ShiroQueueSiginfo(struct System *, int, const int *);
  void ShiroFreeSigq(struct System *);
@@ -72,6 +77,7 @@ index 7582e4d..8cadc46 100644
 +extern bool g_shiro_gdb;
 +void ShiroGdbBegin(struct Machine *, bool);
 +bool ShiroGdbTick(struct Machine *);
++bool ShiroGdbOwns(struct Machine *);
 +bool ShiroGdbSignal(struct Machine *);
 +bool ShiroGdbFault(struct Machine *, int, int);
  extern bool g_shiro_prof;
@@ -89,10 +95,10 @@ index 670e1f4..f575bf6 100644
 +#include "blink/shirogdb.inc"
 diff --git a/blink/shirogdb.inc b/blink/shirogdb.inc
 new file mode 100644
-index 0000000..7bb99fd
+index 0000000..84b0bd5
 --- /dev/null
 +++ b/blink/shirogdb.inc
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,341 @@
 +// ── Debug agent (gdb: docs/research/GDB.md) ─────────────────────────────
 +// Included by shiro.inc.
 +//
@@ -101,8 +107,9 @@ index 0000000..7bb99fd
 +// CheckForSignals and ShiroGdbTick: breakpoints are addresses checked
 +// there, and the instruction runs in the interpreter. A stop is a loop of
 +// kernel calls (1050): the thread reports the stop and its registers, the
-+// kernel answers with a command (memory, registers, breakpoints, continue,
-+// step), and the thread reports the result. Signals become stops
++// kernel answers with a command (memory, registers, breakpoints,
++// watchpoints, continue, step), and the thread reports the result. A
++// watchpoint is memory compared after each instruction. Signals become stops
 +// (ShiroGdbSignal from ConsumeSignal, ShiroGdbFault from
 +// DeliverSignalToUser); the resume command says whether the guest gets the
 +// signal. Only the thread the process started with is debugged; nothing
@@ -113,6 +120,8 @@ index 0000000..7bb99fd
 +bool g_shiro_gdb;
 +#define SHIRO_GDB_REGS  512
 +#define SHIRO_GDB_MAXBP 256
++#define SHIRO_GDB_MAXWP 8
++#define SHIRO_GDB_WPLEN 64
 +static struct ShiroGdb {
 +  struct Machine *m;
 +  bool started;  // the stop before the first instruction was reported
@@ -125,6 +134,14 @@ index 0000000..7bb99fd
 +  unsigned seq;
 +  int nbp;
 +  i64 bp[SHIRO_GDB_MAXBP];
++  int nwp;
++  int wphit;     // 1 + the watchpoint whose memory changed, not yet reported
++  struct ShiroGdbWatch {
++    i64 addr;
++    u32 len;
++    bool ok;     // `was` is what the memory held (it was readable)
++    u8 was[SHIRO_GDB_WPLEN];
++  } wp[SHIRO_GDB_MAXWP];
 +  u8 buf[8192];
 +} g_gdb;
 +
@@ -132,8 +149,9 @@ index 0000000..7bb99fd
 +  g_shiro_gdb = !!on;
 +}
 +
-+static bool ShiroGdbOwns(struct Machine *m) {
-+  return g_shiro_gdb && m == g_gdb.m && !t_vfork;
++// `m` is the debugged thread, and a signal for it is the debugger's to see
++bool ShiroGdbOwns(struct Machine *m) {
++  return g_shiro_gdb && m == g_gdb.m && !t_vfork && !g_gdb.passing;
 +}
 +
 +// the main thread of a program just loaded
@@ -162,6 +180,7 @@ index 0000000..7bb99fd
 +  g_shiro_gdb = false;
 +  g_gdb.m = 0;
 +  g_gdb.nbp = 0;
++  g_gdb.nwp = g_gdb.wphit = 0;
 +  g_gdb.step = g_gdb.stepped = g_gdb.skip = false;
 +}
 +
@@ -216,8 +235,19 @@ index 0000000..7bb99fd
 +  return -1;
 +}
 +
++// What the watched memory holds now; true if some of it changed
++static bool ShiroGdbWatched(struct Machine *m, struct ShiroGdbWatch *w) {
++  u8 now[SHIRO_GDB_WPLEN];
++  bool ok = CopyFromUser(m, now, w->addr, w->len) != -1;
++  bool changed = ok && w->ok && memcmp(now, w->was, w->len);
++  if (ok) memcpy(w->was, now, w->len);
++  w->ok = ok;
++  return changed;
++}
++
 +// Stopped with `sig` (kind 0: before the first instruction, 1: a signal,
-+// 2: a breakpoint, 3: a step): serves the debugger until it resumes the
++// 2: a breakpoint, 3: a step, 4: a watchpoint, its address after the
++// registers): serves the debugger until it resumes the
 +// thread. Returns the signal to deliver (0: none). The calls aren't the
 +// guest's (no mask sync), and with every signal masked meanwhile none
 +// asks the page to interrupt them: one that comes is reported after the
@@ -230,6 +260,11 @@ index 0000000..7bb99fd
 +  int op = 1, a2 = sig, a3 = kind, inlen = SHIRO_GDB_REGS, st;
 +  g_gdb.step = g_gdb.stepped = false;
 +  ShiroGdbGetRegs(m, b);
++  if (kind == 4) {
++    Write64(b + SHIRO_GDB_REGS, g_gdb.wp[g_gdb.wphit - 1].addr);
++    inlen += 8;
++  }
++  g_gdb.wphit = 0;
 +  mask = m->sigmask;
 +  m->sigmask = ~(u64)0;
 +  ++g_gdb.seq;
@@ -255,6 +290,8 @@ index 0000000..7bb99fd
 +        LOCK(&m->system->sig_lock);
 +        m->signals &= ~drop;
 +        UNLOCK(&m->system->sig_lock);
++        // (the debugger may have written to watched memory)
++        for (i = 0; i < (u32)g_gdb.nwp; ++i) ShiroGdbWatched(m, g_gdb.wp + i);
 +        g_gdb.step = r == 2;
 +        g_gdb.skip = true;
 +        m->sigmask = mask;
@@ -298,6 +335,26 @@ index 0000000..7bb99fd
 +          g_gdb.bp[i] = g_gdb.bp[--g_gdb.nbp];
 +        }
 +        break;
++      case 10:  // watch [addr, addr + len) for writes that change it
++        addr = Read64(b), len = Read32(b + 8);
++        if (!len || len > SHIRO_GDB_WPLEN || g_gdb.nwp >= SHIRO_GDB_MAXWP) {
++          st = ENOSPC_LINUX;
++        } else {
++          g_gdb.wp[g_gdb.nwp].addr = addr;
++          g_gdb.wp[g_gdb.nwp].len = len;
++          g_gdb.wp[g_gdb.nwp].ok = false;
++          ShiroGdbWatched(m, g_gdb.wp + g_gdb.nwp++);
++        }
++        break;
++      case 11:  // remove a watchpoint
++        addr = Read64(b), len = Read32(b + 8);
++        for (i = 0; i < (u32)g_gdb.nwp; ++i) {
++          if (g_gdb.wp[i].addr == addr && g_gdb.wp[i].len == len) {
++            g_gdb.wp[i] = g_gdb.wp[--g_gdb.nwp];
++            break;
++          }
++        }
++        break;
 +      default:  // detach (9), or no debugger answers: run free
 +        ShiroGdbEnd();
 +        m->sigmask = mask;
@@ -313,7 +370,7 @@ index 0000000..7bb99fd
 +  u64 pend;
 +  i64 handler;
 +  int sig, act;
-+  if (!ShiroGdbOwns(m) || g_gdb.passing) return true;
++  if (!ShiroGdbOwns(m)) return true;
 +  if (!(pend = m->signals & ~m->sigmask)) return true;
 +  sig = 64 - __builtin_clzll(pend);
 +  handler = Read64(m->system->hands[sig - 1].handler);
@@ -335,7 +392,7 @@ index 0000000..7bb99fd
 +// An instruction raised `sig` (DeliverSignalToUser): reported from
 +// ShiroGdbTick, once HaltMachine has unwound to the interpreter loop.
 +bool ShiroGdbFault(struct Machine *m, int sig, int code) {
-+  if (!ShiroGdbOwns(m) || g_gdb.passing) return false;
++  if (!ShiroGdbOwns(m)) return false;
 +  g_gdb.fault = sig;
 +  g_gdb.faultcode = code;
 +  return true;
@@ -364,6 +421,8 @@ index 0000000..7bb99fd
 +  } else if (!g_gdb.started) {
 +    g_gdb.started = true;
 +    ShiroGdbStop(m, 5, 0);
++  } else if (g_gdb.wphit) {
++    ShiroGdbStop(m, 5, 4);
 +  } else if (g_gdb.step && g_gdb.stepped) {
 +    ShiroGdbStop(m, 5, 3);
 +  } else if (g_gdb.nbp && !g_gdb.skip && ShiroGdbFindBp(m->ip) >= 0) {
@@ -372,6 +431,12 @@ index 0000000..7bb99fd
 +    g_gdb.skip = false;
 +    g_gdb.stepped = g_gdb.step;
 +    ExecuteInstruction(m);
++    if (g_gdb.nwp) {
++      int i;
++      for (i = 0; i < g_gdb.nwp; ++i) {
++        if (ShiroGdbWatched(m, g_gdb.wp + i) && !g_gdb.wphit) g_gdb.wphit = i + 1;
++      }
++    }
 +  }
 +  return true;
 +}
@@ -401,6 +466,22 @@ index b19f5fd..60c2a8b 100644
    if (atomic_load_explicit(&m->killed, memory_order_acquire)) {
      SysExit(m, 0);
  #ifndef DISABLE_JIT
+diff --git a/blink/syscall.c b/blink/syscall.c
+index f8fa7e5..b0d5521 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -5767,7 +5767,10 @@ static int SysTkill(struct Machine *m, int tid, int sig) {
+     if (!sig) return 0;  // (pthread_kill(pthread_self(), 0): it exists)
+     if (sig == SIGSTOP_LINUX || sig == SIGKILL_LINUX) {
+       return raise(XlatSignal(sig));
+-    } else if (~m->sigmask & ((u64)1 << (sig - 1))) {
++    } else if ((~m->sigmask & ((u64)1 << (sig - 1))) &&
++               !(g_shiro_gdb && ShiroGdbOwns(m))) {
++      // (a debugged thread's goes pending: its debugger sees it first, as
++      // it leaves the call: abort() stops in gdb with its backtrace)
+       LOCK(&m->system->sig_lock);
+       switch (Read64(m->system->hands[sig - 1].handler)) {
+         case SIG_DFL_LINUX:
 diff --git a/blink/throw.c b/blink/throw.c
 index df93448..cc1c4aa 100644
 --- a/blink/throw.c

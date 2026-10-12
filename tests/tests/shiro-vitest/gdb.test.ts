@@ -5,8 +5,8 @@
  *    program: framing, the register layout, the target description.
  * 2. A scripted remote-protocol client against fixtures/x86/gdbdemo.c running
  *    in Blink with the agent (Blink patch 0550): the first stop, breakpoints,
- *    registers and memory, single steps, a fault, an interrupt during a
- *    loop and during a blocking read, kill.
+ *    registers and memory, single steps, a watchpoint, a fault, abort(),
+ *    an interrupt during a loop and during a blocking read, kill.
  * 3. Debian's own gdb doing the same from its command line, when the `c`
  *    toolchain layer is available (TABCOMPUTER_TEST_LAYERS=DIR, as
  *    toolchain-layers.test.ts).
@@ -131,6 +131,8 @@ describe('gdbserver: the protocol', () => {
         if (cmd === 6) { regs.set(p.subarray(0, AGENT_REGS)); return { status: 0, data: new Uint8Array(0) }; }
         if (cmd === 7) bps.add(pv.getBigUint64(0, true));
         if (cmd === 8) bps.delete(pv.getBigUint64(0, true));
+        if (cmd === 10) log.push(`watch ${pv.getBigUint64(0, true).toString(16)} ${pv.getUint32(8, true)}`);
+        if (cmd === 11) log.push(`unwatch ${pv.getBigUint64(0, true).toString(16)} ${pv.getUint32(8, true)}`);
         return { status: 0, data: new Uint8Array(0) };
       },
       resume(step, sig) {
@@ -173,6 +175,7 @@ describe('gdbserver: the protocol', () => {
     expect(await c.cmd('qAttached')).toBe('0');
     expect(await c.cmd('vCont?')).toBe('vCont;c;C;s;S');
     expect(await c.cmd('Z1,401000,1')).toBe('');       // no hardware breakpoints
+    expect(await c.cmd('Z3,1000,4')).toBe('');         // nor read watchpoints
     expect(await c.cmd('qTStatus')).toBe('');
   });
 
@@ -228,6 +231,13 @@ describe('gdbserver: the protocol', () => {
     expect(bps.has(0x401020n)).toBe(true);
     expect(await c.cmd('z0,401020,1')).toBe('OK');
     expect(bps.size).toBe(0);
+    // a write watchpoint, and the stop that names its address
+    expect(await c.cmd('Z2,1010,4')).toBe('OK');
+    c.post('c');
+    push({ type: 'stop', sig: 5, kind: 4, regs: new Uint8Array(AGENT_REGS), watch: 0x1010n });
+    expect(await c.reply()).toMatch(/^T05watch:1010;thread:1;/);
+    expect(await c.cmd('z2,1010,4')).toBe('OK');
+    expect(log.splice(0)).toEqual(['watch 1010 4', 'cont 0', 'unwatch 1010 4']);
     expect(await c.cmd('vCont;s:1')).toMatch(/^T05thread:1;/);
     expect(await c.cmd('s')).toMatch(/^T05thread:1;/);
     // continue; an interrupt request is acted on only if the program hasn't stopped by itself
@@ -304,7 +314,7 @@ describe.skipIf(!haveBin || !blinkHasGdb)('gdbserver: a program in Blink under t
     const c = new Client();
     let proc: import('@shiro/kernel/process').Process | undefined;
     c.server = new GdbServer(c.receive, async (file, argv) => {
-      proc = kernel.spawn({ path: file, argv: [file, ...argv], cwd: '/home/user/work', fds: { 0: stdin, 1: out, 2: out }, run: blinkRunner(file, undefined, { gdb: true }) });
+      proc = kernel.spawn({ path: file, argv: [file, ...argv], env: process.env.GDB_TEST_DEBUG ? { TABCOMPUTER_BLINK_DEBUG: '1' } : {}, cwd: '/home/user/work', fds: { 0: stdin, 1: out, 2: out }, run: blinkRunner(file, undefined, { gdb: true }) });
       return new BlinkTracee(proc, kernel, undefined);
     });
     await c.cmd('QStartNoAckMode');
@@ -358,6 +368,31 @@ describe.skipIf(!haveBin || !blinkHasGdb)('gdbserver: a program in Blink under t
     expect(await c.cmd('?')).toBe('W0e');
   }, 120_000);
 
+  it('a watchpoint stops after the instruction that changes the memory', async () => {
+    const { c } = await debug();
+    const counter = sym.get('counter')!, add = sym.get('add')!;
+    expect(await c.cmd(`Z2,${hex64(counter)},4`)).toBe('OK');
+    expect(await c.cmd('vCont;c')).toMatch(new RegExp(`^T05watch:${hex64(counter)};thread:1;`));
+    expect(await c.cmd(`m${hex64(counter)},4`)).toBe('30000000'); // 41 + 7
+    const rip = gReg(await c.cmd('g'), RIP);
+    expect(rip > add && rip < add + 0x40n).toBe(true);
+    // a write by the debugger is not a hit
+    expect(await c.cmd(`M${hex64(counter)},4:31000000`)).toBe('OK');
+    expect(await c.cmd(`z2,${hex64(counter)},4`)).toBe('OK');
+    expect(await c.cmd('vCont;c')).toBe('W07');
+  }, 120_000);
+
+  it('abort() stops in the debugger with SIGABRT before it ends the program', async () => {
+    const { c } = await debug('abort');
+    expect(await c.cmd('vCont;c')).toMatch(/^T06thread:1;/);
+    // the frames above are raise() and abort(): the stack still holds main's return address
+    const sp = gReg(await c.cmd('g'), RSP), main = sym.get('main')!;
+    const stack = fromHex(await c.cmd(`m${hex64(sp)},400`));
+    const words = Array.from({ length: stack.length >> 3 }, (_, i) => new DataView(stack.buffer).getBigUint64(i * 8, true));
+    expect(words.some((w) => w > main && w < main + 0x400n)).toBe(true);
+    expect(await c.cmd('vCont;C06:1')).toBe('X06');
+  }, 120_000);
+
   it('a fault stops in the debugger where it happened; passed on, it ends the program', async () => {
     const { c, stop } = await debug('segv');
     expect(stop).toMatch(/^T05/);
@@ -401,7 +436,7 @@ describe.skipIf(!haveBin || !blinkHasGdb)('gdbserver: a program in Blink under t
     expect(wait.out.text()).toBe('waiting\nwoke\nx=7 counter=48\n');
   }, 120_000);
 
-  it('a program started with the agent and no debugger runs normally', async () => {
+  it('a program started with the agent and no debugger runs normally; abort() ends a program', async () => {
     const { fs } = await createTestShell();
     await fs.mkdir('/home/user/work', { recursive: true });
     await fs.writeFile('/home/user/work/prog', elf, { mode: 0o755 });
@@ -413,6 +448,13 @@ describe.skipIf(!haveBin || !blinkHasGdb)('gdbserver: a program in Blink under t
     const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out, 2: out }, run: blinkRunner('/home/user/work/prog', undefined, { gdb: true }) });
     expect(await p.wait()).toBe(7 << 8);
     expect(out.text()).toBe('x=7 counter=48\n');
+    // abort() ends it with SIGABRT, with the agent and without. (musl raises
+    // with every signal blocked: the kernel, last told that mask, held the
+    // signal the engine died of, and the process never ended: host.mjs shiroKill.)
+    for (const gdb of [true, false]) {
+      const q = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog', 'abort'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out, 2: out }, run: blinkRunner('/home/user/work/prog', undefined, { gdb }) });
+      expect(await q.wait()).toBe(6);
+    }
   }, 60_000);
 });
 
@@ -481,6 +523,22 @@ describe.skipIf(!haveRootfs || !realLayers || !blinkHasGdb)("Debian's gdb (TABCO
     expect(a.output).toMatch(/Temporary breakpoint 3, main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21/);
     expect(a.output).toContain('$2 = 7\n');
     expect(a.output).not.toMatch(/ptrace|Could not trace|warning:/);
+  }, 600_000);
+
+  it('watch, abort() with a backtrace, and run with < and >', async () => {
+    const w = await gdb(['break main', 'run', 'watch counter', 'continue', 'bt', 'continue']);
+    expect(w.output).toMatch(/[Ww]atchpoint 2: counter\n/);
+    expect(w.output).toMatch(/[Ww]atchpoint 2: counter\n\nOld value = 41\nNew value = 48\n/);
+    expect(w.output).toMatch(/#0 +add \(a=3, b=4\) at demo\.c:13\n#1 +0x[0-9a-f]+ in main /);
+    expect(w.output).toContain('x=7 counter=48\n');
+    const a = await gdb(['run', 'bt', 'continue'], 'abort');
+    expect(a.output).toContain('Program received signal SIGABRT, Aborted.');
+    expect(a.output).toMatch(/#\d+ +0x[0-9a-f]+ in abort \(\) from [^\n]*libc\.so\.6\n#\d+ +0x[0-9a-f]+ in main \(argc=2, argv=0x[0-9a-f]+\) at demo\.c:34/);
+    expect(a.output).toContain('Program terminated with signal SIGABRT, Aborted.');
+    await fs.writeFile('/home/user/dbg/in.txt', 'abq');
+    const r = await gdb(['run wait < in.txt > out.txt', 'run wait <in.txt 2>&1 >>out.txt']);
+    expect(r.output).toMatch(/exited with code 07\]\n\[Inferior 1 \(process \d+\) exited with code 07\]/);
+    expect(await fs.readFile('/home/user/dbg/out.txt', 'utf8')).toBe('waiting\nwoke\nx=7 counter=48\n'.repeat(2));
   }, 600_000);
 
   it('a segfault stops in gdb with a backtrace', async () => {

@@ -182,6 +182,16 @@ in the test when `go`/`gcc` exist.
 - `$(./binary)` at the prompt captures the program's stdout (src/shell.ts);
   before, any kernel program inside `$(...)` wrote to the tty.
 - `TABCOMPUTER_BLINK_STRACE=1` adds Blink's own syscall trace.
+- gdb: Blink has no ptrace. A process `tabcomputer-gdbserver` starts
+  (`blinkRunner(path, undefined, { gdb: true })`, host.mjs calls
+  `blink_shiro_gdb`) runs under the debug agent of patch 0550
+  (`blink/shirogdb.inc`): its main thread takes the interpreter's slow path
+  for every instruction, checks breakpoints and watchpoints there, and while
+  stopped serves the debugger through kernel call 1050. The remote protocol
+  is `src/x86-engine/gdbserver.ts`. Design, what works and what doesn't:
+  [research/GDB.md](research/GDB.md). A process not started that way pays
+  one load of a false global where signals are consumed, nothing per
+  instruction.
 
 ### The wasm JIT (patch 0012, `blink/wjit.c`)
 

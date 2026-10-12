@@ -122,7 +122,8 @@ export async function runNode(ctx: CommandContext): Promise<number> {
     code = ctx.stdin;
   }
 
-  if (!code && node.eval === undefined) {
+  // (an empty script file is a program that does nothing: exit 0, tabcomputer#97)
+  if (!code && node.eval === undefined && node.script === undefined) {
     ctx.stderr += 'node: no input provided\n';
     return 1;
   }

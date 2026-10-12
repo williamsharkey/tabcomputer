@@ -1,6 +1,6 @@
 /**
- * Dock icon sets (docs/DESKTOP.md "Icon sets"; design: docs/design/dock-icon-studies.html
- * on design/dock-icons). Every set draws the same glyphs from one geometry, a
+ * Dock icon sets (docs/DESKTOP.md "Icon sets"; design: docs/design/dock-icon-studies.html).
+ * Every set draws the same glyphs from one geometry, a
  * 24-unit grid with round strokes, so the apps belong together; a set changes
  * only the material. "Classic" keeps the colorful tiles of icons.ts.
  *

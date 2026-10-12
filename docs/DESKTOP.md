@@ -356,8 +356,8 @@ claude-signin-sheet-*.png, claude-signin-panel-*.png.
 ## Icon sets
 
 The dock, its stacks, the launcher and Settings draw app icons from one icon
-set (`src/desktop/iconsets.ts`; design: `docs/design/dock-icon-studies.html`
-on `design/dock-icons`). Every set draws the same glyphs, one geometry on a
+set (`src/desktop/iconsets.ts`; design: `docs/design/dock-icon-studies.html`).
+Every set draws the same glyphs, one geometry on a
 24-unit grid with round strokes, so the apps belong together; a set changes
 only the material. Settings → Dock & Icons picks one (localStorage
 `tabcomputer-desktop-iconset`; a grid of cards, each a still mini dock).

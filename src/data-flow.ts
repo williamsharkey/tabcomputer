@@ -54,8 +54,6 @@ export interface DataFlowState {
     host: string | null;
     /** Why there is none */
     why?: 'guest' | 'off';
-    /** A relay of the user's own is saved, but this UI does not apply it */
-    ownIgnored?: boolean;
     /** Whether the site's relay was seen to answer */
     seen: boolean;
     /** The relay in use is given the GitHub sign-in: it asked for one (the site's), or the user allowed it (their own) */
@@ -82,10 +80,10 @@ export function dataFlowState(i: DataFlowInputs): DataFlowState {
   const ownHost = i.ownRelayUrl ? relayHost(i.ownRelayUrl) : null;
   let relay: DataFlowState['relay'];
   if (guest && !guest.network) relay = { kind: 'none', host: null, why: 'guest', seen: false };
-  // Only the desktop applies a relay of the user's own (initNetwork in desktop/network.ts)
-  else if (ownHost && i.ui === 'desktop') relay = { kind: 'own', host: ownHost, seen: false, ...(i.ownRelaySignin ? { signin: true } : {}) };
-  else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true, ...(ownHost ? { ownIgnored: true } : {}) };
-  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(i.siteRelaySignin ? { signin: true } : {}), ...(ownHost ? { ownIgnored: true } : {}) };
+  // A relay of the user's own is applied in both UIs (followRelaySetting, src/kernel/net.ts)
+  else if (ownHost) relay = { kind: 'own', host: ownHost, seen: false, ...(i.ownRelaySignin ? { signin: true } : {}) };
+  else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true };
+  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(i.siteRelaySignin ? { signin: true } : {}) };
   return { host: i.host, ui: i.ui, profile: guest ? 'guest' : 'main', guest, guestsOffered: i.guestsOffered, secrets, relay, persisted: i.persisted };
 }
 
@@ -269,7 +267,6 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
       ? 'Off: this guest has no network. Programs here have no connection.'
       : 'Off: this server has no relay. Programs here cannot open connections.';
   }
-  if (s.relay.ownIgnored) tcp.note = `${tcp.note ? tcp.note + ' ' : ''}A relay of your own is saved, but the terminal UI does not use it.`;
   if (s.relay.kind === 'site') {
     // relayToken (src/kernel/net.ts): the sign-in follows a 401 signin_required, never before
     if (s.relay.signin) {
@@ -382,7 +379,7 @@ export function dataFlowActions(s: DataFlowState): { actions: DataFlowAction[]; 
   // (a no-network guest has no relay, the user's own included: nothing to set there)
   if (!(s.guest && !s.guest.network)) actions.push(s.ui === 'desktop'
     ? { id: 'network', label: 'Network Settings…', why: 'Use a relay you run for programs\' connections. The API, GitHub and download paths stay on this site\'s server.' }
-    : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network; the terminal UI always uses this site\'s.' });
+    : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network (there is no command for it); the terminal UI then uses it too.' });
   if (s.secrets.github || s.secrets.claude) {
     actions.push({
       id: 'accounts', label: 'Accounts…',
@@ -476,7 +473,7 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
   const fetchImpl = opts.fetch ?? fetch;
   const ui = opts.ui ?? ((await import('./ui-mode')).uiMode());
   const own = ownRelay();
-  const skipProbe = !!guest?.noNetwork || (!!own && ui === 'desktop');
+  const skipProbe = !!guest?.noNetwork || !!own;
   const [cfg, claude, persisted, siteRelay] = await Promise.all([
     guestConfig(),
     hasClaudeCredentials(fs as never).catch(() => false),

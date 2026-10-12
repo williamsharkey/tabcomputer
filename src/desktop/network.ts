@@ -9,9 +9,8 @@
 
 import {
   networkCredential, networkStatus, onNetworkStatus, setNetworkSignInHandler, setNetworkStatus,
-  resetNetworkDecline, ownRelay, onOwnRelayChange, relayNetConfig, probeRelayToken, type NetworkNeed, type NetworkStatus,
+  resetNetworkDecline, ownRelay, onOwnRelayChange, probeRelayToken, relayTokenUrlFor, type NetworkNeed, type NetworkStatus,
 } from '../net-signin';
-import { netStackOf } from '../kernel/net';
 import type { Kernel } from '../kernel/kernel';
 import type { FileSystem } from '../filesystem';
 import type { WindowManager } from './wm';
@@ -25,14 +24,13 @@ let fsRef: FileSystem;
 let wmRef: WindowManager;
 let current: { el: HTMLElement; done: (tok: string | null) => void; promise: Promise<string | null> } | null = null;
 
-export function initNetwork(wm: WindowManager, fs: FileSystem, button: HTMLElement, kernel?: Kernel): void {
+export function initNetwork(wm: WindowManager, fs: FileSystem, button: HTMLElement, _kernel?: Kernel): void {
   root = wm.root;
   fsRef = fs;
   wmRef = wm;
-  // "Use my own connection" (Settings → Network) points the kernel's sockets at the user's relay
-  const applyRelay = () => { if (kernel) netStackOf(kernel)?.configure(relayNetConfig()); };
-  applyRelay();
-  onOwnRelayChange(() => { applyRelay(); setNetworkStatus(navigator.onLine ? 'online' : 'offline'); });
+  // "Use my own connection" (Settings → Network): boot points the kernel's sockets at the
+  // chosen relay in both UIs (followRelaySetting, src/kernel/net.ts); here only the status.
+  onOwnRelayChange(() => { setNetworkStatus(navigator.onLine ? 'online' : 'offline'); });
   // A guest never asks for a sign-in by itself: a token saved there is the guest's to read
   if (!guestInfo()) setNetworkSignInHandler((need) => showSignInSheet(need));
   const initial: NetworkStatus = guestInfo()?.noNetwork ? 'unavailable' : !navigator.onLine ? 'offline' : networkCredential() ? 'signed-in' : 'online';
@@ -63,8 +61,9 @@ export function statusText(s: NetworkStatus): string {
 }
 
 /**
- * Check a relay of the user's own: fetch a token if it has a token URL, then
- * open (and close) a WebSocket. Resolves to null when reachable, else why not.
+ * Check a relay of the user's own: fetch a token (from its token URL, or
+ * where server.mjs would have one when none was given), then open (and close)
+ * a WebSocket. Resolves to null when reachable, else why not.
  */
 export async function testOwnRelay(url: string, tokenUrl?: string, timeoutMs = 6000): Promise<string | null> {
   let token: string | null = null;
@@ -72,8 +71,17 @@ export async function testOwnRelay(url: string, tokenUrl?: string, timeoutMs = 6
     try {
       const r = await fetch(tokenUrl, { method: 'POST' });
       if (!r.ok) return `token request answered ${r.status}`;
-      token = (await r.json())?.token ?? null;
+      token = (await r.json().catch(() => null))?.token ?? null;
+      if (typeof token !== 'string' || !token) return 'the token URL answered without a token (is it the relay\'s /tcp/token?)';
     } catch (e) { return `token request failed (${(e as Error)?.message ?? e}; is this site allowed by its CORS/origin list?)`; }
+  } else {
+    // No token URL: try where server.mjs has one; a relay with nothing there is used without a token
+    const guess = relayTokenUrlFor(url);
+    const r = guess ? await fetch(guess, { method: 'POST' }).catch(() => null) : null;
+    if (r?.status === 401) return 'this relay requires a sign-in (tick the box to give it yours)';
+    if (r?.status === 403) return 'the relay refused this site (is it in the relay\'s TABCOMPUTER_TCP_ORIGINS?)';
+    const t = r?.ok ? (await r.json().catch(() => null))?.token : null;
+    if (typeof t === 'string' && t) token = t;
   }
   return new Promise((resolve) => {
     let ws: WebSocket;

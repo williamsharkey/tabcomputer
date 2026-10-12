@@ -12,7 +12,7 @@ import type { AppContext } from '../index';
 import type { DesktopWindow } from '../wm';
 import { GLYPHS, ICONS } from '../icons';
 import { ICON_SETS, appIconIn, glyphFor, paintPixelTiles, type IconSetId } from '../iconsets';
-import { networkCredential, networkStatus, onNetworkStatus, ownRelay, setOwnRelay } from '../../net-signin';
+import { networkCredential, networkStatus, onNetworkStatus, ownRelay, setOwnRelay, relayTokenUrlFor } from '../../net-signin';
 import { openSignIn, probeRelay, signedInAccount, signOut, statusText, testOwnRelay } from '../network';
 import { BRAND } from '../../brand';
 import buildNumber from '../../../build-number.txt?raw';
@@ -234,8 +234,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
           <div class="sd-row" style="flex-direction:column;align-items:stretch;gap:6px;padding-top:8px">
             <label class="sd-small sd-muted" for="sd-relay-url">Relay URL</label>
             <input id="sd-relay-url" class="sd-input" type="url" spellcheck="false" placeholder="wss://relay.example.com/tcp" value="${esc(draft.url)}">
-            <label class="sd-small sd-muted" for="sd-relay-token">Token URL <span>(optional, if your relay issues tokens)</span></label>
-            <input id="sd-relay-token" class="sd-input" type="url" spellcheck="false" placeholder="https://relay.example.com/tcp/token" value="${esc(draft.tokenUrl)}">
+            <label class="sd-small sd-muted" for="sd-relay-token">Token URL <span>(optional: empty means <code>/token</code> next to the relay URL, where server.mjs has it; a relay without tokens is used without one)</span></label>
+            <input id="sd-relay-token" class="sd-input" type="url" spellcheck="false" placeholder="${esc((/^wss?:\/\//.test(draft.url) && relayTokenUrlFor(draft.url)) || 'https://relay.example.com/tcp/token')}" value="${esc(draft.tokenUrl)}">
             <label class="sd-small" for="sd-relay-signin" style="display:flex;gap:6px;align-items:flex-start"><input id="sd-relay-signin" type="checkbox"${draft.sendSignin ? ' checked' : ''}><span>Give this relay my GitHub sign-in if it asks for one <span class="sd-muted">(a relay run with <code>TABCOMPUTER_TCP_REQUIRE_SIGNIN=1</code>). Off: it never receives it.</span></span></label>
             <div class="sd-row" style="gap:8px;border:0;padding:4px 0 0"><span class="sd-grow sd-small ${relayCls === 'err' ? '' : 'sd-muted'}" style="${relayCls === 'err' ? 'color:#ff5a52' : relayCls === 'ok' ? 'color:#2fb457' : ''}">${esc(relayMsg)}</span>
               <button class="sd-btn" data-act="test">Test</button><button class="sd-btn sd-primary" data-act="save">${own ? 'Update' : 'Use this relay'}</button></div>

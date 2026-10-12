@@ -59,8 +59,8 @@ describe('data flow: the state', () => {
     expect(state({ siteRelay: 'unknown' }).relay).toEqual({ kind: 'site', host: 'tabcomputer.test', seen: false });
     expect(state({ siteRelay: 'off' }).relay).toEqual({ kind: 'none', host: null, why: 'off', seen: true });
     expect(state({ ownRelayUrl: 'wss://relay.example.com/tcp' }).relay).toEqual({ kind: 'own', host: 'relay.example.com', seen: false });
-    // only the desktop applies a relay of the user's own
-    expect(state({ ownRelayUrl: 'wss://relay.example.com/tcp', ui: 'terminal' }).relay).toEqual({ kind: 'site', host: 'tabcomputer.test', seen: true, ownIgnored: true });
+    // both UIs apply a relay of the user's own (#117)
+    expect(state({ ownRelayUrl: 'wss://relay.example.com/tcp', ui: 'terminal' }).relay).toEqual({ kind: 'own', host: 'relay.example.com', seen: false });
     // a no-network guest has none, the user's own included
     expect(state({ ownRelayUrl: 'wss://relay.example.com/tcp', guest: { name: 'a', ephemeral: true, noNetwork: true } }).relay.kind).toBe('none');
     // a URL that isn't one is not a relay
@@ -124,9 +124,10 @@ describe('data flow: what each flow says', () => {
     expect(tcp.to).toContain('your relay (relay.example.com)');
     expect(flow({ ownRelayUrl: 'wss://relay.example.com/tcp' }, 'api').reads).toBe('contents');
     expect(flow({ ownRelayUrl: 'wss://relay.example.com/tcp' }, 'github').via).toContain('/git-proxy');
-    const ignored = flow({ ownRelayUrl: 'wss://relay.example.com/tcp', ui: 'terminal' }, 'tcp');
-    expect(ignored.via).toBe('/tcp relay');
-    expect(ignored.note).toContain('the terminal UI does not use it');
+    const inTerminal = flow({ ownRelayUrl: 'wss://relay.example.com/tcp', ui: 'terminal' }, 'tcp');
+    expect(inTerminal.via).toBeNull();
+    expect(inTerminal.to).toContain('your relay (relay.example.com)');
+    expect(inTerminal.note).toBeUndefined();
   });
 
   it('a no-network guest the server enforces: only this site\'s own files still flow', () => {
@@ -187,8 +188,8 @@ describe('data flow: actions', () => {
     expect(ids({ persisted: false })).toContain('storage');
     expect(ids({ persisted: null })).not.toContain('storage');
   });
-  it('says the terminal UI cannot set a relay', () => {
-    expect(dataFlowActions(state({ ui: 'terminal' })).actions.find((a) => a.id === 'network')!.why).toContain('the terminal UI always uses this site\'s');
+  it('says where a relay is set from the terminal UI, which uses it too', () => {
+    expect(dataFlowActions(state({ ui: 'terminal' })).actions.find((a) => a.id === 'network')!.why).toContain('the terminal UI then uses it too');
   });
 });
 

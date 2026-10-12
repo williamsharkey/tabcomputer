@@ -138,7 +138,11 @@ export async function probeRelayToken(tokenUrl: string, opts: { fetch?: typeof f
 export interface OwnRelay {
   /** ws:// or wss:// URL of a TCP relay speaking docs/NETWORKING.md's protocol */
   url: string;
-  /** POST endpoint returning {token, expires}, if that relay wants one */
+  /**
+   * POST endpoint returning {token, expires}. Optional: without it,
+   * relayTokenUrlFor(url) is tried (where server.mjs has it), and a relay with
+   * nothing there is used without a token.
+   */
   tokenUrl?: string;
   /**
    * The user said this relay may have their GitHub sign-in when it asks for
@@ -171,6 +175,19 @@ export function setOwnRelay(r: OwnRelay | null): void {
   for (const cb of relayListeners) { try { cb(r); } catch {} }
 }
 
+/**
+ * Where server.mjs serves tokens for a relay URL: `/token` next to it over
+ * http(s) (wss://host/tcp → https://host/tcp/token). null for a URL that is
+ * not ws(s).
+ */
+export function relayTokenUrlFor(relayUrl: string): string | null {
+  try {
+    const u = new URL(relayUrl);
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;
+    return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}${u.pathname.replace(/\/+$/, '')}/token`;
+  } catch { return null; }
+}
+
 export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
   relayListeners.add(cb);
   return () => { relayListeners.delete(cb); };
@@ -182,11 +199,16 @@ export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
  * it), or this site's /tcp. `credentials` allows the sign-in to be sent once
  * the relay's token endpoint has answered 401 signin_required, never before.
  */
-export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean } {
+export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean; tokenOptional?: boolean } {
   // A no-network guest (src/guest.ts) has no relay, the user's own included
   if (guestInfo()?.noNetwork) return { relayUrl: null, tokenUrl: null, credentials: false };
   const own = ownRelay();
-  if (own) return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? null, credentials: own.sendSignin === true };
+  if (own) {
+    // No token URL given: the one server.mjs has next to its relay is tried, and
+    // a relay that has none there is used without a token (NetConfig.tokenOptional)
+    const guess = own.tokenUrl ? null : relayTokenUrlFor(own.url);
+    return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? guess, credentials: own.sendSignin === true, ...(guess ? { tokenOptional: true } : {}) };
+  }
   const web = (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host;
   return {
     relayUrl: web ? `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/tcp` : null,

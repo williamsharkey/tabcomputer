@@ -80,7 +80,7 @@ import { hotswap } from './hotswap/swap';
 import { liveModule, trackInstance } from './hotswap/live';
 import { startDisplay } from './x11/display';
 import { startGLServer, getGLServer } from './gl/server';
-import { installNet } from './kernel/net';
+import { installNet, followRelaySetting } from './kernel/net';
 import { attachKernelTty } from './kernel/pty';
 import { sudoCmd } from './commands/sudo';
 import { shiroAptCmd, shiroAptMethodCmd, shiroAptStoreCmd, shiroPreconfigureCmd } from './commands/debian';
@@ -605,6 +605,8 @@ async function main() {
   (window as any).__tabcomputerKernel = kernel;
   kernel.attach(fs, shell);
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
+  // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
+  followRelaySetting(kernel);
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)
   const blinkLoader = import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
   // TABCOMPUTER_NODE_WORKER=1: node the kernel starts (sh -c, #! scripts) runs as a guest

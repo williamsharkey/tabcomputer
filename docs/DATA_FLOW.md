@@ -83,12 +83,12 @@ npm install
 TABCOMPUTER_TCP_RELAY=1 TABCOMPUTER_TCP_ORIGINS=https://tabcomputer.com PORT=8787 node server.mjs
 ```
 
-Then enter `wss://your-host/tcp` and `https://your-host/tcp/token`. `server.mjs` refuses a connection without a token, so the token URL is needed with it. A page served over https can only open `wss://` (your relay needs TLS in front), except to `localhost`. Whether a browser lets tabcomputer.com reach `ws://localhost:8787` without a prompt was not tested: **unknown**.
+Then enter `wss://your-host/tcp`. The token URL may stay empty: the page then asks `https://your-host/tcp/token` (`/token` next to the relay URL, `relayTokenUrlFor` in `src/net-signin.ts`), which is where `server.mjs` issues the token it requires. A relay that has nothing at that path is used without a token; fill the field in only when its tokens come from somewhere else. A page served over https can only open `wss://` (your relay needs TLS in front), except to `localhost`. Whether a browser lets tabcomputer.com reach `ws://localhost:8787` without a prompt was not tested: **unknown**.
 
 **What your own relay does not change:**
 
 - The `/api/…` proxies, `/git-proxy/`, the Debian mirror, Claude releases and the static files still come from the site you opened. Claude prompts and GitHub traffic keep passing through that site's server.
-- The setting is applied by the desktop only (`initNetwork` in `src/desktop/network.ts`). In the terminal UI (`?ui=terminal`) it is ignored and the site's relay is used.
+- The setting is made in the desktop (Settings is a desktop app; there is no command for it) and applied in both UIs: boot points the kernel's sockets at it (`followRelaySetting` in `src/kernel/net.ts`), so `?ui=terminal` uses your relay too.
 - A no-network guest has no relay, yours included.
 
 Two environment variables move single paths, per shell: `GIT_CORS_PROXY` (the git proxy, `src/commands/git.ts`) and `ANTHROPIC_BASE_URL` (where node programs send Anthropic API calls, `src/node-compat/process.ts`). There is no setting for the other proxies.

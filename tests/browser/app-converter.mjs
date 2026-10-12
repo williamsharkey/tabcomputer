@@ -162,11 +162,12 @@ async function zipOf(page, f) {
   check('become: the page full-tab, a real document', became.code === 0 && await ready(page, BSEL) && /\/__preview\//.test((await frame(page, BSEL)).url()) && new URL(page.url()).pathname === '/converter', became.o.trim());
   f = await frame(page, BSEL);
   await f.click('#reset');
-  await f.setInputFiles('#pick', [file('second.wpd', 4000), file('big.pub', 70_000)]);
-  check('become: files convert', (await settled(page, f, 2))?.every((r) => r.status === 'done'));
+  await f.setInputFiles('#pick', [file('second.wpd', 4000), file('big.pub', 70_000), file('twin.wks', 300), file('twin.wdb', 300)]);
+  check('become: files convert', (await settled(page, f, 4))?.every((r) => r.status === 'done'));
   check('become: bytes arrive unchanged', await tabBytes(page, 'big.pub', 70_000) === 'same');
   const zip2 = await zipOf(page, f);
   check('become: Download all', zip2?.magic === 'PK' && zip2.names.includes('second.html'), JSON.stringify(zip2));
+  check('two inputs with one name keep both results', zip2?.names.includes('twin.html') && zip2.names.includes('twin.wdb.html'));
 
   // a reload of the tab: the backend is a node process, gone with the page
   const t0 = Date.now();
@@ -174,7 +175,7 @@ async function zipOf(page, f) {
   const back = await ready(page, BSEL, 60_000);
   check('become: a reload brings back the backend and the page', !!back, `${Date.now() - t0} ms`);
   f = await frame(page, BSEL);
-  check('become: the reloaded page lists the batch', !!f && await until(page, () => f.evaluate(() => window.__converter.marks.restored >= 2)));
+  check('become: the reloaded page lists the batch', !!f && await until(page, () => f.evaluate(() => window.__converter.marks.restored >= 4)));
   if (shots) await page.screenshot({ path: join(shots, 'converter-become.png') });
   await page.context().close();
 }

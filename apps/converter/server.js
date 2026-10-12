@@ -160,6 +160,8 @@ function csvToHtml(csv, title) {
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${e(title)}</title><style>body{font:14px system-ui,sans-serif}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:3px 8px;text-align:left}</style></head><body><h1>${e(title)}</h1><table>\n${rows.map((r, i) => `<tr>${r.map((c) => (i ? `<td>${e(c)}</td>` : `<th>${e(c)}</th>`)).join('')}</tr>`).join('\n')}\n</table></body></html>\n`;
 }
 
+const stems = new Map(); // "job/dir/name-without-extension" → the input that owns that output name
+
 async function run(cmd, outFile) {
   const r = await sh(`${cmd} > ${q(outFile)}`);
   if (r.code !== 0 || sizeOf(outFile) === 0) {
@@ -207,7 +209,11 @@ async function convert(job, rel, to) {
   const ext = (rel.split('.').pop() || '').toLowerCase();
   const fam = FAMILIES[ext];
   const outDir = path.join(RESULTS, job, path.dirname(rel));
-  const stem = path.basename(rel).replace(/\.[^.]+$/, '');
+  // budget.wks and budget.wdb in one folder: the second keeps its extension (budget.wdb.html)
+  const plain = path.join(path.dirname(rel), path.basename(rel).replace(/\.[^.]+$/, ''));
+  const owner = stems.get(`${job}/${plain}`) ?? rel;
+  stems.set(`${job}/${plain}`, owner);
+  const stem = owner === rel ? path.basename(plain) : path.basename(rel);
   const out = (suffix) => path.join(outDir, stem + suffix);
   const done = (files, extra = {}) => ({ ok: true, path: rel, outputs: files.map((f) => ({ path: path.relative(path.join(RESULTS, job), f), size: sizeOf(f) })), ms: Date.now() - t0, ...extra });
   const fail = (error, extra = {}) => ({ ok: false, path: rel, error, ms: Date.now() - t0, ...extra });

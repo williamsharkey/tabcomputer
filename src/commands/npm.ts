@@ -394,6 +394,7 @@ async function installTree(
           const fsWriter: FileSystemWriter = {
             writeFile: async (path: string, data: Uint8Array) => { await ctx.fs.writeFile(path, data); },
             mkdir: async (path: string) => { try { await ctx.fs.mkdir(path, { recursive: true }); } catch { /* exists */ } },
+            chmod: async (path: string, mode: number) => { await ctx.fs.chmod(path, mode); },
           };
           await extractTarGzToFS(tarballData, dir, fsWriter);
           fresh.push(n);

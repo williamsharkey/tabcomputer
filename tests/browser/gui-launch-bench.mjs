@@ -20,7 +20,7 @@
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
 // Exits 1 when an app fails to show a usable window.
 import { createRequire } from 'node:module';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 const require = createRequire(import.meta.url);
 let pw;
@@ -34,6 +34,7 @@ const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined :
 const jsonOut = opt('--json');
 const mdOut = opt('--md');
 const profDir = opt('--engine-profile');
+const render = opt('--render'); // print the table of an earlier run's JSON, and stop
 const label = opt('--label') ?? '';
 const passes = (opt('--passes') ?? 'cold,warm,reload').split(',');
 const kv = (s) => Object.fromEntries((s ?? '').split(',').filter(Boolean).map((p) => { const i = p.indexOf('='); return [p.slice(0, i), p.slice(i + 1)]; }));
@@ -165,7 +166,9 @@ function summarize(pass, { st, rep }, net) {
   const paths = rep.paths ?? [];
   const opened = paths.filter((p) => p.nrs.some((n) => /^open/.test(n)));
   const libs = opened.filter((p) => /\.so(\.[0-9.]+)?$/.test(p.path) && p.calls > p.errors);
-  const first = (re) => { let m; for (const p of paths) if (re.test(p.path)) for (const x of p.times) if (m === undefined || x < m) m = x; return m; };
+  // (from the app's own start: a cold launch runs the installer's triggers first)
+  const from = (t.spawn ?? 0) - 20;
+  const first = (re) => { let m; for (const p of paths) if (re.test(p.path)) for (const x of p.times) if (x >= from && (m === undefined || x < m)) m = x; return m; };
   // ld.so's first lookup; and the first path that isn't a library search: the program (or an initializer) is running
   const ldStart = first(/\/ld\.so\.(cache|preload)$/);
   const afterLd = (() => { let m; for (const p of paths) if (!LD_NOISE.test(p.path)) for (const x of p.times) if (ldStart !== undefined && x > ldStart && (m === undefined || x < m)) m = x; return m; })();
@@ -173,7 +176,7 @@ function summarize(pass, { st, rep }, net) {
     relocations: Number(/number of relocations:\s*(\d+)/.exec(st.output)?.[1] ?? NaN),
     relative: Number(/number of relative relocations:\s*(\d+)/.exec(st.output)?.[1] ?? NaN),
   } : null;
-  const install = st.install && { ms: st.install.ms.total, fetchMs: st.install.ms.fetch, unpackMs: st.install.ms.unpack, triggersMs: st.install.ms.triggers, packages: st.install.packages, fetched: st.install.fetched, bytes: st.install.bytes };
+  const install = st.install && { ms: st.install.ms.total, fetchMs: st.install.ms.fetch, unpackMs: st.install.ms.unpack, triggersMs: st.install.ms.triggers, packages: st.install.packages, fetched: st.install.fetched, bytes: st.install.bytes || net.debBytes };
   const threads = rep.threads ?? [];
   const main = threads.find((x) => x.pid === st.pid && x.tid === st.pid) ?? threads.find((x) => x.pid === st.pid);
   return {
@@ -214,7 +217,7 @@ function summarize(pass, { st, rep }, net) {
 function parseEngineProfile(text) {
   const at = text.lastIndexOf('\npid ');
   const last = at < 0 ? text : text.slice(at + 1);
-  const h = /^pid (\d+) \(([^)]*)\) wall ([\d.]+) ms: jit ([\d.]+) ms in (\d+) compiles, syscalls ([\d.]+) ms, rest \(running guest code\) ([\d.]+) ms/.exec(last);
+  const h = /^pid (\d+) \(([^)]*)\) wall ([\d.]+) ms: jit ([\d.]+) ms in (\d+) compiles, syscalls ([\d.]+) ms, rest \(running guest code\) (-?[\d.]+) ms/.exec(last);
   if (!h) return null;
   const threads = [];
   const tab = /thread\s+run ms[^\n]*\n((?:\s*\d+(?:\s+[\d.]+)+\n)+)/.exec(last);
@@ -237,20 +240,27 @@ const mbs = (b) => (b / 1e6).toFixed(b < 9.95e6 ? 1 : 0);
 
 function markdown(results) {
   const out = [];
-  const head = '| App | Toolkit | Pass | Install | Process | ld.so runs | Linked (libs) | X connection | First window | Usable | Quit → gone | Syscalls | File bytes read | Procs / threads |';
+  const head = '| App | Toolkit | Pass | Install | Process | Linked (libs) | X connection | First window | Usable | Quit → gone | Syscalls | File bytes read | Procs / threads |';
   out.push(head, head.replace(/[^|]+/g, (c) => (c.trim() === 'App' || c.trim() === 'Toolkit' || c.trim() === 'Pass' ? '---' : '---:')));
   for (const [app, r] of Object.entries(results.apps)) {
     for (const p of r.passes ?? []) {
       const q = p.quit;
       const gone = !q ? '—' : q.allGone === null ? `not gone (${q.left.filter((x) => x.state !== 'zombie').map((x) => x.comm.split('/').pop()).join(', ')})` : sec(q.allGone) + (q.zombies ? ` (${q.zombies} zombie${q.zombies > 1 ? 's' : ''})` : '');
-      out.push(`| ${app} | ${r.toolkit} | ${p.pass} | ${p.install ? `${sec(p.install.ms)} (${mbs(p.install.bytes)} MB)` : '—'} | ${sec(p.t.spawn)} | ${sec(p.t.ldStart)} | ${sec(p.t.linked)} (${p.ld.libs}) | ${sec(p.t.xConnect)} | ${sec(p.t.firstWindow)} | **${sec(p.t.usable)}** | ${gone} | ${p.kernel.calls} | ${mbs(p.kernel.fileReadBytes)} MB | ${p.processes} / ${p.threads} |`);
+      out.push(`| ${app} | ${r.toolkit} | ${p.pass} | ${p.install ? `${sec(p.install.ms)} (${mbs(p.install.bytes || p.net.debBytes)} MB)` : '—'} | ${sec(p.t.spawn)} | ${sec(p.t.linked)} (${p.ld.libs}) | ${sec(p.t.xConnect)} | ${sec(p.t.firstWindow)} | **${sec(p.t.usable)}** | ${gone} | ${p.kernel.calls} | ${mbs(p.kernel.fileReadBytes)} MB | ${p.processes} / ${p.threads} |`);
     }
-    if (r.error) out.push(`| ${app} | ${r.toolkit} | failed: ${r.error.split('\n')[0].slice(0, 120)} | | | | | | | | | | | |`);
+    if (r.error) out.push(`| ${app} | ${r.toolkit} | failed: ${r.error.split('\n')[0].slice(0, 120)} | | | | | | | | | | |`);
   }
   return out.join('\n') + '\n';
 }
 
 // ── the run ──
+
+if (render) {
+  const md = markdown(JSON.parse(readFileSync(render, "utf8")));
+  if (mdOut) writeFileSync(mdOut, md);
+  console.log(md);
+  process.exit(0);
+}
 
 const browser = await pw.chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const manifest = await (await fetch(new URL('gui/apps.json', url))).json();

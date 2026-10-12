@@ -116,7 +116,7 @@ function parseProfile(text) {
   const at = text.lastIndexOf('\npid ');
   const last = at < 0 ? text : text.slice(at + 1);
   const lines = last.split('\n');
-  const h = /^pid (\d+) \(([^)]*)\) wall ([\d.]+) ms: jit ([\d.]+) ms in (\d+) compiles, syscalls ([\d.]+) ms, rest \(running guest code\) ([\d.]+) ms/.exec(lines[0]);
+  const h = /^pid (\d+) \(([^)]*)\) wall ([\d.]+) ms: jit ([\d.]+) ms in (\d+) compiles, syscalls ([\d.]+) ms, rest \(running guest code\) (-?[\d.]+) ms/.exec(lines[0]);
   let runMs = 0, compiledMs = 0, interpreted = 0, gilWaitMs = 0, threads = 0;
   const th = lines.findIndex((l) => /^thread\s+run ms/.test(l));
   if (th >= 0) for (let i = th + 1; i < lines.length && /^\s*\d+\s/.test(lines[i]); i++) {

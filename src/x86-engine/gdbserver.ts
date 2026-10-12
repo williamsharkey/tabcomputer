@@ -45,6 +45,8 @@ export type TraceeEvent = StopEvent | ExitEvent;
 
 /** What GdbServer needs of a debugged program; BlinkTracee is the real one. */
 export interface Tracee {
+  /** The program's pid. */
+  readonly pid: number;
   /** The next stop, or the exit. */
   wait(): Promise<TraceeEvent>;
   /** While stopped: one command; resolves with the thread's answer. */
@@ -86,6 +88,8 @@ export class BlinkTracee implements Tracee {
   private result: ((r: { status: number; data: Uint8Array }) => void) | null = null;
   private lastSeq = -1;
   private exited = false;
+
+  get pid(): number { return this.proc.pid; }
 
   constructor(readonly proc: Process, private kernel: Kernel, private reaper: Process | undefined) {
     tracees.set(proc, this);
@@ -321,6 +325,9 @@ export class GdbServer {
   private regs: Uint8Array | null = null; // the agent's block, while stopped
   private auxv: Uint8Array | null = null;
   private interruptTimer: ReturnType<typeof setTimeout> | null = null;
+  /** gdb asked for process ids in thread ids (`multiprocess+`): it then shows the program's pid. */
+  private multiprocess = false;
+  private pid = 0;
   private closed = false;
 
   constructor(private send: (bytes: Uint8Array) => void, private launch: Launcher) {}
@@ -385,6 +392,11 @@ export class GdbServer {
     }, INTERRUPT_GRACE_MS);
   }
 
+  /** The one thread's id: the main thread's tid is the pid. */
+  private thread(): string {
+    return this.multiprocess ? `p${this.pid.toString(16)}.${this.pid.toString(16)}` : '1';
+  }
+
   /** Wait for the running program's next stop (or its exit): the stop reply. */
   private async stopReply(): Promise<string> {
     const t = this.tracee!;
@@ -396,14 +408,15 @@ export class GdbServer {
       this.tracee = null;
       this.regs = null;
       const sig = e.status & 0x7f;
-      return (this.lastStop = sig ? `X${toHex(Uint8Array.of(sig))}` : `W${toHex(Uint8Array.of((e.status >> 8) & 255))}`);
+      const proc = this.multiprocess ? `;process:${this.pid.toString(16)}` : '';
+      return (this.lastStop = (sig ? `X${toHex(Uint8Array.of(sig))}` : `W${toHex(Uint8Array.of((e.status >> 8) & 255))}`) + proc);
     }
     this.regs = e.regs;
     const g = agentToG(e.regs);
     const sig = e.kind === StopKind.Signal ? e.sig : SIGTRAP;
     // rbp, rsp and rip go with the reply: gdb needs them at every stop
     const expedite = [6, 7, 16].map((n) => `${n.toString(16).padStart(2, '0')}:${toHex(g.subarray(n * 8, n * 8 + 8))};`).join('');
-    return (this.lastStop = `T${toHex(Uint8Array.of(sig))}${e.kind === StopKind.Breakpoint ? 'swbreak:;' : ''}thread:1;${expedite}`);
+    return (this.lastStop = `T${toHex(Uint8Array.of(sig))}${e.kind === StopKind.Breakpoint ? 'swbreak:;' : ''}thread:${this.thread()};${expedite}`);
   }
 
   private async readMem(addr: bigint, len: number): Promise<Uint8Array> {
@@ -569,6 +582,7 @@ export class GdbServer {
       const t = await this.launch(file, args);
       if (typeof t === 'string') { console.warn('[gdbserver]', t); return 'E01'; }
       this.tracee = t;
+      this.pid = t.pid;
       const r = await this.stopReply();
       if (this.tracee) this.auxv = await this.readAuxv();
       return r;
@@ -577,9 +591,12 @@ export class GdbServer {
   }
 
   private async handleQ(p: string): Promise<string> {
-    if (p.startsWith('qSupported')) return `PacketSize=${PACKET_SIZE.toString(16)};QStartNoAckMode+;swbreak+;vContSupported+;qXfer:features:read+;qXfer:auxv:read+`;
-    if (p === 'qC') return 'QC1';
-    if (p === 'qfThreadInfo') return this.tracee ? 'm1' : 'l';
+    if (p.startsWith('qSupported')) {
+      this.multiprocess = /[:;]multiprocess\+/.test(p);
+      return `PacketSize=${PACKET_SIZE.toString(16)};QStartNoAckMode+;swbreak+;vContSupported+;qXfer:features:read+;qXfer:auxv:read+${this.multiprocess ? ';multiprocess+' : ''}`;
+    }
+    if (p === 'qC') return this.tracee ? 'QC' + this.thread() : 'E01';
+    if (p === 'qfThreadInfo') return this.tracee ? 'm' + this.thread() : 'l';
     if (p === 'qsThreadInfo') return 'l';
     if (p.startsWith('qAttached')) return '0'; // started here: gdb kills it on quit
     if (p === 'qSymbol::') return 'OK';

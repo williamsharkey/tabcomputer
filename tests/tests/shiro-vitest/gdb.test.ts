@@ -118,6 +118,7 @@ describe('gdbserver: the protocol', () => {
     const events: TraceeEvent[] = [];
     const push = (e: TraceeEvent) => { if (waiter) { const w = waiter; waiter = null; w(e); } else events.push(e); };
     const tracee: Tracee = {
+      pid: 0x4d2,
       wait: () => (events.length ? Promise.resolve(events.shift()!) : new Promise((r) => { waiter = r; })),
       async command(cmd, p = new Uint8Array(0)) {
         const pv = new DataView(p.buffer, p.byteOffset, p.byteLength);
@@ -153,7 +154,7 @@ describe('gdbserver: the protocol', () => {
 
   it('answers the packets gdb sends before and at `run`', async () => {
     const { c, launched } = fake();
-    expect(await c.cmd('qSupported:multiprocess+;swbreak+;xmlRegisters=i386')).toMatch(/PacketSize=4000;.*swbreak\+.*qXfer:features:read\+.*qXfer:auxv:read\+/);
+    expect(await c.cmd('qSupported:swbreak+;xmlRegisters=i386')).toMatch(/PacketSize=4000;.*swbreak\+.*qXfer:features:read\+.*qXfer:auxv:read\+/);
     expect(await c.cmd('vMustReplyEmpty')).toBe('');
     expect(await c.cmd('QStartNoAckMode')).toBe('OK');
     expect(await c.cmd('!')).toBe('OK');
@@ -251,6 +252,24 @@ describe('gdbserver: the protocol', () => {
     await c.cmd('vRun;' + toHex(Buffer.from('/p')));
     expect(await c.cmd('vKill;1')).toBe('OK');
     expect(log.at(-1)).toBe('kill');
+  });
+
+  it('with multiprocess, thread ids and exits carry the pid', async () => {
+    const { c, push } = fake();
+    expect(await c.cmd('qSupported:multiprocess+;swbreak+')).toMatch(/;multiprocess\+$/);
+    expect(await c.cmd('vRun;' + toHex(Buffer.from('/p')))).toMatch(/^T05thread:p4d2\.4d2;06:/);
+    expect(await c.cmd('qC')).toBe('QCp4d2.4d2');
+    expect(await c.cmd('qfThreadInfo')).toBe('mp4d2.4d2');
+    expect(await c.cmd('Hgp4d2.4d2')).toBe('OK');
+    expect(await c.cmd('qAttached:4d2')).toBe('0');
+    expect(await c.cmd('vCont;s:p4d2.4d2')).toMatch(/^T05thread:p4d2\.4d2;/);
+    c.post('vCont;c:p4d2.-1');
+    push({ type: 'exit', status: 3 << 8 });
+    expect(await c.reply()).toBe('W03;process:4d2');
+    await c.cmd('vRun;' + toHex(Buffer.from('/p')));
+    c.post('vCont;C0b:p4d2.4d2');
+    push({ type: 'exit', status: 11 });
+    expect(await c.reply()).toBe('X0b;process:4d2');
   });
 
   it('the gdbinit connects at run and reads libraries from the filesystem', async () => {
@@ -428,13 +447,17 @@ describe.skipIf(!haveRootfs || !realLayers || !blinkHasGdb)("Debian's gdb (TABCO
       expect(a.output).toContain('$3 = 41\n');
       expect(a.output).toContain('$4 = 7\n');   // sum, after two `next`
       expect(a.output).toContain('$5 = 48\n');  // counter
-      expect(a.output).toMatch(/Run till exit from #0 +add/);
+      expect(a.output).toMatch(/\n0x[0-9a-f]+ in main \(argc=1, argv=0x[0-9a-f]+\) at demo\.c:21\n21\t  int x = add\(3, 4\);\n/); // finish
       expect(a.output).toContain('Value returned is $6 = 7');
+      expect(a.output).toMatch(/\n22\t  if \(argc > 1 /);                    // step, to the next line
+      expect(a.output).toMatch(/rip +0x[0-9a-f]+ +0x[0-9a-f]+ <main\+\d+>/);
       expect(a.output).toContain('x=7 counter=48\n');
       expect(a.output).toMatch(/\[Inferior 1 \(process \d+\) exited with code 07\]/);
       expect(a.output).not.toMatch(/ptrace|Could not trace|warning: Error/);
 
+      if (process.env.GDB_TEST_SHOW) console.log(a.output);
       const b = await gdb(['run', 'bt', 'print p', 'continue'], 'segv');
+      if (process.env.GDB_TEST_SHOW) console.log(b.output);
       expect(b.output).toMatch(/Program received signal SIGSEGV, Segmentation fault\.\n(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17/);
       expect(b.output).toMatch(/#0 +(0x[0-9a-f]+ in )?crash \(p=0x0\) at demo\.c:17\n#1 +0x[0-9a-f]+ in main \(argc=2, argv=0x[0-9a-f]+\) at demo\.c:22/);
       expect(b.output).toContain('$1 = (int *) 0x0');

@@ -284,6 +284,8 @@ export interface FileSystemWriter {
   writeFile(path: string, data: Uint8Array): Promise<void>;
   mkdir(path: string): Promise<void>;
   symlink?(target: string, path: string): Promise<void>;
+  /** Called for a file the archive marks executable, after it is written */
+  chmod?(path: string, mode: number): Promise<void>;
 }
 
 /**
@@ -338,6 +340,8 @@ export async function extractTarGzToFS(
         }
       }
       await fs.writeFile(fullPath, entry.data);
+      // The archive's x bit: a package's own programs (Codex's vendor/…/bin/codex checks its mode before it starts)
+      if (fs.chmod && entry.mode & 0o111) await fs.chmod(fullPath, 0o755).catch(() => {});
     } else if (entry.type === 'symlink' && entry.linkname && fs.symlink) {
       await fs.symlink(entry.linkname, fullPath);
     }

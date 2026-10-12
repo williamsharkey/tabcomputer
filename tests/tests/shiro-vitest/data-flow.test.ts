@@ -113,8 +113,9 @@ describe('data flow: what each flow says', () => {
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').carries).toEqual([]);
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').detail).toContain('Your GitHub token is not sent to it');
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp', ownRelaySignin: true }, 'tcp').carries).toEqual(['GitHub token']);
-    // a shared seed takes all of them
-    expect(flow({ github: true, claude: true }, 'shared').carries).toEqual(['GitHub token', 'Claude credentials']);
+    // a shared seed leaves them out (src/seed-state.ts, #117)
+    expect(flow({ github: true, claude: true, apiKeys: ['OpenAI'] }, 'shared').carries).toEqual([]);
+    expect(flow({}, 'shared').readsText).toContain('without the sign-ins saved here');
   });
 
   it('a relay of the user\'s own takes programs\' connections off this site\'s server, and nothing else', () => {

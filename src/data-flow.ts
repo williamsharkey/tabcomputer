@@ -12,6 +12,8 @@
  * cut down to its host, so nothing rendered from a DataFlowState can show one.
  */
 
+import { API_KEY_PROVIDERS, GITHUB_TOKEN_STORAGE_KEY, REMOTE_CODE_STORAGE_KEY } from './credentials';
+
 export interface DataFlowInputs {
   /** location.host of the page */
   host: string;
@@ -191,7 +193,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
       'Relays connections and API calls',
       'Sets no cookie, keeps no account',
     ],
-    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores only what you upload with seed share, and copies of public downloads. Its logs record addresses, hosts, paths and sizes, not payloads.',
+    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores only what you upload with seed share (your files, without saved sign-ins), and copies of public downloads. Its logs record addresses, hosts, paths and sizes, not payloads.',
   };
   const internet: Place = {
     id: 'internet',
@@ -325,11 +327,6 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     carries: [],
   });
 
-  const included = [
-    ...(s.secrets.github ? ['GitHub token'] : []),
-    ...(s.secrets.claude ? ['Claude credentials'] : []),
-    ...s.secrets.apiKeys.map((k) => `${k} API key`),
-  ];
   flows.push({
     id: 'shared',
     title: 'Only when you run them: remote start, seed share, group',
@@ -337,12 +334,13 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     via: '/offer, /relay, /api/seed, /channel',
     to: 'whoever holds the code or the link',
     reads: 'contents',
-    readsText: 'seed share stores every file and all saved sign-ins on the server, for anyone with the link. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets.',
-    detail: 'remote start lets the holder of the code run commands and read files here. A shared seed is deleted 60 days after its last visit. group messages pass through unencrypted.'
+    readsText: 'seed share stores your files on the server, for anyone with the link, without the sign-ins saved here. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets. group messages are readable.',
+    detail: 'seed share shows what it will upload and asks first. It leaves out saved sign-ins, key files and files that contain something shaped like a token, and lists them; a secret it cannot recognise inside one of your own files still goes. A shared seed is deleted 60 days after its last visit. remote start lets the holder of the code run commands and read files here.'
       + (s.secrets.remoteCode ? ' A remote code is saved in this tab.' : ''),
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
-    carries: included,
+    // seed leaves the saved sign-ins out (src/seed-state.ts); remote start sends none
+    carries: [],
   });
 
   const headline = g
@@ -448,11 +446,7 @@ export function dataFlowText(s: DataFlowState, width = 80): string {
 
 interface CredentialFs { readFile(path: string, encoding: 'utf8'): Promise<unknown> }
 
-const API_KEYS: [string, string[]][] = [
-  ['Anthropic', ['tabcomputer_anthropic_key', 'tabcomputer_api_key']],
-  ['OpenAI', ['tabcomputer_openai_key']],
-  ['Google', ['tabcomputer_google_key']],
-];
+// Where sign-ins live is one list (src/credentials.ts), shared with what `seed` leaves out
 
 function has(key: string): boolean {
   try { return !!localStorage.getItem(key); } catch { return false; }
@@ -487,10 +481,10 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     guest: guest ? { name: guest.name, ephemeral: guest.ephemeral, noNetwork: guest.noNetwork } : null,
     guestEnforced: !!cfg.enforced && same,
     guestsOffered: guest ? null : !!cfg.origin,
-    github: has('tabcomputer_github_token'),
+    github: has(GITHUB_TOKEN_STORAGE_KEY),
     claude,
-    apiKeys: API_KEYS.filter(([, keys]) => keys.some(has)).map(([name]) => name),
-    remoteCode: has('tabcomputer-remote-code'),
+    apiKeys: API_KEY_PROVIDERS.filter(([, keys]) => keys.some(has)).map(([name]) => name),
+    remoteCode: has(REMOTE_CODE_STORAGE_KEY),
     ownRelayUrl: own?.url ?? null,
     ownRelaySignin: own?.sendSignin === true,
     siteRelay: siteRelay.relay,

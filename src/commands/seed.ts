@@ -2,16 +2,25 @@ import { Command, CommandContext } from './index';
 import { captureTerminal, addOverlay, encodeGIF } from '../gif-encoder';
 import { getShiroOrigin } from '../utils/shiro-origin';
 
+import { collectSeedState, describeSeedContents, SEED_VERSION, type SeedState, type SeedStats } from '../seed-state';
+
 /**
- * seed: Copy a Shiro seed to clipboard — full state snapshot
+ * seed: a copy of this machine that boots somewhere else.
  *
- * Serializes the entire IndexedDB filesystem + localStorage into a
- * self-contained snippet using NDJSON format for incremental parsing.
- * When pasted into any browser's DevTools console, it creates a floating
- * Shiro iframe and hydrates it with the captured state without blocking.
+ *   seed            a snippet on the clipboard: pasted into a page's DevTools
+ *                   console, it opens tabcomputer in a floating frame with this state
+ *   seed blob       the same, self-contained (runs in the host page's origin)
+ *   seed gif|html   a file on your disk (a GIF to drag onto a tab, a page to open)
+ *   seed share      uploads it; anyone with the link can download it
+ *
+ * Every form goes through collectSeedState (src/seed-state.ts): a seed
+ * carries no credentials, and the output lists what was left out.
+ * `--with-credentials` keeps them, for the forms that stay on your disk or
+ * clipboard (moving your own machine); `seed share` refuses it. `seed share`
+ * shows what it will upload and asks first (`--yes` skips the question).
  */
 
-const SHIRO_VERSION = '0.1.0';
+const SHIRO_VERSION = SEED_VERSION;
 
 function uint8ToBase64(data: Uint8Array): string {
   let binary = '';
@@ -41,52 +50,6 @@ async function gzipCompress(data: Uint8Array): Promise<Uint8Array> {
     offset += chunk.length;
   }
   return result;
-}
-
-interface SeedStats {
-  version: string;
-  files: number;
-  dirs: number;
-  totalBytes: number;
-  sizeKB: number;
-  sizeMB: string;
-  detectedKeys: string[];  // Names of detected keys (not values)
-}
-
-/** Detect API keys in localStorage by common patterns */
-function detectApiKeys(storage: Record<string, string>): string[] {
-  const detected: string[] = [];
-  const keyPatterns: Array<{ name: string; pattern: RegExp }> = [
-    { name: 'OpenAI', pattern: /^sk-[a-zA-Z0-9-_]{20,}$/ },
-    { name: 'Anthropic', pattern: /^sk-ant-[a-zA-Z0-9-_]{20,}$/ },
-    { name: 'Google', pattern: /^AIza[a-zA-Z0-9-_]{30,}$/ },
-    { name: 'GitHub', pattern: /^gh[ps]_[a-zA-Z0-9]{36,}$/ },
-    { name: 'Stripe', pattern: /^sk_(test|live)_[a-zA-Z0-9]{20,}$/ },
-    { name: 'AWS', pattern: /^AKIA[A-Z0-9]{16}$/ },
-  ];
-
-  for (const [key, value] of Object.entries(storage)) {
-    // Check key name for hints
-    const keyLower = key.toLowerCase();
-    if (keyLower.includes('key') || keyLower.includes('token') || keyLower.includes('secret')) {
-      // Check value against patterns
-      for (const { name, pattern } of keyPatterns) {
-        if (pattern.test(value)) {
-          detected.push(name);
-          break;
-        }
-      }
-      // Also flag generic-looking keys
-      if (value.length > 20 && /^[a-zA-Z0-9-_]+$/.test(value) && !detected.includes(key)) {
-        const keyName = key.replace(/^shiro_/, '').replace(/_/g, ' ');
-        if (!detected.some(d => keyName.toLowerCase().includes(d.toLowerCase()))) {
-          detected.push(keyName);
-        }
-      }
-    }
-  }
-
-  return [...new Set(detected)];  // Dedupe
 }
 
 function buildSnippet(url: string, ndjson: string, storage: string, stats: SeedStats): string {
@@ -195,7 +158,7 @@ function buildSnippet(url: string, ndjson: string, storage: string, stats: SeedS
   function maybeSeed(){
     if(seeded||!seedReady||!iframe.contentWindow)return;
     seeded=true;
-    iframe.contentWindow.postMessage({type:'shiro-seed-v2',ndjson:SEED_FS,storage:SEED_STORAGE,context:buildContext()},'*');
+    iframe.contentWindow.postMessage({type:'shiro-seed-v2',ndjson:SEED_FS,storage:SEED_STORAGE,context:buildContext()},'${new URL(url).origin}');
   }
   window.addEventListener('message',function(e){
     if(e.source===iframe.contentWindow&&e.data&&e.data.type==='shiro-seed-ready'){
@@ -250,17 +213,23 @@ function getCurrentSubdomain(): string | null {
   return match ? match[1] : null;
 }
 
-/** Build the target URL for seeding */
+/**
+ * Where the snippet's frame loads tabcomputer from: this site. (It used to be
+ * https://shiro.computer whatever site made the seed, so a tabcomputer.com
+ * seed posted its state into another origin.) A subdomain argument names a
+ * shiro.computer subdomain and works only there.
+ */
 function buildTargetUrl(targetSubdomain?: string): string {
+  const onShiro = typeof window !== 'undefined' && /(^|\.)shiro\.computer$/.test(window.location.hostname);
   if (targetSubdomain) {
+    if (!onShiro) throw new Error(`a subdomain target ("${targetSubdomain}") exists on shiro.computer only; without it the seed opens ${getShiroOrigin()}`);
     return `https://${targetSubdomain}.shiro.computer/`;
   }
-  // Default to current subdomain if on one, otherwise main domain
-  const current = getCurrentSubdomain();
-  if (current) {
-    return `https://${current}.shiro.computer/`;
+  if (onShiro) {
+    const current = getCurrentSubdomain();
+    return current ? `https://${current}.shiro.computer/` : 'https://shiro.computer/';
   }
-  return 'https://shiro.computer/';
+  return `${getShiroOrigin()}/`;
 }
 
 /**
@@ -513,32 +482,41 @@ function buildBlobSnippet(compressedHtmlB64: string, compressedFsB64: string, co
 })();`;
 }
 
+interface SeedOptions { withCredentials: boolean; yes: boolean }
+
+const USAGE = 'Usage: seed [blob|gif|html|share] [--with-credentials] [--yes]\n';
+
 export const seedCmd: Command = {
   name: 'seed',
-  description: 'Export tabcomputer state (seed [blob|gif|html|share] [subdomain])',
+  description: 'Export tabcomputer state, without credentials (seed [blob|gif|html|share] [--with-credentials] [--yes])',
 
   async exec(ctx: CommandContext): Promise<number> {
+    const flags = ctx.args.filter((a) => a.startsWith('-'));
+    const unknown = flags.filter((f) => !['--with-credentials', '--yes', '-y'].includes(f));
+    if (unknown.length) { ctx.stderr = `seed: unknown option ${unknown[0]}\n${USAGE}`; return 2; }
+    const opts: SeedOptions = { withCredentials: flags.includes('--with-credentials'), yes: flags.includes('--yes') || flags.includes('-y') };
+    ctx = Object.assign(ctx, { args: ctx.args.filter((a) => !a.startsWith('-')) });
+
     // ─── seed gif ────────────────────────────────────────
     if (ctx.args[0] === 'gif') {
-      return execSeedGif(ctx);
+      return execSeedGif(ctx, opts);
     }
 
     // ─── seed html ───────────────────────────────────────
     if (ctx.args[0] === 'html') {
-      return execSeedHtml(ctx);
+      return execSeedHtml(ctx, opts);
     }
 
     // ─── seed share ──────────────────────────────────────
     if (ctx.args[0] === 'share') {
-      return execSeedShare(ctx);
+      return execSeedShare(ctx, opts);
     }
 
     // Check for blob mode: seed blob
     const isBlob = ctx.args[0] === 'blob';
     const targetArg = isBlob ? ctx.args[1] : ctx.args[0];
-    const url = buildTargetUrl(targetArg);
-
     try {
+      const url = buildTargetUrl(targetArg);
       // For blob mode, we need to inline the document and compress it
       let compressedB64 = '';
       let htmlSize = 0;
@@ -564,59 +542,11 @@ export const seedCmd: Command = {
         ctx.stdout += `  Compressed: ${(compressedSize / 1024).toFixed(0)} KB (${((1 - compressedSize / htmlSize) * 100).toFixed(0)}% reduction)\n`;
       }
 
-      // Export filesystem
-      const nodes = await ctx.fs.exportAll();
-
-      // Calculate stats
-      let fileCount = 0;
-      let dirCount = 0;
-      let totalBytes = 0;
-
-      // Build NDJSON - one JSON object per line
-      const ndjsonLines: string[] = [];
-      for (const node of nodes) {
-        if (node.type === 'file') {
-          fileCount++;
-          totalBytes += node.size || 0;
-        } else if (node.type === 'dir') {
-          dirCount++;
-        }
-
-        const serialized = {
-          path: node.path,
-          type: node.type,
-          content: node.content ? uint8ToBase64(node.content) : null,
-          mode: node.mode,
-          mtime: node.mtime,
-          ctime: node.ctime,
-          size: node.size,
-          symlinkTarget: node.symlinkTarget,
-        };
-        ndjsonLines.push(JSON.stringify(serialized));
-      }
-      const ndjson = ndjsonLines.join('\n');
-
-      // Export localStorage
-      const storage: Record<string, string> = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i)!;
-        storage[key] = localStorage.getItem(key)!;
-      }
-      const storageJson = JSON.stringify(storage);
-
-      // Detect API keys
-      const detectedKeys = detectApiKeys(storage);
-
-      // Build stats
-      const stats: SeedStats = {
-        version: SHIRO_VERSION,
-        files: fileCount,
-        dirs: dirCount,
-        totalBytes,
-        sizeKB: Math.round(totalBytes / 1024),
-        sizeMB: (totalBytes / (1024 * 1024)).toFixed(2),
-        detectedKeys,
-      };
+      // The state, without credentials unless asked (src/seed-state.ts)
+      const state = await collectSeedState(ctx.fs, opts);
+      const { ndjson, storageJson, stats } = state;
+      const fileCount = stats.files;
+      const dirCount = stats.dirs;
 
       // Build the appropriate snippet
       let snippet: string;
@@ -655,12 +585,8 @@ export const seedCmd: Command = {
       output += `  Data size:   ${stats.sizeMB} MB\n`;
       output += `  Seed size:   ${snippetSizeMB} MB (${snippetSizeKB} KB)\n`;
 
-      if (detectedKeys.length > 0) {
-        output += `\n  API keys detected:\n`;
-        for (const key of detectedKeys) {
-          output += `    - ${key}\n`;
-        }
-      }
+      output += describeSeedContents(state);
+      if (isBlob) output += `\n  A blob seed runs inside the page you paste it into: that site's scripts can read these files.\n`;
 
       // Size warning for large seeds
       if (snippetSizeKBNum > 10000) {
@@ -681,41 +607,7 @@ export const seedCmd: Command = {
 
 // ─── seed gif implementation ─────────────────────────────────
 
-async function serializeState(ctx: CommandContext) {
-  const nodes = await ctx.fs.exportAll();
-  let fileCount = 0;
-  let dirCount = 0;
-  let totalBytes = 0;
-  const ndjsonLines: string[] = [];
-
-  for (const node of nodes) {
-    if (node.type === 'file') { fileCount++; totalBytes += node.size || 0; }
-    else if (node.type === 'dir') { dirCount++; }
-    ndjsonLines.push(JSON.stringify({
-      path: node.path, type: node.type,
-      content: node.content ? uint8ToBase64(node.content) : null,
-      mode: node.mode, mtime: node.mtime, ctime: node.ctime,
-      size: node.size, symlinkTarget: node.symlinkTarget,
-    }));
-  }
-  const ndjson = ndjsonLines.join('\n');
-
-  const storage: Record<string, string> = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)!;
-    storage[key] = localStorage.getItem(key)!;
-  }
-  const storageJson = JSON.stringify(storage);
-  const detectedKeys = detectApiKeys(storage);
-
-  const stats: SeedStats = {
-    version: SHIRO_VERSION, files: fileCount, dirs: dirCount,
-    totalBytes, sizeKB: Math.round(totalBytes / 1024),
-    sizeMB: (totalBytes / (1024 * 1024)).toFixed(2), detectedKeys,
-  };
-
-  return { ndjson, storageJson, stats };
-}
+const serializeState = (ctx: CommandContext, opts: SeedOptions): Promise<SeedState> => collectSeedState(ctx.fs, opts);
 
 function triggerDownload(data: Uint8Array | string, type: string, filename: string) {
   const blob = new Blob([data as BlobPart], { type });
@@ -729,10 +621,11 @@ function triggerDownload(data: Uint8Array | string, type: string, filename: stri
   URL.revokeObjectURL(url);
 }
 
-async function execSeedGif(ctx: CommandContext): Promise<number> {
+async function execSeedGif(ctx: CommandContext, opts: SeedOptions): Promise<number> {
   try {
     ctx.stdout = 'Capturing terminal...\n';
-    const { ndjson, storageJson, stats } = await serializeState(ctx);
+    const state = await serializeState(ctx, opts);
+    const { ndjson, storageJson, stats } = state;
 
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'shiro.computer';
 
@@ -781,11 +674,7 @@ async function execSeedGif(ctx: CommandContext): Promise<number> {
     output += `  Data size:   ${stats.sizeMB} MB\n`;
     output += `  GIF size:    ${(gifBytes.length / 1024).toFixed(0)} KB (seed: ${(compressed.length / 1024).toFixed(0)} KB + image: ${(imageApprox / 1024).toFixed(0)} KB)\n`;
 
-    if (stats.detectedKeys.length > 0) {
-      output += `\n  API keys detected:\n`;
-      for (const key of stats.detectedKeys) output += `    - ${key}\n`;
-      output += `\n  Warning: This GIF contains your API keys.\n`;
-    }
+    output += describeSeedContents(state);
 
     output += `\n  Downloaded: ${filename}\n`;
     output += `  To restore: drag this GIF onto a tabcomputer tab.\n\n`;
@@ -858,10 +747,24 @@ function showDraggableGif(gifBytes: Uint8Array, filename: string) {
 
 // ─── seed share implementation ───────────────────────────────
 
-async function execSeedShare(ctx: CommandContext): Promise<number> {
+/** One line typed at the terminal, or null when there is nobody to ask (a script, an agent's tool, a pipe) */
+async function askAtTerminal(ctx: CommandContext, text: string): Promise<string | null> {
+  const term = ctx.terminal as (CommandContext['terminal'] & { waitForUserInput?: () => Promise<string> }) | undefined;
+  if (!term?.waitForUserInput || ctx.stdinIsTTY === false || ctx.stdoutIsTTY === false) return null;
+  term.writeOutput(text);
+  return term.waitForUserInput();
+}
+
+async function execSeedShare(ctx: CommandContext, opts: SeedOptions): Promise<number> {
   try {
-    ctx.stdout = 'Serializing filesystem...\n';
-    const { ndjson, storageJson, stats } = await serializeState(ctx);
+    if (opts.withCredentials) {
+      ctx.stderr = 'seed share: a shared seed is kept on the server and anyone with the link can download it, so it never carries credentials.\n'
+        + 'To move your own machine with its sign-ins, make a file instead: seed gif --with-credentials (or seed html --with-credentials).\n';
+      return 2;
+    }
+    const state = await collectSeedState(ctx.fs, opts);
+    const { ndjson, storageJson, stats } = state;
+    const origin = getShiroOrigin();
 
     // Build seed envelope and compress
     const seedEnvelope = JSON.stringify({
@@ -874,13 +777,42 @@ async function execSeedShare(ctx: CommandContext): Promise<number> {
       ndjson,
       storage: storageJson,
     });
-
-    ctx.stdout += 'Compressing...\n';
     const compressed = await gzipCompress(new TextEncoder().encode(seedEnvelope));
-    ctx.stdout += `  Compressed: ${(compressed.length / 1024).toFixed(0)} KB\n`;
 
-    ctx.stdout += 'Uploading...\n';
-    const origin = getShiroOrigin();
+    // What will be shared, before anything is sent
+    let summary = '\n';
+    summary += `  tabcomputer Shared Seed v${SHIRO_VERSION}\n`;
+    summary += `  ${'─'.repeat(30)}\n`;
+    summary += `  Files:       ${stats.files}\n`;
+    summary += `  Directories: ${stats.dirs}\n`;
+    summary += `  Data size:   ${stats.sizeMB} MB\n`;
+    summary += `  Compressed:  ${(compressed.length / 1024).toFixed(0)} KB\n`;
+    summary += describeSeedContents(state);
+    summary += `\n  This uploads every other file on this machine to ${origin}.\n`;
+    summary += `  \x1b[1mAnyone with the link can download all of it.\x1b[0m The server keeps it, with your\n`;
+    summary += `  address, until 60 days after the link was last opened. There is no way to take it back.\n`;
+
+    if (compressed.length > SHARE_MAX_BYTES) {
+      ctx.stdout = summary;
+      ctx.stderr = `seed share: too large to share (${(compressed.length / 1024).toFixed(0)} KB compressed; the limit is ${SHARE_MAX_BYTES / 1024} KB). Nothing was uploaded.\n`;
+      return 1;
+    }
+
+    let shown = false;
+    if (!opts.yes) {
+      const answer = await askAtTerminal(ctx, `${summary}\n  Upload? Type yes to share, anything else to cancel: `);
+      if (answer === null) {
+        ctx.stdout = summary;
+        ctx.stderr = 'seed share: nothing was uploaded. This needs a yes: run it at a terminal, or pass --yes after reading the list above.\n';
+        return 1;
+      }
+      shown = true;
+      if (answer.trim().toLowerCase() !== 'yes') {
+        ctx.stdout = '\n  Cancelled. Nothing was uploaded.\n\n';
+        return 1;
+      }
+    }
+
     const res = await fetch(`${origin}/api/seed`, {
       method: 'POST',
       body: compressed as unknown as BodyInit,
@@ -901,23 +833,11 @@ async function execSeedShare(ctx: CommandContext): Promise<number> {
       await navigator.clipboard.writeText(fullUrl);
     } catch {}
 
-    let output = '\n';
-    output += `  tabcomputer Shared Seed v${SHIRO_VERSION}\n`;
-    output += `  ${'─'.repeat(30)}\n`;
-    output += `  Files:       ${stats.files}\n`;
-    output += `  Directories: ${stats.dirs}\n`;
-    output += `  Data size:   ${stats.sizeMB} MB\n`;
-    output += `  Compressed:  ${(compressed.length / 1024).toFixed(0)} KB\n`;
+    let output = shown ? '\n' : summary;
+    output += `\n  Uploaded.\n`;
     output += `  ID:          ${id}\n`;
     output += `  URL:         ${fullUrl}\n`;
-
-    if (stats.detectedKeys.length > 0) {
-      output += `\n  API keys detected:\n`;
-      for (const key of stats.detectedKeys) output += `    - ${key}\n`;
-      output += `\n  Warning: This shared seed contains your API keys!\n`;
-    }
-
-    output += `\n  URL copied to clipboard. Share it to give anyone a tabcomputer instance with your files.\n`;
+    output += `\n  URL copied to clipboard. Whoever opens it gets a tabcomputer with these files.\n`;
     output += `  Link expires after 60 days of no visits.\n\n`;
     ctx.stdout = output;
     return 0;
@@ -927,16 +847,20 @@ async function execSeedShare(ctx: CommandContext): Promise<number> {
   }
 }
 
+/** server.mjs SEED_MAX_SIZE */
+const SHARE_MAX_BYTES = 512 * 1024;
+
 // ─── seed html implementation ────────────────────────────────
 
-async function execSeedHtml(ctx: CommandContext): Promise<number> {
+async function execSeedHtml(ctx: CommandContext, opts: SeedOptions): Promise<number> {
   try {
     ctx.stdout = 'Inlining document resources...\n';
     const html = await inlineDocument();
     ctx.stdout += `  HTML size: ${(html.length / 1024).toFixed(0)} KB\n`;
 
     ctx.stdout += 'Serializing filesystem...\n';
-    const { ndjson, storageJson, stats } = await serializeState(ctx);
+    const state = await serializeState(ctx, opts);
+    const { ndjson, storageJson, stats } = state;
 
     // Compress NDJSON + storage for smaller file
     ctx.stdout += 'Compressing state...\n';
@@ -993,10 +917,7 @@ async function execSeedHtml(ctx: CommandContext): Promise<number> {
     output += `  Data size:   ${stats.sizeMB} MB\n`;
     output += `  HTML size:   ${(fullHtml.length / 1024).toFixed(0)} KB\n`;
 
-    if (stats.detectedKeys.length > 0) {
-      output += `\n  API keys detected:\n`;
-      for (const key of stats.detectedKeys) output += `    - ${key}\n`;
-    }
+    output += describeSeedContents(state);
 
     output += `\n  Downloaded: ${filename}\n`;
     output += `  Open in any browser to boot with your filesystem.\n\n`;

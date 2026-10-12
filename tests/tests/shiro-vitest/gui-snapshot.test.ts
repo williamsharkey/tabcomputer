@@ -41,6 +41,14 @@ describe('GUI snapshots: validity', () => {
     await fs.writeFile('/home/user/.config/snapdemo/rc', 'theme=light\n');
     await fs.writeFile('/home/user/.cache/snapdemo/cache', 'two, and longer');
     expect(await snapshotProblem(fs, snap, 'k')).toBeNull();
+    // ... or with the same lines in another order (a table written out as it happens to iterate)
+    await fs.writeFile('/home/user/.config/snapdemo/rc', 'b=2\na=1\n');
+    const reordered = { meta: { v: 2, key: 'k', opened: await signaturesOf(fs, ['/home/user/.config/snapdemo/rc']) } } as never;
+    await fs.writeFile('/home/user/.config/snapdemo/rc', 'a=1\nb=2\n');
+    expect(await snapshotProblem(fs, reordered, 'k')).toBeNull();
+    await fs.writeFile('/home/user/.config/snapdemo/rc', 'a=1\nb=3\n');
+    expect(await snapshotProblem(fs, reordered, 'k')).toBe('/home/user/.config/snapdemo/rc changed');
+    await fs.writeFile('/home/user/.config/snapdemo/rc', 'theme=light\n');
     // the user changed a setting
     await fs.writeFile('/home/user/.config/snapdemo/rc', 'theme=dark\n');
     expect(await snapshotProblem(fs, snap, 'k')).toBe('/home/user/.config/snapdemo/rc changed');

@@ -4,17 +4,19 @@
  *
  * A GTK or Qt app spends its launch computing the same start-up every time
  * (docs/GUI_LAUNCH.md). With snapshots on, the first start of an app is kept:
- * once its window is up and it has gone quiet, the engine writes the
- * process's image (every page of memory, every thread's registers: Blink
- * patch 0551), and the page keeps what the kernel and the X server hold for
- * it. The next launch rebuilds the process from that instead of running the
- * program:
+ * once its window is up and it has gone quiet, the engine writes the image
+ * of each of its processes (every page of memory, every thread's registers:
+ * Blink patch 0551), and the page keeps what the kernel and the X server
+ * hold for them. The next launch rebuilds the processes from that instead
+ * of running the program:
  *
- * - the image goes to a new Blink worker (`blinkRunner(path, image)`), whose
- *   threads go on where they were, a waiting system call run again;
- * - its descriptors are made again from their records: the launcher's stdio,
- *   eventfds, a listening socket bound to its path, files by path and
- *   offset, and the X connection;
+ * - each image goes to a new Blink worker (`blinkRunner(path, image)`),
+ *   whose threads go on where they were, a waiting system call run again;
+ *   children are started under their parent, with the pids they had;
+ * - their open files are made again from records, once each however many
+ *   descriptors and processes hold them: the launcher's stdio, eventfds,
+ *   inotify watches, pipes and socket pairs between them, a listening socket
+ *   bound to its path, read-only files by path and offset, the X connection;
  * - the X server gets the client back by playing its recorded requests into
  *   a client with the same number (src/x11/display.ts `adoptXClient`): the
  *   windows, pixmaps, glyphs and properties are rebuilt as they were made, and
@@ -22,9 +24,10 @@
  *
  * A snapshot is used only while what it was made from is unchanged: the
  * build, the engine, the app's packages, its arguments and environment, the
- * screen, and every file the process opened or looked for (system files by
- * size and time, files under /home by content). It holds the process's
- * memory, so it never leaves the profile's own IndexedDB.
+ * screen, and every file its processes opened or looked for (system files
+ * by size and time, files under /home by content, caches not at all). It
+ * holds the processes' memory, so it never leaves the profile's own
+ * IndexedDB.
  */
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from '../kernel/kernel';
@@ -183,7 +186,14 @@ async function sha256(b: Uint8Array): Promise<string> {
   return Array.from(d, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-/** What is at `path`, as a short string: '' nothing; a file under /home by content, any other by size and time */
+/**
+ * What is at `path`, as a short string: '' nothing; a file under /home by
+ * content, any other by size and time. A home file's content is its lines
+ * whatever their order: GIMP rewrites controllerrc at every exit from a hash
+ * table, the same entries in another order, and that is not another setting.
+ * (The cost: a file where only the order of lines changed, and the order
+ * means something, doesn't outdate a snapshot.)
+ */
 async function fileSignature(fs: FileSystem, path: string): Promise<string> {
   const st = await fs.stat(path).catch(() => null);
   if (!st) return '';
@@ -191,7 +201,10 @@ async function fileSignature(fs: FileSystem, path: string): Promise<string> {
   if (path.startsWith('/home/')) {
     const data = await fs.readFile(path).catch(() => null);
     if (data === null) return '';
-    return 'h' + await sha256(typeof data === 'string' ? new TextEncoder().encode(data) : data);
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    // (text of a sensible size: sorted lines; anything else as it is)
+    const text = bytes.length < (1 << 20) && !bytes.includes(0) ? new TextDecoder().decode(bytes) : null;
+    return 'h' + await sha256(text === null ? bytes : new TextEncoder().encode(text.split('\n').sort().join('\n')));
   }
   return `${st.size}:${Math.floor(Number(st.mtime instanceof Date ? st.mtime.getTime() : st.mtime ?? 0))}`;
 }

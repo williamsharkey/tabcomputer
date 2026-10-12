@@ -582,6 +582,11 @@ export interface LaunchedApp { pid: number; exited: Promise<number>; output: () 
 
 type SnapshotModule = typeof import('./snapshot');
 
+/** The snapshots setting (src/gui/snapshot.ts snapshotsEnabled), read here so that the module loads only when it is on */
+export function snapshotsOn(): boolean {
+  try { return (globalThis as { localStorage?: Storage }).localStorage?.getItem('tabcomputer-gui-snapshots') === '1'; } catch { return false; }
+}
+
 /**
  * Apps started without the session bus while snapshots are on. An app that
  * holds a bus connection can't be snapshotted (the daemon keeps its side of
@@ -599,8 +604,8 @@ async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: 
   const fs = kernel.fs as FileSystem | undefined;
   if (!fs || typeof indexedDB === 'undefined') return null;
   try {
+    if (!snapshotsOn() || await debianMode(fs)) return null;
     const S = await import('./snapshot');
-    if (!S.snapshotsEnabled() || await debianMode(fs)) return null;
     const { getXSession } = await import('../x11/session');
     const { server } = await getXSession(0);
     const { FIRST_RESERVED_CLIENT, LAST_CLIENT } = await import('../x11/server');
@@ -645,7 +650,7 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
   // and Dillo's launch: docs/GUI_LAUNCH.md)
   await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
-  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && (await import('./snapshot')).snapshotsEnabled();
+  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && snapshotsOn();
   const bus = withoutBus ? null : await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
   // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile

@@ -8,7 +8,10 @@ freshly loaded page Geany's window is back 0.3 s after the click instead of
 5.9 s, GIMP's main window after 0.8 s instead of 16 s, Inkscape's after 0.6 s
 instead of 13 s. The restored apps work: Geany opens a file through its file
 dialog, takes typing, saves and quits with Ctrl+Q; GIMP makes a new image
-through its dialog and quits. Eleven of the corpus's thirteen apps restore
+through its dialog and quits. A snapshot is good until the app saves
+different settings: GIMP does after most sessions, and then its next start
+is a usual one ("What a snapshot is good for"). Eleven of the corpus's
+thirteen apps restore
 (xeyes, xclock, Dillo, GPicView, L3afpad, Galculator, Geany, Mousepad,
 FeatherPad, Inkscape, GIMP); the two terminals don't (a shell on a pty).
 
@@ -178,19 +181,40 @@ hash. A restore checks them all first. A library that changed, a font
 added, a config file edited: the snapshot is dropped, the app starts the
 usual way, and a new one is taken.
 
-Two rules keep that from being too strict or too loose:
+Three rules keep that from being too strict:
 
 - **Settings an app rewrites unchanged are still the same** (content, not
   time). The first time an app quits it often writes its settings for the
-  first time (L3afpad, GPicView, GIMP's `sessionrc` and `unitrc`): that
-  changes what its first snapshot was made from, so the second launch is a
-  usual start too and the third is the first restore. An app that saves
-  something different when it quits (Galculator after a calculation,
-  Mousepad's GSettings keyfile, GIMP's `sessionrc` after work) outdates its
-  snapshot, rightly: the next start reads the new state, and is kept in turn.
+  first time (L3afpad, GPicView, GIMP's `unitrc`): that changes what its
+  first snapshot was made from, so the second launch is a usual start too
+  and the third is the first restore.
+- **The same lines in another order are the same file.** GIMP rewrites
+  `controllerrc` at every exit from a hash table: the same entries, in
+  whatever order the table gives them (4 quits of 4 in a row, nothing
+  touched). A home file's signature is the hash of its sorted lines. The
+  cost: a file where only the order changed, and the order means
+  something, doesn't outdate a snapshot.
 - **Files under `~/.cache` don't count.** A cache is something the app does
   as well without, and babl rewrites its conversion cache at every exit of
-  GIMP, which would outdate GIMP's snapshot every time.
+  GIMP.
+
+What is left is right, and it is the feature's main limit today: **an app
+that saves different settings when it quits outdates its own snapshot.**
+The next start reads the new state, as it must, and is a usual start (a
+new snapshot is taken from it). Measured in the test, after the restored
+app was used and quit:
+
+| App | What it was used for | The next launch |
+|---|---|---|
+| Geany | a file opened, edited, saved, Ctrl+Q | restored (0.17 s) |
+| L3afpad, FeatherPad, Dillo, xeyes, xclock, GPicView, Inkscape | typing, or nothing | restored |
+| Galculator | a number typed | usual start: `galculator.conf` changed |
+| Mousepad | text typed, closed | usual start: its GSettings keyfile changed |
+| GIMP | a new image made, Ctrl+Q | usual start: `sessionrc` changed (its windows) |
+
+So for GIMP the 0.8 s start is what follows a session that left its
+windows as they were; after most real sessions the next start is the
+usual 15 s. Open problem 1 is how to get past that.
 
 ### What must never be shared
 
@@ -299,45 +323,55 @@ What a restored app can notice:
 
 ## Open problems
 
-1. **Before it can be on by default.** It has run on eleven apps, on one
+1. **A session that changes the app's settings costs the next start.**
+   (Above: GIMP, Galculator, Mousepad.) The fix that keeps every setting
+   honest is to take the new snapshot before the user asks: when an app
+   quits and its snapshot is outdated, start it again hidden (its windows
+   not shown), let it go quiet, keep its image, end it. The next click is a
+   restore whatever the session did. It costs one start's worth of engine
+   time in the background after such a quit, and needs windows the desktop
+   doesn't show. The alternative, a list per app of files that may be stale
+   (GIMP's `sessionrc`), restores fast with the window layout of an older
+   session, which is a setting lost.
+2. **Before it can be on by default.** It has run on eleven apps, on one
    machine, for minutes each. Wanted first: a way to turn it off per app
    and a listing in Settings (what is stored, how big, forget); eviction
    (snapshots are 3 to 85 MB each in IndexedDB and are only ever replaced);
    a soak test (restore, use for a long time, many restores in a row);
    Firefox and Safari; phones' memory.
-2. **Ptys and non-engine children** (xterm, QTerminal): the line
+3. **Ptys and non-engine children** (xterm, QTerminal): the line
    discipline's state, the session and foreground group, and a child that
    is tabcomputer's own shell rather than an engine process.
-3. **D-Bus connections that matter** (an app that needs the bus to work).
+4. **D-Bus connections that matter** (an app that needs the bus to work).
    Replaying the client's side into a fresh daemon, as the X requests are
    replayed, needs the daemon to hand out the same unique name; or the
    daemon is snapshotted too.
-4. **Image size.** The image holds every mapped page, including library
+5. **Image size.** The image holds every mapped page, including library
    pages that are byte for byte the file's. Recording those as (file,
    offset) from Blink's `FileMap` table and mapping the file again at
    restore would cut the images to their private pages and most of the
    gzip time with them.
-5. **More kinds of open file**: files open for writing (the offset, and the
+6. **More kinds of open file**: files open for writing (the offset, and the
    file must be unchanged), timerfd (re-armed for the remaining time),
    epoll (the set, by descriptor), signalfd.
-6. **Atoms across tabs.** Two tabs of one profile each run a server and
+7. **Atoms across tabs.** Two tabs of one profile each run a server and
    save the table; the last save wins, and a snapshot taken in the other
    tab may then find an atom's id taken. It is dropped and retaken. A
    shared, append-only table (a lock, or a `BroadcastChannel`) would fix it.
-7. **55 apps** can hold a client number; beyond that, numbers have to be
+8. **55 apps** can hold a client number; beyond that, numbers have to be
    handed back.
-8. **The screen.** Resizing the browser window between sessions drops every
+9. **The screen.** Resizing the browser window between sessions drops every
    snapshot (the key has the work area's size). An app only needs the
    screen it was told about to still be plausible; a RANDR-style notice
    after the restore would let the key leave the size out.
-9. **Settings read with `stat` only** aren't in the open log (a file whose
+10. **Settings read with `stat` only** aren't in the open log (a file whose
    time an app checks without opening it), and a directory counts only as
    being there: a font added to a system font directory doesn't outdate a
    snapshot unless the app opened the font.
-10. **A process tree needs all its pids**: later in a session, when one of
+11. **A process tree needs all its pids**: later in a session, when one of
     them is taken, GIMP starts the usual way. Giving the apps' processes
     pids from a range of their own would make that never happen.
-11. **Debian mode** (apps from apt): not wired; the key would take the
+12. **Debian mode** (apps from apt): not wired; the key would take the
     package versions from dpkg.
 
 ## Trying it

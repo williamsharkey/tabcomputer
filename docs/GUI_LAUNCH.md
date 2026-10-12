@@ -416,7 +416,10 @@ Against the goal of a window in under 2 seconds:
   0.3 s.
 - **GIMP**: 19 s the first time instead of 67 s (the plug-in registry and
   babl's cache ship with it), 15 to 16 s after that, as before. With a
-  snapshot, 0.8 s.
+  snapshot, 0.8 s, when the session before left GIMP's settings as they
+  were; a session that moved its windows rewrites `sessionrc`, and the
+  start after it is the usual 15 s (the research doc's first open
+  problem).
 - Under 2 s without snapshots: xeyes, xclock, xterm, Dillo, GPicView once
   installed, L3afpad warm (1.9 s), QTerminal warm (1.8 s). Everything
   installed is under a second with a snapshot, except the two terminals,
@@ -426,9 +429,11 @@ What would close the rest, in the order of what it buys:
 
 1. **Snapshots on by default.** They are the only thing here that gets
    Geany and GIMP under 2 s, and they do it on 11 of 13 apps. What is
-   missing is listed in the research doc: a place in Settings, eviction,
-   a soak test, other browsers, and the first-start cost stays (a snapshot
-   is of a start that happened).
+   missing is listed in the research doc: a snapshot taken again in the
+   background when a session changed the app's settings (without it GIMP's
+   fast start is the exception), a place in Settings, eviction, a soak
+   test, other browsers. The first-start cost stays (a snapshot is of a
+   start that happened).
 2. **The first start**: 0.6 to 5 s of install (fetching and decoding `.deb`s
    from a local mirror; more from a real network) plus the start. A snapshot can't ship with the app while it holds a
    user's data; an image taken in a clean profile and proven free of it

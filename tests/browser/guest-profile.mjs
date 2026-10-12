@@ -154,7 +154,7 @@ check(['indexedDB', 'localStorage', 'cache', 'OPFS'].every((k) => ctl.hits.some(
 
 // ── guest ──
 const guestUrl = (await sh(main, 'guest url --keep work')).split('\n')[0];
-check(/^http:\/\/guest--work\./.test(guestUrl), `main profile: \`guest url --keep work\` is ${guestUrl}`);
+check(/^https?:\/\/guest--work\./.test(guestUrl), `main profile: \`guest url --keep work\` is ${guestUrl}`);
 const guest = await load(guestUrl);
 const info = await guest.evaluate(() => ({ origin: location.origin, coi: crossOriginIsolated, pill: document.querySelector('.sd-mb-guest')?.textContent, attr: document.documentElement.dataset.guest }));
 check(info.origin !== mainOrigin && info.origin === new URL(guestUrl).origin, `guest: its own origin (${info.origin})`);

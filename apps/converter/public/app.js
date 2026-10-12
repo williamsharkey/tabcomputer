@@ -101,10 +101,12 @@
     if (outs && outs.length) {
       var d = document.createElement('div'); d.className = 'outs';
       outs.forEach(function (o) {
-        var a = document.createElement('a');
-        a.href = 'results/' + state.job + '/' + enc(o.path); a.target = '_blank'; a.rel = 'noopener';
+        // A button, not a link: host pages intercept link clicks, and a new tab
+        // would leave the server's address space
+        var a = document.createElement('button');
+        a.type = 'button'; a.className = 'link';
         a.textContent = o.path.split('/').pop();
-        a.addEventListener('click', openResult);
+        a.addEventListener('click', function () { view(o.path); });
         d.appendChild(a);
       });
       if (result.note) d.appendChild(document.createTextNode(result.note));
@@ -135,6 +137,42 @@
     $('failed').hidden = failed === 0 || left > 0;
     if (!left && total && !state.marks.allDone) state.marks.allDone = Math.round(performance.now());
   }
+
+  // ── looking at one result, in the page ──
+  function save(blob, name) {
+    // An anchor that is not in the document: a host page's click handlers never see it
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+  }
+  function view(rel) {
+    var name = rel.split('/').pop(), ext = (name.split('.').pop() || '').toLowerCase();
+    api('results/' + state.job + '/' + enc(rel)).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    }).then(function (blob) {
+      if (['html', 'csv', 'txt', 'sql'].indexOf(ext) < 0) return save(blob, name);
+      return blob.text().then(function (text) {
+        var v = $('viewer'), body = $('viewer-body');
+        $('viewer-title').textContent = name;
+        body.innerHTML = '';
+        if (ext === 'html') {
+          var f = document.createElement('iframe');
+          f.setAttribute('sandbox', ''); // converted documents never run script
+          f.srcdoc = text; f.title = name;
+          body.appendChild(f);
+        } else {
+          var pre = document.createElement('pre'); pre.textContent = text; body.appendChild(pre);
+        }
+        $('viewer-save').onclick = function () { save(blob, name); };
+        v.hidden = false;
+        state.viewing = rel;
+      });
+    }).catch(function (e) { alert('Could not open ' + name + ': ' + (e && e.message || e)); });
+  }
+  $('viewer-close').addEventListener('click', function () { $('viewer').hidden = true; $('viewer-body').innerHTML = ''; state.viewing = null; });
 
   // ── converting ──
   function pumpQueue() {
@@ -228,12 +266,7 @@
       return r.blob();
     }).then(function (blob) {
       state.marks.zipMs = Math.round(performance.now() - t0); state.marks.zipBytes = blob.size;
-      // An anchor that is not in the document: a host page's click handlers never see it
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([blob], { type: 'application/zip' }));
-      a.download = 'converted-' + state.job + '.zip';
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 60000);
+      save(new Blob([blob], { type: 'application/zip' }), 'converted-' + state.job + '.zip');
     }).catch(function (e) { alert('Could not make the zip: ' + (e && e.message || e)); })
       .then(function () { b.disabled = false; b.textContent = label; });
   });

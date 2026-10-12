@@ -21,8 +21,11 @@ with their icons (from their Debian packages), what installing each would
 download now (less when it shares libraries with installed apps), and a
 **Get** button that installs it with a progress bar, then **Open**.
 Installed apps get their own dock icon. Opening an app that isn't installed
-(`desktop open ID`, `wm.openApp(id)`) shows a download window, then the
-app's own window. Any X client can be started directly too
+(`desktop open ID`, `wm.openApp(id)`, `gui ID`) installs it first. Either
+way the app's dock icon shows it is starting and a placeholder window says
+the stage (installing with its progress, starting, opening its window)
+until the app's own window takes its place (docs/DESKTOP.md "Launch
+feedback"; `src/gui/launch.ts`). Any X client can be started directly too
 (`DISPLAY=:0` is set in the shell): `xterm &` after `gui install xterm`.
 
 Screenshots: [docs/screenshots/](screenshots/) (`gui-*.png`): the Apps

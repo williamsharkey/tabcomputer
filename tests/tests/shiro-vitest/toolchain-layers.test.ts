@@ -113,6 +113,38 @@ describe.skipIf(!haveRootfs)('toolchain layers', () => {
     expect(cat.layers[0]).toMatchObject({ name: 'hello', title: 'Hello', requested: ['tc-hello'] });
   });
 
+  // #109: work left for dpkg would run in the tab at the user's next apt
+  // install (tex-common's triggers rebuild every TeX format under Blink)
+  it('refuses a tree where dpkg still has triggers to run', () => {
+    const base = join(dir, 'base'), tree = join(dir, 'tree');
+    const pack = () => {
+      try {
+        execFileSync('node', [join(ROOT, 'scripts/debian/pack-layer.mjs'), base, tree, join(dir, 'refused'), '--id', 'hello', '--base-id', 'x', '--snapshot', 'test', '--recipe', 'test'], { stdio: 'pipe' });
+        return '';
+      } catch (e: any) { return String(e.stderr); }
+    };
+    const status = join(tree, 'var/lib/dpkg/status');
+    const unincorp = join(tree, 'var/lib/dpkg/triggers/Unincorp');
+    const clean = readFileSync(status, 'utf8');
+    try {
+      // Activated (dpkg-trigger in a prepare step), not yet incorporated
+      writeFileSync(unincorp, 'texmf-format tc-hello\n');
+      expect(pack()).toMatch(/triggers were activated and never run .*texmf-format tc-hello/);
+      writeFileSync(unincorp, '');
+      // Incorporated, not yet run: the state `dpkg --unpack` or an interrupted apt leaves
+      writeFileSync(status, clean.replace('Package: tc-lib\nStatus: install ok installed\n', 'Package: tc-lib\nStatus: install ok triggers-pending\nTriggers-Pending: texmf-format\n'));
+      expect(pack()).toMatch(/tc-lib:all is "install ok triggers-pending"/);
+      writeFileSync(status, clean.replace('Package: tc-hello\nStatus: install ok installed\n', 'Package: tc-hello\nStatus: install ok triggers-awaited\nTriggers-Awaited: tc-lib\n'));
+      expect(pack()).toMatch(/tc-hello:all is "install ok triggers-awaited"/);
+      writeFileSync(status, clean);
+      expect(pack()).toBe('');
+    } finally {
+      writeFileSync(status, clean);
+      rmSync(unincorp, { force: true });
+    }
+    expect(existsSync(join(dir, 'refused/hello/layer.json'))).toBe(true);
+  });
+
   it('applies onto a fresh rootfs; dpkg and apt agree, and apt installs a package on top', async () => {
     const { fs, shell } = await createTestShell();
     expect((await run(shell, 'debian install')).exitCode).toBe(0);

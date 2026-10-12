@@ -196,6 +196,25 @@ index holds:
   `statoverride` and `triggers/*`, and `/etc/passwd`, `group`, `shadow`,
   `gshadow` and `shells`.
 
+A layer ships with nothing left for dpkg to do. apt configures the packages
+and runs their triggers in the chroot (tex-common's: every TeX format, the
+`ls-R` files, updmap's font maps; `ldconfig`; fontconfig's and the MIME
+caches where a set has them), and what they wrote is in the layer. After
+apt and the set's `prepare`, the builder runs `dpkg --configure --pending`
+and `dpkg --triggers-only --pending`, then fails the set if `dpkg --audit`
+reports anything, a status stanza has `Triggers-Pending` or
+`Triggers-Awaited`, or `triggers/Unincorp` isn't empty. `pack-layer.mjs`
+refuses such a tree too (`toolchain-layers.test.ts`). Otherwise the user's
+next `apt install` would do that work in the tab, under Blink (#109).
+
+That does not make a later `apt install texlive-…` fast. Debian's TeX Live
+packages whose postinst runs `update-texmf-config format` (texlive-latex-extra,
+texlive-luatex, texlive-xetex, …) activate tex-common's `texmf-format`
+trigger, and tex-common then rebuilds every format (`fmtutil --sys --all`),
+about ten minutes in the tab. That is what #109 measured; the `tex` layer
+had no trigger pending. The packages people reach for are therefore a layer
+of their own, `tex-full`.
+
 A set can also name `prepare` commands, which run in the chroot after apt
 and are part of the recipe. `go` uses this to run `go build std` with
 `HOME=/home/user` and `CGO_ENABLED=0`, so the layer carries the standard

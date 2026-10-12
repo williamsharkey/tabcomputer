@@ -160,6 +160,22 @@ EOF
     in_root sh -e /tmp/tc-prepare.sh
     rm -f "$ROOT/tmp/tc-prepare.sh"
   fi
+  # A layer ships with nothing left for dpkg to do (#109). apt has configured
+  # the packages and run their triggers by now (TeX's formats, ls-R, updmap;
+  # ldconfig); whatever is still unconfigured, or was triggered since (a
+  # prepare step can activate triggers), runs here, natively, and not in the
+  # tab under Blink at the user's next apt run. Then dpkg must agree that
+  # nothing is pending; pack-layer.mjs checks the tree it packs as well.
+  in_root dpkg --configure --pending
+  in_root dpkg --triggers-only --pending
+  audit=$(in_root dpkg --audit 2>&1) || true
+  pending=$(awk '/^Package:/ { p = $2 } /^Triggers-(Pending|Awaited):/ { print p ": " $0 }' "$ROOT/var/lib/dpkg/status")
+  if [ -n "$audit" ] || [ -n "$pending" ] || [ -s "$ROOT/var/lib/dpkg/triggers/Unincorp" ]; then
+    echo "build-layers.sh: $id: dpkg still has work pending after the install:" >&2
+    printf '%s\n' "$audit" "$pending" >&2
+    cat "$ROOT/var/lib/dpkg/triggers/Unincorp" >&2 2>/dev/null || true
+    exit 1
+  fi
 
   # Back to the base's configuration and the overlay's stubs
   rm -f "$ROOT/etc/apt/build-ca.crt"

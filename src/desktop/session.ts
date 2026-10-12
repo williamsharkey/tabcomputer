@@ -34,8 +34,8 @@ export const SESSION_KEY = 'tabcomputer-desktop-session';
 /** '0': don't restore the session on reload (Settings → Desktop) */
 export const RESTORE_KEY = 'tabcomputer-restore-session';
 const RESTORABLE = new Set(['terminal', 'files', 'settings', 'activity', 'about']);
-/** The line printed under a restored terminal's scrollback */
-export const RESTORED_NOTE = '— restored after reload —';
+/** The line printed under a restored terminal's scrollback (as a dim shell comment, terminal.ts restoreScreen) */
+export const RESTORED_NOTE = '── the output above is from before the page reloaded ──';
 /**
  * Long-running commands that run again by themselves after a reload (servers
  * that only serve files): anything else that was running is only offered.
@@ -170,18 +170,19 @@ export const OFFER_MAX = 72;
  * offer a line on the prompt (typed, not run). The note under the scrollback is one short line;
  * a long command isn't echoed: it goes in a script (`file`, /tmp/restore-N.sh) and the offer is
  * `source` of it. Claude Code that couldn't be resumed by its session id is offered `claude --continue`.
+ * `history`: the line also goes on the shell's history, so Up brings it back after an exit.
  */
-export function followUp(st: TabState, agent: ResumeCommand | null, n = 1): { note: string; run?: string; offer?: string; file?: { path: string; text: string } } {
-  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}`, run: agent.line };
+export function followUp(st: TabState, agent: ResumeCommand | null, n = 1): { note: string; run?: string; offer?: string; history?: string; file?: { path: string; text: string } } {
+  if (agent) return { note: `${RESTORED_NOTE}\r\nresuming ${agent.agent === 'claude' ? 'Claude Code' : 'Codex'}`, run: agent.line, history: agent.line };
   if (!st.running) return { note: RESTORED_NOTE };
   const line = st.running.trim();
   const short = line.length <= OFFER_MAX && !line.includes('\n');
-  if (RESTARTABLE.some((r) => r.test(line))) return { note: short ? `${RESTORED_NOTE}\r\nstarted again: ${line}` : `${RESTORED_NOTE}\r\nstarted again`, run: line };
+  if (RESTARTABLE.some((r) => r.test(line))) return { note: short ? `${RESTORED_NOTE}\r\nstarted again: ${line}` : `${RESTORED_NOTE}\r\nstarted again`, run: line, history: line };
   // (one whose session another tab resumes (st.agent, deduped) is offered plainly, not that session again)
-  if (!st.agent && /^(clear\s*(;|&&)\s*)?claude(\s|$)/.test(line)) return { note: RESTORED_NOTE, offer: 'claude --continue' };
-  if (short) return { note: RESTORED_NOTE, offer: line };
+  if (!st.agent && /^(clear\s*(;|&&)\s*)?claude(\s|$)/.test(line)) return { note: RESTORED_NOTE, offer: 'claude --continue', history: line };
+  if (short) return { note: RESTORED_NOTE, offer: line, history: line };
   const path = `/tmp/restore-${n}.sh`;
-  return { note: RESTORED_NOTE, offer: `source ${path}`, file: { path, text: `# Running in this terminal at the reload (${new Date().toLocaleString()}):\n${line}\n` } };
+  return { note: RESTORED_NOTE, offer: `source ${path}`, history: line, file: { path, text: `# Running in this terminal at the reload (${new Date().toLocaleString()}):\n${line}\n` } };
 }
 
 export interface RestoreDeps {
@@ -222,6 +223,7 @@ export async function restoreSession(wm: WindowManager, saved: SavedWindow[], de
           const tabs = await Promise.all((s.tabs ?? []).map(async (t, j) => ({ ...t, screen: (await store.get(screenKey(wi, j))) ?? '' })));
           const f = follow[wi];
           view.restoreTabs(tabs, (j) => f[j]?.note ?? RESTORED_NOTE, (j, term) => {
+            if (f[j]?.history) term.rememberCommand?.(f[j].history!);
             if (f[j]?.run) term.injectInput(f[j].run + '\r');
             else if (f[j]?.offer) term.injectInput(f[j].offer!);
           }, s.id !== 'terminal');

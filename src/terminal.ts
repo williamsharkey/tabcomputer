@@ -885,12 +885,25 @@ export class ShiroTerminal {
   restoreScreen(scrollback: string, note: string): void {
     if (this.running) return;
     this.term.reset();
+    // The banner drawn before the reset is gone: its remembered row now lands in
+    // the restored text, and the remote status rewrites would print over it
+    this.hud = null;
     const text = scrollback.replace(/\r?\n/g, '\r\n');
     if (text) this.term.write(text.endsWith('\r\n') ? text : text + '\r\n');
-    this.term.write(`\x1b[2m${note}\x1b[0m\r\n`);
+    // The note as dim shell comments, between the old output and the new prompt
+    for (const line of note.split(/\r?\n/)) this.term.write(`\x1b[2m# ${line}\x1b[0m\r\n`);
     this.lineBuffer = '';
     this.cursorPos = 0;
     this.showPrompt();
+    this.term.scrollToBottom();
+  }
+
+  /** Put a command line on the shell's history (a restored tab's command: Up brings it back) */
+  rememberCommand(line: string): void {
+    const h = this.shell.history;
+    if (!line || h[h.length - 1] === line) return;
+    h.push(line);
+    this.shell.scheduleHistorySave();
   }
 
   private async handleInput(data: string) {

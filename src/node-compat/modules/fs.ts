@@ -1974,13 +1974,10 @@ export function createFsPromisesModule(deps: FsDeps): any {
         appendFile: async (data: any) => { syncFs.writeSync(fd, data); },
         readFile: async (opts?: any) => {
           const encoding = typeof opts === 'string' ? opts : opts?.encoding;
-          // Check fileCache first (consistent with readFileSync)
-          const cached = fileCache.get(resolved);
-          if (cached !== undefined) {
-            if (!encoding || encoding === 'utf8' || encoding === 'utf-8') return cached;
-            return FakeBuffer.from(cached);
-          }
-          return ctx.fs.readFile(resolved, encoding || 'utf8');
+          // A Buffer unless an encoding is given, as node's: Claude Code's Edit
+          // tool sniffs the encoding with .subarray() on it (tabcomputer#94)
+          const buf = FakeBuffer.from(await currentBytes());
+          return encoding ? buf.toString(encoding) : buf;
         },
         writeFile: (data: any, opts?: any) => shared().writeFile(p, data, opts, false),
         close,

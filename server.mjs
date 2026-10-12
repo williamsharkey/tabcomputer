@@ -1164,6 +1164,16 @@ async function handleGitProxy(req, res, targetUrl) {
 }
 
 // --- Seed sharing ---
+// `seed share` uploads a snapshot of a tab's files; anyone with the link can
+// download it. Off unless TABCOMPUTER_SEED_SHARE=1: with it on, this server
+// stores what people upload (SEED_DIR), which is a decision for whoever runs
+// it. The routes are matched before the /api/ proxy, which used to answer
+// /api/seed itself ("Unknown API target: seed"), so sharing never worked here.
+//   GET  /api/seed       → {enabled, maxBytes, keepDays}
+//   POST /api/seed       → {id, url}        (the gzipped snapshot)
+//   GET  /api/seed/:id   → the snapshot
+const SEED_SHARE = process.env.TABCOMPUTER_SEED_SHARE === '1';
+const SEED_KEEP_DAYS = 60;
 const SEED_DIR = process.env.SEED_DIR || '/opt/tabcomputer/seeds';
 const SEED_MAX_SIZE = 512 * 1024; // 512KB max per seed (gzipped)
 const SEED_RATE_LIMIT = 200; // per IP per month
@@ -1172,7 +1182,19 @@ const SEED_RATE_LIMIT = 200; // per IP per month
 const seedRates = new Map();
 
 // Ensure seed directory exists
-mkdir(SEED_DIR, { recursive: true }).catch(() => {});
+if (SEED_SHARE) mkdir(SEED_DIR, { recursive: true }).catch(() => {});
+
+async function handleSeed(req, res, pathname) {
+  const cors = corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']);
+  const json = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
+  if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+  if (pathname === '/api/seed' && req.method === 'GET') return json(200, { enabled: SEED_SHARE, maxBytes: SEED_MAX_SIZE, keepDays: SEED_KEEP_DAYS });
+  if (!SEED_SHARE) return json(404, { error: 'Seed sharing is off on this server' });
+  if (pathname === '/api/seed' && req.method === 'POST') return handleSeedUpload(req, res);
+  const m = pathname.match(/^\/api\/seed\/([a-z0-9]{4,16})$/);
+  if (m && req.method === 'GET') return handleSeedDownload(req, res, m[1]);
+  return json(404, { error: 'Unknown seed endpoint' });
+}
 
 function checkSeedRateLimit(ip) {
   const now = Date.now();
@@ -1215,8 +1237,9 @@ async function handleSeedUpload(req, res) {
   }
   const body = Buffer.concat(chunks);
 
-  // Generate short ID (8 chars, base36)
-  const id = randomBytes(5).toString('base36').slice(0, 8).padEnd(8, '0');
+  // The id is all that guards a seed: 16 base36 characters (about 82 random bits).
+  // (Buffer has no 'base36' encoding: the old line threw, and took the server down.)
+  const id = BigInt('0x' + randomBytes(11).toString('hex')).toString(36).padStart(16, '0').slice(-16);
   const meta = JSON.stringify({ created: Date.now(), lastVisited: Date.now(), ip, size: body.length });
 
   try {
@@ -1262,7 +1285,7 @@ async function handleSeedDownload(req, res, id) {
 setInterval(async () => {
   try {
     const files = await readdir(SEED_DIR);
-    const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - SEED_KEEP_DAYS * 24 * 60 * 60 * 1000;
     for (const file of files) {
       if (!file.endsWith('.meta')) continue;
       try {
@@ -2075,6 +2098,10 @@ const server = createServer(async (req, res) => {
     return tcpRelay.handleToken(req, res);
   }
 
+  // Seed sharing, before the API proxy (which would take /api/seed for an unknown target)
+  if (pathname === '/api/seed' || pathname.startsWith('/api/seed/')) {
+    return handleSeed(req, res, pathname);
+  }
   if (pathname.startsWith('/api/')) {
     return handleProxy(req, res, pathname.slice(5));
   }
@@ -2122,14 +2149,6 @@ const server = createServer(async (req, res) => {
     const cors = corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']);
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     return remoteRelay.handle(req, res, pathname, cors);
-  }
-  // Seed sharing: POST /api/seed (upload), GET /api/seed/:id (download raw data)
-  if (pathname === '/api/seed' && req.method === 'POST') {
-    return handleSeedUpload(req, res);
-  }
-  const seedApiMatch = pathname.match(/^\/api\/seed\/([a-z0-9]{4,16})$/);
-  if (seedApiMatch && req.method === 'GET') {
-    return handleSeedDownload(req, res, seedApiMatch[1]);
   }
   // /s/:id falls through to handleStatic which SPA-fallbacks to index.html
   return handleStatic(req, res, guest, guests);

@@ -751,7 +751,7 @@ function showDraggableGif(gifBytes: Uint8Array, filename: string) {
 async function askAtTerminal(ctx: CommandContext, text: string): Promise<string | null> {
   const term = ctx.terminal as (CommandContext['terminal'] & { waitForUserInput?: () => Promise<string> }) | undefined;
   if (!term?.waitForUserInput || ctx.stdinIsTTY === false || ctx.stdoutIsTTY === false) return null;
-  term.writeOutput(text);
+  term.writeOutput(text.replace(/\r?\n/g, '\r\n'));
   return term.waitForUserInput();
 }
 
@@ -762,9 +762,16 @@ async function execSeedShare(ctx: CommandContext, opts: SeedOptions): Promise<nu
         + 'To move your own machine with its sign-ins, make a file instead: seed gif --with-credentials (or seed html --with-credentials).\n';
       return 2;
     }
+    const origin = getShiroOrigin();
+    // Whether this server keeps shared seeds at all (a server setting, TABCOMPUTER_SEED_SHARE=1)
+    const server = await fetch(`${origin}/api/seed`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (server?.enabled !== true) {
+      ctx.stderr = 'seed share: this server does not keep shared seeds (it is a server setting, off here). Nothing was uploaded.\n'
+        + 'seed gif and seed html make a file you can send yourself.\n';
+      return 1;
+    }
     const state = await collectSeedState(ctx.fs, opts);
     const { ndjson, storageJson, stats } = state;
-    const origin = getShiroOrigin();
 
     // Build seed envelope and compress
     const seedEnvelope = JSON.stringify({

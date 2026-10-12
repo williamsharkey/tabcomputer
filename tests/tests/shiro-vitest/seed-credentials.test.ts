@@ -8,14 +8,19 @@
  * what it will upload and asks first, and that importing a seed neither
  * replaces the importer's sign-ins nor plants a remote-control code.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createTestShell, run } from './helpers';
 import type { Shell } from '@shiro/shell';
 import type { FileSystem } from '@shiro/filesystem';
 import { seedCmd } from '@shiro/commands/seed';
 import { collectSeedState, importSeedState, parseSeedNdjson, sharedSeedQuestion } from '@shiro/seed-state';
 import { STORED_CREDENTIALS, API_KEY_PROVIDERS, credentialFileReason, scrubCredentialLines, storageCredentialKind } from '@shiro/credentials';
+
+const serverPath = decodeURIComponent(new URL('../../../server.mjs', import.meta.url).pathname);
 
 // ── localStorage ──
 const store: Record<string, string> = {};
@@ -119,6 +124,8 @@ async function gunzip(bytes: Uint8Array): Promise<string> {
 
 let fs: FileSystem; let shell: Shell;
 let uploads: Uint8Array[] = [];
+/** Whether the server keeps shared seeds (TABCOMPUTER_SEED_SHARE=1) */
+let serverShares = true;
 const realFetch = globalThis.fetch;
 const realNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 let clipboard = '';
@@ -128,8 +135,13 @@ beforeEach(async () => {
   shell.commands.register(seedCmd);
   await fs.importAll([]);           // each test starts from an empty disk
   await plantMachine(fs);
-  uploads = []; clipboard = '';
+  uploads = []; clipboard = ''; serverShares = true;
   globalThis.fetch = (async (url: any, init: any = {}) => {
+    if (String(url).endsWith('/api/seed') && (init.method ?? 'GET') === 'GET') {
+      return serverShares
+        ? new Response(JSON.stringify({ enabled: true, maxBytes: 524288, keepDays: 60 }), { status: 200, headers: { 'content-type': 'application/json' } })
+        : new Response('Unknown API target: seed', { status: 404 });   // a server from before the setting
+    }
     if (String(url).endsWith('/api/seed') && init.method === 'POST') {
       uploads.push(new Uint8Array(init.body));
       return new Response(JSON.stringify({ id: 'abcd1234', url: '/s/abcd1234' }), { status: 201, headers: { 'content-type': 'application/json' } });
@@ -326,10 +338,62 @@ describe('seed share', () => {
     expect(output).toContain('seed gif --with-credentials');
   });
 
+  it('says so, before anything else, on a server that does not keep shared seeds', async () => {
+    serverShares = false;
+    const { output, exitCode } = await run(shell, 'seed share --yes');
+    expect(exitCode).toBe(1);
+    expect(uploads).toHaveLength(0);
+    expect(output).toContain('this server does not keep shared seeds');
+    expect(output).toContain('Nothing was uploaded');
+  });
+
   it('an unknown option is an error, not a share', async () => {
     expect((await run(shell, 'seed share --force')).exitCode).toBe(2);
     expect(uploads).toHaveLength(0);
   });
+});
+
+describe('server.mjs and shared seeds', () => {
+  const procs: ChildProcess[] = [];
+  const dirs: string[] = [];
+  afterAll(() => { for (const p of procs) p.kill(); for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  async function start(env: Record<string, string>): Promise<string> {
+    const dir = mkdtempSync(join(tmpdir(), 'seed-share-'));
+    dirs.push(dir);
+    const proc = spawn(process.execPath, [serverPath], { env: { ...process.env, PORT: '0', SEED_DIR: join(dir, 'seeds'), TABCOMPUTER_SEED_SHARE: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    procs.push(proc);
+    const port = await new Promise<number>((resolve, reject) => {
+      proc.once('exit', (c) => reject(new Error(`server exited (${c})`)));
+      proc.stdout!.on('data', (d) => { const m = /listening on :(\d+)/.exec(String(d)); if (m) resolve(Number(m[1])); });
+    });
+    return `http://127.0.0.1:${port}`;
+  }
+
+  it('keeps none unless TABCOMPUTER_SEED_SHARE=1, and says so', async () => {
+    const off = await start({});
+    expect(await (await realFetch(`${off}/api/seed`)).json()).toMatchObject({ enabled: false });
+    const up = await realFetch(`${off}/api/seed`, { method: 'POST', body: new Uint8Array([1, 2, 3]) });
+    expect(up.status).toBe(404);
+    expect(await up.json()).toEqual({ error: 'Seed sharing is off on this server' });
+    expect((await realFetch(`${off}/api/seed/abcd1234`)).status).toBe(404);
+    expect(existsSync(join(dirs[dirs.length - 1], 'seeds'))).toBe(false);
+  }, 30_000);
+
+  it('with it on, the routes answer (they sit before the /api/ proxy) and a seed comes back as it went', async () => {
+    const on = await start({ TABCOMPUTER_SEED_SHARE: '1' });
+    expect(await (await realFetch(`${on}/api/seed`)).json()).toEqual({ enabled: true, maxBytes: 512 * 1024, keepDays: 60 });
+    const body = new Uint8Array([31, 139, 8, 0, 1, 2, 3, 4]);
+    const up = await realFetch(`${on}/api/seed`, { method: 'POST', body });
+    expect(up.status).toBe(200);
+    const { id, url } = await up.json() as { id: string; url: string };
+    expect(url).toBe(`/s/${id}`);
+    expect(id).toMatch(/^[a-z0-9]{16}$/);   // the id is all that guards a seed
+    expect(new Uint8Array(await (await realFetch(`${on}/api/seed/${id}`)).arrayBuffer())).toEqual(body);
+    expect((await realFetch(`${on}/api/seed/zzzz9999`)).status).toBe(404);
+    // over the limit: refused (the server may hang up before the whole body is in)
+    const big = await realFetch(`${on}/api/seed`, { method: 'POST', body: new Uint8Array(600 * 1024) }).then((r) => r.status, () => 413);
+    expect(big).toBe(413);
+  }, 30_000);
 });
 
 describe('seed (the clipboard snippet)', () => {

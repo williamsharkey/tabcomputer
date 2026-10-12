@@ -193,7 +193,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
       'Relays connections and API calls',
       'Sets no cookie, keeps no account',
     ],
-    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores only what you upload with seed share (your files, without saved sign-ins), and copies of public downloads. Its logs record addresses, hosts, paths and sizes, not payloads.',
+    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores copies of public downloads, and, only if it is set to keep shared seeds, what you upload with seed share (your files, without saved sign-ins). Its logs record addresses, hosts, paths and sizes, not payloads.',
   };
   const internet: Place = {
     id: 'internet',
@@ -334,7 +334,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     via: '/offer, /relay, /api/seed, /channel',
     to: 'whoever holds the code or the link',
     reads: 'contents',
-    readsText: 'seed share stores your files on the server, for anyone with the link, without the sign-ins saved here. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets. group messages are readable.',
+    readsText: 'seed share, on a server that keeps shared seeds (a server setting; tabcomputer.com does not), stores your files there for anyone with the link, without the sign-ins saved here. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets. group messages are readable.',
     detail: 'seed share shows what it will upload and asks first. It leaves out saved sign-ins, key files and files that contain something shaped like a token, and lists them; a secret it cannot recognise inside one of your own files still goes. A shared seed is deleted 60 days after its last visit. remote start lets the holder of the code run commands and read files here.'
       + (s.secrets.remoteCode ? ' A remote code is saved in this tab.' : ''),
     status: sealed ? 'off' : 'on',

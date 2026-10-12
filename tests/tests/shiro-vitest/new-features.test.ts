@@ -79,6 +79,8 @@ describe('seed share — upload state and get shareable URL', () => {
           json: async () => ({ id: 'abc12345', url: '/s/abc12345' }),
         };
       }
+      // the server says it keeps shared seeds (TABCOMPUTER_SEED_SHARE=1)
+      if (typeof url === 'string' && url.endsWith('/api/seed')) return { ok: true, json: async () => ({ enabled: true, maxBytes: 524288, keepDays: 60 }) };
       return { ok: true, text: async () => '/* mock */' };
     };
   });
@@ -157,6 +159,7 @@ describe('seed share — upload state and get shareable URL', () => {
 
   it('should handle server error (non-ok response)', async () => {
     (globalThis as any).fetch = async (url: string, opts?: any) => {
+      if (typeof url === 'string' && url.endsWith('/api/seed') && opts?.method !== 'POST') return { ok: true, json: async () => ({ enabled: true }) };
       if (typeof url === 'string' && url.includes('/api/seed') && opts?.method === 'POST') {
         return {
           ok: false,

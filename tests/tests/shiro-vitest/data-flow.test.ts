@@ -116,6 +116,7 @@ describe('data flow: what each flow says', () => {
     // a shared seed leaves them out (src/seed-state.ts, #117)
     expect(flow({ github: true, claude: true, apiKeys: ['OpenAI'] }, 'shared').carries).toEqual([]);
     expect(flow({}, 'shared').readsText).toContain('without the sign-ins saved here');
+    expect(flow({}, 'shared').readsText).toContain('on a server that keeps shared seeds');
   });
 
   it('a relay of the user\'s own takes programs\' connections off this site\'s server, and nothing else', () => {

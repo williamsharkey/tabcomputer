@@ -572,6 +572,8 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   if (app.home) await writeHomeDefaults(kernel, app.home);
   const bus = await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
+  // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile
+  env = { ...env, ...((globalThis as { __guiLaunchEnv?: Record<string, string> }).__guiLaunchEnv ?? {}) };
   const out = new BufferFile(null);
   if (opts.onOutput) {
     const dec = new TextDecoder();

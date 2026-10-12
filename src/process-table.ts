@@ -49,10 +49,11 @@ class ProcessTable {
   /**
    * A particular pid, for a process that must keep the one it had (a GUI app
    * restored from a snapshot holds its own pid, and its children's). False
-   * when a process of this table has it; the kernel checks its own.
+   * when a process of this table has it; the kernel checks its own (a pid
+   * taken before can be taken again once its process is gone).
    */
   takePid(pid: number): boolean {
-    if (!Number.isInteger(pid) || pid < 100 || pid >= 4_000_000 || this.processes.has(pid) || this.taken.has(pid)) return false;
+    if (!Number.isInteger(pid) || pid < 100 || pid >= 4_000_000 || this.processes.has(pid)) return false;
     if (pid >= this.nextPid) this.taken.add(pid);
     return true;
   }

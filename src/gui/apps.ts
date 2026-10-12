@@ -585,10 +585,10 @@ type SnapshotModule = typeof import('./snapshot');
 /**
  * Apps started without the session bus while snapshots are on. An app that
  * holds a bus connection can't be snapshotted (the daemon keeps its side of
- * it: docs/research/GUI_SNAPSHOTS.md), and these work without one: GIMP uses
- * the bus only to hand a second invocation's files to the running one.
+ * it: docs/research/GUI_SNAPSHOTS.md), and these work without one: they use
+ * the bus to hand a second invocation's files to the running instance.
  */
-const SNAPSHOT_WITHOUT_BUS = new Set(['gimp']);
+const SNAPSHOT_WITHOUT_BUS = new Set(['gimp', 'inkscape', 'mousepad', 'featherpad']);
 
 /**
  * Whether this launch can use snapshots, and with what: the stored one when it

@@ -29,8 +29,11 @@ const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux
 const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 /** Apps whose first windows aren't the usable one: the title of the window that is */
 const READY = { gimp: 'GNU Image Manipulation Program' };
+/** For 'type': a key that puts the keyboard where typing shows (Dillo: its location bar), and what to type (a calculator takes digits) */
+const FOCUS_KEY = { dillo: 'Control+l' };
+const TEXT = { galculator: '7654321' };
 /** How each app is used after a restore: 'pointer' moves over it, 'type' types into it */
-const USE = { xeyes: 'pointer', xclock: 'none', gpicview: 'none', gimp: 'gimp', xterm: 'type', geany: 'geany', l3afpad: 'type', mousepad: 'type', featherpad: 'type', galculator: 'type' };
+const USE = { xeyes: 'pointer', xclock: 'none', gpicview: 'none', inkscape: 'none', gimp: 'gimp', xterm: 'type', geany: 'geany', l3afpad: 'type', mousepad: 'type', featherpad: 'type', galculator: 'type' };
 
 const boot = async (page, app) => {
   await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 90_000 });
@@ -100,16 +103,18 @@ async function use(page, app) {
   }
   await page.mouse.click(a.x + a.width / 2, a.y + a.height * 0.6);
   await page.waitForTimeout(300);
+  if (FOCUS_KEY[app]) { await page.keyboard.press(FOCUS_KEY[app]); await page.waitForTimeout(500); }
   // (an editor's caret blinks: what the window looks like over a blink, before any key)
   const before = new Set();
   for (let i = 0; i < 14; i++) { before.add((await look(page, app)).hash); await page.waitForTimeout(100); }
   // the first key after a restore: how long until the window shows it (the JIT starts cold)
   const t0 = Date.now();
-  await page.keyboard.type('s');
+  const text = TEXT[app] ?? 'snapshot 12345';
+  await page.keyboard.type(text[0]);
   let after = await look(page, app);
   for (let i = 0; i < 400 && before.has(after.hash); i++) { await page.waitForTimeout(25); after = await look(page, app); }
   const firstKeyMs = Date.now() - t0;
-  await page.keyboard.type('napshot 12345', { delay: 30 });
+  await page.keyboard.type(text.slice(1), { delay: 30 });
   return { ok: !before.has(after.hash), kind, title: after.title, firstKeyMs };
 }
 

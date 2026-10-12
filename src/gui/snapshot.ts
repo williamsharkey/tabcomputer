@@ -56,6 +56,8 @@ export type FileRecord =
   | { flags: number; kind: 'file'; path: string; pos: number }
   /** One end of a pipe whose every end is held by the snapshot's processes, and empty; `pipe` numbers the pipes */
   | { flags: number; kind: 'pipe'; pipe: number; end: 'r' | 'w' }
+  /** One side of a connected socket pair both of whose sides the snapshot's processes hold, nothing queued; `pair` numbers them */
+  | { flags: number; kind: 'pair'; pair: number; side: 0 | 1; type: number }
   /** An inotify instance with nothing queued: its watches, by watch descriptor */
   | { flags: number; kind: 'inotify'; watches: [number, string, number, boolean][]; nextWd: number };
 
@@ -203,6 +205,13 @@ async function fileSignature(fs: FileSystem, path: string): Promise<string> {
  */
 const IGNORED_PATH = /^\/(?:dev|proc|sys|tmp)\/|^\/home\/[^/]+\/\.cache\//;
 
+/** What is at each of `paths` now, for a snapshot's `opened` (the paths that don't count are left out) */
+export async function signaturesOf(fs: FileSystem, paths: Iterable<string>): Promise<[string, string][]> {
+  const out: [string, string][] = [];
+  for (const path of paths) if (!IGNORED_PATH.test(path)) out.push([path, await fileSignature(fs, path)]);
+  return out;
+}
+
 /** Why a stored snapshot can't be used now (null: it can) */
 export async function snapshotProblem(fs: FileSystem, snap: StoredSnapshot, key: string): Promise<string | null> {
   const m = snap.meta;
@@ -236,6 +245,7 @@ async function lookAtFiles(procs: Process[], xSock: OpenFile | null, output: Ope
   const files: FileRecord[] = [];
   const seen = new Map<OpenFile, number>();
   const pipes: InstanceType<typeof PipeEnd>['pipe'][] = [];
+  const pairs: OpenFile[][] = [];
   const all = new Set<OpenFile>();
   for (const p of procs) for (const [, f] of p.fds.entries()) all.add(f);
   const record = (f: OpenFile, fd: number, pid: number): FileRecord | string => {
@@ -257,6 +267,13 @@ async function lookAtFiles(procs: Process[], xSock: OpenFile | null, output: Ope
     if (f instanceof BufferFile) return { flags, kind: fd === 0 ? 'stdin' : 'output' };
     if (f instanceof EventFile) return { flags, kind: 'event', ...f.state };
     if (f instanceof DevNull && f.constructor === DevNull) return { flags, kind: 'null' };
+    if (f instanceof KSocket && f.state === 'connected' && f.pairedWith && all.has(f.pairedWith)) {
+      const other = f.pairedWith;
+      if (f.netInfo().rxQueue || other.netInfo().rxQueue) return `${where} is a socket with data waiting`;
+      let n = pairs.findIndex((p) => p.includes(f));
+      if (n < 0) n = pairs.push([f, other]) - 1;
+      return { flags, kind: 'pair', pair: n, side: pairs[n][0] === f ? 0 : 1, type: f.type };
+    }
     if (f instanceof KSocket && f.state === 'listening' && f.unixKey && !f.unixKey.startsWith('\0') && f.netInfo().rxQueue === 0) return { flags, kind: 'listen', address: f.local?.address ?? f.unixKey };
     if (f instanceof RegularFile && !f.inode.unlinked && (f.flags & 3) === 0) return { flags, kind: 'file', path: f.path, pos: f.seek(0, 1) };
     return `${where} (${f.kind}${f instanceof KSocket ? ' ' + f.state + ' ' + (f.remote?.address ?? f.local?.address ?? '').replace('\0', '@') : ''}${f.path ? ' ' + f.path : ''}) can't be made again`;
@@ -321,10 +338,7 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
   const requests = new Uint8Array(rec.bytes);
   let at = 0;
   for (const c of rec.chunks) { requests.set(c, at); at += c.length; }
-  const opened: [string, string][] = [];
-  for (const path of (main.data.openLog as Set<string> | undefined) ?? []) {
-    if (!IGNORED_PATH.test(path)) opened.push([path, await fileSignature(fs, path)]);
-  }
+  const opened = await signaturesOf(fs, (main.data.openLog as Set<string> | undefined) ?? []);
   const [x, ...images] = await Promise.all([gzip(requests), ...raw.map((b) => gzip(new Uint8Array(b)))]);
   const meta: SnapshotMeta = {
     v: VERSION, app, key, taken: Date.now(),
@@ -430,6 +444,7 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
   const made: OpenFile[] = [];
   const started: Process[] = [];
   const pipes = new Map<number, { r: OpenFile; w: OpenFile; used: Set<OpenFile> }>();
+  const pairs = new Map<number, { sides: [OpenFile, OpenFile]; used: Set<OpenFile> }>();
   let tx = 0;
   try {
     if (!netStackOf(kernel)) installNet(kernel);
@@ -443,6 +458,16 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
         let p = pipes.get(r.pipe);
         if (!p) { const [rd, wr] = createPipe(); p = { r: rd, w: wr, used: new Set() }; pipes.set(r.pipe, p); }
         f = p[r.end];
+        p.used.add(f);
+      } else if (r.kind === 'pair') {
+        let p = pairs.get(r.pair);
+        if (!p) {
+          const made2 = stack.socketpair(r.type);
+          if (typeof made2 === 'number') throw new Error(`socketpair: errno ${-made2}`);
+          p = { sides: made2, used: new Set() };
+          pairs.set(r.pair, p);
+        }
+        f = p.sides[r.side];
         p.used.add(f);
       } else if (r.kind === 'inotify') {
         const uid = kernel.init.uid ?? 0;
@@ -501,6 +526,7 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
     }
     // (an end every process had closed: gone here too. After the spawns: a descriptor table holds its files)
     for (const p of pipes.values()) for (const e of [p.r, p.w]) if (!p.used.has(e)) void e.close();
+    for (const p of pairs.values()) for (const e of p.sides) if (!p.used.has(e)) void e.close();
     return { proc: started[0], ms: { x: tx, image: ti, total: Date.now() - t0 } };
   } catch (e) {
     for (const p of started.reverse()) { try { kernel.kill(p.pid, 9); } catch { /* gone */ } }

@@ -314,7 +314,7 @@ interface StreamPeer {
 }
 
 class LoopbackPeer implements StreamPeer {
-  constructor(private self: KSocket, private other: KSocket) {}
+  constructor(private self: KSocket, readonly other: KSocket) {}
   send(data: Uint8Array, fds?: OpenFile[]) { this.other._deliver(data.slice(), fds); }
   shutdownWrite() { this.other._eof(); }
   close() { this.other._eof(); this.other._peerGone(); }
@@ -485,6 +485,8 @@ export class KSocket implements OpenFile {
   }
 
   private get nonblock() { return (this.flags & O_NONBLOCK) !== 0; }
+  /** The socket at the other end, when both are this kernel's (a socketpair, or a connected AF_UNIX pair) */
+  get pairedWith(): KSocket | null { return this.peer instanceof LoopbackPeer ? this.peer.other : null; }
   private get messages() { return this.type !== SOCK_STREAM; }
 
   /** What /proc/net/tcp shows: state, addresses, queues (a listener's rx queue is its accept backlog) */

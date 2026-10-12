@@ -733,8 +733,11 @@ if (!token) return -ENETUNREACH;   // the user said "Not now"
   `/api/*`. `needsSignIn(url)` tells them apart.
 
 Today the hook has one caller: the TCP relay token request (`relayToken` in
-`src/kernel/net.ts`). That request sends `Authorization: Bearer <token>` when
-a sign-in is saved, and asks the hook when the server answers 401.
+`src/kernel/net.ts`). That request goes without a credential first. When the
+server answers `401 {"error":"signin_required"}` it is repeated with
+`Authorization: Bearer <token>` (the saved sign-in, or the hook's answer), and
+later token requests carry it at once until the relay setting changes. A
+server that does not require a sign-in never receives the token.
 
 The server enforces sign-in only when `TABCOMPUTER_TCP_REQUIRE_SIGNIN=1` is set.
 `POST /tcp/token` then needs a GitHub token that `api.github.com/user`
@@ -744,16 +747,20 @@ unset, nothing changes.
 
 **Use my own connection.** Settings → Network → Connection switches the
 kernel's sockets from this site's relay to one the user runs: a `ws(s)://`
-relay URL and, if that relay issues tokens, its token URL (any relay speaking
+relay URL and, optionally, its token URL (any relay speaking
 docs/NETWORKING.md's protocol; `TABCOMPUTER_TCP_RELAY=1 node server.mjs` with this
-site in `TABCOMPUTER_TCP_ORIGINS`). **Test** checks the relay (the token request,
+site in `TABCOMPUTER_TCP_ORIGINS`). Left empty, the token URL is `/token` next to
+the relay URL, which is where server.mjs has it; a relay with nothing there is
+used without a token. **Test** checks the relay (the token request,
 then a WebSocket open) before it is saved. The choice lives in localStorage
 `tabcomputer_relay` (`ownRelay`/`setOwnRelay`/`relayNetConfig` in net-signin.ts), and
-the desktop applies it with `netStackOf(kernel).configure(...)` at boot and on
-change. A user's relay gets `credentials: false` (a NetConfig field, default
-true): the saved GitHub token is never sent to it, and a 401 from it doesn't
-open the sign-in sheet. The sheet's "Other ways to connect" links here. The
-classic UI never sets a relay of its own, so shiro.computer is unaffected.
+boot applies it with `followRelaySetting(kernel)` (src/kernel/net.ts) in both
+UIs, at boot and on change. A user's relay gets `credentials: false` (a
+NetConfig field, default true): the saved GitHub token is not sent to it, and
+a 401 from it doesn't open the sign-in sheet, unless the user ticked "Give
+this relay my GitHub sign-in if it asks for one" (`sendSignin`). The sheet's
+"Other ways to connect" links here. The terminal UI has no Settings, so a
+relay is set in the desktop; it is used in `?ui=terminal` too.
 
 The menu bar's network icon shows `online`, `signed-in`, `needs-sign-in`,
 `offline` or `unavailable` (relay off). Clicking it opens a popover with Sign

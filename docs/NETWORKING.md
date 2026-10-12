@@ -236,11 +236,18 @@ into them, loopback listen/accept, and the iframeServer HTTP bridge.
 
 ## Sign-in and other relays (desktop)
 
-`NetConfig.credentials` (default true) sends the saved GitHub sign-in with
-token requests and asks `requireNetworkSignIn()` (src/net-signin.ts) once on a
-401, for this site's relay. A relay the user chose in the desktop's Settings
-("Use my own connection") is configured with `credentials: false`, so it never
-receives that token. See docs/DESKTOP.md, "Network sign-in".
+`NetConfig.credentials` (default true, for this site's relay) allows the
+saved GitHub sign-in to be given to the relay, and only once it asked: the
+token request goes without it, and a `401 {"error":"signin_required"}`
+(`TABCOMPUTER_TCP_REQUIRE_SIGNIN=1`) brings it along, or asks
+`requireNetworkSignIn()` (src/net-signin.ts) once when none is saved. A relay
+that issues tokens to anyone never receives it. A relay the user chose in the
+desktop's Settings ("Use my own connection") is configured with
+`credentials: false` unless they ticked "Give this relay my GitHub sign-in if
+it asks for one". The setting is applied at boot in both UIs
+(`followRelaySetting`). With no token URL given, `/token` next to the relay
+URL is tried (`NetConfig.tokenOptional`): a relay with nothing there is used
+without a token. See docs/DESKTOP.md, "Network sign-in".
 
 ## Checking it from a tab
 

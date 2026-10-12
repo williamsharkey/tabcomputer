@@ -42,7 +42,11 @@ export interface GuiApp {
  * A file a postinst would generate, built by gen-apps.py (public/gui/overlay/SHA256), applied when `when` is
  * installed; with `tar`, a tar archive unpacked at `path` (e.g. symlinks).
  */
-export interface Overlay { path: string; sha256: string; size: number; when: string; tar?: boolean }
+export interface Overlay {
+  path: string; sha256: string; size: number; when: string; tar?: boolean;
+  /** Written only when nothing is at `path` yet (a file in the user's home: GIMP's plug-in registry) */
+  keep?: boolean;
+}
 export interface AppsManifest {
   suite: string; arch: string; mirror: string; snapshot: string;
   overlays?: Overlay[];
@@ -230,7 +234,9 @@ async function unpack(fs: FileSystem, entries: TarEntry[], ownBins: Set<string>)
       try { await fs.unlink(path); } catch { /* none */ }
       await fs.symlink(e.linkname, path).catch(() => {});
     } else {
-      await fs.writeFile(path, e.data, { mode: e.mode & 0o7777 });
+      // with the package's file time, as dpkg does (GIMP asks a plug-in again when its time isn't the one in
+      // pluginrc, and the registry that ships with it was made from these times)
+      await fs.writeFile(path, e.data, { mode: e.mode & 0o7777, times: e.mtime ? { mtime: e.mtime * 1000 } : undefined });
     }
     files++;
   }
@@ -419,7 +425,9 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
     }
   };
   startMore();
-  const overlays = (m.overlays ?? []).filter((o) => want.includes(o.when)).map((o) => [o, getBlob(o.sha256, o.size, `gui/overlay/${o.sha256}`, cache, fetchOverride ? () => fetchOverride!({ version: '', filename: `gui/overlay/${o.sha256}`, sha256: o.sha256, size: o.size }) : null)] as const);
+  // (__guiNoKeptOverlays: scripts/gui/make-pluginrc.mjs wants GIMP to write its registry itself)
+  const noKept = !!(globalThis as { __guiNoKeptOverlays?: boolean }).__guiNoKeptOverlays;
+  const overlays = (m.overlays ?? []).filter((o) => want.includes(o.when) && !(o.keep && noKept)).map((o) => [o, getBlob(o.sha256, o.size, `gui/overlay/${o.sha256}`, cache, fetchOverride ? () => fetchOverride!({ version: '', filename: `gui/overlay/${o.sha256}`, sha256: o.sha256, size: o.size }) : null)] as const);
   for (const [, blob] of overlays) blob.catch(() => {}); // awaited after the packages
   for (const n of want) {
     const tw = Date.now();
@@ -447,6 +455,7 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   for (const [o, blob] of overlays) {
     const { data } = await blob;
     if (o.tar) { await unpack(fs, untar(data), ownBins); continue; }
+    if (o.keep && (await fs.exists(o.path).catch(() => false))) continue;
     await fs.mkdir(o.path.slice(0, o.path.lastIndexOf('/')), { recursive: true }).catch(() => {});
     await fs.writeFile(o.path, data);
   }
@@ -654,7 +663,10 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
       if (!kernel.procs.has(plan.stored.meta.pid) && !ids.pidAppIds.has(plan.stored.meta.pid)) { ids.pidAppIds.set(plan.stored.meta.pid, name); restoredPids.push(plan.stored.meta.pid); }
       const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
       p = r.proc;
-      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes });
+      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.pid });
+      // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again
+      const S = plan.S;
+      void p.wait().then((st) => { if (st !== 0 && Date.now() - t0 < 5000) { snapshotLog(name, { restored: false, why: `the restored process ended at once (${st})` }); void S.dropSnapshot(name); } });
     } catch (e) {
       for (const pid of restoredPids.splice(0)) ids.pidAppIds.delete(pid);
       snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });

@@ -475,6 +475,20 @@ def main():
         h = hashlib.sha256(data).hexdigest()
         open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
         overlays.append({'path': '/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders.cache', 'sha256': h, 'size': len(data), 'when': 'librsvg2-common'})
+    # The two caches GIMP builds on its first start, as GIMP writes them in the tab
+    # (scripts/gui/make-gimp-caches.mjs makes scripts/gui/overlays/gimp-pluginrc and gimp-babl-fishes; run
+    # it again when gimp's or babl's packages change): its plug-in registry, so a first start doesn't run
+    # every plug-in to ask what it provides, and babl's conversion cache. They go into the user's home,
+    # and only when no such file is there ('keep'). The registry's entries carry the plug-ins' file
+    # times: the installer writes files with their package's times, so they match in every tab.
+    for name, path in (('gimp-pluginrc', '/home/user/.config/GIMP/2.10/pluginrc'),
+                       ('gimp-babl-fishes', '/home/user/.cache/babl/babl-fishes')):
+        rc = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'overlays', name)
+        if os.path.exists(rc) and 'gimp' in apps:
+            data = open(rc, 'rb').read()
+            h = hashlib.sha256(data).hexdigest()
+            open(os.path.join(os.path.dirname(out), 'overlay', h), 'wb').write(data)
+            overlays.append({'path': path, 'sha256': h, 'size': len(data), 'when': 'gimp', 'keep': True})
     # Font directories (installer: pinFontDirs) and fontconfig's caches for them. Fontconfig
     # keeps a directory's mtime in its cache: the installer gives each font directory a
     # fixed mtime when it holds just its package's files, and the caches were made with it

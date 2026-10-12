@@ -283,3 +283,54 @@ click to the usable window):
 The cold launch is the one that writes the cache: unchanged (xterm 1532 →
 1523, dillo 1942 → 1969). GTK and Qt apps have their own input methods and
 don't read the file. No layer or engine rebuild: it ships with the page.
+
+### GIMP's first start
+
+A first start did two things a later one doesn't, and neither is the
+installer's to do (no trigger, no postinst): GIMP builds them itself.
+
+1. **The plug-in registry.** GIMP runs every plug-in once to ask what it
+   provides, 106 of them, each a process (115 processes and 6.7 GB of file
+   reads in the baseline), and writes the answers to
+   `~/.config/GIMP/2.10/pluginrc`.
+2. **babl's conversion cache.** babl finds the chain of conversions to use
+   between pixel formats by trying them, and writes what it found to
+   `~/.cache/babl/babl-fishes` when GIMP exits (8 KB). Removing just that
+   file makes a later start take 38 s instead of 14.5 s.
+
+Both now ship with the app, as overlays written only where the user has no
+such file (`keep`), made by GIMP itself in the tab
+(`scripts/gui/make-gimp-caches.mjs` → `scripts/gui/overlays/`).
+
+What makes them valid in every tab:
+
+- The registry names plug-ins as `${gimp_plug_in_dir}/plug-ins/...`, not by
+  an absolute path, and holds nothing of the machine or the user.
+- It keeps each plug-in file's modification time, and GIMP asks a plug-in
+  again when its file's time differs. The installer used to write every file
+  with the time of the install; it now writes files with their package's
+  times, as dpkg does (`unpack` in `src/gui/apps.ts`), so the registry's
+  times (2026-04-14, the package's build) are every tab's. The generator
+  checks each entry against its file and refuses a registry with a time
+  from its own run.
+- babl ignores a cache whose first line isn't its own version and settings
+  (`#BABL_0_1_98 BABL_PATH_LENGTH=3 BABL_TOLERANCE=0.000005`). Its entries
+  name babl's extension libraries by their system paths. Which extensions
+  load depends on CPUID, which is the engine's and the same everywhere.
+- Stale files cost time, not correctness: after a GIMP update the changed
+  plug-ins are asked again, and another babl rebuilds its cache.
+
+Baseline build against this one, two rounds each, interleaved (ms from the
+click to GIMP's main window; the install is 3.5 s of each cold launch):
+
+| Pass | Before | After | |
+|---|---:|---:|---:|
+| cold: registry only | 67472 | 42563 | −37% |
+| cold: registry and babl's cache | 65032 | 18642 | −71% |
+| reload | 15402 | 15151 | (unchanged) |
+
+A first start now runs 9 processes instead of 115. It needs nothing
+rebuilt on the server: the overlays are in `public/gui/overlay/` and
+`apps.json`. A tab that installed GIMP before this keeps what it has (its
+own registry, made on its first start). Tests: `gui-apps.test.ts` "package
+file times and kept overlays".

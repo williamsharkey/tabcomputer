@@ -14,10 +14,14 @@ import { snapshotPage, restorePage, recordTestLeftovers } from './leftovers';
 
 type Fn = () => unknown;
 type Mode = 'run' | 'skip' | 'only' | 'todo';
+/** vitest's options object for describe and it (the part the runner acts on) */
+interface TestOptions { timeout?: number; skip?: boolean; only?: boolean; todo?: boolean; fails?: boolean }
 
 interface TestCase { kind: 'test'; name: string; fn: Fn | null; mode: Mode; timeout: number; parent: Suite; fails?: boolean }
 interface Suite {
   kind: 'suite'; name: string; mode: Mode; parent: Suite | null;
+  /** describe(name, { timeout }, fn): its tests' timeout unless they give their own */
+  timeout?: number;
   children: (Suite | TestCase)[];
   beforeAll: Fn[]; afterAll: Fn[]; beforeEach: Fn[]; afterEach: Fn[];
 }
@@ -415,8 +419,19 @@ async function dropTestDatabases(): Promise<void> {
 
 function makeApi(rootSuite: Suite, restorers: (() => void)[]) {
   let current = rootSuite;
-  const addSuite = (name: string, fn: Fn | undefined, mode: Mode) => {
-    const s: Suite = { kind: 'suite', name: String(name), mode, parent: current, children: [], beforeAll: [], afterAll: [], beforeEach: [], afterEach: [] };
+  /**
+   * What follows the name, in vitest's forms: (fn), (fn, timeout), (options, fn) and the
+   * older (fn, options). `describe(name, { timeout }, fn)` called the options ("f is not a function", #106)
+   */
+  const split = (a: unknown, b: unknown): [Fn | undefined, TestOptions] => {
+    const fn = typeof a === 'function' ? a : typeof b === 'function' ? b : undefined;
+    const o = typeof a === 'function' ? b : a;
+    return [fn as Fn | undefined, typeof o === 'number' ? { timeout: o } : o && typeof o === 'object' ? o as TestOptions : {}];
+  };
+  const modeOf = (mode: Mode, o: TestOptions): Mode => (mode !== 'run' ? mode : o.todo ? 'todo' : o.skip ? 'skip' : o.only ? 'only' : 'run');
+  const addSuite = (name: string, fn: Fn | undefined, mode: Mode, opts: TestOptions = {}) => {
+    const s: Suite = { kind: 'suite', name: String(name), mode: modeOf(mode, opts), parent: current, children: [], beforeAll: [], afterAll: [], beforeEach: [], afterEach: [],
+      timeout: opts.timeout ?? current.timeout };
     current.children.push(s);
     const prev = current;
     current = s;
@@ -425,9 +440,9 @@ function makeApi(rootSuite: Suite, restorers: (() => void)[]) {
       if (r && typeof (r as any).then === 'function') throw new Error(`describe('${name}') callback must not be async`);
     } finally { current = prev; }
   };
-  const addTest = (name: string, fn: Fn | undefined, mode: Mode, opts?: number | { timeout?: number }) => {
-    const timeout = typeof opts === 'number' ? opts : opts?.timeout ?? DEFAULT_TIMEOUT;
-    current.children.push({ kind: 'test', name: String(name), fn: fn ?? null, mode: fn ? mode : 'todo', timeout, parent: current });
+  const addTest = (name: string, fn: Fn | undefined, mode: Mode, opts: TestOptions = {}) => {
+    const timeout = opts.timeout ?? current.timeout ?? DEFAULT_TIMEOUT;
+    current.children.push({ kind: 'test', name: String(name), fn: fn ?? null, mode: fn ? modeOf(mode, opts) : 'todo', timeout, parent: current, ...(opts.fails ? { fails: true } : {}) });
   };
   const title = (template: string, args: unknown[], i: number): string => {
     let k = 0;
@@ -446,17 +461,20 @@ function makeApi(rootSuite: Suite, restorers: (() => void)[]) {
     }
     return out;
   };
-  const withEach = (add: (name: string, fn: any, mode: Mode, opts?: any) => void, mode: Mode) =>
-    (table: unknown[]) => (name: string, fn: (...a: any[]) => unknown, opts?: any) => {
+  type Add = (name: string, fn: Fn | undefined, mode: Mode, opts?: TestOptions) => void;
+  const withEach = (add: Add, mode: Mode) =>
+    (table: unknown[]) => (name: string, a?: unknown, b?: unknown) => {
+      const [fn, opts] = split(a, b) as [((...a: any[]) => unknown) | undefined, TestOptions];
       table.forEach((row, i) => {
         const args = Array.isArray(row) ? row : [row];
-        add(title(name, args, i), () => fn(...args), mode, opts);
+        add(title(name, args, i), fn && (() => fn(...args)), mode, opts);
       });
     };
-  const variants = (add: (name: string, fn: any, mode: Mode, opts?: any) => void) => {
-    const f: any = (name: string, fn: any, opts?: any) => add(name, fn, 'run', opts);
-    f.skip = (name: string, fn: any, opts?: any) => add(name, fn, 'skip', opts);
-    f.only = (name: string, fn: any, opts?: any) => add(name, fn, 'only', opts);
+  const variants = (add: Add) => {
+    const as = (mode: Mode) => (name: string, a?: unknown, b?: unknown) => { const [fn, opts] = split(a, b); add(name, fn, mode, opts); };
+    const f: any = as('run');
+    f.skip = as('skip');
+    f.only = as('only');
     f.todo = (name: string) => add(name, undefined, 'todo');
     f.skipIf = (cond: unknown) => (cond ? f.skip : f);
     f.runIf = (cond: unknown) => (cond ? f : f.skip);
@@ -464,15 +482,14 @@ function makeApi(rootSuite: Suite, restorers: (() => void)[]) {
     f.skip.each = withEach(add, 'skip');
     f.only.each = withEach(add, 'only');
     f.concurrent = f; f.sequential = f;
-    f.fails = (name: string, fn: any, opts?: any) => {
-      add(name, fn, 'run', opts);
-      const t = current.children.at(-1) as TestCase;
-      if (t?.kind === 'test') t.fails = true;
+    f.fails = (name: string, a?: unknown, b?: unknown) => {
+      const [fn, opts] = split(a, b);
+      add(name, fn, 'run', { ...opts, fails: true });
     };
     return f;
   };
   const test = variants(addTest);
-  const describe = variants((name, fn, mode) => addSuite(name, fn, mode));
+  const describe = variants(addSuite);
   const hook = (key: 'beforeAll' | 'afterAll' | 'beforeEach' | 'afterEach') => (fn: Fn) => { current[key].push(fn); };
   return {
     describe, suite: describe, it: test, test,

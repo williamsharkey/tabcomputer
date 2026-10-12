@@ -93,6 +93,8 @@ const STYLE = `
 .sd-br-side.sd-collapsed { width: 48px; padding-left: 6px; padding-right: 6px; }
 .sd-br-side.sd-collapsed .sd-br-tab { justify-content: center; padding: 0; }
 .sd-br-side.sd-collapsed .sd-br-title, .sd-br-side.sd-collapsed .sd-br-x { display: none; }
+/* (the narrow-tab rule above hides the active tab's favicon for its ×: here there is no ×) */
+.sd-br-side.sd-collapsed .sd-br-tab.sd-active .sd-br-fav { display: flex; }
 .sd-br-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 5px; cursor: ew-resize; }
 .sd-br-side.sd-collapsed .sd-br-grip { display: none; }
 .sd-br-headside { flex: 0 0 auto; display: flex; gap: 2px; align-items: center; justify-content: flex-end; width: calc(var(--sd-br-side, 220px) - 82px); min-width: 0; }
@@ -427,7 +429,12 @@ class BrowserWindow {
         case 'key': if (this.engine) this.fillLogin(); break;
         case 'save-login': if (this.engine) void this.saveLogin(); break;
         case 'no-save': if (t) { t.savePrompt = null; this.chooser = false; this.refresh(); } break;
-        case 'collapse': this.prefs.collapsed = !this.prefs.collapsed; savePrefs(this.prefs); this.layout(); break;
+        case 'collapse':
+          // (in a narrow window the choice is this window's: the saved one is for windows with room)
+          if (this.narrow) this.narrowCollapsed = !this.collapsedNow();
+          else { this.prefs.collapsed = !this.prefs.collapsed; savePrefs(this.prefs); }
+          this.layout();
+          break;
         case 'search': this.tabSearch(e.target as HTMLElement); break;
         case 'fill-entry': {
           const id = (e.target as HTMLElement).closest<HTMLElement>('[data-id]')?.dataset.id;
@@ -475,9 +482,30 @@ class BrowserWindow {
       if (this.timer) clearInterval(this.timer);
     });
     this.layout();
+    this.watchWidth();
     this.timer = setInterval(() => this.renderStatus(), 1000);
     void this.ready.then((e) => { if (engineError(e)) this.showMessage(e.error); });
     return this.win;
+  }
+
+  /** A window this narrow (a phone's) has no room for the tab sidebar beside the toolbar and the page */
+  private static NARROW = 560;
+  private narrow = false;
+  /** The sidebar's state in a narrow window, for this window only (null: collapsed, the default there) */
+  private narrowCollapsed: boolean | null = null;
+  private collapsedNow(): boolean {
+    return this.narrow ? this.narrowCollapsed ?? true : this.prefs.collapsed;
+  }
+  /** Follow the window's width: the sidebar collapses to favicons when it gets narrow */
+  private watchWidth(): void {
+    if (typeof ResizeObserver !== 'function') return;
+    new ResizeObserver((es) => {
+      const w = es[0]?.contentRect.width ?? 0;
+      const narrow = w > 0 && w < BrowserWindow.NARROW;
+      if (narrow === this.narrow) return;
+      this.narrow = narrow;
+      this.layout();
+    }).observe(this.root);
   }
 
   /** Puts the strip and the toolbar where the current layout has them */
@@ -487,10 +515,11 @@ class BrowserWindow {
     this.root.dataset.tabs = this.head.dataset.tabs = this.tabStrip.dataset.tabs = mode;
     this.root.style.setProperty('--sd-br-side', `${this.prefs.width}px`);
     this.head.style.setProperty('--sd-br-side', `${this.prefs.width}px`);
-    this.side.classList.toggle('sd-collapsed', v && this.prefs.collapsed);
-    this.headSide.classList.toggle('sd-collapsed', v && this.prefs.collapsed);
+    const collapsed = this.collapsedNow();
+    this.side.classList.toggle('sd-collapsed', v && collapsed);
+    this.headSide.classList.toggle('sd-collapsed', v && collapsed);
     const c = this.headSide.querySelector<HTMLElement>('[data-act=collapse]')!;
-    c.title = this.prefs.collapsed ? 'Expand tabs' : 'Collapse tabs';
+    c.title = collapsed ? 'Expand tabs' : 'Collapse tabs';
     c.setAttribute('aria-label', c.title);
     if (v) {
       this.searchBtn.innerHTML = ICON.search;

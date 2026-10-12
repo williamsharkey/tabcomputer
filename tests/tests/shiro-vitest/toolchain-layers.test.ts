@@ -78,6 +78,11 @@ describe('the sets (src/debian/toolchains.json)', () => {
     expect(builder('tex', 'disk_gb')).toBe('0');
   });
 
+  it('python has tkinter, so `import turtle` works in Debian\'s python3 (#112)', () => {
+    expect(sets.python.packages).toContain('python3-tk');
+    expect(sets.python.check).toMatch(/import .*\bturtle\b/);
+  });
+
   it('rescue has the converters for dead formats and pandoc (#114), and builds before the big tex-full', () => {
     expect(sets.rescue.packages).toEqual(['libwpd-tools', 'libmspub-tools', 'libwps-tools', 'libmwaw-tools', 'mdbtools', 'pandoc']);
     // LibreOffice is not in it: 163 more packages, and soffice is untested under Blink

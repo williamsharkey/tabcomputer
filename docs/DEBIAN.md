@@ -203,6 +203,12 @@ so expect `toolchain install tex-full` to take longer than the 1.5 s of
 (`disk_gb`, 8 for `tex-full`): the builder skips it on a host with less,
 and the tab uses apt.
 
+`python` gains python3-tk (#112), which the layer built on 2026-10-09 does
+not have: 23 more packages (Tcl/Tk, libX11, fontconfig, the DejaVu fonts),
+7 MB of `.deb`s, 21 MB unpacked. With it `import turtle` works in Debian's
+`python3` and draws in an X11 window on the desktop (`DISPLAY=:0`). The
+built-in WebAssembly `python3` (`pkg`) still has no tkinter.
+
 `rescue` (#114) converts files no current program opens: `wpd2html` and
 `wpd2text` (WordPerfect), `pub2xhtml` (Publisher), `wps2html`, `wks2csv`
 (Works, Lotus 1-2-3), `mwaw2html` (ClarisWorks and other old Mac formats),

@@ -13,7 +13,7 @@ Read this whole file once, then `AGENTS.md`, then the docs it points to.
 ## 0. Resume checklist (do these in order)
 
 1. **Environment.** A Claude Code cloud environment with:
-   - GitHub access (push) to `williamsharkey/shiro` and `williamsharkey/tabcomputer`.
+   - GitHub access (push) to `williamsharkey/tabcomputer` (not `williamsharkey/shiro`).
    - Network: npm registry, GitHub (api, codeload, objects), Debian mirrors
      (deb.debian.org, snapshot.debian.org), busybox.net, jsdelivr/unpkg,
      api.digitalocean.com and api.porkbun.com (the coordinator only),
@@ -220,16 +220,13 @@ coordinator session, which merges, tests, benchmarks and deploys.
   - Issues are filed here, including by Claude agents running inside tabcomputer.
 - **`williamsharkey/shiro`**: a different product, shiro.computer, the
   lightweight terminal without the full x86 emulator. Deployed by hand from its
-  `main`. Never touch shiro `main`.
-  - Its `unix/*` branches and `unix/integration` are the pre-move history.
-    During the move, sessions that could not yet push to tabcomputer staged
-    their work on shiro `unix/<area>`, and the coordinator copied it to
-    tabcomputer `unix/<area>` and kept shiro `unix/integration` equal to tab
-    `main`. Retire that once every worker pushes to tabcomputer.
+  `main`. Never push anything to the shiro repository: no branches, no staging.
+  - The pre-move `unix/*` branches (and the interim staging on them) were
+    deleted from shiro on 2026-10-11 after checking every commit is in
+    tabcomputer. A session that can't push to tabcomputer stops and asks for
+    push access; it never pushes to shiro instead.
   - Anything shiro wants from tabcomputer is ported deliberately, if at all.
-- **Coordinator clone:** a tabcomputer clone (`origin` = tabcomputer). A
-  coordinator still on a shiro clone has `origin` = shiro and `tab` = tabcomputer;
-  integrate and push `tab main` / `tab deploy` there.
+- **Coordinator clone:** a tabcomputer clone (`origin` = tabcomputer).
 
 ---
 
@@ -608,3 +605,4 @@ Closed earlier: #1–#11. #10 was the audit tracker.
 - **Firefox** needs the font-list overlay until it's retested on shmobj (gui).
 - **Memory:** Vite dev uses about 700 MB resident; apt update peaks at about +600 MiB.
 - **shiro.computer** no longer serves `/pkg/`, so the fallback mirror is tabcomputer.com.
+

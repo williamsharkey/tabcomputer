@@ -58,6 +58,8 @@ const standIn = () => {
     launchApp: async (_kernel, _name, _args, _env, o) => {
       fake.spawns++;
       fake.output = o?.onOutput;
+      // (an app restored from a snapshot: its window is up before the launcher has its process)
+      if (fake.windowFirst) window.__shiroDesktop.createWindow({ appId: 'gimp', title: 'GNU Image Manipulation Program', width: 520, height: 340, content: { kind: 'surface' } });
       return { pid: 900000 + fake.spawns, exited: new Promise((r) => { fake.exit = r; }), output: () => '' };
     },
   };
@@ -219,7 +221,7 @@ try {
     await page.evaluate(() => { window.__fakeGui.output('gimp: loading plug-ins\n'); });
     await page.waitForTimeout(150);
     s = await look(page);
-    check(s.spawns === 1 && s.ph?.stageText === 'Starting…' && s.ph.note === 'first start takes a few minutes' && s.ph.last === 'gimp: loading plug-ins' && s.ph.bar?.indeterminate,
+    check(s.spawns === 1 && s.ph?.stageText === 'Starting…' && s.ph.note === 'takes a while to start' && s.ph.last === 'gimp: loading plug-ins' && s.ph.bar?.indeterminate,
       'starting: "Starting…", the app\'s note, its output line, an indeterminate bar', JSON.stringify(s.ph && { stage: s.ph.stageText, note: s.ph.note, last: s.ph.last }));
     check(s.tile?.cls === 'sd-starting', 'dock: still marked after the dock re-rendered', s.tile?.cls ?? '');
     await page.evaluate(() => window.__shiroDesktop.get('terminal').focus());
@@ -255,6 +257,23 @@ try {
       'second start: the placeholder is where the window was, no install', `${JSON.stringify(s.ph?.rect)} remembered ${await page.evaluate(() => localStorage.getItem('tabcomputer-launch-geometry'))}`);
     const second = await appWindow(page);
     check(second.rect.x === 420 && second.rect.w === 600 && second.rect.h === 380 + 38 && second.placeholders === 0, 'second start: the window takes the same place and size', JSON.stringify(second.rect));
+    await closeApp(page);
+    await page.waitForTimeout(300);
+
+    // A window that is up before the launcher has its process (an app restored from a snapshot:
+    // docs/research/GUI_SNAPSHOTS.md) is a start, not a cancelled launch: nothing is stopped
+    await page.evaluate(() => {
+      const k = window.__tabcomputer.kernel, kill = k.kill.bind(k);
+      window.__fakeGui.windowFirst = true;
+      window.__fakeGui.kills = 0;
+      k.kill = (pid, sig, ...rest) => { if (pid >= 900000) window.__fakeGui.kills++; return kill(pid, sig, ...rest); };
+    });
+    const early = await sh(page, 'gui gimp');
+    await page.waitForTimeout(2300); // (a stopped process would get SIGKILL two seconds after SIGTERM)
+    s = await look(page);
+    const kills = await page.evaluate(() => { window.__fakeGui.windowFirst = false; return window.__fakeGui.kills; });
+    check(early.code === 0 && /gimp started \(pid 9\d+\)/.test(early.out) && kills === 0 && s.stage === null && s.ph === null && s.tile?.cls === 'sd-running',
+      'a window before the process is known: started, running, nothing stopped', `${early.out.trim()} (exit ${early.code}), ${kills} kills, ${s.tile?.cls}`);
     await closeApp(page);
     await page.waitForTimeout(300);
 

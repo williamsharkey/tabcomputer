@@ -27,6 +27,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 | [CONFORMANCE.md](CONFORMANCE.md) | Shell specs, busybox, LTP and Open POSIX under Blink, wasi-testsuite | `npm run conformance` |
 | [COMPAT.md](COMPAT.md) | Popular tools, languages, agent CLIs, GUI apps, developer workflows | per-section smoke tests in `tests/` |
 | [GUI_SCORE.md](GUI_SCORE.md) | 29 Debian GUI apps: install, window, render, input, DOM text | `npm run gui-score` |
+| [GUI_LAUNCH.md](GUI_LAUNCH.md) | Click to usable window for 13 GUI apps (cold, warm, after a reload), where the time goes, what was changed | `tests/browser/gui-launch-bench.mjs`, `scripts/gui/launch-profile.mjs` |
 | [WEB_SCORE.md](WEB_SCORE.md) | The Browser app against real sites | `tests/browser/web-score.mjs` |
 | [BENCHMARKS.md](BENCHMARKS.md) | Speed and memory baselines, round by round | `npm run bench` ([bench/README.md](../bench/README.md)) |
 
@@ -50,5 +51,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
 - [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and a proposed app layer (2026-10-12).
+- [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md): snapshots of started GUI apps (a process's image, its descriptors and its X client restored in a later page load): the design, what is built behind a setting, measurements, open problems (2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

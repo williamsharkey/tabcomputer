@@ -103,14 +103,19 @@ seconds from the click.
 | inkscape | gtk3 | warm | — | 0.0 | 1.2 (139) | 1.4 | 21 | **21** | 0.1 (1 zombie) | 10927 | 289 MB | 1 / 5 |
 | inkscape | gtk3 | reload | — | 0.2 | 1.6 (139) | 1.7 | 21 | **22** | 0.1 (1 zombie) | 10933 | 289 MB | 2 / 5 |
 
-Read against the goal: only the Xlib and FLTK apps and GPicView are under
-2 s once installed. The small GTK 3 apps take 3 to 13 s, Qt 5 2 to 3 s,
-Inkscape 21 s and GIMP 30 s, and a first launch adds the install (0.7 to
-9 s) and, for GIMP, 75 s of plug-in queries.
+**The times in this table are too long from Galculator down.** It is one
+25-minute run that also took the engine's profile, and the machine ran hot
+by its second half: Geany's warm launch is 6.9 s here and 5.5 s cool,
+Mousepad's 11 s against 4.9 s, GIMP's 30.6 s against 15 s. The timelines'
+shape and the counts (system calls, bytes, processes, libraries) are right.
+For times, use "Where it stands" at the end, where the two builds were run
+app by app, one after the other. Compare builds only that way.
 
-The numbers move with the machine's load: Geany's warm launch was 5.2 s in
-a run by itself and 6.9 s in this one (after 25 minutes of launches the
-machine runs hot). Compare runs made back to back.
+Read against the goal, with those cool times: only the Xlib and FLTK apps
+and GPicView are under 2 s once installed. The small GTK 3 apps take 1.9
+to 5.5 s, Qt 5 about 2 s, Inkscape 13 s and GIMP 15 s, and a first launch
+adds the install (0.6 to 5 s from a local mirror) and, for GIMP, 48 s of
+first-start work.
 
 Two things the quit column found: every app left a zombie (#118, fixed:
 "What changed" below), and QTerminal stays when its window is closed. That
@@ -206,8 +211,10 @@ By how much of a warm launch it is, across the corpus:
    bus and the engine's own start.
 9. **Install** (cold only): 0.7 s (xeyes, 10 MB) to 9.3 s (Inkscape,
    83 MB), almost all of it waiting for packages to be fetched and decoded.
-10. **GIMP's first start**: 115 processes and 6.7 GB of file reads to query
-    every plug-in, 75 s of its 105.
+10. **GIMP's first start**: 52 s more than a later one (67 s against 15 s,
+    cool). About half is running each of 106 plug-ins to ask what it
+    provides (115 processes, 6.7 GB of file reads); the other half is babl
+    building its conversion cache.
 
 Per app, what stands out beyond the common part:
 
@@ -231,7 +238,7 @@ Per app, what stands out beyond the common part:
 | Candidate | Finding |
 |---|---|
 | Prebuilt caches (fontconfig, icon themes, MIME, GSettings schemas, gdk-pixbuf loaders) | Already in place and used: no directory scan, no cache write in any launch (the installer ships or builds them: docs/GUI.md). What remains is reading configuration, items 6 and 7. `ld.so.cache` is missing, and it doesn't matter: all of Geany's opens, the failed ones of the library search included, are within its 34 ms of kernel CPU. |
-| GIMP's plug-in registry (`pluginrc`) | Worth 75 s of the first start. See "What changed". |
+| GIMP's plug-in registry (`pluginrc`) | Worth 25 s of the first start, and babl's cache, which nobody had listed, another 24 s. Both ship now: "What changed". |
 | Recorded read-ahead of file chunks | Nothing to read ahead. Outside Debian mode the packages are unpacked into the tab's filesystem, and a launch reads its 65 to 290 MB of mappings in a few ms. |
 | A translated-code cache across page loads | Bounded by item 3: at most 11 to 19% of a launch, less the code generation that would still run. Not built. |
 | Session services kept warm | The bus is started once per page, and costs the first launch 0.2 s. No app in the corpus waits on a probe that cannot succeed (the accessibility bus is off: `NO_AT_BRIDGE`, `GTK_A11Y=none`). |
@@ -334,3 +341,99 @@ rebuilt on the server: the overlays are in `public/gui/overlay/` and
 `apps.json`. A tab that installed GIMP before this keeps what it has (its
 own registry, made on its first start). Tests: `gui-apps.test.ts` "package
 file times and kept overlays".
+
+### Tried and dropped: the JIT's compile threshold
+
+The engine compiles a region once its entry has run 200 times
+(`BLINK_WJIT_THRESHOLD`). With 17 to 42% of a launch spent interpreting, a
+lower threshold looked worth a try. It isn't: at 50, L3afpad's warm launch
+is 2.2 s against 1.7 s and FeatherPad's 2.9 s against 2.2 s (two interleaved
+rounds, `--env BLINK_WJIT_THRESHOLD=50`): more regions are compiled than
+ever get hot, and compiling costs more than interpreting them did. At 800
+Geany was slower too (6.5 s against 5.2 s, runs back to back, not
+interleaved). 200 stays.
+
+### Not changed, and why
+
+- **fontconfig's configuration** (cost 6): 0.1 to 0.25 s of every launch is
+  expat reading `/etc/fonts/conf.d`. A shorter configuration would save
+  most of it, but which files an app's font matching depends on is not
+  something this pass could check across the corpus. Left for a change of
+  its own.
+- **The session bus at the first launch** (cost 8): starting it at boot
+  would move 0.2 s out of the first launch and keep a process running in
+  every tab that never opens a GUI app.
+- **ld.so's symbol lookups** (cost 5) are glibc doing its work in the
+  engine; there is no prelink for these libraries.
+- **Costs 1 to 4** are the engine's: its compiled code's speed (calls
+  between short functions go through a C helper), the warm-up in the
+  interpreter, compiling, and thread start. They are the engine owners'
+  work, and the numbers above are for them: per app, how many
+  instructions, how many region entries, how long compiling.
+
+## Where it stands
+
+Build 1007 against this branch, app by app: for each app the old build's
+three launches, then the new build's, so both saw the same machine
+(2026-10-12, an Apple M3, headless Chrome 155, snapshots off as they are by
+default). Seconds from the click to the usable window. The last column is
+the same click with snapshots on, after a reload of the page
+([research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md)).
+
+| App | Toolkit | Build 1007: cold | warm | reload | This branch: cold | warm | reload | Restored from a snapshot (setting on) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| xeyes | x11 | 1.1 | 0.2 | 0.4 | 1.1 | 0.2 | 0.3 | **0.2** |
+| xclock | x11 | 1.4 | 0.3 | 0.6 | 1.4 | 0.3 | 0.6 | **0.2** |
+| xterm | x11 | 1.5 | 0.4 | 0.6 | 1.5 | 0.3 | 0.6 | no snapshot |
+| dillo | fltk | 1.9 | 0.9 | 1.1 | 2.0 | 0.7 | 0.8 | **0.3** |
+| l3afpad | gtk3 | 5.1 | 1.9 | 2.2 | 5.1 | 1.9 | 2.2 | **0.4** |
+| galculator | gtk3 | 7.2 | 4.0 | 4.1 | 7.4 | 4.0 | 4.0 | **0.4** |
+| geany | gtk3 | 8.9 | 5.5 | 5.8 | 9.5 | 5.5 | 5.9 | **0.3** |
+| mousepad | gtk3 | 8.1 | 4.9 | 5.4 | 8.2 | 4.8 | 5.1 | **0.3** |
+| gpicview | gtk2 | 3.7 | 0.5 | 0.8 | 3.7 | 0.5 | 0.8 | **0.2** |
+| featherpad | qt5 | 5.0 | 2.3 | 2.7 | 5.0 | 2.3 | 2.5 | **0.3** |
+| qterminal | qt5 | 4.7 | 1.9 | 2.3 | 4.7 | 1.8 | 2.3 | no snapshot |
+| gimp | gtk2 | 67 | 15 | 16 | 19 | 15 | 16 | **0.8** |
+| inkscape | gtk3 | 19 | 13 | 13 | 18 | 13 | 13 | **0.6** |
+
+(The baseline table further up came from one 25-minute run with the
+engine's profile, and its later rows ran on a hot machine: GIMP's warm
+launch is 30.6 s there and 15 to 16 s in every interleaved run since,
+Mousepad's 11 s there and 4.9 s here. Use this table for the times and
+that one for the timelines and counts.)
+
+With snapshots off the two builds differ where "What changed" says they
+should: Dillo and xterm once installed (the Compose cache), GIMP's first
+launch (its two caches), and nothing else. That also says the rebuilt
+engine (patch 0551: two counter updates per kernel call, one store per
+system call) costs nothing that shows in a launch.
+
+Against the goal of a window in under 2 seconds:
+
+- **Geany**: 5.5 s once installed, 9.5 s the first time (3.7 s of it the
+  install), as before: its launch is a billion instructions of GTK, and
+  nothing in this branch makes the engine run them faster. With a snapshot,
+  0.3 s.
+- **GIMP**: 19 s the first time instead of 67 s (the plug-in registry and
+  babl's cache ship with it), 15 to 16 s after that, as before. With a
+  snapshot, 0.8 s.
+- Under 2 s without snapshots: xeyes, xclock, xterm, Dillo, GPicView once
+  installed, L3afpad warm (1.9 s), QTerminal warm (1.8 s). Everything
+  installed is under a second with a snapshot, except the two terminals,
+  which have none.
+
+What would close the rest, in the order of what it buys:
+
+1. **Snapshots on by default.** They are the only thing here that gets
+   Geany and GIMP under 2 s, and they do it on 11 of 13 apps. What is
+   missing is listed in the research doc: a place in Settings, eviction,
+   a soak test, other browsers, and the first-start cost stays (a snapshot
+   is of a start that happened).
+2. **The first start**: 0.6 to 5 s of install (fetching and decoding `.deb`s
+   from a local mirror; more from a real network) plus the start. A snapshot can't ship with the app while it holds a
+   user's data; an image taken in a clean profile and proven free of it
+   could, and would make the first window a download away.
+3. **The engine**, for everything without a snapshot and for the seconds
+   after a restore while the JIT is cold: calls between compiled regions
+   without the C helper, compiling earlier what is known to get hot, and a
+   translated-code cache across page loads.

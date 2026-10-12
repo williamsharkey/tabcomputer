@@ -25,7 +25,8 @@ export const uploadCmd: Command = {
         const outputs: string[] = [];
         for (const file of Array.from(files)) {
           try {
-            const content = await file.text();
+            // Bytes, not text: a .zip, .pub or image survives the trip
+            const content = new Uint8Array(await file.arrayBuffer());
             const destPath = targetDir === '.'
               ? ctx.fs.resolvePath(file.name, ctx.cwd)
               : ctx.fs.resolvePath(`${targetDir}/${file.name}`, ctx.cwd);
@@ -57,8 +58,8 @@ export const uploadCmd: Command = {
   },
 };
 
-function triggerDownload(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'application/octet-stream' });
+function triggerDownload(content: Uint8Array | string, filename: string) {
+  const blob = new Blob([content as BlobPart], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -79,7 +80,7 @@ export const downloadCmd: Command = {
       for (const filePath of ctx.args) {
         try {
           const resolvedPath = ctx.fs.resolvePath(filePath, ctx.cwd);
-          const content = await ctx.fs.readFile(resolvedPath, 'utf8') as string;
+          const content = await ctx.fs.readFile(resolvedPath);
           triggerDownload(content, filePath.split('/').pop() || 'file');
           outputs.push(`Downloaded: ${filePath}`);
         } catch (err: any) {
@@ -200,7 +201,7 @@ async function showFileBrowser(ctx: import('./index').CommandContext): Promise<n
         } else {
           row.onclick = async () => {
             try {
-              const content = await ctx.fs.readFile(fullPath, 'utf8') as string;
+              const content = await ctx.fs.readFile(fullPath);
               triggerDownload(content, name);
               ctx.stdout = `Downloaded: ${fullPath}\n`;
             } catch (e: any) {

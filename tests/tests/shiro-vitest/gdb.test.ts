@@ -25,7 +25,6 @@ import { GdbServer, BlinkTracee, wireKernel, agentToG, gToAgent, toHex, fromHex,
 import { GDBINIT, GDBINIT_PATH } from '@shiro/x86-engine/gdbinit';
 import { installAlwaysShims } from '@shiro/path-shims';
 import { TtySession } from '@shiro/kernel/pty';
-import { kernelDiagnostics } from '@shiro/kernel-diag';
 
 const ROOT = resolve(__dirname, '../../..');
 const FIX = resolve(__dirname, 'fixtures/x86');
@@ -485,10 +484,7 @@ describe.skipIf(!haveRootfs || !realLayers || !blinkHasGdb)("Debian's gdb (TABCO
   let shell: Awaited<ReturnType<typeof createTestShell>>['shell'];
   const gdb = async (cmds: string[], args = '') => {
     await fs.writeFile('/home/user/dbg/g.cmd', cmds.join('\n') + '\n');
-    // GDB_TEST_DIAG=1: what every kernel process is doing if gdb hasn't finished in 45 s
-    const stuck = process.env.GDB_TEST_DIAG ? setTimeout(() => console.log('GDBDIAG ' + cmds.join('; ') + ' ' + JSON.stringify(kernelDiagnostics())), 45_000) : undefined;
     const r = await run(shell, `cd /home/user/dbg && gdb -q -batch -x g.cmd --args ./demo ${args} 2>&1`);
-    clearTimeout(stuck);
     if (process.env.GDB_TEST_SHOW) console.log(r.output);
     return r;
   };

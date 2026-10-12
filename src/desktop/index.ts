@@ -266,6 +266,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'browser', name: 'Browser', icon: ICONS.browser, order: 4, launch: focusOrLaunch('browser', lazy(() => import('./apps/browser'))) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
+    // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
+    { id: 'dataflow', name: 'How Your Data Flows', icon: ICONS.about, order: 92, dock: false, launch: focusOrLaunch('dataflow', lazy(() => import('./apps/dataflow'))) },
     // The hardwired half of the app-maker comparison (docs/research/APP_MAKER.md): not in the dock
     { id: 'converter', name: 'Converter', icon: ICONS.files, order: 91, dock: false, launch: focusOrLaunch('converter', lazy(() => import('./apps/converter'))) },
   ];
@@ -621,6 +623,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   ] : [];
   const systemMenu = (): MenuSpec => ({ title: 'System', items: [
     { label: 'About This Computer', action: () => void wm.openApp('about') },
+    { label: 'How Your Data Flows', action: () => void wm.openApp('dataflow') },
     'separator',
     ...guestItems(),
     { label: 'Settings…', shortcut: 'Alt+Shift+,', action: () => void wm.openApp('settings') },
@@ -682,6 +685,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       { label: 'Search…', shortcut: 'Ctrl+Space', action: () => openSpotlight() },
       { label: 'Welcome', action: () => void import('./welcome').then(m => m.showWelcome(ctx)) },
       { label: 'Getting Started', action: () => openTerminal({ command: 'help' }) },
+      { label: 'How Your Data Flows', action: () => void wm.openApp('dataflow') },
       { label: 'Keyboard Shortcuts', action: () => showToast(root, SHORTCUTS_HTML, 9000) },
       { label: 'Desktop & /dom docs', action: () => window.open('https://github.com/williamsharkey/tabcomputer/blob/main/docs/DESKTOP.md', '_blank', 'noopener') },
     ] };

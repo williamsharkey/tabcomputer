@@ -216,7 +216,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       const signed = !!networkCredential();
       const dot = s === 'signed-in' || s === 'online' ? 'ok' : s === 'needs-sign-in' ? 'warn' : 'off';
       panel.innerHTML = `
-        <h2>Network</h2><p class="sd-muted">Programs reach the internet through a relay: this site's, or one you run. Downloads from this site — packages, the npm registry proxy — always work.</p>
+        <h2>Network</h2><p class="sd-muted">Programs reach the internet through a relay: this site's, or one you run. Downloads from this site (packages, Debian) need no relay.</p>
         <h3>Status</h3>
         <div class="sd-card">
           <div class="sd-row"><span class="sd-dot ${dot}"></span><span class="sd-grow">${esc(statusText(s))}${own ? ` <span class="sd-small sd-muted">· your relay</span>` : ''}</span><button class="sd-btn" data-act="check">Check</button></div>
@@ -248,7 +248,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
             ${signed ? '<button class="sd-btn" data-act="signout">Sign out</button>' : '<button class="sd-btn sd-primary" data-act="signin">Sign in with GitHub</button>'}
           </div>
         </div>
-        <p class="sd-small" style="margin-top:10px"><button class="sd-link" data-act="accounts" type="button">All accounts (GitHub, Claude)…</button></p>`;
+        <p class="sd-small" style="margin-top:10px"><button class="sd-link" data-act="accounts" type="button">All accounts (GitHub, Claude)…</button></p>
+        <p class="sd-small" style="margin-top:6px"><button class="sd-link" data-act="dataflow" type="button">How your data flows: what the relay and this site's server can read…</button></p>`;
     };
     const readDraft = () => {
       draft = {
@@ -266,6 +267,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       if (el.dataset.mode === 'own') { mode = 'own'; render(); panel.querySelector<HTMLInputElement>('#sd-relay-url')?.focus(); return; }
       const act = el.dataset.act;
       if (act === 'accounts') { show('accounts'); return; }
+      if (act === 'dataflow') { void wm.openApp('dataflow'); return; }
       if (act === 'signin') { await openSignIn(); account = await signedInAccount(); render(); }
       if (act === 'signout') { signOut(); account = null; render(); }
       if (act === 'check') { await probeRelay(); render(); }

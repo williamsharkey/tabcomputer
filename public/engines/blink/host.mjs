@@ -892,6 +892,9 @@ async function run(msg) {
       M.HEAPU8.set(snap, ptr);
       M._blink_shiro_set_restore(ptr, snap.length);
     }
+    // Started by tabcomputer-gdbserver: Blink's debug agent holds the main
+    // thread before its first instruction (Blink patch 0550, src/x86-engine/gdbserver.ts)
+    if (msg.gdb) M._blink_shiro_gdb?.(1);
     const argv = msg.argv && msg.argv.length ? msg.argv : [msg.path];
     // blink -0 PROGRAM ARGV0 ARGS...: load PROGRAM (the resolved path, never
     // a PATH search of argv[0]) and give the guest argv[0] as invoked.

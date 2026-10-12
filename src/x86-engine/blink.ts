@@ -190,7 +190,7 @@ export function blinkCrashSignal(err: unknown): number {
   return /abort/i.test(text) ? SIGABRT : SIGSEGV;
 }
 
-export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
+export function blinkRunner(path: string, restore?: ArrayBuffer, opts: { /** Start under the debug agent (gdbserver.ts): the main thread stops before its first instruction */ gdb?: boolean } = {}): Runner {
   return async (proc: Process, kernel: Kernel) => {
     ensureNet(kernel);
     registerBlinkLoader(kernel); // ELF children of this guest run in Blink too
@@ -218,7 +218,7 @@ export function blinkRunner(path: string, restore?: ArrayBuffer): Runner {
         // Opt-in (TABCOMPUTER_BLINK_POOL_WAKE=atomics): no measurable gain on
         // bash/dpkg in a 6-round A/B (docs/BENCHMARKS.md, perf-kernel round 10)
         poolWake: canWatchChannels() && proc.env?.TABCOMPUTER_BLINK_POOL_WAKE === 'atomics' ? 'atomics' : 'message',
-        restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1',
+        restore, debug: proc.env?.TABCOMPUTER_BLINK_DEBUG === '1', gdb: !!opts.gdb,
         // the compiled modules the page has: the process doesn't post them again
         wjKept: proc.env?.TABCOMPUTER_BLINK_WJ_KEEP === '0' ? [] : [...keptModules.keys()],
       },

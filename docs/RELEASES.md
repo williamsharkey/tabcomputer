@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 1006 | see `git log --grep "^Build 1006"` | 2026-10-12 | `npm install` of a package installed before Build 1005 unpacks it again, once, so its files get their executable bits (an existing Codex install stayed broken) |
 | 1005 | see `git log --grep "^Build 1005"` | 2026-10-12 | `npm install` keeps the executable bit of a package's files: Codex 0.162 refused to start (“local Codex package file bin/codex is not executable”) |
 | 1004 | see `git log --grep "^Build 1004"` | 2026-10-12 | How Your Data Flows (docs/DATA_FLOW.md): a window from the welcome card, the System and Help menus and Settings → Network that draws this tab, the server and the internet with what the server can read of each kind of traffic, from the tab's live state (guest or main profile, sign-ins present, relay in use); `dataflow` prints it in a terminal |
 | 1003 | see `git log --grep "^Build 1003"` | 2026-10-12 | Toolchain sets `tex-full` (extends `tex`: TikZ, biblatex/biber, fonts, XeTeX, LuaTeX; #111) and `rescue` (#114); `python` gains python3-tk (turtle, #112); `classic`'s libcob asks for the libxml2 Debian ships; the layer builder refuses a tree with dpkg work pending (#109). All layers rebuild on the server after this deploy. Guest profiles enabled (`TABCOMPUTER_GUESTS=1`, #113) |

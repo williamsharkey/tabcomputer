@@ -81,6 +81,7 @@ export function showWelcome(ctx: AppContext): void {
       </button>`).join('')}
     </div>
     <div class="sd-welcome-foot"><span class="sd-grow">Find anything with <kbd>Ctrl</kbd>+<kbd>Space</kbd>. Help → Welcome brings this back.</span>
+      <button class="sd-btn sd-welcome-flow" type="button" data-act="dataflow" title="Where your files, sign-ins and traffic go, and what the server can read">How your data flows</button>
       <button class="sd-btn" type="button" data-act="close">Got It</button></div>`;
   const close = () => {
     try { localStorage.setItem(WELCOME_KEY, String(Date.now())); } catch {}
@@ -91,6 +92,8 @@ export function showWelcome(ctx: AppContext): void {
   el.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
     if (t.closest('[data-act=close]')) { close(); return; }
+    // The explainer (docs/DATA_FLOW.md) opens beside the card, which stays up
+    if (t.closest('[data-act=dataflow]')) { void ctx.wm.openApp('dataflow'); return; }
     const id = t.closest<HTMLElement>('[data-demo]')?.dataset.demo;
     const demo = DEMOS.find(d => d.id === id);
     if (!demo) return;

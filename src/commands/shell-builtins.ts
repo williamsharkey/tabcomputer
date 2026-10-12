@@ -326,6 +326,11 @@ Save your work
   zip -r work.zip DIR    pack a folder, then: download work.zip
   upload [DIR]           copy files from this device into DIR (default: here)
 
+Privacy
+  dataflow               where your files, sign-ins and traffic go, and what the
+                         server can read, for this tab as it is now
+  guest                  a separate tabcomputer for code you don't trust
+
 Something wrong?
   doctor                 check this tab (deploy, browser, network, sign-ins, storage):
                          paste its output into a bug report (also: tabinfo)

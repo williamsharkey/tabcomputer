@@ -11,6 +11,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [DEBIAN.md](DEBIAN.md) | Debian mode: the streamed root filesystem, apt and dpkg in Blink, the overlay of builtins |
 | [GUI.md](GUI.md) | Linux GUI apps over X11: the X server in the page, `gui`, what runs and how fast |
 | [NETWORKING.md](NETWORKING.md) | Kernel sockets, the WebSocket-to-TCP relay, its security model and how to run it |
+| [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |

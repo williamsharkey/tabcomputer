@@ -732,6 +732,66 @@ describe('Blink engine: kernel processes', () => {
     expect(out.text()).toContain('stdin=late line');
   }, 60_000);
 
+  it('writes out a process waiting in poll and starts it again from the image (patch 0551)', async () => {
+    // A static program with no libc: for (;;) { poll(0, 0, 200 ms); write(1, "t\n", 2); }
+    const code = [
+      0xb8, 7, 0, 0, 0,               // mov eax, 7 (poll)
+      0x31, 0xff, 0x31, 0xf6,         // xor edi, edi; xor esi, esi
+      0xba, 200, 0, 0, 0,             // mov edx, 200
+      0x0f, 0x05,                     // syscall
+      0xb8, 1, 0, 0, 0,               // mov eax, 1 (write)
+      0xbf, 1, 0, 0, 0,               // mov edi, 1
+      0x48, 0x8d, 0x35, 9, 0, 0, 0,   // lea rsi, [rip + 9]: the text below
+      0xba, 2, 0, 0, 0,               // mov edx, 2
+      0x0f, 0x05,                     // syscall
+      0xeb, 0xd6,                     // jmp to the start
+      0x74, 0x0a,                     // "t\n"
+    ];
+    const elf = new Uint8Array(0x78 + code.length);
+    const dv = new DataView(elf.buffer);
+    elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]);
+    dv.setUint16(16, 2, true); dv.setUint16(18, 0x3e, true); dv.setUint32(20, 1, true);    // ET_EXEC, x86-64
+    dv.setBigUint64(24, 0x400078n, true); dv.setBigUint64(32, 64n, true);                  // entry, program headers
+    dv.setUint16(52, 64, true); dv.setUint16(54, 56, true); dv.setUint16(56, 1, true); dv.setUint16(58, 64, true);
+    dv.setUint32(64, 1, true); dv.setUint32(68, 5, true);                                  // PT_LOAD, r-x
+    dv.setBigUint64(80, 0x400000n, true); dv.setBigUint64(88, 0x400000n, true);
+    dv.setBigUint64(96, BigInt(elf.length), true); dv.setBigUint64(104, BigInt(elf.length), true); dv.setBigUint64(112, 0x1000n, true);
+    elf.set(code, 0x78);
+    const { fs } = await setup(elf);
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { BufferFile } = await import('@shiro/kernel/fd');
+    const { blinkRunner } = await import('@shiro/x86-engine/blink');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const out = new BufferFile(null);
+    const p = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out, 2: out }, run: blinkRunner('/home/user/work/prog') });
+    for (let i = 0; i < 200 && !out.text().includes('t\n'); i++) await new Promise((res) => setTimeout(res, 25));
+    expect(out.text()).toContain('t\n');
+    // It is in poll nearly all the time; caught in its write, the engine says "not now" (-1) and is asked again
+    type Checkpoint = { rc: number; why: string; image: ArrayBuffer | null };
+    let c: Checkpoint = { rc: -1, why: '', image: null };
+    const busy: string[] = [];
+    for (let i = 0; i < 100 && c.rc !== 0; i++) {
+      c = await (p.data.engineCheckpoint as () => Promise<Checkpoint>)();
+      if (c.rc !== 0) { busy.push(c.why); await new Promise((res) => setTimeout(res, 15)); }
+    }
+    expect(c.rc, busy.join('; ')).toBe(0);
+    expect(c.image!.byteLength).toBeGreaterThan(4096);
+    // the original goes on after being looked at
+    const seen = out.text().length;
+    for (let i = 0; i < 100 && out.text().length === seen; i++) await new Promise((res) => setTimeout(res, 25));
+    expect(out.text().length).toBeGreaterThan(seen);
+    kernel.kill(p.pid, 9);
+    await p.wait();
+    // The image in a new process: its poll runs again, then it writes as before
+    const out2 = new BufferFile(null);
+    const p2 = kernel.spawn({ path: '/home/user/work/prog', argv: ['prog'], cwd: '/home/user/work', fds: { 0: new BufferFile(''), 1: out2, 2: out2 }, run: blinkRunner('/home/user/work/prog', c.image!) });
+    for (let i = 0; i < 400 && out2.text().length < 6; i++) await new Promise((res) => setTimeout(res, 25));
+    expect(out2.text()).toMatch(/^(t\n){3,}$/);
+    expect(p2.exitStatus).toBeUndefined();
+    kernel.kill(p2.pid, 9);
+    await p2.wait();
+  }, 60_000);
+
   it("shows who holds Blink's GIL while it runs (patch 0126), and lets go of the memory after", async () => {
     const { fs } = await setup(readFileSync(join(FIX, 'hello-musl')));
     const { Kernel } = await import('@shiro/kernel/kernel');

@@ -58,6 +58,17 @@
         "fp-units-rtl",
         "gnat"
       ],
+      "prepare": [
+        "# Every program cobc builds printed \"Warning: program compiled against libxml 212 using older 209\"",
+        "# (#110). trixie has one libxml2, 2.12.7+dfsg+really2.9.14: the 2.9.14 library under a 2.12.7",
+        "# version number. Debian's libcob4t64 3.2-3 was compiled while the archive had the real 2.12.7",
+        "# and was not rebuilt, so cob_init calls xmlCheckVersion(21207) and the library answers 20914.",
+        "# No package in trixie fixes that, so the version libcob asks for (mov $21207,%edi before each",
+        "# of its two calls) becomes the one installed. Only with exactly that libxml2 and exactly two",
+        "# such calls; otherwise libcob stays as Debian built it. dpkg --verify libcob4t64 shows the change.",
+        "lib=/usr/lib/x86_64-linux-gnu",
+        "if [ -e $lib/libxml2.so.2.9.14 ] && [ -f $lib/libcob.so.4.2.0 ]; then perl -e 'my $f = shift; open(my $h, \"+<:raw\", $f) or die \"$f: $!\"; local $/; my $d = <$h>; my $old = \"\\xbf\\xd7\\x52\\x00\\x00\\xe8\"; my $new = \"\\xbf\\xb2\\x51\\x00\\x00\\xe8\"; my $n = () = $d =~ /\\Q$old\\E/g; if ($n != 2) { print \"libcob: $n xmlCheckVersion(21207) calls, not 2: left as it is\\n\"; exit 0 } $d =~ s/\\Q$old\\E/$new/g; seek($h, 0, 0); print $h $d; close($h) or die \"$f: $!\"; print \"libcob: xmlCheckVersion(21207) is now xmlCheckVersion(20914), twice\\n\"' $lib/libcob.so.4.2.0; else echo 'libcob: not the libxml2 2.9.14 this was written for: left as it is'; fi"
+      ],
       "check": "gfortran --version && cobc --version && fpc -iV && gnatmake --version"
     },
     "tex": {

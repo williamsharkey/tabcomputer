@@ -278,6 +278,22 @@ and `go run` hit the cache and compile only the user's packages.
 One build job at a time costs nothing under Blink, which runs one guest thread at a time. It also avoids a Blink bug: its vfork emulation can take Go's preemption signal (SIGURG) during parallel forks and wedge `go`, leaving its other children as zombies (with perf-blink). `go env -u CGO_ENABLED` turns cgo back on, for example with the `c` set
 installed; the cgo packages then compile once.
 
+`classic` uses `prepare` for a Debian bug (#110). trixie has one libxml2,
+version `2.12.7+dfsg+really2.9.14`: the 2.9.14 library under a 2.12.7
+version number. Debian's libcob4t64 3.2-3 was compiled while the archive
+had the real 2.12.7 and was not rebuilt, so every program `cobc` builds
+calls `xmlCheckVersion(21207)` at start and libxml2 prints "Warning: program
+compiled against libxml 212 using older 209". The set's package list is not
+at fault (apt on any trixie machine gives the same pair), and no package in
+trixie fixes it. So the step changes the version libcob asks for, in
+`libcob.so.4.2.0`, to the one installed (20914): four bytes, at the two
+calls, and only when the library is that libxml2 and has exactly those two
+calls. `dpkg --verify libcob4t64` reports the file as changed, and a
+libcob4t64 from a later Debian update replaces it as usual. Checked on the
+snapshot's own `.deb` (the two `mov $0x52d7,%edi` before `xmlCheckVersion`
+become `$0x51b2`); a COBOL program has not been run against the patched
+library yet.
+
 Go deletes cache entries whose mtime is more than 5 days old (once a day,
 recorded in `trim.txt`), and it ignores a `trim.txt` dated in the future.
 The layer's times are the snapshot's, so the first `go` command used to trim

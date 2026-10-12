@@ -83,6 +83,32 @@ describe('the sets (src/debian/toolchains.json)', () => {
     expect(sets.python.check).toMatch(/import .*\bturtle\b/);
   });
 
+  // #110: trixie's libxml2 is 2.9.14 under a 2.12.7 version number, and Debian's libcob
+  // was compiled against the real 2.12.7, so every COBOL program warned at start
+  it('classic: libcob asks libxml2 for the version trixie has, and is left alone when it is not the libcob expected', () => {
+    const d = mkdtempSync(join(tmpdir(), 'tc-cob-'));
+    try {
+      const prepare = builder('classic', 'prepare').replace(/^lib=.*$/m, `lib=${d}`);
+      expect(prepare).toContain(`lib=${d}\n`);
+      const sh = () => execFileSync('sh', ['-e', '-c', prepare], { encoding: 'utf8' });
+      const call = (version: number) => Buffer.from([0xbf, version & 255, version >> 8, 0, 0, 0xe8, 1, 2, 3, 4]); // mov $version,%edi; call
+      const pad = Buffer.from('\x7fELF and other code\n\0\0');
+      const lib = join(d, 'libcob.so.4.2.0');
+      writeFileSync(lib, Buffer.concat([pad, call(21207), pad, call(21207), pad]), { mode: 0o644 });
+      // Another libxml2 (a later Debian): nothing is touched
+      expect(sh()).toMatch(/not the libxml2 2\.9\.14/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(21207), pad, call(21207), pad]));
+      writeFileSync(join(d, 'libxml2.so.2.9.14'), '');
+      expect(sh()).toMatch(/is now xmlCheckVersion\(20914\), twice/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(20914), pad, call(20914), pad]));
+      // Not the libcob this was written for (one call, or already done): left as it is
+      expect(sh()).toMatch(/0 xmlCheckVersion\(21207\) calls, not 2/);
+      writeFileSync(lib, Buffer.concat([pad, call(21207), pad]));
+      expect(sh()).toMatch(/1 xmlCheckVersion\(21207\) calls, not 2/);
+      expect(readFileSync(lib)).toEqual(Buffer.concat([pad, call(21207), pad]));
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
   it('rescue has the converters for dead formats and pandoc (#114), and builds before the big tex-full', () => {
     expect(sets.rescue.packages).toEqual(['libwpd-tools', 'libmspub-tools', 'libwps-tools', 'libmwaw-tools', 'mdbtools', 'pandoc']);
     // LibreOffice is not in it: 163 more packages, and soffice is untested under Blink

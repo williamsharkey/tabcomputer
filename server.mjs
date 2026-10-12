@@ -384,14 +384,131 @@ function bootMark(favicon) {
   return svg;
 }
 
+// --- Guests (docs/research/GUEST_PROFILE.md) ---
+// A guest is the app on an origin of its own, `guest--<name>[--<flags>].<base>`
+// (src/guest.ts parses the same label), so the browser keeps its storage apart
+// from the main profile's. Flags: `t` thrown away (the page's business), `x`
+// no network: this server then refuses its proxies and the relay to that host,
+// and to that Origin on any host, and sends a CSP that stops the page's own
+// requests to other sites. The mode is in the hostname because script in the
+// guest cannot change its origin.
+//   TABCOMPUTER_GUESTS=1          guests under the brand domain (https://guest--x.<domain>);
+//                                 localhost has them without it; 0 turns them off
+//   TABCOMPUTER_GUEST_ORIGIN      another template, e.g. https://{guest}.example-guests.com
+// Off (the default away from localhost), a guest hostname is an ordinary host.
+const GUEST_LABEL = /^guest--([a-z0-9]{1,32})(?:--(t|x|tx))?$/;
+
+export function parseGuestLabel(label) {
+  const m = GUEST_LABEL.exec(String(label || '').toLowerCase());
+  if (!m) return null;
+  const flags = m[2] || '';
+  return { label: m[0], name: m[1], ephemeral: flags.includes('t'), noNetwork: flags.includes('x') };
+}
+
+/** { template, scheme, suffix } for the app host or guest host `hostHeader`, or null when guests are off. */
+export function guestConfigFor(hostHeader, env = process.env, brand = profileFor(hostHeader)?.brand) {
+  if (env.TABCOMPUTER_GUESTS === '0') return null;
+  const host = String(hostHeader || '').toLowerCase();
+  let template = env.TABCOMPUTER_GUEST_ORIGIN || '';
+  if (!template) {
+    const local = /^((?:[a-z0-9-]+\.)*localhost)(:\d+)?$/.exec(host);
+    const domain = String(brand?.domain || '').toLowerCase();
+    if (local) {
+      // A guest's own host answers with the template it was made from
+      const first = local[1].split('.')[0];
+      const base = parseGuestLabel(first) ? local[1].slice(first.length + 1) : local[1];
+      template = `http://{guest}.${base}${local[2] || ''}`;
+    } else if (env.TABCOMPUTER_GUESTS === '1' && domain && (host === domain || host.endsWith('.' + domain))) {
+      template = `https://{guest}.${domain}`;
+    } else return null;
+  }
+  template = template.toLowerCase().replace(/\/+$/, '');
+  const tm = /^(https?):\/\/\{guest\}\.([a-z0-9.-]+(?::\d+)?)$/.exec(template);
+  return tm ? { template, scheme: tm[1], suffix: tm[2] } : null;
+}
+
+/** The guest `host` (a Host header, or an Origin's host) is under `cfg`, or null. */
+export function guestOfHost(host, cfg) {
+  if (!cfg || !host) return null;
+  const h = String(host).toLowerCase();
+  if (!h.endsWith('.' + cfg.suffix)) return null;
+  return parseGuestLabel(h.slice(0, -cfg.suffix.length - 1));
+}
+
+/**
+ * The guest a request comes from: its Host, or else its Origin (a guest's page
+ * calling another host of this server). `via` says which.
+ */
+export function guestOfRequest(req, cfg = guestConfigFor(req.headers.host)) {
+  if (!cfg) return null;
+  const byHost = guestOfHost(req.headers.host, cfg);
+  if (byHost) return { ...byHost, via: 'host' };
+  const origin = req.headers['origin'];
+  if (!origin) return null;
+  let oh = '';
+  try { const u = new URL(origin); if (u.protocol === cfg.scheme + ':') oh = u.host; } catch { /* bad origin */ }
+  const byOrigin = guestOfHost(oh, cfg);
+  return byOrigin ? { ...byOrigin, via: 'origin' } : null;
+}
+
+// This server's routes that reach other hosts, or carry data between clients
+const GUEST_NETWORK_ROUTES = ['/api', '/tcp', '/git-proxy', '/offer', '/answer', '/relay', '/oauth', '/channel', '/browse/fetch'];
+const underRoute = (pathname, route) => pathname === route || pathname.startsWith(route + '/');
+
+/** Why this server won't do `method pathname` for `guest`, or '' when it will. */
+export function guestRefusal(guest, method, pathname) {
+  if (!guest) return '';
+  // The device flow hands a token to whoever started it: never to a guest
+  if (underRoute(pathname, '/api/github-login')) return 'sign-in is not offered to a guest';
+  if (!guest.noNetwork) return '';
+  if (GUEST_NETWORK_ROUTES.some((r) => underRoute(pathname, r))) return 'this guest has no network';
+  if (method !== 'GET' && method !== 'HEAD') return 'this guest has no network';
+  return '';
+}
+
+// A no-network guest's page may load only this host's own files. The inline
+// entry chunk, node-compat's eval and blob Workers need the unsafe-* and blob:
+// sources: the policy is about where requests go, not about script injection.
+// Nothing here stops the page navigating itself to another address.
+const GUEST_NO_NETWORK_CSP = [
+  "default-src 'self' blob: data:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:",
+  "style-src 'self' 'unsafe-inline'",
+  "connect-src 'self' blob: data:",
+  "form-action 'self'",
+  "webrtc 'block'",
+].join('; ');
+
+/** Response headers for a guest host's pages and scripts (Workers take their policy from their script). */
+export function guestHeaders(guest) {
+  if (!guest || guest.via === 'origin') return {};
+  return {
+    'origin-agent-cluster': '?1',
+    'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex',
+    ...(guest.noNetwork ? { 'content-security-policy': GUEST_NO_NETWORK_CSP } : {}),
+  };
+}
+
+/**
+ * True when the app shell is asked for as a frame of another origin of the
+ * same site. A guest under the brand domain is same-site with the main
+ * profile, so such a frame would run with the main profile's own storage.
+ */
+export function sameSiteFrame(req) {
+  const dest = String(req.headers['sec-fetch-dest'] || '');
+  return req.headers['sec-fetch-site'] === 'same-site' && ['iframe', 'frame', 'embed', 'object', 'fencedframe'].includes(dest);
+}
+
 // --- Static file server ---
-async function handleStatic(req, res) {
+async function handleStatic(req, res, guest = null, guests = null) {
   let pathname = new URL(req.url, 'http://localhost').pathname;
   let filePath = join(STATIC_DIR, pathname);
   const requestExt = extname(pathname);
   const staticHeaders = {
     'access-control-allow-origin': '*',
     'cross-origin-resource-policy': 'cross-origin',
+    ...guestHeaders(guest),
   };
 
   try {
@@ -420,6 +537,10 @@ async function handleStatic(req, res) {
     // isolated page. The public/*.html docs pages stay unisolated: they embed
     // the app in iframes and need nothing from SharedArrayBuffer.
     const isAppShell = filePath === join(STATIC_DIR, 'index.html');
+    if (isAppShell && guests && !guest && sameSiteFrame(req)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('tabcomputer does not load in a frame of another site under this domain.');
+    }
     const isolation = isAppShell || ext === '.js' || ext === '.mjs' ? isolationHeaders() : {};
     if (isAppShell) {
       const override = new URL(req.url, 'http://localhost').searchParams.get('profile');
@@ -1672,6 +1793,7 @@ export function browseKeyOf(hostHeader, cfg) {
   const host = String(hostHeader).toLowerCase();
   if (!host.endsWith('.' + cfg.suffix)) return null;
   const key = host.slice(0, -cfg.suffix.length - 1);
+  if (/^guest--/.test(key)) return null; // a guest's host (localhost shares the zone)
   // Keys are one label with at least one dash (a dot of the real host): never "www" or "api"
   return /^[a-z0-9-]{1,63}$/.test(key) && key.includes('-') && !key.startsWith('-') && !key.endsWith('-') ? key : null;
 }
@@ -1927,9 +2049,25 @@ const server = createServer(async (req, res) => {
 
   const browse = browseConfigFor(req.headers.host);
   if (browseKeyOf(req.headers.host, browse)) return handleBrowseHost(req, res, browse);
+  // Guests (docs/research/GUEST_PROFILE.md): what a guest may not ask of this server
+  const guests = guestConfigFor(req.headers.host);
+  const guest = guestOfRequest(req, guests);
+  if (pathname === '/guest/config.json') {
+    const own = guest?.via === 'host' ? guest : null;
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', ...guestHeaders(own) });
+    return res.end(JSON.stringify(guests
+      ? { origin: guests.template, ...(own ? { guest: { name: own.name, ephemeral: own.ephemeral, noNetwork: own.noNetwork }, enforced: true } : {}) }
+      : { origin: null }));
+  }
+  const refusal = guestRefusal(guest, req.method, pathname);
+  if (refusal) {
+    res.writeHead(403, { 'content-type': 'application/json', ...corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']), ...guestHeaders(guest) });
+    return res.end(JSON.stringify({ error: 'guest', reason: refusal }));
+  }
   if (pathname === '/browse/config.json') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    return res.end(JSON.stringify(browse ? { origin: browse.template, app: appOriginOf(req, browse), ...(BROWSE_SERVER_FETCH ? { serverFetch: true } : {}) } : { origin: null }));
+    // The Browser app is off in a guest: browse origins are shared by every app origin
+    return res.end(JSON.stringify(browse && !guest ? { origin: browse.template, app: appOriginOf(req, browse), ...(BROWSE_SERVER_FETCH ? { serverFetch: true } : {}) } : { origin: null }));
   }
   if (pathname === '/browse/fetch' && BROWSE_SERVER_FETCH) {
     return handleBrowseFetch(req, res);
@@ -1996,7 +2134,7 @@ const server = createServer(async (req, res) => {
     return handleSeedDownload(req, res, seedApiMatch[1]);
   }
   // /s/:id falls through to handleStatic which SPA-fallbacks to index.html
-  return handleStatic(req, res);
+  return handleStatic(req, res, guest, guests);
 });
 
 // --- WebSocket relay ---
@@ -2007,6 +2145,7 @@ const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   if (browseKeyOf(req.headers.host, browseConfigFor(req.headers.host))) return rejectUpgrade(socket, 404, 'Not found');
+  if (guestOfRequest(req)?.noNetwork) return rejectUpgrade(socket, 403, 'This guest has no network');
   if (CHANNEL_PATH.test(pathname)) {
     return wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   }

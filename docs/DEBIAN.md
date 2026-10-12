@@ -175,6 +175,37 @@ Sizes are from `.toolchain-build/layers/index.json` (build of 2026-10-09). Nothi
 downloaded at install time beyond the layer's index. A program's chunks are
 fetched the first time it runs.
 
+Sets added since that build, not built yet. These numbers are apt's own for
+the base's snapshot (the `Packages` indexes of 20261001T000000Z resolved
+without Recommends, as the base's apt does; the same sum gives 65, 60, 61 and
+115 packages for `tex`, `python`, `classic` and `c`, which is what the built
+layers have). Chunks are gzip, so a layer comes out 1.1 to 1.5 times its
+`.deb`s:
+
+| id | packages asked for | Debian packages | `.deb`s | unpacked |
+| --- | --- | ---: | ---: | ---: |
+| `tex-full` | `tex`'s, and texlive-latex-extra, texlive-pictures, texlive-science, texlive-bibtex-extra, biber, texlive-plain-generic, texlive-fonts-recommended, texlive-fonts-extra, texlive-xetex, texlive-luatex | 222 (157 more than `tex`) | 1019 MB | 2.7 GB |
+
+`tex-full` **extends** `tex`: the builder installs `tex`'s packages and then
+its own, so the layer is a superset of `tex`'s (the packages they share are
+the same chunks) and a tab applies it instead. `toolchain install tex` after
+it says the set is already installed and leaves the files no package owns
+alone (`tex`'s `ls-R`, formats and font maps would name less). When the
+server has `tex` and not yet `tex-full`, `toolchain install tex-full` applies
+`tex` and gets the rest with apt. Most of it is texlive-fonts-extra: 1.7 GB
+unpacked and 103,808 of the roughly 150,000 files, against `tex`'s 8,939.
+Without it the set would be 320 MB of `.deb`s on top of `tex`. It is in
+because thesis templates name its fonts (fourier, in #111). The files
+still download only when TeX opens them, but the index lists every path,
+so expect `toolchain install tex-full` to take longer than the 1.5 s of
+`tex`; that is not measured yet. A set can ask for free disk at build time
+(`disk_gb`, 8 for `tex-full`): the builder skips it on a host with less,
+and the tab uses apt.
+
+Not in it: the LaTeX `svg` package runs Inkscape through `--shell-escape`
+(`sudo apt-get install inkscape`, 133 more packages), and `minted` needs
+`python3-pygments`.
+
 **What a layer is.** `scripts/debian/build-layers.sh` (root, any Linux host)
 rebuilds the exact base rootfs users install from `public/debian`
 (`unpack-rootfs.mjs`) and chroots into it. It points apt at the base's
@@ -280,7 +311,8 @@ idle I/O, `CPUQuota=50%`, `PRUNE=1`) with `OUT=/opt/tabcomputer/layers`,
 which `server.env` serves. It never fails or delays the deploy, and it
 refuses to start with less than 6 GB free (`MIN_FREE_GB`). The
 first build fetches the packages from snapshot.debian.org. Later deploys
-rebuild only sets whose recipe changed. Downloaded `.deb`s stay in
+rebuild only sets whose recipe changed (every set, when `build-layers.sh` or
+`pack-layer.mjs` changed). Downloaded `.deb`s stay in
 `/opt/tabcomputer/layer-build/debs` for rebuilds. Until a set is built,
 `toolchain install` falls back to apt. Locally:
 

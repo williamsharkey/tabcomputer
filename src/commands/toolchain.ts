@@ -14,7 +14,12 @@ export interface ToolchainEntry {
   id: string;
   title: string;
   description: string;
+  /** The packages asked for, those of the set it extends first. */
   packages: string[];
+  /** The set this one is a superset of (`tex-full` extends `tex`): its layer holds that set's packages too. */
+  extends?: string;
+  /** An applied set that extends this one, so this one is already in place. */
+  partOf?: string;
   /** Compressed bytes streamed as programs are first used (0: no prebuilt layer). */
   size: number;
   /** A prebuilt layer for this machine's Debian is on the server. */
@@ -37,14 +42,22 @@ export async function listToolchains(fs: CommandContext['fs']): Promise<Toolchai
     const name = s.match(/^Package: (.*)$/m)?.[1];
     if (name && /^Status: .* installed$/m.test(s)) have.add(name);
   }
-  const sets = (spec as any).default?.layers ?? (spec as any).layers;
-  return Object.entries(sets as Record<string, { title: string; description: string; packages: string[]; check?: string; note?: string }>).map(([id, s]) => {
+  const sets = ((spec as any).default?.layers ?? (spec as any).layers) as Record<string, { title: string; description: string; packages: string[]; extends?: string; check?: string; note?: string }>;
+  /** A set and the sets it extends, the furthest first. */
+  const chain = (id: string): string[] => {
+    const ids: string[] = [];
+    for (let i: string | undefined = id; i && sets[i] && !ids.includes(i); i = sets[i].extends) ids.unshift(i);
+    return ids;
+  };
+  return Object.entries(sets).map(([id, s]) => {
     const layer = catalog.find((l) => l.name === id && (!rootfs || l.base === rootfs.id));
+    const packages = [...new Set(chain(id).flatMap((i) => sets[i].packages))];
     return {
-      id, title: s.title, description: s.description, packages: s.packages, check: s.check, note: s.note,
+      id, title: s.title, description: s.description, packages, extends: s.extends, check: s.check, note: s.note,
+      partOf: Object.keys(sets).find((other) => other !== id && !!applied[other] && chain(other).includes(id)),
       size: layer?.chunkBytes ?? 0,
       prebuilt: !!layer,
-      installed: !!applied[id] || (s.packages.length > 0 && s.packages.every((p) => have.has(p))),
+      installed: !!applied[id] || (packages.length > 0 && packages.every((p) => have.has(p))),
     };
   });
 }
@@ -95,6 +108,13 @@ export const toolchainCmd: Command = {
         const t = (await listToolchains(ctx.fs)).find((x) => x.id === id)!;
         const t0 = Date.now();
         if (t.note) out(`note: ${t.note}\n`);
+        if (t.partOf && !flags.has('--apt')) {
+          // The applied superset's files that no package owns (TeX's ls-R, formats
+          // and font maps) name more than this set's would: leave them
+          out(`${t.title}: already installed, as part of ${t.partOf}.\n`);
+          if (flags.has('--check') && t.check) status ||= await check(ctx, t, out, err);
+          continue;
+        }
         if (t.prebuilt && !flags.has('--apt')) {
           try {
             const r = await layers.applyLayer(ctx.fs, id, { progress: (m) => out(m + '\n') });
@@ -105,6 +125,14 @@ export const toolchainCmd: Command = {
           }
         } else {
           if (!flags.has('--apt')) out(`No prebuilt ${id} layer on this server for this Debian base; installing with apt (this takes minutes).\n`);
+          // The set it extends may have a layer: apt then installs only the rest
+          const parent = t.extends && !flags.has('--apt') ? (await listToolchains(ctx.fs)).find((x) => x.id === t.extends) : undefined;
+          if (parent?.prebuilt && !parent.installed) {
+            try {
+              const r = await layers.applyLayer(ctx.fs, parent.id, { progress: (m) => out(m + '\n') });
+              out(`${parent.title}: ${r.installed.length} packages installed from the prebuilt ${parent.id} layer.\n`);
+            } catch (e: any) { err(`toolchain: prebuilt ${parent.id} failed (${e?.message ?? e}); apt installs it too\n`); }
+          }
           if (await aptInstall(ctx, t.packages, out, err)) { status = 1; continue; }
           out(`${t.title}: installed with apt in ${((Date.now() - t0) / 1000).toFixed(0)} s.\n`);
         }

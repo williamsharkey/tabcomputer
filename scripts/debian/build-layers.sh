@@ -19,10 +19,16 @@
 #   FORCE=1   rebuild layers whose recipe hash is unchanged
 #   PRUNE=1   afterwards, delete chunks and indexes of all but each set's
 #             current and previous build
-#   MIN_FREE_GB  refuse to start with less free disk on WORK (default 6)
+#   MIN_FREE_GB  refuse to start with less free disk on WORK (default 6). A set
+#             that needs more says so ("disk_gb") and is skipped, not failed,
+#             when WORK has less
 #   CA_BUNDLE CA certificates apt uses for https (default: the host's
 #             /etc/ssl/certs/ca-certificates.crt; minbase has none)
 #   HTTPS_PROXY  passed to apt as Acquire::https::Proxy when set
+#
+# A set that "extends" another is built with that set's packages and prepare
+# steps first, then its own. Its layer is a superset: a tab applies it
+# instead of the other (tex-full extends tex).
 #
 # A layer is rebuilt only when its recipe changes: the hash of the base id,
 # the snapshot, the package list and this script and pack-layer.mjs. Old
@@ -89,11 +95,39 @@ APT_OPTS=(-o Acquire::Retries=5 -o Acquire::https::CaInfo=/etc/apt/build-ca.crt)
 in_root() { chroot "$ROOT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 \
   DEBIAN_FRONTEND=noninteractive SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" "$@"; }
 
+# A set's recipe fields, those of the sets it extends first:
+#   spec ID packages | prepare (a command a line) | prepare-json | disk_gb
+spec() {
+  node -e '
+    const [file, id, what] = process.argv.slice(1);
+    const layers = require(file).layers;
+    const chain = [];
+    for (let i = id; i; i = layers[i].extends) {
+      if (!layers[i]) { console.error("no layer " + i); process.exit(1); }
+      if (chain.length > 8) { console.error(id + ": extends itself"); process.exit(1); }
+      chain.unshift(layers[i]);
+    }
+    const prepare = chain.flatMap((l) => l.prepare || []);
+    if (what === "packages") console.log([...new Set(chain.flatMap((l) => l.packages))].join(" "));
+    else if (what === "prepare") console.log(prepare.join("\n"));
+    else if (what === "prepare-json") console.log(JSON.stringify(prepare));
+    else if (what === "disk_gb") console.log(layers[id].disk_gb || 0);
+    else process.exit(2);
+  ' "$SPEC" "$1" "$2"
+}
+
 for id in "${IDS[@]}"; do
-  pkgs=$(node -e 'const l = require(process.argv[1]).layers[process.argv[2]]; if (!l) { console.error("no layer " + process.argv[2]); process.exit(1); } console.log(l.packages.join(" "))' "$SPEC" "$id")
-  recipe=$( { echo "$BASE_ID $SNAPSHOT $MIRROR $pkgs"; node -e 'console.log(JSON.stringify(require(process.argv[1]).layers[process.argv[2]].prepare || []))' "$SPEC" "$id"; cat "$0" "$HERE/pack-layer.mjs"; } | sha256sum | cut -c1-16)
+  pkgs=$(spec "$id" packages)
+  recipe=$( { echo "$BASE_ID $SNAPSHOT $MIRROR $pkgs"; spec "$id" prepare-json; cat "$0" "$HERE/pack-layer.mjs"; } | sha256sum | cut -c1-16)
   if [ -z "${FORCE:-}" ] && [ -f "$OUT/$id/layer.json" ] && grep -q "\"recipe\": \"$recipe\"" "$OUT/$id/layer.json"; then
     echo "== $id: up to date ($recipe)"; continue
+  fi
+  # A big set (tex-full: its .debs, the unpacked tree and the chunks at
+  # once) waits for a disk with room instead of filling this one
+  need_gb=$(spec "$id" disk_gb)
+  free_gb=$(( $(df -Pk "$WORK" | awk 'NR==2 {print $4}') / 1024 / 1024 ))
+  if [ "$free_gb" -lt "$need_gb" ]; then
+    echo "== $id: skipped: it needs ${need_gb} GB free on $WORK, and there are ${free_gb}" >&2; continue
   fi
   echo "== $id: $pkgs (recipe $recipe)"
   umount_all
@@ -154,7 +188,7 @@ EOF
   in_root ldconfig
   # The set's own preparation (toolchains.json "prepare"), e.g. Go's std
   # compiled into the build cache so the tab doesn't compile it under Blink
-  prepare=$(node -e 'console.log((require(process.argv[1]).layers[process.argv[2]].prepare || []).join("\n"))' "$SPEC" "$id")
+  prepare=$(spec "$id" prepare)
   if [ -n "$prepare" ]; then
     printf '%s\n' "$prepare" > "$ROOT/tmp/tc-prepare.sh"
     in_root sh -e /tmp/tc-prepare.sh

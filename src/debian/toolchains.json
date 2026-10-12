@@ -91,6 +91,25 @@
         "mkdir -p /home/user/.config/go && printf 'CGO_ENABLED=0\\nGOFLAGS=-p=1\\n' > /home/user/.config/go/env"
       ],
       "check": "printf 'package main\\nimport \"fmt\"\\nfunc main(){fmt.Println(\"hello\")}\\n' > /tmp/tc-hello.go && cd /tmp && go run tc-hello.go"
+    },
+    "tex-full": {
+      "title": "LaTeX, full",
+      "description": "tex plus TikZ, biblatex and biber, latex-extra, science, the extra fonts, XeTeX and LuaTeX",
+      "extends": "tex",
+      "disk_gb": 8,
+      "packages": [
+        "texlive-latex-extra",
+        "texlive-pictures",
+        "texlive-science",
+        "texlive-bibtex-extra",
+        "biber",
+        "texlive-plain-generic",
+        "texlive-fonts-recommended",
+        "texlive-fonts-extra",
+        "texlive-xetex",
+        "texlive-luatex"
+      ],
+      "check": "kpsewhich tikz.sty biblatex.sty siunitx.sty xpatch.sty fourier.sty && xelatex --version | head -n 1 && biber --version"
     }
   }
 }

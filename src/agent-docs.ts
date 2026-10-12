@@ -165,8 +165,8 @@ ${bootSection(ctx, name)}
   emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
   popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
-  \`go\` (std precompiled), \`tex\`, \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\`
-  or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
+  \`go\` (std precompiled), \`tex\`, \`tex-full\` (TikZ, biblatex/biber, XeTeX, LuaTeX,
+  fonts), \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\` or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
   dpkg knows them, so apt keeps working. \`toolchain list\` shows the sets. The first run of each program
   downloads it (gcc's hello world takes about 9 s from a fresh tab).
 - Prebuilt: \`pkg install NAME\` installs one of ${name}'s 72 prebuilt programs

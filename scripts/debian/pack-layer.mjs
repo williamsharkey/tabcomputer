@@ -33,7 +33,7 @@ if (catalogDir) {
     if (!existsSync(f)) continue;
     const m = JSON.parse(readFileSync(f, 'utf8'));
     const s = spec.layers[id];
-    layers.push({ ...m, title: s.title, description: s.description, requested: s.packages, check: s.check });
+    layers.push({ ...m, title: s.title, description: s.description, requested: s.packages, check: s.check, ...(s.extends ? { extends: s.extends } : {}) });
   }
   const tmp = join(catalogDir, 'index.json.tmp');
   writeFileSync(tmp, JSON.stringify({ format: 1, layers }, null, 2) + '\n');

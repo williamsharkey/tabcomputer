@@ -38,8 +38,10 @@ So the only boundary that holds against the second group is the browser's:
 | remote-control code | `localStorage.tabcomputer-remote-code` |
 | Browser app cookie jar and password vault | IndexedDB (`src/browser/kv.ts`) |
 
-The server holds no user secret and sets no cookie (`server.mjs` has no
-`set-cookie`; its proxies forward the caller's own headers).
+The server stores no user secret and sets no cookie (`server.mjs` has no
+`set-cookie`): nothing of a user's is kept there at rest. Its proxies forward
+the caller's own headers, so tokens, prompts and replies do pass through it in
+transit on the paths that end TLS at the server (docs/DATA_FLOW.md).
 
 ## Options
 

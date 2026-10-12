@@ -28,7 +28,7 @@ export const REPLY_GRACE_MS = 3000;
 export type ToWorker =
   | { snap?: unknown; hidden?: boolean }
   | { init: { abortFlag?: SharedArrayBuffer; autoAbortMs?: number } }
-  | { relayStart: { base: string; info: RelayInfo; code: string } }
+  | { relayStart: { base: string; info: RelayInfo; secret: string } }
   | { relaySend: string }
   | { relayStop: true };
 
@@ -55,7 +55,7 @@ export interface HostDeps {
   post(msg: FromWorker): void;
   saveWedge(rec: WedgeRecordOut | null): void;
   now?: () => number;
-  makeRelay?: (opts: { base: string; info: RelayInfo; code: string }) => RelayLike;
+  makeRelay?: (opts: { base: string; info: RelayInfo; secret: string }) => RelayLike;
 }
 
 export class WatchdogHost {
@@ -136,7 +136,7 @@ export class WatchdogHost {
     try { if (this.relay?.readyState === 'open') this.relay.send(JSON.stringify(reply)); } catch { /* closing */ }
   }
 
-  private startRelay(opts: { base: string; info: RelayInfo; code: string }): void {
+  private startRelay(opts: { base: string; info: RelayInfo; secret: string }): void {
     this.stopRelay();
     const relay = this.deps.makeRelay ? this.deps.makeRelay(opts) : new RelayChannel({ ...opts, as: 'tab' });
     this.relay = relay;

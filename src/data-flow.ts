@@ -12,6 +12,8 @@
  * cut down to its host, so nothing rendered from a DataFlowState can show one.
  */
 
+import { API_KEY_PROVIDERS, GITHUB_TOKEN_STORAGE_KEY, REMOTE_CODE_STORAGE_KEY } from './credentials';
+
 export interface DataFlowInputs {
   /** location.host of the page */
   host: string;
@@ -31,8 +33,12 @@ export interface DataFlowInputs {
   remoteCode: boolean;
   /** The relay the user saved in Settings → Network, as saved; only its host is kept */
   ownRelayUrl: string | null;
+  /** The user let their own relay have the GitHub sign-in when it asks (OwnRelay.sendSignin) */
+  ownRelaySignin?: boolean;
   /** Whether this site's /tcp relay answered */
   siteRelay: 'on' | 'off' | 'unknown';
+  /** This site's relay asked for a sign-in (its token endpoint answered 401) */
+  siteRelaySignin?: boolean;
   /** navigator.storage.persisted(); null when the browser can't say */
   persisted: boolean | null;
 }
@@ -50,10 +56,10 @@ export interface DataFlowState {
     host: string | null;
     /** Why there is none */
     why?: 'guest' | 'off';
-    /** A relay of the user's own is saved, but this UI does not apply it */
-    ownIgnored?: boolean;
     /** Whether the site's relay was seen to answer */
     seen: boolean;
+    /** The relay in use is given the GitHub sign-in: it asked for one (the site's), or the user allowed it (their own) */
+    signin?: boolean;
   };
   persisted: boolean | null;
 }
@@ -76,10 +82,10 @@ export function dataFlowState(i: DataFlowInputs): DataFlowState {
   const ownHost = i.ownRelayUrl ? relayHost(i.ownRelayUrl) : null;
   let relay: DataFlowState['relay'];
   if (guest && !guest.network) relay = { kind: 'none', host: null, why: 'guest', seen: false };
-  // Only the desktop applies a relay of the user's own (initNetwork in desktop/network.ts)
-  else if (ownHost && i.ui === 'desktop') relay = { kind: 'own', host: ownHost, seen: false };
-  else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true, ...(ownHost ? { ownIgnored: true } : {}) };
-  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(ownHost ? { ownIgnored: true } : {}) };
+  // A relay of the user's own is applied in both UIs (followRelaySetting, src/kernel/net.ts)
+  else if (ownHost) relay = { kind: 'own', host: ownHost, seen: false, ...(i.ownRelaySignin ? { signin: true } : {}) };
+  else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true };
+  else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(i.siteRelaySignin ? { signin: true } : {}) };
   return { host: i.host, ui: i.ui, profile: guest ? 'guest' : 'main', guest, guestsOffered: i.guestsOffered, secrets, relay, persisted: i.persisted };
 }
 
@@ -187,7 +193,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
       'Relays connections and API calls',
       'Sets no cookie, keeps no account',
     ],
-    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores only what you upload with seed share, and copies of public downloads. Its logs record addresses, hosts, paths and sizes, not payloads.',
+    detail: 'The server this page came from. It relays what programs here send to other hosts. It keeps no account for you and sets no cookie. It stores copies of public downloads, and, only if it is set to keep shared seeds, what you upload with seed share (your files, without saved sign-ins). Its logs record addresses, hosts, paths and sizes, not payloads.',
   };
   const internet: Place = {
     id: 'internet',
@@ -254,17 +260,23 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     tcp.to = `your relay (${s.relay.host}), then the hosts it allows`;
     tcp.reads = 'nothing';
     tcp.readsText = 'This site\'s server sees none of it. Your relay sees the host name, port and byte counts.';
-    tcp.detail = 'Programs\' connections go to the relay you set in Settings → Network. TLS and SSH are done in the tab, so it carries ciphertext too. Your GitHub token is not sent to it.';
+    tcp.detail = 'Programs\' connections go to the relay you set in Settings → Network. TLS and SSH are done in the tab, so it carries ciphertext too. '
+      + (s.relay.signin ? 'You let it have your GitHub token when it asks for a sign-in.' : 'Your GitHub token is not sent to it.');
+    if (s.relay.signin && s.secrets.github) tcp.carries.push('GitHub token');
   } else if (s.relay.kind === 'none') {
     tcp.status = 'off';
     tcp.note = s.relay.why === 'guest'
       ? 'Off: this guest has no network. Programs here have no connection.'
       : 'Off: this server has no relay. Programs here cannot open connections.';
   }
-  if (s.relay.ownIgnored) tcp.note = `${tcp.note ? tcp.note + ' ' : ''}A relay of your own is saved, but the terminal UI does not use it.`;
-  if (s.relay.kind === 'site' && s.secrets.github) {
-    tcp.carries.push('GitHub token');
-    tcp.detail += ' Your GitHub token is sent with each request for a relay token; this server does not need it unless it requires a sign-in.';
+  if (s.relay.kind === 'site') {
+    // relayToken (src/kernel/net.ts): the sign-in follows a 401 signin_required, never before
+    if (s.relay.signin) {
+      tcp.detail += ' This relay requires a sign-in, so your GitHub token is sent with each request for a relay token.';
+      if (s.secrets.github) tcp.carries.push('GitHub token');
+    } else {
+      tcp.detail += ' A GitHub token is sent to the relay only if it asks for a sign-in; this one does not.';
+    }
   }
   flows.push(tcp);
 
@@ -315,11 +327,6 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     carries: [],
   });
 
-  const included = [
-    ...(s.secrets.github ? ['GitHub token'] : []),
-    ...(s.secrets.claude ? ['Claude credentials'] : []),
-    ...s.secrets.apiKeys.map((k) => `${k} API key`),
-  ];
   flows.push({
     id: 'shared',
     title: 'Only when you run them: remote start, seed share, group',
@@ -327,12 +334,13 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     via: '/offer, /relay, /api/seed, /channel',
     to: 'whoever holds the code or the link',
     reads: 'contents',
-    readsText: 'seed share stores every file and all saved sign-ins on the server, for anyone with the link. remote start gives the server the code that its relayed messages are sealed with.',
-    detail: 'remote start lets the holder of the code run commands and read files here. A shared seed is deleted 60 days after its last visit. group messages pass through unencrypted.'
+    readsText: 'seed share, on a server that keeps shared seeds (a server setting; tabcomputer.com does not), stores your files there for anyone with the link, without the sign-ins saved here. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets. group messages are readable.',
+    detail: 'seed share shows what it will upload and asks first. It leaves out saved sign-ins, key files and files that contain something shaped like a token, and lists them; a secret it cannot recognise inside one of your own files still goes. A shared seed is deleted 60 days after its last visit. remote start lets the holder of the code run commands and read files here.'
       + (s.secrets.remoteCode ? ' A remote code is saved in this tab.' : ''),
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
-    carries: included,
+    // seed leaves the saved sign-ins out (src/seed-state.ts); remote start sends none
+    carries: [],
   });
 
   const headline = g
@@ -369,7 +377,7 @@ export function dataFlowActions(s: DataFlowState): { actions: DataFlowAction[]; 
   // (a no-network guest has no relay, the user's own included: nothing to set there)
   if (!(s.guest && !s.guest.network)) actions.push(s.ui === 'desktop'
     ? { id: 'network', label: 'Network Settings…', why: 'Use a relay you run for programs\' connections. The API, GitHub and download paths stay on this site\'s server.' }
-    : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network; the terminal UI always uses this site\'s.' });
+    : { id: 'network', label: 'Network Settings…', why: 'A relay of your own is set in the desktop\'s Settings → Network (there is no command for it); the terminal UI then uses it too.' });
   if (s.secrets.github || s.secrets.claude) {
     actions.push({
       id: 'accounts', label: 'Accounts…',
@@ -438,43 +446,33 @@ export function dataFlowText(s: DataFlowState, width = 80): string {
 
 interface CredentialFs { readFile(path: string, encoding: 'utf8'): Promise<unknown> }
 
-const API_KEYS: [string, string[]][] = [
-  ['Anthropic', ['tabcomputer_anthropic_key', 'tabcomputer_api_key']],
-  ['OpenAI', ['tabcomputer_openai_key']],
-  ['Google', ['tabcomputer_google_key']],
-];
+// Where sign-ins live is one list (src/credentials.ts), shared with what `seed` leaves out
 
 function has(key: string): boolean {
   try { return !!localStorage.getItem(key); } catch { return false; }
 }
 
-/** Ask this site's relay for a token: 'on' when it issues one. Sends no credential. */
-async function probeSiteRelay(fetchImpl: typeof fetch, timeoutMs = 3000): Promise<'on' | 'off' | 'unknown'> {
-  try {
-    const r = await fetchImpl('/tcp/token', { method: 'POST', credentials: 'omit', signal: AbortSignal.timeout(timeoutMs) });
-    // A server without the relay answers this path with the app shell, or a 404
-    if (r.status === 401) return 'on';
-    if (!r.ok) return r.status === 404 ? 'off' : 'unknown';
-    const j = await r.json().catch(() => null);
-    return j && typeof j.token === 'string' ? 'on' : 'off';
-  } catch { return 'unknown'; }
+/** Ask this site's relay for a token: 'on' when it issues one or wants a sign-in first. Sends no credential. */
+async function probeSiteRelay(fetchImpl: typeof fetch, probe: typeof import('./net-signin').probeRelayToken, timeoutMs = 3000): Promise<{ relay: 'on' | 'off' | 'unknown'; signin: boolean }> {
+  const r = await probe('/tcp/token', { fetch: fetchImpl, timeoutMs });
+  return { relay: r === 'on' || r === 'signin' ? 'on' : r === 'off' ? 'off' : 'unknown', signin: r === 'signin' };
 }
 
 /** What this tab is and holds, as presence only. */
 export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desktop' | 'terminal'; fetch?: typeof fetch } = {}): Promise<DataFlowInputs> {
-  const [{ guestInfo, guestConfig }, { ownRelay }, { hasClaudeCredentials }] = await Promise.all([
+  const [{ guestInfo, guestConfig }, { ownRelay, probeRelayToken }, { hasClaudeCredentials }] = await Promise.all([
     import('./guest'), import('./net-signin'), import('./claude-signin'),
   ]);
   const guest = guestInfo();
   const fetchImpl = opts.fetch ?? fetch;
   const ui = opts.ui ?? ((await import('./ui-mode')).uiMode());
   const own = ownRelay();
-  const skipProbe = !!guest?.noNetwork || (!!own && ui === 'desktop');
+  const skipProbe = !!guest?.noNetwork || !!own;
   const [cfg, claude, persisted, siteRelay] = await Promise.all([
     guestConfig(),
     hasClaudeCredentials(fs as never).catch(() => false),
     (async () => { try { return (await navigator.storage?.persisted?.()) ?? null; } catch { return null; } })(),
-    skipProbe ? Promise.resolve('unknown' as const) : probeSiteRelay(fetchImpl),
+    skipProbe ? Promise.resolve({ relay: 'unknown' as const, signin: false }) : probeSiteRelay(fetchImpl, probeRelayToken),
   ]);
   const same = !!guest && !!cfg.guest && cfg.guest.name === guest.name && cfg.guest.noNetwork === guest.noNetwork && cfg.guest.ephemeral === guest.ephemeral;
   return {
@@ -483,12 +481,14 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     guest: guest ? { name: guest.name, ephemeral: guest.ephemeral, noNetwork: guest.noNetwork } : null,
     guestEnforced: !!cfg.enforced && same,
     guestsOffered: guest ? null : !!cfg.origin,
-    github: has('tabcomputer_github_token'),
+    github: has(GITHUB_TOKEN_STORAGE_KEY),
     claude,
-    apiKeys: API_KEYS.filter(([, keys]) => keys.some(has)).map(([name]) => name),
-    remoteCode: has('tabcomputer-remote-code'),
+    apiKeys: API_KEY_PROVIDERS.filter(([, keys]) => keys.some(has)).map(([name]) => name),
+    remoteCode: has(REMOTE_CODE_STORAGE_KEY),
     ownRelayUrl: own?.url ?? null,
-    siteRelay,
+    ownRelaySignin: own?.sendSignin === true,
+    siteRelay: siteRelay.relay,
+    siteRelaySignin: siteRelay.signin,
     persisted,
   };
 }

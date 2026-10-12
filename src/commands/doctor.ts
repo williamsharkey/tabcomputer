@@ -140,9 +140,16 @@ async function relayChecks(ctx: CommandContext): Promise<Check[]> {
     const url = own ? own.tokenUrl : '/tcp/token';
     if (!url) out.push({ label: 'relay token', status: 'OK', detail: `own relay ${own!.url} (no token URL)` });
     else {
-      const r = await fetch(url, { method: 'POST', credentials: own ? 'omit' : 'same-origin', ...(cred && !own ? { headers: { Authorization: `Bearer ${cred}` } } : {}) });
-      const why = r.status === 401 ? ' (sign in to use the internet: the globe icon in the menu bar)' : r.status === 404 ? ' (this server has no internet relay)' : '';
-      out.push({ label: 'relay token', status: r.ok ? 'OK' : r.status === 401 ? 'WARN' : 'FAIL', detail: `${own ? `own relay ${own.url}: ` : ''}POST ${url} → ${r.status}${why}, ${ms(t0)}` });
+      // As the kernel asks (relayToken): without the sign-in, and with it only after a 401
+      const ask = (withCred: boolean) => fetch(url, { method: 'POST', credentials: own ? 'omit' : 'same-origin', ...(withCred ? { headers: { Authorization: `Bearer ${cred}` } } : {}) });
+      let r = await ask(false);
+      if (r.status === 401 && cred && (own ? own.sendSignin === true : true)) r = await ask(true);
+      // A 2xx is not a relay by itself: a server without one answers this path with the app shell
+      const issued = r.ok && typeof (await r.clone().json().catch(() => null))?.token === 'string';
+      const why = r.status === 401 ? ' (sign in to use the internet: the globe icon in the menu bar)'
+        : r.status === 404 ? ' (this server has no internet relay)'
+        : r.ok && !issued ? ' but no token (this server has no internet relay: the path answered with something else)' : '';
+      out.push({ label: 'relay token', status: issued ? 'OK' : r.status === 401 ? 'WARN' : 'FAIL', detail: `${own ? `own relay ${own.url}: ` : ''}POST ${url} → ${r.status}${why}, ${ms(t0)}` });
     }
   } catch (e: any) {
     out.push({ label: 'relay token', status: 'FAIL', detail: `request failed: ${e?.message ?? e}` });

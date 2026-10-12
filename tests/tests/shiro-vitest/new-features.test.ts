@@ -79,6 +79,8 @@ describe('seed share — upload state and get shareable URL', () => {
           json: async () => ({ id: 'abc12345', url: '/s/abc12345' }),
         };
       }
+      // the server says it keeps shared seeds (TABCOMPUTER_SEED_SHARE=1)
+      if (typeof url === 'string' && url.endsWith('/api/seed')) return { ok: true, json: async () => ({ enabled: true, maxBytes: 524288, keepDays: 60 }) };
       return { ok: true, text: async () => '/* mock */' };
     };
   });
@@ -89,28 +91,28 @@ describe('seed share — upload state and get shareable URL', () => {
   });
 
   it('should exit 0 and output URL + clipboard message', async () => {
-    const { output, exitCode } = await run(shell, 'seed share');
+    const { output, exitCode } = await run(shell, 'seed share --yes');
     expect(exitCode).toBe(0);
     expect(output).toContain('/s/abc12345');
     expect(output).toContain('URL copied to clipboard');
   });
 
   it('should show file and directory stats', async () => {
-    const { output } = await run(shell, 'seed share');
+    const { output } = await run(shell, 'seed share --yes');
     expect(output).toContain('Files:');
     expect(output).toContain('Directories:');
     expect(output).toContain('Compressed:');
   });
 
   it('should POST to /api/seed with correct content type', async () => {
-    await run(shell, 'seed share');
+    await run(shell, 'seed share --yes');
     const seedPost = fetchCalls.find(c => c.url.includes('/api/seed') && c.opts?.method === 'POST');
     expect(seedPost).toBeTruthy();
     expect(seedPost!.opts.headers['Content-Type']).toBe('application/octet-stream');
   });
 
   it('should POST a gzip-compressed body', async () => {
-    await run(shell, 'seed share');
+    await run(shell, 'seed share --yes');
     const seedPost = fetchCalls.find(c => c.url.includes('/api/seed') && c.opts?.method === 'POST');
     expect(seedPost).toBeTruthy();
     const body = seedPost!.opts.body;
@@ -121,7 +123,7 @@ describe('seed share — upload state and get shareable URL', () => {
   });
 
   it('should decompress to a valid seed envelope with ndjson and storage', async () => {
-    await run(shell, 'seed share');
+    await run(shell, 'seed share --yes');
     const seedPost = fetchCalls.find(c => c.url.includes('/api/seed') && c.opts?.method === 'POST');
     const compressed = seedPost!.opts.body as Uint8Array;
 
@@ -151,12 +153,13 @@ describe('seed share — upload state and get shareable URL', () => {
   });
 
   it('should copy URL to clipboard', async () => {
-    await run(shell, 'seed share');
+    await run(shell, 'seed share --yes');
     expect(lastClipboardText).toContain('/s/abc12345');
   });
 
   it('should handle server error (non-ok response)', async () => {
     (globalThis as any).fetch = async (url: string, opts?: any) => {
+      if (typeof url === 'string' && url.endsWith('/api/seed') && opts?.method !== 'POST') return { ok: true, json: async () => ({ enabled: true }) };
       if (typeof url === 'string' && url.includes('/api/seed') && opts?.method === 'POST') {
         return {
           ok: false,
@@ -168,15 +171,24 @@ describe('seed share — upload state and get shareable URL', () => {
       return { ok: true, text: async () => '' };
     };
 
-    const { exitCode, output } = await run(shell, 'seed share');
+    const { exitCode, output } = await run(shell, 'seed share --yes');
     expect(exitCode).toBe(1);
     expect(output).toContain('Rate limited');
   });
 
-  it('should warn when API keys are detected', async () => {
+  it('leaves a saved API key out, and says so (seed-credentials.test.ts has the rest)', async () => {
     localStorage.setItem('tabcomputer_api_key', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-    const { output } = await run(shell, 'seed share');
-    expect(output).toContain('API keys detected');
+    const { output } = await run(shell, 'seed share --yes');
+    expect(output).toContain('Left out (a seed carries no credentials):');
+    expect(output).toContain('Anthropic API key (tabcomputer_api_key)');
+    expect(output).not.toContain('sk-ant-api03');
+  });
+
+  it('uploads nothing without a yes', async () => {
+    const { exitCode, output } = await run(shell, 'seed share');
+    expect(exitCode).toBe(1);
+    expect(output).toContain('Anyone with the link can download all of it.');
+    expect(output).toContain('nothing was uploaded');
   });
 });
 

@@ -98,6 +98,37 @@ export function onNetworkStatus(cb: (s: NetworkStatus) => void): () => void {
   return () => { statusListeners.delete(cb); };
 }
 
+/**
+ * What a relay's token endpoint said:
+ *   'on'      it issued a token ({token: string} as JSON);
+ *   'signin'  it wants a sign-in first (401);
+ *   'refused' it is a relay but not for this page (403: origin not allowed, a no-network guest);
+ *   'off'     there is no relay there: a 404, or an answer that is not a token.
+ *             A server without the relay answers /tcp/token with the app shell
+ *             (200, text/html), so a 2xx alone says nothing;
+ *   'unknown' no answer, or one that says neither.
+ */
+export type RelayProbe = 'on' | 'signin' | 'refused' | 'off' | 'unknown';
+
+/** Ask a relay's token endpoint for a token, to learn whether a relay is there. */
+export async function probeRelayToken(tokenUrl: string, opts: { fetch?: typeof fetch; credential?: string | null; timeoutMs?: number } = {}): Promise<RelayProbe> {
+  const f = opts.fetch ?? fetch;
+  let res: Response;
+  try {
+    res = await f(tokenUrl, {
+      method: 'POST', credentials: 'omit',
+      ...(opts.credential ? { headers: { Authorization: `Bearer ${opts.credential}` } } : {}),
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+    });
+  } catch { return 'unknown'; }
+  if (res.status === 401) return 'signin';
+  if (res.status === 403) return 'refused';
+  if (res.status === 404) return 'off';
+  if (!res.ok) return 'unknown';
+  const j = await res.json().catch(() => null);
+  return j && typeof j.token === 'string' && j.token ? 'on' : 'off';
+}
+
 // Other bundles (seeded pages, worker hosts) reach it without importing
 (globalThis as any).__shiroRequireNetwork = requireNetworkSignIn;
 
@@ -107,8 +138,17 @@ export function onNetworkStatus(cb: (s: NetworkStatus) => void): () => void {
 export interface OwnRelay {
   /** ws:// or wss:// URL of a TCP relay speaking docs/NETWORKING.md's protocol */
   url: string;
-  /** POST endpoint returning {token, expires}, if that relay wants one */
+  /**
+   * POST endpoint returning {token, expires}. Optional: without it,
+   * relayTokenUrlFor(url) is tried (where server.mjs has it), and a relay with
+   * nothing there is used without a token.
+   */
   tokenUrl?: string;
+  /**
+   * The user said this relay may have their GitHub sign-in when it asks for
+   * one (its token endpoint answers 401 signin_required). Off unless set.
+   */
+  sendSignin?: boolean;
 }
 
 const RELAY_KEY = 'tabcomputer_relay';
@@ -118,7 +158,8 @@ const relayListeners = new Set<(r: OwnRelay | null) => void>();
 export function ownRelay(): OwnRelay | null {
   try {
     const r = JSON.parse(localStorage.getItem(RELAY_KEY) || 'null');
-    return r && typeof r.url === 'string' && /^wss?:\/\//.test(r.url) ? { url: r.url, ...(r.tokenUrl ? { tokenUrl: String(r.tokenUrl) } : {}) } : null;
+    return r && typeof r.url === 'string' && /^wss?:\/\//.test(r.url)
+      ? { url: r.url, ...(r.tokenUrl ? { tokenUrl: String(r.tokenUrl) } : {}), ...(r.sendSignin === true ? { sendSignin: true } : {}) } : null;
   } catch { return null; }
 }
 
@@ -134,6 +175,19 @@ export function setOwnRelay(r: OwnRelay | null): void {
   for (const cb of relayListeners) { try { cb(r); } catch {} }
 }
 
+/**
+ * Where server.mjs serves tokens for a relay URL: `/token` next to it over
+ * http(s) (wss://host/tcp → https://host/tcp/token). null for a URL that is
+ * not ws(s).
+ */
+export function relayTokenUrlFor(relayUrl: string): string | null {
+  try {
+    const u = new URL(relayUrl);
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;
+    return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}${u.pathname.replace(/\/+$/, '')}/token`;
+  } catch { return null; }
+}
+
 export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
   relayListeners.add(cb);
   return () => { relayListeners.delete(cb); };
@@ -141,13 +195,20 @@ export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
 
 /**
  * NetStack settings for the current choice: the user's relay (no token unless
- * they gave a URL, and never their GitHub sign-in), or this site's /tcp.
+ * they gave a URL, and their GitHub sign-in only if they turned that on for
+ * it), or this site's /tcp. `credentials` allows the sign-in to be sent once
+ * the relay's token endpoint has answered 401 signin_required, never before.
  */
-export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean } {
+export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean; tokenOptional?: boolean } {
   // A no-network guest (src/guest.ts) has no relay, the user's own included
   if (guestInfo()?.noNetwork) return { relayUrl: null, tokenUrl: null, credentials: false };
   const own = ownRelay();
-  if (own) return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? null, credentials: false };
+  if (own) {
+    // No token URL given: the one server.mjs has next to its relay is tried, and
+    // a relay that has none there is used without a token (NetConfig.tokenOptional)
+    const guess = own.tokenUrl ? null : relayTokenUrlFor(own.url);
+    return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? guess, credentials: own.sendSignin === true, ...(guess ? { tokenOptional: true } : {}) };
+  }
   const web = (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host;
   return {
     relayUrl: web ? `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/tcp` : null,

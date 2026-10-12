@@ -78,8 +78,13 @@ await sh(page, 'remote start');
 const code = await page.evaluate(() => localStorage.getItem('tabcomputer-remote-code'));
 check(!!code, 'remote start registered a code');
 await wait(6000); // ICE gathering (up to 5 s) before the offer is posted
-const offer = await (await fetch(`${origin}/offer/${code}`)).json();
+// The code is <id>#<secret>; the server is given the id and holds a sealed offer
+const [codeId, codeSecret] = String(code).split('#');
+check(/^[a-z]+-[a-z]+-[a-z]+$/.test(codeId) && /^[a-z2-7]{26}$/.test(codeSecret ?? ''), 'the code is <id>#<secret>');
+const offer = await (await fetch(`${origin}/offer/${codeId}?v=3`)).json();
+check(offer.v === 3 && typeof offer.sealed === 'string' && !('offer' in offer), 'the server holds a sealed offer, not the SDP');
 check(offer.relay && /^[a-f0-9]{32}$/.test(offer.relay.id), 'the offer names a relay mailbox');
+check((await fetch(`${origin}/offer/${codeId}`)).status === 426, 'a client from before protocol 3 is told to update');
 
 const { mcp, call, tool } = startMcp();
 await call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'remote-relay-check', version: '0' } });

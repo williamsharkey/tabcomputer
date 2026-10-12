@@ -4,19 +4,21 @@
 // captures a burst: two diags 10 s apart, `watchdog --json`, dmesg, /proc of the pids.
 // Never runs anything else in the tab.
 //   cd shiro-mcp && npm ci && npm run build
-//   NODE_USE_ENV_PROXY=1 node monitor.mjs <code> diag.jsonl   (exits 2 when the relay closes)
+//   NODE_USE_ENV_PROXY=1 node monitor.mjs '<code>' diag.jsonl   (exits 2 when the relay closes)
 import fs from 'node:fs';
-const { RelayChannel } = await import(new URL('./dist/relay.js', import.meta.url).href);
+const { RelayChannel, parseRemoteCode, fetchOffer, sendAnswer } = await import(new URL('./dist/relay.js', import.meta.url).href);
 const [code, logPath] = process.argv.slice(2);
 const BASE = process.env.TABCOMPUTER_SIGNALING_URL || 'https://tabcomputer.com';
 const log = (o) => fs.appendFileSync(logPath, JSON.stringify({ t: new Date().toISOString(), ...o }) + '\n');
 const say = (s) => console.log(`${new Date().toISOString().slice(11, 19)} ${s}`);
 
-const offer = await (await fetch(`${BASE}/offer/${code}`)).json();
-if (!offer.relay) { say(`no relay in offer: ${JSON.stringify(offer).slice(0, 200)}`); process.exit(1); }
-const ans = await fetch(`${BASE}/answer/${code}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: { type: 'relay', v: offer.relay.v === 2 ? 2 : 1 }, candidates: [] }) });
-if (!ans.ok) { say(`answer refused ${ans.status}`); process.exit(1); }
-const ch = new RelayChannel({ base: BASE, info: offer.relay, code, as: 'peer', log: (m) => say(`[relay] ${m}`) });
+// The code is <id>#<secret>: the server gets the id; the offer, the answer and every message are sealed with the secret
+let parts, offer;
+try { parts = parseRemoteCode(code); offer = await fetchOffer(BASE, parts); } catch (e) { say(e.message); process.exit(1); }
+if (!offer) { say(`code not found: ${parts.id}`); process.exit(1); }
+if (!offer.relay) { say('this tab does not offer the HTTPS relay (remote start --relay)'); process.exit(1); }
+try { await sendAnswer(BASE, parts, { answer: { type: 'relay', v: offer.relay.v === 2 ? 2 : 1 }, candidates: [] }); } catch (e) { say(`answer refused: ${e.message}`); process.exit(1); }
+const ch = new RelayChannel({ base: BASE, info: offer.relay, secret: parts.secret, as: 'peer', log: (m) => say(`[relay] ${m}`) });
 const pending = new Map(); let n = 0;
 ch.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } const p = m.requestId && pending.get(m.requestId); if (p) { pending.delete(m.requestId); p(m); } else if (m.type === 'user_message') say(`user: ${m.message}`); };
 ch.onclose = () => { say('CONNECTION CLOSED'); log({ event: 'closed' }); process.exit(2); };

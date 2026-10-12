@@ -758,27 +758,89 @@ describe('seed blob — self-contained clipboard snippet', () => {
   });
 });
 
-describe('seed — API key detection', () => {
+describe('seed — credentials stay behind in every form', () => {
+  // (seed share, the report and the import side: seed-credentials.test.ts)
   let shell: Shell;
+  let fs: FileSystem;
+  const KEY = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const CREDS = '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-BBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}';
+  const REMOTE = 'fluffy-cloud-shimutako#abcdefghijklmnopqrstuvwxyz';
+  const carries = (text: string) => [KEY, CREDS, btoa(CREDS), 'sk-ant-oat01-BBBB', REMOTE].filter((x) => text.includes(x));
 
   beforeEach(async () => {
     const env = await createSeedTestEnv();
     shell = env.shell;
+    fs = env.fs;
     installClipboardMock();
+    installDownloadCapture();
+    installShiroMock();
+    await fs.mkdir('/home/user/.claude', { recursive: true });
+    await fs.writeFile('/home/user/.claude/.credentials.json', CREDS);
+    localStorage.setItem('tabcomputer_api_key', KEY);
+    localStorage.setItem('wal:/home/user/.claude/.credentials.json', CREDS);
+    localStorage.setItem('tabcomputer-remote-code', REMOTE);
+    (globalThis as any).fetch = async () => ({ text: async () => '<!DOCTYPE html><html><head></head><body><div id="terminal"></div></body></html>', ok: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    teardownDownloadCapture();
     localStorage.clear();
+    delete (globalThis as any).fetch;
+    delete (window as any).__tabcomputer;
+    await fs.rm('/home/user/.claude', { recursive: true }).catch(() => {});
   });
 
-  it('should warn when API keys are detected in localStorage', async () => {
-    localStorage.setItem('tabcomputer_api_key', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-    const { output } = await run(shell, 'seed');
-    expect(output).toContain('API keys detected');
+  it('seed: the snippet has none, and the output names what was left out', async () => {
+    const { output, exitCode } = await run(shell, 'seed');
+    expect(exitCode).toBe(0);
+    expect(carries(lastClipboardText!)).toEqual([]);
+    expect(output).toContain('Left out (a seed carries no credentials):');
+    expect(output).toContain('/home/user/.claude/.credentials.json  (Claude credentials)');
+    expect(output).toContain('Anthropic API key (tabcomputer_api_key)');
+    expect(carries(output)).toEqual([]);
   });
 
-  it('should not warn when no API keys are present', async () => {
+  it('seed blob: none in the compressed state either', async () => {
+    const { output, exitCode } = await run(shell, 'seed blob');
+    expect(exitCode).toBe(0);
+    const parts = [...lastClipboardText!.matchAll(/_dc\('([A-Za-z0-9+/=]+)'\)/g)].map((m) => m[1]);
+    expect(parts.length).toBe(3);
+    const text = (await Promise.all(parts.map(decompressB64))).join('\n');
+    expect(text).toContain('/home/user/project/hello.txt');
+    expect(carries(text)).toEqual([]);
+    expect(text).not.toContain('.credentials.json');
+    expect(output).toContain("that site's scripts can read these files");
+  });
+
+  it('seed gif and seed html: none in the file', async () => {
+    expect((await run(shell, 'seed gif')).exitCode).toBe(0);
+    const seed = await extractShiroSeed(await blobToUint8Array(lastDownloadBlob!));
+    expect(carries(seed!.ndjson + seed!.storage)).toEqual([]);
+    expect(seed!.ndjson).not.toContain('.credentials.json');
+
+    expect((await run(shell, 'seed html')).exitCode).toBe(0);
+    const html = await blobToText(lastDownloadBlob!);
+    const packed = [...html.matchAll(/_dc\('([A-Za-z0-9+/=]+)'\)/g)].map((m) => m[1]);
+    expect(packed.length).toBe(2);
+    expect(carries((await Promise.all(packed.map(decompressB64))).join('\n'))).toEqual([]);
+  });
+
+  it('seed gif --with-credentials: they are in, with a blunt warning, and never the remote code', async () => {
+    const { output, exitCode } = await run(shell, 'seed gif --with-credentials');
+    expect(exitCode).toBe(0);
+    const seed = await extractShiroSeed(await blobToUint8Array(lastDownloadBlob!));
+    expect(seed!.ndjson).toContain(btoa(CREDS));
+    expect(seed!.storage).toContain(KEY);
+    expect(seed!.storage).not.toContain(REMOTE);
+    expect(output).toContain('WARNING: this seed carries your credentials.');
+    expect(carries(output)).toEqual([]);
+  });
+
+  it('says so when there was nothing to leave out', async () => {
+    localStorage.clear();
+    await fs.rm('/home/user/.claude', { recursive: true });
     const { output } = await run(shell, 'seed');
-    expect(output).not.toContain('API keys detected');
+    expect(output).not.toContain('saved in the browser');
+    expect(output).not.toContain('WARNING');
   });
 });

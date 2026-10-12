@@ -80,7 +80,7 @@ import { hotswap } from './hotswap/swap';
 import { liveModule, trackInstance } from './hotswap/live';
 import { startDisplay } from './x11/display';
 import { startGLServer, getGLServer } from './gl/server';
-import { installNet } from './kernel/net';
+import { installNet, followRelaySetting } from './kernel/net';
 import { attachKernelTty } from './kernel/pty';
 import { sudoCmd } from './commands/sudo';
 import { shiroAptCmd, shiroAptMethodCmd, shiroAptStoreCmd, shiroPreconfigureCmd } from './commands/debian';
@@ -207,13 +207,9 @@ async function main() {
           ...n,
           content: n.content ? Uint8Array.from(atob(n.content), (c: string) => c.charCodeAt(0)) : null,
         }));
-        await fs.importAll(decoded);
-        // Restore localStorage
-        if (storage) {
-          for (const [key, value] of Object.entries(storage)) {
-            localStorage.setItem(key, value as string);
-          }
-        }
+        // The files are replaced; this profile's own sign-ins are not (src/seed-state.ts)
+        const { importSeedState } = await import('./seed-state');
+        await importSeedState(fs, decoded, storage);
         if (context) {
           try {
             sessionStorage.setItem(SHIRO_RUNTIME_CONTEXT_SESSION_KEY, JSON.stringify(context));
@@ -230,36 +226,9 @@ async function main() {
     if (e.data && e.data.type === 'shiro-seed-v2') {
       try {
         const { ndjson, storage, context } = e.data;
-        const lines = ndjson.split('\n');
-        const nodes: any[] = [];
-        const BATCH_SIZE = 100;
-
-        // Parse NDJSON incrementally
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-
-          const node = JSON.parse(line);
-          nodes.push({
-            ...node,
-            content: node.content ? Uint8Array.from(atob(node.content), (c: string) => c.charCodeAt(0)) : null,
-          });
-
-          // Yield to browser every BATCH_SIZE entries
-          if (nodes.length % BATCH_SIZE === 0) {
-            await new Promise(r => setTimeout(r, 0));
-          }
-        }
-
-        await fs.importAll(nodes);
-
-        // Restore localStorage
-        if (storage) {
-          const storageObj = typeof storage === 'string' ? JSON.parse(storage) : storage;
-          for (const [key, value] of Object.entries(storageObj)) {
-            localStorage.setItem(key, value as string);
-          }
-        }
+        // The files are replaced; this profile's own sign-ins are not (src/seed-state.ts)
+        const { importSeedState, parseSeedNdjson } = await import('./seed-state');
+        await importSeedState(fs, await parseSeedNdjson(ndjson), storage);
         if (context) {
           try {
             sessionStorage.setItem(SHIRO_RUNTIME_CONTEXT_SESSION_KEY, JSON.stringify(context));
@@ -605,6 +574,8 @@ async function main() {
   (window as any).__tabcomputerKernel = kernel;
   kernel.attach(fs, shell);
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
+  // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
+  followRelaySetting(kernel);
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)
   const blinkLoader = import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
   // TABCOMPUTER_NODE_WORKER=1: node the kernel starts (sh -c, #! scripts) runs as a guest
@@ -905,27 +876,20 @@ async function main() {
         const full = await pipeBytes(compressed, new DecompressionStream('gzip'));
         const envelope = JSON.parse(new TextDecoder().decode(full));
 
-        // Hydrate filesystem
-        const lines = envelope.ndjson.split('\n');
-        const nodes: any[] = [];
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const node = JSON.parse(trimmed);
-          nodes.push({
-            ...node,
-            content: node.content ? Uint8Array.from(atob(node.content), (c: string) => c.charCodeAt(0)) : null,
-          });
+        // Where the server has guests, a /s/ link was sent to a guest of its own before
+        // this (bootGuest, src/guest.ts). On a server without them it lands here, in the
+        // profile itself: then a link must not replace the machine by itself. Its files
+        // (startup scripts among them) would run next to whatever the profile is signed in to.
+        const { importSeedState, parseSeedNdjson, sharedSeedQuestion } = await import('./seed-state');
+        if (!guest && !window.confirm(sharedSeedQuestion(seedId, envelope))) {
+          terminal.term.writeln('Not loaded. Nothing was changed.');
+          history.replaceState(null, '', '/');
+          throw Object.assign(new Error('declined'), { declined: true });
         }
-        await fs.importAll(nodes);
 
-        // Restore localStorage
-        if (envelope.storage) {
-          const storageObj = typeof envelope.storage === 'string' ? JSON.parse(envelope.storage) : envelope.storage;
-          for (const [key, value] of Object.entries(storageObj)) {
-            localStorage.setItem(key, value as string);
-          }
-        }
+        // Hydrate the filesystem; this profile's own sign-ins stay (src/seed-state.ts)
+        const kept = await importSeedState(fs, await parseSeedNdjson(envelope.ndjson), envelope.storage);
+        if (kept.keptFiles.length || kept.skippedStorage.length) console.log(`[seed] kept this profile's sign-ins: ${[...kept.keptFiles, ...kept.skippedStorage].join(', ')}`);
 
         terminal.term.writeln(`Loaded ${envelope.files} files. Reloading...`);
         // Redirect to root so we don't re-import on reload
@@ -935,7 +899,7 @@ async function main() {
         terminal.term.writeln(`Seed not found (${res.status})`);
       }
     } catch (e: any) {
-      terminal.term.writeln(`Failed to load seed: ${e.message}`);
+      if (!e?.declined) terminal.term.writeln(`Failed to load seed: ${e.message}`);
     }
   }
 

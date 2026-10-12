@@ -17,7 +17,7 @@
  * Errors are negative Linux errno values, as everywhere in the kernel ABI.
  */
 
-import { networkCredential, requireNetworkSignIn, setNetworkStatus } from '../net-signin';
+import { networkCredential, requireNetworkSignIn, setNetworkStatus, relayNetConfig, onOwnRelayChange } from '../net-signin';
 import { guestInfo } from '../guest';
 import type { KStat } from './abi';
 import { retain, release, type FdTable, type OpenFile } from './fd';
@@ -100,6 +100,12 @@ export interface NetConfig {
   relayUrl: string | null;
   /** POST endpoint that returns {token, expires}; null = connect without a token. */
   tokenUrl: string | null;
+  /**
+   * tokenUrl is a guess (the user gave a relay URL and no token URL, so it is
+   * where server.mjs would have one): when nothing there issues a token, connect
+   * without one instead of failing. A 401 or 403 from it is still a refusal.
+   */
+  tokenOptional?: boolean;
   /** DNS-over-HTTPS endpoint (RFC 8484) used for UDP/53 and as a resolver fallback. */
   dohUrl: string | null;
   WebSocket?: typeof WebSocket;
@@ -117,11 +123,18 @@ export interface NetConfig {
   /** Send loopback connects with no kernel listener to the relay (tests, dev relays that allow 127.0.0.1). */
   relayLoopback: boolean;
   /**
-   * Send the saved sign-in (src/net-signin.ts) with token requests and ask for
-   * one on 401. Only for this site's own relay: a relay the user chose
-   * ("Use my own connection") must never receive their GitHub token.
+   * This relay may be given the saved sign-in (src/net-signin.ts): when its
+   * token endpoint answers 401 signin_required, the request is repeated with
+   * it (or the user is asked to sign in). Never sent before that. True for
+   * this site's own relay; a relay the user chose ("Use my own connection")
+   * gets it only if they turned that on for it (OwnRelay.sendSignin).
    */
   credentials: boolean;
+}
+
+/** A token endpoint's 401 that asks for a sign-in ({error: 'signin_required'}, server.mjs handleToken) */
+async function saysSigninRequired(res: Response): Promise<boolean> {
+  try { return (await res.clone().json())?.error === 'signin_required'; } catch { return false; }
 }
 
 function defaultConfig(): NetConfig {
@@ -1395,11 +1408,14 @@ export class NetStack {
   private nextEphemeral = 32768;
   nextIno = 1;
   private token: { token: string; expires: number } | null = null;
+  /** The token endpoint answered 401 signin_required: later requests carry the sign-in at once */
+  private signinRequired = false;
   private portHostPromise: Promise<PortHost | null> | null = null;
 
   configure(c: Partial<NetConfig>): void {
     this.config = { ...this.config, ...c };
     this.token = null;
+    this.signinRequired = false;
     if ('portHost' in c) this.portHostPromise = null;
   }
 
@@ -1681,9 +1697,8 @@ export class NetStack {
   private async relayToken(): Promise<string | null> {
     const { tokenUrl } = this.config;
     if (!tokenUrl) return null;
-    if (this.token && this.token.expires - 30_000 > Date.now()) return this.token.token;
+    if (this.token && this.token.expires - 30_000 > Date.now()) return this.token.token || null;
     const f = this.config.fetch ?? fetch;
-    // A saved sign-in goes along, so a relay that requires one connects silently
     const post = (cred: string | null) => f(tokenUrl, {
       method: 'POST', credentials: 'same-origin' as RequestCredentials,
       ...(cred ? { headers: { Authorization: `Bearer ${cred}` } } : {}),
@@ -1694,10 +1709,29 @@ export class NetStack {
         throw new Error(`token request failed: ${(e as Error)?.message ?? e}`);
       }
     };
-    let res = await fetchToken(own ? networkCredential() : null);
+    let first: Response | null = null;
+    if (this.config.tokenOptional) {
+      // A guessed token URL: no relay token there (unreachable, a 404, an answer
+      // that is not a token) means this relay takes connections without one
+      const guess = await post(null).catch(() => null);
+      const issued = guess?.ok ? await guess.clone().json().catch(() => null) : null;
+      if (!guess || (guess.status !== 401 && guess.status !== 403 && typeof issued?.token !== 'string')) {
+        this.token = { token: '', expires: Date.now() + 10 * 60_000 };
+        setNetworkStatus('online');
+        return null;
+      }
+      first = guess;
+    }
+    // The saved sign-in (a GitHub token) is sent only to a relay that said it
+    // requires one: the first request goes without it, and a 401
+    // signin_required (server.mjs with TABCOMPUTER_TCP_REQUIRE_SIGNIN=1) is
+    // what brings it along, then and for later requests. A relay that issues
+    // tokens to anyone never sees it.
+    let res = first ?? await fetchToken(own && this.signinRequired ? networkCredential() : null);
     let signedIn = false;
-    if (res.status === 401 && own) {
-      // The relay wants a signed-in user: ask once (src/net-signin.ts), then retry
+    if (res.status === 401 && own && (this.signinRequired || await saysSigninRequired(res))) {
+      this.signinRequired = true;
+      // The relay wants a signed-in user: the saved one, or ask once (src/net-signin.ts), then retry
       const cred = await requireNetworkSignIn({ reason: 'A program wants to connect to the internet' });
       if (!cred) { setNetworkStatus('needs-sign-in'); throw new Error('sign-in required (token 401)'); }
       res = await fetchToken(cred);
@@ -2111,6 +2145,18 @@ export async function netSyscall(
 
 /** Route the kernel's socket syscalls to `stack`; EPIPE without MSG_NOSIGNAL raises SIGPIPE. Returns the unregister function. */
 const installedStacks = new WeakMap<Kernel, NetStack>();
+
+/**
+ * Point the kernel's sockets at the relay chosen in Settings → Network (the
+ * user's own, or this site's), now and each time the choice changes. Boot
+ * calls it for both UIs (the setting is one localStorage key, whichever UI
+ * saved it). Returns a function that stops following.
+ */
+export function followRelaySetting(kernel: Kernel): () => void {
+  const apply = () => { netStackOf(kernel)?.configure(relayNetConfig()); };
+  apply();
+  return onOwnRelayChange(apply);
+}
 
 export function installNet(kernel: Kernel, stack: NetStack = netStack): () => void {
   installedStacks.set(kernel, stack);

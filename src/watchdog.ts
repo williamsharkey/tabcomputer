@@ -244,7 +244,7 @@ let relayProxy: WorkerRelay | null = null;
  * even while this page is frozen. Null when the worker isn't running (then
  * the caller runs the relay in the page).
  */
-export function workerRelay(opts: { base: string; info: RelayInfo; code: string }): WorkerRelay | null {
+export function workerRelay(opts: { base: string; info: RelayInfo; secret: string }): WorkerRelay | null {
   const w = watchWorker;
   if (!w || !workerAlive) return null;
   if (relayProxy) { const old = relayProxy; relayProxy = null; old.readyState = 'closed'; }

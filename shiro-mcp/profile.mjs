@@ -3,14 +3,14 @@
 // then read it back and write <out> (JSON) and <out>.trace.json (open in
 // https://ui.perfetto.dev or chrome://tracing). Prints the summary.
 //   cd shiro-mcp && npm ci && npm run build
-//   NODE_USE_ENV_PROXY=1 node profile.mjs <code> <out.json> [--seconds 60] [--sample 100]
+//   NODE_USE_ENV_PROXY=1 node profile.mjs '<code>' <out.json> [--seconds 60] [--sample 100]
 //       [--proc claude] [--label TEXT] [--run 'shell command'] [--collect]
 // --run runs the command in the tab's headless shell during the capture and
 // stops the capture when it ends (else after --seconds, or Ctrl-C).
 // --collect only reads the tab's current or last capture (none started).
 // Stop monitor.mjs first: one peer per mailbox.
 import fs from 'node:fs';
-const { RelayChannel } = await import(new URL('./dist/relay.js', import.meta.url).href);
+const { RelayChannel, parseRemoteCode, fetchOffer, sendAnswer } = await import(new URL('./dist/relay.js', import.meta.url).href);
 const { collectProfile, profileToTrace } = await import(new URL('./dist/trace.js', import.meta.url).href);
 
 const argv = process.argv.slice(2);
@@ -23,15 +23,17 @@ const label = opt('--label', undefined);
 const run = opt('--run', undefined);
 const collectOnly = flag('--collect');
 const [code, out] = argv;
-if (!code || !out) { console.error('usage: node profile.mjs <code> <out.json> [--seconds S] [--sample MS] [--proc RE] [--label TEXT] [--run CMD] [--collect]'); process.exit(64); }
+if (!code || !out) { console.error("usage: node profile.mjs '<code>' <out.json> [--seconds S] [--sample MS] [--proc RE] [--label TEXT] [--run CMD] [--collect]"); process.exit(64); }
 const BASE = process.env.TABCOMPUTER_SIGNALING_URL || 'https://tabcomputer.com';
 const say = (s) => console.log(`${new Date().toISOString().slice(11, 19)} ${s}`);
 
-const offer = await (await fetch(`${BASE}/offer/${code}`)).json();
-if (!offer.relay) { say(`no relay in offer: ${JSON.stringify(offer).slice(0, 200)}`); process.exit(1); }
-const ans = await fetch(`${BASE}/answer/${code}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: { type: 'relay', v: offer.relay.v === 2 ? 2 : 1 }, candidates: [] }) });
-if (!ans.ok) { say(`answer refused ${ans.status}`); process.exit(1); }
-const ch = new RelayChannel({ base: BASE, info: offer.relay, code, as: 'peer', log: (m) => say(`[relay] ${m}`) });
+// The code is <id>#<secret>: the server gets the id; the offer, the answer and every message are sealed with the secret
+let parts, offer;
+try { parts = parseRemoteCode(code); offer = await fetchOffer(BASE, parts); } catch (e) { say(e.message); process.exit(1); }
+if (!offer) { say(`code not found: ${parts.id}`); process.exit(1); }
+if (!offer.relay) { say('this tab does not offer the HTTPS relay (remote start --relay)'); process.exit(1); }
+try { await sendAnswer(BASE, parts, { answer: { type: 'relay', v: offer.relay.v === 2 ? 2 : 1 }, candidates: [] }); } catch (e) { say(`answer refused: ${e.message}`); process.exit(1); }
+const ch = new RelayChannel({ base: BASE, info: offer.relay, secret: parts.secret, as: 'peer', log: (m) => say(`[relay] ${m}`) });
 const pending = new Map(); let n = 0;
 ch.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } const p = m.requestId && pending.get(m.requestId); if (p) { pending.delete(m.requestId); p(m); } };
 ch.onclose = () => { say('CONNECTION CLOSED'); process.exit(2); };

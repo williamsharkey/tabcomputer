@@ -3,7 +3,9 @@
 // few seconds into a JSONL log, and serves ad-hoc evals on 127.0.0.1:7788.
 // Console history lives in Shiro itself: curl 'localhost:7788/console?grep=error&limit=50'
 //
-//   cd shiro-mcp && npm install && node probe.mjs <code>   # run (keep in background)
+//   cd shiro-mcp && npm install && npm run build && node probe.mjs '<code>'   # run (keep in background)
+// The code is <id>#<secret> (quote it): only the id goes to the signaling server; the offer and
+// the answer are sealed with the secret (src/relay.ts).
 //   curl -s localhost:7788/eval --data-binary @snippet.js
 import ndc from 'node-datachannel';
 import http from 'node:http';
@@ -13,7 +15,14 @@ const CODE = process.argv[2];
 const SIGNAL = process.env.TABCOMPUTER_SIGNALING_URL || 'https://shiro.computer';
 const LOG = process.env.PROBE_LOG || 'probe.jsonl';
 const INTERVAL = +(process.env.PROBE_INTERVAL || 2000);
-if (!CODE) { console.error('usage: node probe.mjs <remote-code>'); process.exit(1); }
+if (!CODE) { console.error("usage: node probe.mjs '<remote-code>'"); process.exit(1); }
+// The built module, or the source itself on a Node that runs TypeScript (23.6+)
+const relayModule = await import(new URL('./dist/relay.js', import.meta.url).href)
+  .catch(() => import(new URL('./src/relay.ts', import.meta.url).href))
+  .catch(() => { console.error('probe: run `npm run build` in shiro-mcp first (dist/relay.js is missing)'); process.exit(1); });
+const { parseRemoteCode, fetchOffer, sendAnswer } = relayModule;
+let PARTS;
+try { PARTS = parseRemoteCode(CODE); } catch (e) { console.error(`probe: ${e.message}`); process.exit(1); }
 
 const INSTALL = `(() => {
   if (window.__probe) return 'already installed';
@@ -104,9 +113,9 @@ function request(payload, timeoutMs = 60000) {
 const evalJs = (code, timeoutMs) => request({ type: 'eval', code }, timeoutMs).then((r) => r.result);
 
 async function connect() {
-  const offerRes = await fetch(`${SIGNAL}/offer/${CODE}`);
-  if (!offerRes.ok) throw new Error(`code not found (${offerRes.status})`);
-  const { offer, candidates } = await offerRes.json();
+  const offered = await fetchOffer(SIGNAL, PARTS);
+  if (!offered) throw new Error(`code not found (${PARTS.id})`);
+  const { offer, candidates } = offered;
   const pc = new ndc.PeerConnection('shiro-probe', { iceServers: ['stun:stun.l.google.com:19302'] });
   const ice = [];
   pc.onLocalCandidate((candidate, mid) => ice.push({ candidate, sdpMid: mid }));
@@ -130,9 +139,7 @@ async function connect() {
   for (const c of candidates) if (c.candidate) pc.addRemoteCandidate(c.candidate, c.sdpMid || '0');
   await new Promise((r) => { pc.onGatheringStateChange((s) => s === 'complete' && r()); setTimeout(r, 5000); });
   const desc = pc.localDescription();
-  const ans = await fetch(`${SIGNAL}/answer/${CODE}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer: { type: desc.type, sdp: desc.sdp }, candidates: ice }) });
-  if (!ans.ok) throw new Error('answer rejected');
+  await sendAnswer(SIGNAL, PARTS, { answer: { type: desc.type, sdp: desc.sdp }, candidates: ice });
   await Promise.race([opened, new Promise((_, rej) => setTimeout(() => rej(new Error('open timeout')), 30000))]);
   if (process.env.PROBE_LITE) {
     log({ event: 'connected', install: 'skipped (PROBE_LITE)' });
@@ -150,7 +157,11 @@ async function reconnectLoop() {
   if (reconnecting || connected) return;
   reconnecting = true;
   while (!connected) {
-    try { await connect(); } catch (e) { await new Promise((r) => setTimeout(r, 4000)); }
+    try { await connect(); } catch (e) {
+      // An older server or tab: stop, never fall back to sending the code
+      if (e?.name === 'RemoteProtocolError') { console.error(`probe: ${e.message}`); process.exit(1); }
+      await new Promise((r) => setTimeout(r, 4000));
+    }
   }
   reconnecting = false;
 }

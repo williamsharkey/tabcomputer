@@ -2,7 +2,10 @@ import { Command, CommandContext } from './index';
 import { Shell } from '../shell';
 import { createRemotePanel, type RemotePanel, type LogType } from '../remote-panel';
 import { getShiroOrigin } from '../utils/shiro-origin';
-import { RelayChannel, newRelayInfo, type RelayInfo } from '../remote-relay';
+import {
+  RelayChannel, newRelayInfo, newRemoteSecret, formatRemoteCode, parseRemoteCode, registerOffer, fetchAnswer,
+  RemoteProtocolError, type RelayInfo, type RemoteCode,
+} from '../remote-relay';
 import { workerRelay } from '../watchdog';
 
 // LocalStorage key for persisting remote session code across page reloads
@@ -72,9 +75,11 @@ const SYLLABLES = [
 ];
 
 /**
- * Generate a cryptographically secure random code.
- * Format: adjective-noun-syllables (e.g., "fluffy-cloud-shimutako")
- * ~46 bits of entropy (secure for 5-minute TTL with rate limiting)
+ * Generate a remote code: `<id>#<secret>` (src/remote-relay.ts).
+ * The id is adjective-noun-syllables ("fluffy-cloud-shimutako"): the
+ * rendezvous, which the signaling server is given. The secret (130 random
+ * bits) is never sent anywhere: it seals the offer, the answer and every
+ * relayed message, so the server cannot read or join the session.
  */
 function generateCode(): { full: string; display: string } {
   const bytes = new Uint16Array(6);
@@ -89,7 +94,7 @@ function generateCode(): { full: string; display: string } {
 
   const compound = syl1 + syl2 + syl3 + syl4;
   return {
-    full: `${adj}-${noun}-${compound}`,
+    full: formatRemoteCode(`${adj}-${noun}-${compound}`, newRemoteSecret()),
     display: `${adj}-${noun}`, // Safe to show on screen
   };
 }
@@ -108,7 +113,12 @@ interface RemoteChannel {
 }
 
 interface RemoteSession {
+  /** The whole code, `<id>#<secret>`: stays in this tab (and the clipboard) */
   code: string;
+  /** Its parts: the id is what the signaling server is given */
+  parts: RemoteCode;
+  /** Why signaling failed, for `remote status` */
+  error?: string;
   displayCode: string;
   pc: RTCPeerConnection;
   dc: RemoteChannel | null;
@@ -169,7 +179,7 @@ export function openRemotePanel(): void {
   }
 
   // Create panel
-  const panel = createRemotePanel(session.code, `remote \u2194 ${session.displayCode}`);
+  const panel = createRemotePanel(session.displayCode, `remote \u2194 ${session.displayCode}`);
   session.panel = panel;
   session.panelOpen = true;
 
@@ -608,6 +618,7 @@ async function startRemote(ctx: CommandContext): Promise<number> {
 
   const session: RemoteSession = {
     code,
+    parts: parseRemoteCode(code),
     displayCode,
     pc,
     dc: null,
@@ -629,6 +640,9 @@ async function startRemote(ctx: CommandContext): Promise<number> {
     console.error(`[remote] Signaling failed: ${err.message}`);
     logActivity(session, 'error', `Signaling failed: ${err.message}`);
     session.status = 'error';
+    session.error = err.message;
+    // An older server would need the code itself: say so where the user is looking
+    if (err instanceof RemoteProtocolError) (ctx.terminal as any)?.term?.writeln?.(`\r\n\x1b[31mremote: ${err.message}\x1b[0m`);
     if (session.panel) session.panel.setStatus('disconnected');
   });
 
@@ -673,21 +687,8 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
     }
   });
 
-  // Register with signaling server
-  const res = await fetch(`${SIGNALING_URL}/offer`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      code: session.code,
-      offer: pc.localDescription,
-      candidates: iceCandidates,
-      ...(session.relay ? { relay: session.relay } : {}),
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Signaling server error: ${res.status}`);
-  }
+  // Register with the signaling server: the id and a sealed offer, never the secret
+  await registerOffer(SIGNALING_URL, session.parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
 
   session.status = 'waiting';
 
@@ -708,7 +709,8 @@ function switchToRelay(session: RemoteSession, v: 1 | 2 = 1) {
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
   session.transport = 'relay';
   // In the watchdog worker when it runs: `diag` then answers while this page is frozen
-  const opts = { base: SIGNALING_URL, info: { ...session.relay!, v: Math.min(v, session.relay!.v) as 1 | 2 }, code: session.code };
+  // Keyed by the secret part and this offer's salt (never the whole code)
+  const opts = { base: SIGNALING_URL, info: { ...session.relay!, v: Math.min(v, session.relay!.v) as 1 | 2 }, secret: session.parts.secret };
   const relay = workerRelay(opts) ?? new RelayChannel({ ...opts, as: 'tab', log: (m) => console.warn(`[remote] ${m}`) });
   wireSession(session, relay);
 }
@@ -744,44 +746,50 @@ async function pollForAnswer(session: RemoteSession) {
     }
 
     try {
-      const res = await fetch(`${SIGNALING_URL}/answer/${session.code}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.expired) {
-          renew('Signaling server forgot the offer');
-          return;
-        } else if (data.waiting) {
-          // No answer yet, continue polling
-        } else if (data.answer?.type === 'relay') {
-          if (session.relay) {
-            // The envelope version both sides speak (an older peer answers v1)
-            switchToRelay(session, data.answer.v === 2 ? 2 : 1);
-            return;
-          }
-          // A peer asked for the relay this session didn't offer: keep waiting
-        } else if (data.answer) {
-          await session.pc.setRemoteDescription(data.answer);
-
-          // Add ICE candidates from peer
-          if (data.candidates) {
-            for (const candidate of data.candidates) {
-              await session.pc.addIceCandidate(candidate);
-            }
-          }
-
-          console.log('[remote] Received answer, establishing connection...');
-          // ICE failed (a peer without UDP, or NATs that won't meet): take
-          // answers again, so the peer can retry or ask for the relay
-          session.pc.onconnectionstatechange = () => {
-            if (session.pc.connectionState === 'failed' && session.status !== 'connected') renew('WebRTC connection failed');
-          };
+      const data = await fetchAnswer(SIGNALING_URL, session.parts);
+      if ('expired' in data) {
+        renew('Signaling server forgot the offer');
+        return;
+      } else if ('waiting' in data) {
+        // No answer yet, continue polling
+      } else if ('bad' in data) {
+        // From someone with the id but not the secret (or a mistyped code): take answers again
+        console.warn(`[remote] Ignored an answer: ${data.bad}`);
+        logActivity(session, 'error', `Ignored an answer: ${data.bad}`);
+        renew('An answer did not open with this code');
+        return;
+      } else if (data.answer?.type === 'relay') {
+        if (session.relay) {
+          // The envelope version both sides speak
+          switchToRelay(session, data.answer.v === 2 ? 2 : 1);
           return;
         }
-      } else if (res.status === 404) {
-        renew('Offer not found on signaling server');
+        // A peer asked for the relay this session didn't offer: keep waiting
+      } else if (data.answer) {
+        await session.pc.setRemoteDescription(data.answer);
+
+        // Add ICE candidates from peer
+        for (const candidate of data.candidates as RTCIceCandidateInit[]) {
+          await session.pc.addIceCandidate(candidate);
+        }
+
+        console.log('[remote] Received answer, establishing connection...');
+        // ICE failed (a peer without UDP, or NATs that won't meet): take
+        // answers again, so the peer can retry or ask for the relay
+        session.pc.onconnectionstatechange = () => {
+          if (session.pc.connectionState === 'failed' && session.status !== 'connected') renew('WebRTC connection failed');
+        };
         return;
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof RemoteProtocolError) {
+        // The server changed under this session (a rolling deploy): stop, don't downgrade
+        console.error(`[remote] ${e.message}`);
+        logActivity(session, 'error', e.message);
+        session.status = 'error';
+        session.error = e.message;
+        return;
+      }
       // Network error - continue polling (transient failure)
     }
 
@@ -848,6 +856,7 @@ function statusRemote(ctx: CommandContext): number {
   }
 
   ctx.stdout += `Remote session status: \x1b[93m${session.status}\x1b[0m\n`;
+  if (session.error) ctx.stdout += `\x1b[31m${session.error}\x1b[0m\n`;
   ctx.stdout += `Display code: \x1b[93m${session.displayCode}\x1b[0m\n`;
 
   if (session.dc) {
@@ -918,7 +927,15 @@ export async function startRemoteWithCode(
     return true;
   }
 
-  const displayCode = code.split('-').slice(0, 2).join('-');
+  let parts: RemoteCode;
+  try { parts = parseRemoteCode(code); } catch (e: any) {
+    // A code saved by a build from before protocol 3: the server could read those. Not registered again.
+    console.warn(`[remote] The saved remote code was dropped: ${e.message}`);
+    if (localStorage.getItem(REMOTE_CODE_KEY) === code) localStorage.removeItem(REMOTE_CODE_KEY);
+    terminal?.updateHudRemoteCode?.(null);
+    return false;
+  }
+  const displayCode = parts.id.split('-').slice(0, 2).join('-');
   console.log(`[remote] Auto-reconnecting with code: ${displayCode}`);
 
   // Create or reuse shadow shell (panel is lazy — only created on demand)
@@ -943,6 +960,7 @@ export async function startRemoteWithCode(
 
   const session: RemoteSession = {
     code,
+    parts,
     displayCode,
     pc,
     dc: null,
@@ -993,20 +1011,7 @@ export async function startRemoteWithCode(
 
   // Register with signaling server
   try {
-    const res = await fetch(`${SIGNALING_URL}/offer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        offer: pc.localDescription,
-        candidates: iceCandidates,
-        ...(session.relay ? { relay: session.relay } : {}),
-      }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Signaling server error: ${res.status}`);
-    }
+    await registerOffer(SIGNALING_URL, parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
 
     session.status = 'waiting';
 
@@ -1017,6 +1022,15 @@ export async function startRemoteWithCode(
     console.log('[remote] Auto-reconnect successful, waiting for peer');
     return true;
   } catch (err: any) {
+    if (err instanceof RemoteProtocolError) {
+      // An older server would need the code itself: keep the session as an error, don't retry
+      console.error(`[remote] ${err.message}`);
+      logActivity(session, 'error', err.message);
+      session.status = 'error';
+      session.error = err.message;
+      reconnectAttempts.delete(code);
+      return false;
+    }
     cleanupSession();
     // The signaling server may just be restarting (a deploy); retry a few times
     // with the same code before giving it up.

@@ -337,7 +337,7 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     via: '/offer, /relay, /api/seed, /channel',
     to: 'whoever holds the code or the link',
     reads: 'contents',
-    readsText: 'seed share stores every file and all saved sign-ins on the server, for anyone with the link. remote start gives the server the code that its relayed messages are sealed with.',
+    readsText: 'seed share stores every file and all saved sign-ins on the server, for anyone with the link. remote start gives the server only the public half of its code: the offer and relayed messages are sealed with the other half, which it never gets.',
     detail: 'remote start lets the holder of the code run commands and read files here. A shared seed is deleted 60 days after its last visit. group messages pass through unencrypted.'
       + (s.secrets.remoteCode ? ' A remote code is saved in this tab.' : ''),
     status: sealed ? 'off' : 'on',

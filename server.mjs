@@ -870,24 +870,15 @@ async function handleClaudeReleases(req, res, rest) {
 }
 
 // --- WebRTC signaling ---
-const offers = new Map(); // code -> { offer, candidates, answer, answerCandidates, created }
 const OFFER_TTL = 5 * 60 * 1000; // 5 minutes
-
-// Prune expired offers every minute
-setInterval(() => {
-  const now = Date.now();
-  for (const [code, entry] of offers) {
-    if (now - entry.created > OFFER_TTL) offers.delete(code);
-  }
-}, 60_000).unref();
 
 // --- Remote relay: `remote start` over HTTPS when WebRTC can't connect ---
 // A peer that can't do UDP (a cloud container behind an HTTPS proxy) answers an
 // offer with {type: 'relay'} instead of SDP; then the tab and the peer exchange
 // the same JSON messages through a mailbox here, by long-polling. The tab names
-// the mailbox (a random id) in its offer, so only someone holding the remote
-// code can find it; message bodies are AES-GCM sealed with a key derived from
-// the code (src/remote-relay.ts), so this server only queues opaque strings.
+// the mailbox (a random id) in its offer; message bodies are AES-GCM sealed
+// with a key derived from the secret part of the remote code, which this
+// server is never given (src/remote-relay.ts), so it only queues opaque strings.
 //
 //   POST /relay/:id/send?as=tab|peer   {msgs: [string]}  → queued for the other side
 //   GET  /relay/:id/recv?as=tab|peer&wait=MS            → {msgs, peerSeenMs}
@@ -985,96 +976,103 @@ export function createRemoteRelay(limits = RELAY_LIMITS) {
 }
 const remoteRelay = createRemoteRelay();
 
-async function handleSignaling(req, res, pathname) {
-  const origin = req.headers['origin'];
-  const cors = corsHeaders(origin, req.headers['access-control-request-headers']);
+// --- Remote signaling (`remote start`), protocol 3 ---
+// A remote code is `<id>#<secret>`. This server is given the id only: it is the
+// key offers are kept under and the last segment of /offer/:id and /answer/:id.
+// The offer and the answer arrive AES-GCM sealed with a key derived from the
+// secret (src/remote-relay.ts), so nothing here can read the session, and
+// nothing that reaches this handler is a value its key can be derived from.
+// Before protocol 3 the whole code was posted here (and logged), and the code
+// was the key. Such requests are refused with 426 and never logged: an old tab
+// or an old shiro-mcp gets an error, not a session this server could read.
+//
+//   POST /offer            {v: 3, id, sealed, relay?: {id}}  → {ok, v: 3}
+//   GET  /offer/:id?v=3    → {v: 3, sealed, relay?: {id}}
+//   POST /answer/:id       {v: 3, sealed}                    → {ok, v: 3}
+//   GET  /answer/:id       → {v: 3, sealed} | {waiting} | {expired}
+export const SIGNAL_PROTOCOL = 3;
+const SIGNAL_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+){1,5}$/;
+const SIGNAL_UPGRADE = 'This server takes remote protocol 3 only: a remote code is now words#letters and its secret part is never sent here. Reload the tab and run `remote start` again; update shiro-mcp (git pull, npm run build).';
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, cors);
-    return res.end();
-  }
+export function createSignaling({ relay = null, log = console.log, ttlMs = OFFER_TTL, maxBody = 512 * 1024, maxOffers = 5000 } = {}) {
+  const offers = new Map(); // id -> { sealed, relay, answer, created }
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, entry] of offers) if (now - entry.created > ttlMs) offers.delete(id);
+  }, 60_000);
+  timer.unref?.();
+  const validId = (id) => typeof id === 'string' && id.length <= 80 && SIGNAL_ID_RE.test(id);
 
-  // POST /offer — register a new offer
-  if (pathname === '/offer' && req.method === 'POST') {
+  async function readJson(req) {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const data = JSON.parse(Buffer.concat(chunks).toString());
-
-    if (!data.code || !data.offer) {
-      res.writeHead(400, { 'content-type': 'application/json', ...cors });
-      return res.end(JSON.stringify({ error: 'Missing code or offer' }));
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > maxBody) return undefined;
+      chunks.push(chunk);
     }
-
-    console.log(`[signal] offer registered: ${data.code} (${offers.has(data.code) ? 'refresh' : 'new'})`);
-    // A tab that can relay names its mailbox; open it now so the peer can use it
-    const relay = data.relay && remoteRelay.open(data.relay.id) ? { v: data.relay.v === 2 ? 2 : 1, id: data.relay.id, salt: String(data.relay.salt || '') } : null;
-    offers.set(data.code, {
-      offer: data.offer,
-      candidates: data.candidates || [],
-      relay,
-      answer: null,
-      answerCandidates: null,
-      created: Date.now(),
-    });
-
-    res.writeHead(200, { 'content-type': 'application/json', ...cors });
-    return res.end(JSON.stringify({ ok: true }));
+    try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { return null; }
   }
 
-  // GET /offer/:code — retrieve an offer (for MCP client connecting)
-  const offerMatch = pathname.match(/^\/offer\/(.+)$/);
-  if (offerMatch && req.method === 'GET') {
-    const entry = offers.get(offerMatch[1]);
-    if (!entry) {
-      console.log(`[signal] offer lookup miss: ${offerMatch[1]} (known: ${[...offers.keys()].join(', ') || 'none'})`);
-      res.writeHead(404, { 'content-type': 'application/json', ...cors });
-      return res.end(JSON.stringify({ error: 'Not found' }));
+  async function handle(req, res, pathname, cors = {}) {
+    const json = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
+    // What an older client sends carried (or was) its key: answer, and log nothing of it
+    const upgrade = () => json(426, { error: 'upgrade_required', protocol: SIGNAL_PROTOCOL, message: SIGNAL_UPGRADE });
+    if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+    const url = new URL(req.url, 'http://localhost');
+
+    if (pathname === '/offer' && req.method === 'POST') {
+      const data = await readJson(req);
+      if (data === undefined) return json(413, { error: 'Too large' });
+      if (!data || typeof data !== 'object') return json(400, { error: 'Bad JSON' });
+      if (data.v !== SIGNAL_PROTOCOL || 'code' in data || 'offer' in data) return upgrade();
+      if (!validId(data.id) || typeof data.sealed !== 'string' || !data.sealed) return json(400, { error: 'Missing id or sealed offer' });
+      if (!offers.has(data.id) && offers.size >= maxOffers) return json(503, { error: 'Too many offers' });
+      log(`[signal] offer registered: ${data.id} (${offers.has(data.id) ? 'refresh' : 'new'})`);
+      // A tab that can relay names its mailbox; open it now so the peer can use it
+      const box = data.relay && relay && relay.open(data.relay.id) ? { id: data.relay.id } : null;
+      offers.set(data.id, { sealed: data.sealed, relay: box, answer: null, created: Date.now() });
+      return json(200, { ok: true, v: SIGNAL_PROTOCOL });
     }
-    res.writeHead(200, { 'content-type': 'application/json', ...cors });
-    return res.end(JSON.stringify({ offer: entry.offer, candidates: entry.candidates, ...(entry.relay ? { relay: entry.relay } : {}) }));
-  }
 
-  // /answer/:code
-  const answerMatch = pathname.match(/^\/answer\/(.+)$/);
-  if (answerMatch) {
-    const code = answerMatch[1];
-
-    // POST /answer/:code — store an answer
-    if (req.method === 'POST') {
-      const entry = offers.get(code);
+    const offerMatch = pathname.match(/^\/offer\/([^/]+)$/);
+    if (offerMatch && req.method === 'GET') {
+      // A peer from before protocol 3 doesn't say v=3 (and its old code was the key: not logged)
+      if (url.searchParams.get('v') !== String(SIGNAL_PROTOCOL)) return upgrade();
+      const entry = validId(offerMatch[1]) ? offers.get(offerMatch[1]) : null;
       if (!entry) {
-        res.writeHead(404, { 'content-type': 'application/json', ...cors });
-        return res.end(JSON.stringify({ error: 'Not found' }));
+        log(`[signal] offer lookup miss (${offers.size} registered)`);
+        return json(404, { error: 'Not found' });
       }
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const data = JSON.parse(Buffer.concat(chunks).toString());
-      entry.answer = data.answer;
-      entry.answerCandidates = data.candidates || [];
-
-      res.writeHead(200, { 'content-type': 'application/json', ...cors });
-      return res.end(JSON.stringify({ ok: true }));
+      return json(200, { v: SIGNAL_PROTOCOL, sealed: entry.sealed, ...(entry.relay ? { relay: entry.relay } : {}) });
     }
 
-    // GET /answer/:code — poll for answer
-    if (req.method === 'GET') {
-      const entry = offers.get(code);
-      if (!entry) {
-        res.writeHead(200, { 'content-type': 'application/json', ...cors });
-        return res.end(JSON.stringify({ expired: true }));
-      }
-      if (entry.answer) {
-        res.writeHead(200, { 'content-type': 'application/json', ...cors });
-        return res.end(JSON.stringify({ answer: entry.answer, candidates: entry.answerCandidates }));
-      }
-      res.writeHead(200, { 'content-type': 'application/json', ...cors });
-      return res.end(JSON.stringify({ waiting: true }));
+    const answerMatch = pathname.match(/^\/answer\/([^/]+)$/);
+    if (answerMatch && req.method === 'POST') {
+      const data = await readJson(req);
+      if (data === undefined) return json(413, { error: 'Too large' });
+      if (!data || typeof data !== 'object') return json(400, { error: 'Bad JSON' });
+      if (data.v !== SIGNAL_PROTOCOL || 'answer' in data) return upgrade();
+      const entry = validId(answerMatch[1]) ? offers.get(answerMatch[1]) : null;
+      if (!entry) return json(404, { error: 'Not found' });
+      if (typeof data.sealed !== 'string' || !data.sealed) return json(400, { error: 'Missing sealed answer' });
+      entry.answer = data.sealed;
+      return json(200, { ok: true, v: SIGNAL_PROTOCOL });
     }
+    if (answerMatch && req.method === 'GET') {
+      const entry = validId(answerMatch[1]) ? offers.get(answerMatch[1]) : null;
+      // (an old tab polling with its old code lands here too: its offer was refused, so "expired")
+      if (!entry) return json(200, { expired: true });
+      if (entry.answer) return json(200, { v: SIGNAL_PROTOCOL, sealed: entry.answer });
+      return json(200, { waiting: true });
+    }
+
+    return json(404, { error: 'Unknown signaling endpoint' });
   }
 
-  res.writeHead(404, { 'content-type': 'application/json', ...cors });
-  return res.end(JSON.stringify({ error: 'Unknown signaling endpoint' }));
+  return { handle, offers, stop: () => { clearInterval(timer); offers.clear(); } };
 }
+const signaling = createSignaling({ relay: remoteRelay });
 
 // --- Git CORS proxy (for isomorphic-git clone) ---
 /**
@@ -2118,7 +2116,7 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
   if (pathname === '/offer' || pathname.startsWith('/offer/') || pathname.startsWith('/answer/')) {
-    return handleSignaling(req, res, pathname);
+    return signaling.handle(req, res, pathname, corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']));
   }
   if (pathname.startsWith('/relay/')) {
     const cors = corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']);

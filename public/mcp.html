@@ -228,7 +228,7 @@
 
       <div class="step">
         <p><span class="step-number">2</span> <strong>Connect</strong> &mdash; In <a href="/">tabcomputer</a>, run <code>remote start</code> to get a connection code, then tell Claude:</p>
-        <pre><code>"Connect to tabcomputer with code fluffy-cloud-shimutako"</code></pre>
+        <pre><code>"Connect to tabcomputer with code fluffy-cloud-shimutako#abcdefghijklmnopqrstuvwxyz"</code></pre>
         <p>Done! Claude can now execute commands, read/write files, and run JavaScript in your browser.</p>
       </div>
     </section>
@@ -279,20 +279,17 @@
     <section>
       <h2>Connection Codes</h2>
       <p>
-        Connection codes like <code>fluffy-cloud-shimutako</code> provide ~46 bits of entropy,
-        making them virtually impossible to guess. They expire after 5 minutes.
-      </p>
-      <p>
-        The code has three parts:
+        A connection code has two parts, joined by <code>#</code>:
+        <code>fluffy-cloud-shimutako#abcdefghijklmnopqrstuvwxyz</code>. <code>remote start</code> copies the whole of it.
       </p>
       <ul style="margin-left: 1.5rem; margin-bottom: 1rem;">
-        <li><strong>Adjective</strong> (200 options) &mdash; fluffy, cosmic, brave...</li>
-        <li><strong>Noun</strong> (200 options) &mdash; cloud, fox, crystal...</li>
-        <li><strong>Syllables</strong> (64⁴ options) &mdash; shimutako, karinobe...</li>
+        <li><strong>The words</strong> (<code>fluffy-cloud-shimutako</code>) are the meeting point. This is the only part the server is given.</li>
+        <li><strong>The letters after <code>#</code></strong> are a secret (130 random bits) that never leaves your tab and the program you paste it into.
+          The connection details and every relayed message are encrypted with a key made from it, so the server cannot read the session or join it.</li>
       </ul>
       <p>
-        Only the first two parts are shown in the tabcomputer banner for privacy &mdash;
-        someone watching your screen can't hijack your session.
+        Only the first two words are shown in the tabcomputer banner, so someone watching your screen can't take over your session.
+        Quote the code in a shell (<code>'&hellip;#&hellip;'</code>). Whoever has the whole code can run commands in your tab: give it only to a program you run yourself.
       </p>
     </section>
 

@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 1007 | see `git log --grep "^Build 1007"` | 2026-10-12 | Launch feedback (docs/DESKTOP.md): a pulsing dot under a starting app's dock tile, a placeholder window behind the others with the stage and real install progress that the app's first window replaces, no second launch while one is starting, failure with Close and Retry; agents' docs describe the three Claude builds as they are |
 | 1006 | see `git log --grep "^Build 1006"` | 2026-10-12 | `npm install` of a package installed before Build 1005 unpacks it again, once, so its files get their executable bits (an existing Codex install stayed broken) |
 | 1005 | see `git log --grep "^Build 1005"` | 2026-10-12 | `npm install` keeps the executable bit of a package's files: Codex 0.162 refused to start (“local Codex package file bin/codex is not executable”) |
 | 1004 | see `git log --grep "^Build 1004"` | 2026-10-12 | How Your Data Flows (docs/DATA_FLOW.md): a window from the welcome card, the System and Help menus and Settings → Network that draws this tab, the server and the internet with what the server can read of each kind of traffic, from the tab's live state (guest or main profile, sign-ins present, relay in use); `dataflow` prints it in a terminal |

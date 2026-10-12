@@ -5,7 +5,6 @@
 # profile: shiro
 # args: repo (optional https URL of the repository to work on)
 # on-open: cd ~/run/claude-sandbox/work
-# status: untested
 set -e
 mkdir -p work && cd work
 if [ -n "$RUN_REPO" ] && [ ! -d .git ]; then

@@ -9,7 +9,7 @@
  * its way doesn't start anything.
  */
 import type { RunPromptInfo } from './run-url';
-import type { DesktopAPI } from './desktop/wm';
+import type { DesktopAPI, DesktopWindow } from './desktop/wm';
 
 const STYLE_ID = 'tc-run-prompt-style';
 const RUN_ARMS_AFTER_MS = 700;
@@ -103,20 +103,26 @@ export function showRunPrompt(info: RunPromptInfo, wm: DesktopAPI | null): Promi
       resolve(run);
     };
     const content = buildRunPrompt(info, done);
+    let win: DesktopWindow | null = null;
     if (wm) {
       const wa = wm.workArea();
-      const win = wm.createWindow({
-        appId: 'run-link', title: 'Run link', content: { kind: 'dom', element: content },
+      const w = win = wm.createWindow({
+        // Above windows the session restores after it (they take the focus when they come back)
+        appId: 'run-link', title: 'Run link', alwaysOnTop: true, content: { kind: 'dom', element: content },
         width: Math.min(640, Math.max(280, wa.width - 40)), height: Math.min(560, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
       });
-      close = () => { win.close(true); };
-      win.on('close', () => done(false));
+      close = () => { w.close(true); };
+      w.on('close', () => done(false));
     } else {
       const overlay = el('div', '', 'tc-run-overlay');
       overlay.append(content);
       document.body.appendChild(overlay);
       close = () => overlay.remove();
     }
-    content.querySelector<HTMLButtonElement>('[data-act=cancel]')?.focus();
+    // Cancel has the focus, also after the desktop has finished its own boot-time focusing
+    const cancel = content.querySelector<HTMLButtonElement>('[data-act=cancel]');
+    const focus = () => { if (!settled) { win?.focus(); cancel?.focus(); } };
+    focus();
+    setTimeout(focus, RUN_ARMS_AFTER_MS);
   });
 }

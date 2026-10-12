@@ -12,6 +12,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [GUI.md](GUI.md) | Linux GUI apps over X11: the X server in the page, `gui`, what runs and how fast |
 | [NETWORKING.md](NETWORKING.md) | Kernel sockets, the WebSocket-to-TCP relay, its security model and how to run it |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
+| [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
 | [RELEASES.md](RELEASES.md) | Each build shipped to tabcomputer.com: its commit, date and what changed |
 

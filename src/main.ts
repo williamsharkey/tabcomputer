@@ -768,6 +768,10 @@ async function main() {
       fetch: (url, init) => fetch(url, init),
       fs,
       cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
+      // The desktop appears once its saved windows are back (at most a few seconds)
+      ready: async () => {
+        for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
+      },
       confirm: (info) => showRunPrompt(info, desktop?.wm ?? null),
       openTerminal: ({ cwd, command, env, title }) => {
         if (desktop) { desktop.ctx.openTerminal({ cwd, command, env, title }); return; }

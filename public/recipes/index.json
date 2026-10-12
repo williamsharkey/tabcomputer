@@ -13,14 +13,13 @@
   },
   {
    "name": "claude-sandbox",
-   "sha256": "d48c29a6092265144150d6ea8e915af00ee0de4758476ff9b6ce99c528cabc3b",
+   "sha256": "034a76af09a49bb6d32f9a89eeaa21ef63cfa7b848d762955a12086319215ba4",
    "title": "Claude Code in a throwaway machine",
    "for": "people who want a coding agent that can't touch their real disk",
    "needs": "claude net",
    "profile": "shiro",
    "args": "repo (optional https URL of the repository to work on)",
-   "on-open": "cd ~/run/claude-sandbox/work",
-   "status": "untested"
+   "on-open": "cd ~/run/claude-sandbox/work"
   },
   {
    "name": "latex-paper",
@@ -44,13 +43,12 @@
   },
   {
    "name": "untrusted-repo",
-   "sha256": "2ff932db7ddebf3b64400b359dae6d8ec967950fb4b791e704ff0211d7e7534a",
+   "sha256": "57c0adb8a5ed41ba910a3e3c16d7b1bb041d1a96ba589c65f6f924ef7cfbf1f6",
    "title": "Look inside a repo or archive you don't trust",
    "for": "people sent a repository or tarball they don't trust (a \"take-home test\", an \"NDA branch\")",
    "needs": "net",
    "args": "url (optional https URL of a git repository or an archive; or put files in ~/run/untrusted-repo/in)",
-   "on-open": "cd ~/run/untrusted-repo",
-   "status": "untested"
+   "on-open": "cd ~/run/untrusted-repo"
   },
   {
    "name": "wordperfect-rescue",

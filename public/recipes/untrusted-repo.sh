@@ -4,7 +4,6 @@
 # needs: net
 # args: url (optional https URL of a git repository or an archive; or put files in ~/run/untrusted-repo/in)
 # on-open: cd ~/run/untrusted-repo
-# status: untested
 # This tab has none of your SSH keys or files, so a hook that fires only reaches the tab.
 # It can still reach the internet through the relay; use a fresh tab and sign in to nothing.
 set -e

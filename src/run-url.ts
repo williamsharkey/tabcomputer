@@ -333,6 +333,8 @@ export interface RunLinkDeps {
   };
   /** Drop the run link from the address (history.replaceState) */
   cleanUrl(): void;
+  /** Resolves once the page has put back its saved windows (they take the focus and redraw the terminal) */
+  ready?(): Promise<void>;
   /** Show a script that isn't curated; true only when the person chose Run */
   confirm(info: RunPromptInfo): Promise<boolean>;
   /** A new Terminal in `cwd` with `env` set, typing `command` */
@@ -348,6 +350,7 @@ export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
   let parsed: ParsedRun | null;
   try {
     try { parsed = parseRunUrl(deps.search); } finally { if (new URLSearchParams(deps.search).has('run')) deps.cleanUrl(); }
+    await deps.ready?.();
     if (!parsed) return 'none';
     if (deps.framed) throw new RunLinkError('run links are ignored inside a frame; open the link in its own tab');
     const script = await loadScript(parsed.target, deps.origin, deps.fetch);
@@ -366,6 +369,7 @@ export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
     deps.openTerminal({ cwd: dir, command: `. ~/run/${script.name}/${START_FILE}`, env, title: script.curated ? plain(script.header.title ?? script.name, 60) : script.name });
     return done ? 'on-open' : 'ran';
   } catch (e) {
+    await deps.ready?.().catch(() => {});
     deps.report(e instanceof RunLinkError ? e.message : 'it failed to start');
     if (!(e instanceof RunLinkError)) console.warn('[run-link]', e);
     return 'refused';

@@ -43,7 +43,7 @@ export function isolationHeaders() {
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.mjs': 'application/javascript',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
-  '.ico': 'image/x-icon', '.wasm': 'application/wasm', '.txt': 'text/plain',
+  '.ico': 'image/x-icon', '.wasm': 'application/wasm', '.txt': 'text/plain', '.sh': 'text/plain; charset=utf-8',
   '.map': 'application/json', '.mjs': 'application/javascript',
 };
 

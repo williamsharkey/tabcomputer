@@ -582,6 +582,7 @@ async function main() {
     if (!st) { void createPathShims(fs).catch(() => {}); return; } // no Debian: nothing for commands to wait for
     await import('./debian/layers').then((l) => l.bootLayers(fs)); // toolchain layers' lazy files
     void installAlwaysShims(fs).catch(() => {}); // xdg-open, xclip, ... on PATH in Debian mode too
+    void m.pipInstallsPackages(fs).catch(() => {}); // /etc/pip.conf for installs made before it was written
     const ov = await import('./debian/overlay');
     await ov.enableDebianShadows(fs, (n) => !!commands.get(n));
     for (const [k, v] of Object.entries(m.DEBIAN_ENV)) shell.env[k] ??= v;
@@ -771,6 +772,30 @@ async function main() {
     }
   });
 
+  const startRunLink = async () => {
+    const [{ handleRunLink, cleanRunUrl }, { showRunPrompt }] = await Promise.all([import('./run-url'), import('./run-prompt')]);
+    let framed = true;
+    try { framed = window.top !== window; } catch { /* cross-origin parent */ }
+    await handleRunLink({
+      search: location.search, origin: location.origin, home: shell.env['HOME'] || '/home/user', framed,
+      fetch: (url, init) => fetch(url, init),
+      fs,
+      cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
+      // The desktop appears once its saved windows are back (at most a few seconds)
+      ready: async () => {
+        for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
+      },
+      confirm: (info) => showRunPrompt(info, desktop?.wm ?? null),
+      openTerminal: ({ cwd, command, env, title }) => {
+        if (desktop) { desktop.ctx.openTerminal({ cwd, command, env, title }); return; }
+        // The terminal UI has one terminal: the script runs there
+        Object.assign(shell.env, env);
+        terminal.injectInput(command + '\r');
+      },
+      report: (message) => terminal.term.writeln(`\r\n\x1b[33mrun link: ${message}\x1b[0m`),
+    }).catch((e) => console.warn('[run-link]', e));
+  };
+
   // Demo mode: lightweight boot for about page iframes
   const isDemo = new URLSearchParams(location.search).get('demo') === '1';
 
@@ -856,6 +881,11 @@ async function main() {
       // Pathname doesn't match slug — show terminal (stale config)
       document.body.classList.remove('become-active');
     }
+  }
+
+  // A run link (?run=, src/run-url.ts, docs/RUN_LINKS.md): its script in a new Terminal
+  if (!safe && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
+    void startRunLink();
   }
 
   // Check for shared seed URL: /s/:id

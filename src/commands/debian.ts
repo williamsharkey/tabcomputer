@@ -2,7 +2,9 @@ import type { Command, CommandContext } from './index';
 
 /**
  * Debian mode (docs/DEBIAN.md):
- *   debian install [--base URL]   stream Debian's root filesystem into this machine
+ *   debian install [--base URL] [-v]
+ *                                 stream Debian's root filesystem into this machine
+ *                                 (-v: each overlay change)
  *   debian status                 what is installed, fetched and overlaid
  *   debian prefetch [PKG...]      fetch packages' files now (default: apt, dpkg, bash, coreutils)
  * and the overlay switch:
@@ -40,12 +42,12 @@ export const debianCmd: Command = {
       const bi = rest.indexOf('--base');
       const base = bi >= 0 ? rest[bi + 1] : undefined;
       const r = await rootfs.installRootfs(ctx.fs, { base, progress: (m) => out(m) });
-      const { applyDefaults } = await import('../debian/overlay');
+      const { applyDefaults, overlayReport } = await import('../debian/overlay');
       await enableDebianMode(ctx);
       const changed = await applyDefaults(ctx.fs);
       await ctx.fs.sync();
       out(`Installed ${r.entries} paths in ${r.ms} ms; file contents are fetched on first use.`);
-      for (const c of changed) out(`  overlay: ${c}`);
+      for (const l of overlayReport(changed, rest.includes('-v') || rest.includes('--verbose'))) out(l);
       if (r.moved.length) out(`  moved into Debian's directories: ${r.moved.join(', ')}`);
       out(`Try: sudo apt update && sudo apt install <package>`);
       return 0;
@@ -81,7 +83,7 @@ export const debianCmd: Command = {
       out(`prefetched ${n} files of ${pkgs.length} packages in ${Date.now() - t} ms`);
       return 0;
     }
-    ctx.stderr += `usage: debian install [--base URL] | status | prefetch [PKG...]\n`;
+    ctx.stderr += `usage: debian install [--base URL] [-v] | status | prefetch [PKG...]\n`;
     return 2;
   },
 };

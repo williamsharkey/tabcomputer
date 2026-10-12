@@ -100,8 +100,11 @@ What is still shared, and what a guest could do with it:
   with no click. `main.ts` acts on URLs: `/s/<id>` imports a shared seed
   (files and localStorage) and `/<user>/<repo>` clones a repository and runs it
   (`src/github-player`). Both run in whatever origin the link names, so
-  `location.href = 'https://tabcomputer.com/s/<seed with a ~/.profile>'` takes
-  over the main profile. This is open to every web page today, guests or not.
+  `location.href = 'https://tabcomputer.com/s/<seed with a ~/.profile>'` would
+  take over the main profile, from any web page, guests or not. What stops it
+  today is a bug: the build's chunks load from `./assets/` (vite `base: './'`),
+  so the app does not start at a two-segment path (`/s/assets/…` is a 404, on
+  tabcomputer.com too). Fixing that bug opens the hole.
   The rule the design needs: **no URL makes the main profile import or run
   code without a click in the main profile.** With guests on, such links open
   in a guest.
@@ -179,7 +182,8 @@ kept in a query parameter or in storage would be the guest's to edit.
   the gallery's `claude-sandbox` and `untrusted-repo` links carry `&guest`.
 - `/s/<id>` and `/<user>/<repo>` on the main origin open in a guest when the
   server has guests (a seed in a kept guest named after it, a repository in a
-  thrown-away one).
+  thrown-away one). `bootGuest` does this; it cannot be seen working until
+  the app starts at those paths again (above).
 
 **No network** can truthfully mean this, and no more:
 - Linux and WASM programs have no route out: the page gives the kernel no
@@ -244,8 +248,8 @@ the mode (`/guest/config.json`), so it says less when less is true:
 - Device-code phishing by a guest with network.
 - The Claude credential an agent needs lives in the guest.
 - `/oauth/callback` on the main origin takes parameters from any opener.
-- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` still
-  import and run in the main profile.
+- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` would
+  import and run in the main profile once the app starts at those paths.
 - Relay use by a guest counts against the user's IP.
 
 ## Owner decisions

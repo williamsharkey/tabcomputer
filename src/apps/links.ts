@@ -114,6 +114,8 @@ export async function fetchSiteApp(id: string, origin: string, fetchFn: Fetch): 
   const entry = Array.isArray(index?.apps) ? index.apps.find((a) => a && a.id === id) : undefined;
   if (!entry || !Array.isArray(entry.files) || !entry.files.length) throw new AppLinkError('no such app');
   if (entry.files.length > FETCHED_FILES_MAX) throw new AppLinkError('the app has too many files');
+  // Every name is checked before anything is fetched under it
+  for (const f of entry.files) if (typeof f?.path !== 'string' || !relOk(f.path) || typeof f.sha256 !== 'string') throw new AppLinkError('the app list names a file that is not a plain path');
   const get = async (f: { path: string; sha256: string; size: number }): Promise<Uint8Array> => {
     if (typeof f?.path !== 'string' || !relOk(f.path) || typeof f.sha256 !== 'string') throw new AppLinkError('the app list names a file that is not a plain path');
     const bytes = await fetchSiteFile(`${origin}/apps/${id}/${f.path.split('/').map(encodeURIComponent).join('/')}`, fetchFn, FETCHED_BYTES_MAX, `the app's ${plain(f.path, 60)}`, `the app's ${plain(f.path, 60)} is missing`, f.path.endsWith('.html') || f.path.endsWith('.htm'));
@@ -148,7 +150,7 @@ const COMMIT = /^[0-9a-f]{40}$/;
  * file installed come from that commit, so what is shown is what is installed.
  */
 export async function fetchGhApp(t: { owner: string; repo: string; path: string }, fetchFn: Fetch): Promise<FetchedApp> {
-  if (!GH_OWNER.test(t.owner) || !GH_REPO.test(t.repo) || (t.path && t.path.split('/').some((s) => !GH_SEGMENT.test(s) || s === '.' || s === '..'))) throw new AppLinkError('no such app');
+  if (!GH_OWNER.test(t.owner) || !GH_REPO.test(t.repo) || t.repo === '.' || t.repo === '..' || (t.path && t.path.split('/').some((s) => !GH_SEGMENT.test(s) || s === '.' || s === '..'))) throw new AppLinkError('no such app');
   const where = `github.com/${t.owner}/${t.repo}${t.path ? `, ${t.path}` : ''}`;
   const api = `https://api.github.com/repos/${t.owner}/${t.repo}`;
   const headBytes = await fetchRaw(`${api}/commits/HEAD`, (url, init) => fetchFn(url, { ...init, headers: { accept: 'application/vnd.github.sha' } }), 200, where, `${where} does not exist (or the repository is private)`);

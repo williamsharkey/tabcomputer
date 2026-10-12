@@ -147,8 +147,9 @@
     /**
      * Put dropped or picked files into the tab's filesystem: a FileList, a DataTransfer (folders
      * are walked), an array of Files or of { file, rel }. opts.dir: where (a folder the app may
-     * write; default a new folder under its data folder). opts.onProgress({ done, total, rel }).
-     * Resolves to { dir, paths, files: [{ path, rel, size }] } in the order given.
+     * write; default a new folder under its data folder). opts.onProgress({ done, total, file }) as
+     * each file lands (file: { path, rel, size, ms }), so work on it can start before the rest arrive.
+     * Resolves to { dir, paths, files: [{ path, rel, size, ms }] } in the order given.
      */
     import: function (source, opts) {
       opts = opts || {};
@@ -157,14 +158,14 @@
         var results = new Array(list.length), next = 0, done = 0, dir = opts.dir || null;
         function one() {
           if (next >= list.length) return Promise.resolve();
-          var i = next++, item = list[i];
+          var i = next++, item = list[i], t0 = performance.now();
           return item.file.arrayBuffer().then(function (buf) {
             return call('files.put', { dir: opts.dir, batch: batch, rel: item.rel, data: buf }, null, [buf]);
           }).then(function (r) {
-            results[i] = { path: r.path, rel: r.rel, size: r.size };
+            results[i] = { path: r.path, rel: r.rel, size: r.size, ms: Math.round(performance.now() - t0) };
             dir = dir || r.dir;
             done++;
-            if (opts.onProgress) opts.onProgress({ done: done, total: list.length, rel: r.rel });
+            if (opts.onProgress) opts.onProgress({ done: done, total: list.length, file: results[i] });
             return one();
           });
         }

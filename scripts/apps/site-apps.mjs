@@ -8,9 +8,10 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// (no node:url here: the tests load this file through vite, whose stand-in for it does not resolve)
+const HERE = decodeURIComponent(new URL(import.meta.url).pathname);
+const ROOT = resolve(dirname(HERE), '../..');
 /** Never shipped: what measures or documents an app rather than being it */
 const SKIP = new Set(['measure', 'test', 'tests', 'node_modules', 'README.md', 'package.json', 'package-lock.json']);
 
@@ -58,7 +59,7 @@ export function writeSiteApps(outDir, root = ROOT) {
   return apps;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && resolve(process.argv[1]) === HERE) {
   const apps = writeSiteApps(resolve(process.argv[2] || join(ROOT, 'dist')));
   console.log(`apps: ${apps.map((a) => `${a.id} (${a.files.length} files)`).join(', ') || 'none'}`);
 }

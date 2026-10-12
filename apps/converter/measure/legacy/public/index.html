@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Converter</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Convert old files</h1>
+    <p class="sub">Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files, converted on this computer. Nothing is uploaded.</p>
+  </header>
+
+  <section id="drop" tabindex="0" aria-label="Drop files or a folder here">
+    <p class="big">Drop files or a folder here</p>
+    <p class="types">.pub .wpd .wps .wks .wk1 .cwk .mdb</p>
+    <div class="row">
+      <label class="btn">Choose files<input id="pick" type="file" multiple hidden></label>
+      <label class="btn">Choose a folder<input id="pickdir" type="file" webkitdirectory hidden></label>
+      <label class="out">Convert to
+        <select id="to"><option value="html">HTML</option><option value="csv">CSV</option></select>
+      </label>
+    </div>
+  </section>
+
+  <section id="setup" hidden>
+    <h2>Getting the converters ready</h2>
+    <p id="setup-msg">The first time, the converter programs are installed into this tab (about 20 seconds). After that they start at once.</p>
+    <progress id="setup-bar"></progress>
+    <details><summary>Details</summary><pre id="setup-log"></pre></details>
+  </section>
+
+  <section id="work" hidden>
+    <div class="bar">
+      <div id="summary" role="status" aria-live="polite"></div>
+      <div class="row">
+        <button id="zip" class="btn primary" disabled>Download all (.zip)</button>
+        <button id="reset" class="btn">Start over</button>
+      </div>
+    </div>
+    <p id="folder" class="sub"></p>
+    <ul id="list"></ul>
+    <div id="failed" hidden>
+      <h2>Could not be converted</h2>
+      <ul id="failed-list"></ul>
+    </div>
+  </section>
+</main>
+<div id="viewer" hidden>
+  <div class="vbar"><b id="viewer-title"></b><span class="row"><button id="viewer-save" class="btn">Save a copy</button><button id="viewer-close" class="btn">Close</button></span></div>
+  <div id="viewer-body"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

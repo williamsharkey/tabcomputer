@@ -29,8 +29,6 @@ export interface InstalledApp {
   installedAt: number;
   /** The icon as a data: URL (the dock shows it before any file is read), or '' */
   icon: string;
-  /** Open it in a guest instead of here (`app install --guest`) */
-  guest?: string;
 }
 
 export interface Registry { v: 1; apps: Record<string, InstalledApp> }
@@ -158,7 +156,6 @@ export interface InstallOptions {
   source: string;
   /** Is this id something else's (a built-in app's)? */
   taken?(id: string): boolean;
-  guest?: string;
   now?: number;
 }
 
@@ -166,7 +163,7 @@ async function register(fs: RegistryFs, m: AppManifest, dir: string, o: InstallO
   const reg = await readRegistry(fs);
   const app: InstalledApp = {
     id: m.id, name: m.name, version: m.version, dir, source: o.source, installedAt: o.now ?? Date.now(),
-    icon: await iconDataUrl(fs, dir, m), ...(o.guest ? { guest: o.guest } : {}),
+    icon: await iconDataUrl(fs, dir, m),
   };
   reg.apps[m.id] = app;
   await writeRegistry(fs, reg);

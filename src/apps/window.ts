@@ -208,6 +208,8 @@ export interface OpenOptions {
   restore?: string;
   /** The icon as a data: URL (an installed app's is in the registry) */
   icon?: string;
+  /** The launch already asked for (the dock's click asks before anything is awaited) */
+  launch?: Launch;
 }
 
 /**
@@ -222,24 +224,21 @@ export async function openAppWindow(ref: AppRef, opts: OpenOptions = {}): Promis
   const inst = instanceFor(ref);
   const name = inst.manifest.name;
   const open = windowsOf(wm, id);
+  let launch: Launch | null = opts.launch ?? null;
   if (open.length && !(inst.manifest.window.multiple && opts.newWindow)) {
     const w = open[open.length - 1];
     if (w.state === 'minimized') w.restore();
     w.focus();
+    launch?.running(w);
     return w;
   }
   const icon = opts.icon ?? '';
-  const tracker = wm.launches;
-  let launch: Launch | null = null;
-  if (!open.length) {
-    const r = tracker.request({
+  if (!launch && !open.length) {
+    const r = wm.launches.request({
       id, name, icon: icon || monogramIcon(name, id), placeholder: true,
       size: { width: inst.manifest.window.width, height: inst.manifest.window.height },
-      retry: () => { void openAppWindow(ref, opts); },
-      onCancel: () => {
-        if (!inst.views.size) inst.stop();
-        return `${name} won't open.`;
-      },
+      retry: () => { void openAppWindow(ref, { ...opts, launch: undefined }); },
+      onCancel: () => `${name} won't open.`,
     });
     if (!r.fresh) return wm.get(placeholderId(id)) ?? null;
     launch = r.launch;
@@ -247,7 +246,7 @@ export async function openAppWindow(ref: AppRef, opts: OpenOptions = {}): Promis
   const offLog = launch ? inst.on((ev, text) => { if (ev === 'log' && text) launch!.log(text); }) : () => {};
   try {
     await inst.prepare((stage) => { launch?.installing(null, stage); });
-    if (launch && !launch.active) return null;
+    if (launch && !launch.active) { if (!inst.views.size) inst.stop(); return null; }
     launch?.starting();
     if (!await inst.startBackend()) {
       const why = inst.supervisor?.error || 'it was stopped';
@@ -278,8 +277,24 @@ export function registerInstalledApp(app: InstalledApp): void {
   registered.add(app.id);
   wm.registerApp({
     id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), order: 40, dock: true,
-    // Asked for before anything is awaited: wm.openApp sees the launch this starts
-    launch: (args) => openInstalled(app.id, { newWindow: !!args?.newWindow }),
+    launch: (args) => {
+      const open = windowsOf(wm, app.id);
+      const newWindow = !!args?.newWindow;
+      if (open.length && !newWindow) {
+        const w = open[open.length - 1];
+        if (w.state === 'minimized') w.restore();
+        w.focus();
+        return w;
+      }
+      // Asked for before anything is awaited, so wm.openApp sees this launch and starts none of its own
+      const r = wm.launches.request({
+        id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), placeholder: true,
+        retry: () => { void wm.openApp(app.id, args); },
+        onCancel: () => `${app.name} won't open.`,
+      });
+      if (!r.fresh) return wm.get(placeholderId(app.id)) ?? null;
+      return openInstalled(app.id, { newWindow, launch: r.launch });
+    },
   });
 }
 
@@ -307,26 +322,11 @@ export async function openInstalled(id: string, opts: OpenOptions = {}): Promise
   let found: { ref: AppRef; app: InstalledApp };
   try { found = await installedRef(id); }
   catch (e) {
-    const wm = desktop();
     // The dock's own click has nowhere to print: the launch shows the reason
-    const l = wm?.launches.request({ id, name: id, placeholder: true }).launch;
-    if (l?.active) { l.fail((e as Error).message); return null; }
+    if (opts.launch?.active) { opts.launch.fail((e as Error).message); return null; }
     throw e;
   }
-  if (found.app.guest) {
-    const { openGuest } = await import('../guest');
-    const url = await openGuest({ name: found.app.guest }, { search: `?app=${encodeURIComponent(linkOf(found.app))}` });
-    if (!url) throw new AppError(`${found.app.name} was installed to open in a guest, and this server has none`);
-    return null;
-  }
   return openAppWindow(found.ref, { ...opts, icon: found.app.icon, restore: `app open ${id}` });
-}
-
-/** The `?app=` value that installs this app again (its guest opens it with this) */
-export function linkOf(app: InstalledApp): string {
-  if (app.source === 'site') return app.id;
-  const m = /^gh:([^@]+)(?:@.*)?$/.exec(app.source);
-  return m ? `gh:${m[1]}` : app.id;
 }
 
 // ── app mode ──

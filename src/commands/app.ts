@@ -48,6 +48,9 @@ export const appCmd: Command = {
   description: 'Apps: make one from a template, try it, install it in the dock, open it',
   async exec(ctx) {
     const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s + '\n'); else ctx.stdout += s + '\n'; };
+    // What must show while the command still runs (app dev's log, an install's progress): straight to the terminal
+    const term = !ctx.streamStdout && ctx.terminal && ctx.stdoutIsTTY !== false ? ctx.terminal : null;
+    const live = (s: string) => { if (term) term.writeOutput((s + '\n').replace(/\r?\n/g, '\r\n')); else out(s); };
     const err = (s: string) => { ctx.stderr += `app: ${s}\n`; };
     const args = [...ctx.args];
     const sub = args.shift() ?? '';
@@ -117,7 +120,7 @@ export const appCmd: Command = {
           return 0;
         }
 
-        case 'dev': return await dev(ctx, rest, flags, out, err, known, tilde);
+        case 'dev': return await dev(ctx, rest, flags, live, err, known, tilde);
 
         case 'install': {
           if (!known('--guest', '--open')) return 2;
@@ -132,7 +135,7 @@ export const appCmd: Command = {
             if (flags.has('--guest')) { err('a folder of this tab cannot be installed into a guest (a guest has its own files): put it in a repository and use gh:OWNER/REPO'); return 1; }
             const r = await install.installDir(asDir);
             id = r.app.id;
-            out(`${r.replaced ? 'Updated' : 'Installed'} ${r.app.name} (${id}) in ${tilde(r.app.dir)}${r.files ? `: ${r.files} files` : ''}.`);
+            live(`${r.replaced ? 'Updated' : 'Installed'} ${r.app.name} (${id}) in ${tilde(r.app.dir)}${r.files ? `: ${r.files} files` : ''}.`);
           } else {
             const { parseAppSpec, appLinkQuery } = await import('../apps/links');
             if (!/^(gh:|https?:)/i.test(spec) && spec.includes('/')) { err(`${spec}: no such folder`); return 1; }
@@ -146,30 +149,30 @@ export const appCmd: Command = {
               if (g.guestInfo()) { err('this is a guest already'); return 1; }
               const url = await g.openGuest(name ? { name } : {}, { search: appLinkQuery(target) });
               if (!url) { err('this server has no guests'); return 1; }
-              out(`Opening it in ${name ? `the guest "${name}"` : 'a thrown-away guest'}, which cannot read this tab's files or sign-ins: ${url}`);
+              live(`Opening it in ${name ? `the guest "${name}"` : 'a thrown-away guest'}, which cannot read this tab's files or sign-ins: ${url}`);
               return 0;
             }
-            out(`Fetching ${plain(spec)}…`);
+            live(`Fetching ${plain(spec)}…`);
             const app = await install.fetchApp(target);
             if (!app.curated) {
-              out(`${app.manifest.name} (${app.manifest.id}) from ${app.from}. tabcomputer has not reviewed it: a window shows what it asks for.`);
+              live(`${app.manifest.name} (${app.manifest.id}) from ${app.from}. tabcomputer has not reviewed it: a window shows what it asks for.`);
               const choice = await install.confirmInstall(app);
               if (choice === 'guest') {
                 const g = await import('../guest');
                 if (target.kind === 'url') { err('an archive cannot be opened in a guest from here'); return 1; }
                 const url = await g.openGuest({}, { search: appLinkQuery(target) });
-                out(url ? `Opened in a guest: ${url}` : 'This server has no guests.');
+                live(url ? `Opened in a guest: ${url}` : 'This server has no guests.');
                 return url ? 0 : 1;
               }
-              if (choice !== 'install') { out('Cancelled: nothing was installed.'); return 1; }
+              if (choice !== 'install') { live('Cancelled: nothing was installed.'); return 1; }
             }
             const r = await install.installFetched(app);
             id = r.app.id;
-            out(`${r.replaced ? 'Updated' : 'Installed'} ${r.app.name} (${id}) in ${tilde(r.app.dir)}: ${r.files} files.`);
+            live(`${r.replaced ? 'Updated' : 'Installed'} ${r.app.name} (${id}) in ${tilde(r.app.dir)}: ${r.files} files.`);
           }
           // Its toolchain sets now, so the first open is quick (the dock shows the progress)
-          await install.prepareInstalled(id, (l) => out(`  ${l}`));
-          out(hasDesktop() ? `It is in the dock. Open it: app open ${id}` : `Open it: app open ${id}`);
+          await install.prepareInstalled(id, (l) => live(`  ${l}`));
+          live(hasDesktop() ? `It is in the dock. Open it: app open ${id}` : `Open it: app open ${id}`);
           if (flags.has('--open')) await openById(ctx, id, false, false, out);
           return 0;
         }
@@ -191,7 +194,7 @@ export const appCmd: Command = {
           out(`${'ID'.padEnd(20)} ${'NAME'.padEnd(22)} ${'STATE'.padEnd(16)} FROM`);
           for (const a of apps) {
             const inst = instanceOf(a.id);
-            const state = a.guest ? `guest ${a.guest}` : !inst ? '-' : inst.supervisor ? `${inst.supervisor.state} :${inst.supervisor.port}` : 'open';
+            const state = !inst ? '-' : inst.supervisor ? `${inst.supervisor.state} :${inst.supervisor.port}` : 'open';
             out(`${a.id.padEnd(20)} ${a.name.slice(0, 22).padEnd(22)} ${state.padEnd(16)} ${plain(a.source.replace(/^dir:/, ''), 80)}`);
             if (!long) continue;
             try {

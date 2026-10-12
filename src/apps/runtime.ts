@@ -99,7 +99,6 @@ export const NO_NETWORK_CSP = [
   "connect-src 'self' data: blob:",
   "frame-src 'self' data: blob:",
   "form-action 'self'",
-  "webrtc 'block'",
 ].join('; ');
 
 /** The fixed path an app's page loads the client library from */

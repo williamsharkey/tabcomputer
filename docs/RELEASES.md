@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 999 | see `git log --grep "^Build 999"` | 2026-10-12 | Guest profiles (#113, docs/research/GUEST_PROFILE.md): the app on its own origin `guest--<name>.<base>`, thrown-away and no-network modes, the `guest` command and menu items; off until the server sets `TABCOMPUTER_GUESTS=1`. Recipes: the four Debian ones ran on production, no longer marked untested |
 | 998 | see `git log --grep "^Build 998"` | 2026-10-12 | Run links (#115, docs/RUN_LINKS.md): `?run=<recipe>` runs a curated recipe in a new Terminal, `?run=gh:owner/repo` and `?run=sh:…` show the script with Run and Cancel first; six recipes, a gallery at `/recipes`, a README badge |
 | 997 | see `git log --grep "^Build 997"` | 2026-10-12 | Blink: the xattr syscalls answer as a filesystem without attributes (`python3 -m venv`, `cp -a`; #107), 80-bit loads and stores round as IEEE does (patches 0539, 0540; engine rebuilt) |
 | 996 | see `git log --grep "^Build 996"` | 2026-10-12 | Newcomer papercuts (#110): Debian's `which` finds `npm -g` commands, `upload`/`download --help` print usage, `help` has a Save your work section, apt without a terminal is quiet about debconf, `toolchain install` prints one overlay line (`-v` for each); `pip install` works without a venv (`/etc/pip.conf`, #112); the `c` set says gdb can't run programs yet (#108) |

@@ -4,7 +4,6 @@
 # needs: debian toolchain:c net
 # args: repo (optional https URL of the starter code)
 # on-open: cd ~/run/c-class/work
-# status: untested
 set -e
 # gcc is a tabcomputer builtin until Debian's is installed, so ask toolchain rather than PATH
 toolchain list | grep -q '^c  *yes' || toolchain install c
@@ -16,4 +15,4 @@ if [ -n "$RUN_REPO" ] && [ ! -d .git ]; then
   esac
 fi
 [ -e hello.c ] || [ -d .git ] || printf '#include <stdio.h>\nint main(void){puts("hello from tabcomputer");return 0;}\n' > hello.c
-echo "Ready: gcc, make, gdb. Try: gcc hello.c && ./a.out"
+echo "Ready: gcc, g++, make. Try: gcc hello.c && ./a.out"

@@ -3,13 +3,12 @@
  "recipes": [
   {
    "name": "c-class",
-   "sha256": "1f93f31b2c2ee72cfd202450b2ccfd8390ce3f31d0c7382c54777c6985b6c30d",
+   "sha256": "863ba30a8e90fd1cc4df802897b41478745a20401d2f92f2ad64944a96431134",
    "title": "C programming class",
    "for": "students and teachers on managed Chromebooks and laptops where nothing can be installed",
    "needs": "debian toolchain:c net",
    "args": "repo (optional https URL of the starter code)",
-   "on-open": "cd ~/run/c-class/work",
-   "status": "untested"
+   "on-open": "cd ~/run/c-class/work"
   },
   {
    "name": "claude-sandbox",
@@ -23,23 +22,21 @@
   },
   {
    "name": "latex-paper",
-   "sha256": "c372411ecadb241305cf625ef90c8bc2f482ca9930fcb2f7ef03852ebc7a7481",
+   "sha256": "f8a9fcb0d1088f4a39d9451e00c8aa0b684585bbd467c8ec1d68257dc5a0f085",
    "title": "LaTeX project, no compile time limit",
    "for": "people whose paper hits an online editor's compile timeout, or who can't upload it",
    "needs": "debian toolchain:tex net",
    "args": "repo (optional https URL of the paper's repository), main (main .tex file, default main.tex)",
-   "on-open": "cd ~/run/latex-paper/work",
-   "status": "untested"
+   "on-open": "cd ~/run/latex-paper/work"
   },
   {
    "name": "python-class",
-   "sha256": "261da8bfede8ccd6224a659bec9d6311267d6b5f153805d4ea7a912eac38a933",
+   "sha256": "c1c5fc7447fe840cc75b8371e48a7a297e31cefd7680b3154065c4a4012bf08d",
    "title": "Python class",
    "for": "students on machines where Python can't be installed",
    "needs": "debian toolchain:python net",
    "args": "repo (optional https URL of the course's repository), pip (optional package names, space-separated)",
-   "on-open": "cd ~/run/python-class/work",
-   "status": "untested"
+   "on-open": "cd ~/run/python-class/work"
   },
   {
    "name": "untrusted-repo",
@@ -52,12 +49,11 @@
   },
   {
    "name": "wordperfect-rescue",
-   "sha256": "b8a99dbc4d68956ea3b90af6d85f6614e53662f793d2f9f192069a5244c9e274",
+   "sha256": "d90c0ff0adfd5ee8b9a94ee3acf58d142d30e3837f266fb37739b3cf1c71d69d",
    "title": "Rescue old documents (WordPerfect, Works, ClarisWorks, Visio, CorelDraw)",
    "for": "people with old files they can't open and won't upload",
    "needs": "debian",
-   "on-open": "cd ~/run/wordperfect-rescue",
-   "status": "untested"
+   "on-open": "cd ~/run/wordperfect-rescue"
   }
  ]
 }

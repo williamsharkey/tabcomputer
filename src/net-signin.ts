@@ -98,6 +98,37 @@ export function onNetworkStatus(cb: (s: NetworkStatus) => void): () => void {
   return () => { statusListeners.delete(cb); };
 }
 
+/**
+ * What a relay's token endpoint said:
+ *   'on'      it issued a token ({token: string} as JSON);
+ *   'signin'  it wants a sign-in first (401);
+ *   'refused' it is a relay but not for this page (403: origin not allowed, a no-network guest);
+ *   'off'     there is no relay there: a 404, or an answer that is not a token.
+ *             A server without the relay answers /tcp/token with the app shell
+ *             (200, text/html), so a 2xx alone says nothing;
+ *   'unknown' no answer, or one that says neither.
+ */
+export type RelayProbe = 'on' | 'signin' | 'refused' | 'off' | 'unknown';
+
+/** Ask a relay's token endpoint for a token, to learn whether a relay is there. */
+export async function probeRelayToken(tokenUrl: string, opts: { fetch?: typeof fetch; credential?: string | null; timeoutMs?: number } = {}): Promise<RelayProbe> {
+  const f = opts.fetch ?? fetch;
+  let res: Response;
+  try {
+    res = await f(tokenUrl, {
+      method: 'POST', credentials: 'omit',
+      ...(opts.credential ? { headers: { Authorization: `Bearer ${opts.credential}` } } : {}),
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+    });
+  } catch { return 'unknown'; }
+  if (res.status === 401) return 'signin';
+  if (res.status === 403) return 'refused';
+  if (res.status === 404) return 'off';
+  if (!res.ok) return 'unknown';
+  const j = await res.json().catch(() => null);
+  return j && typeof j.token === 'string' && j.token ? 'on' : 'off';
+}
+
 // Other bundles (seeded pages, worker hosts) reach it without importing
 (globalThis as any).__shiroRequireNetwork = requireNetworkSignIn;
 

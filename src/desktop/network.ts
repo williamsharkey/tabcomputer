@@ -9,7 +9,7 @@
 
 import {
   networkCredential, networkStatus, onNetworkStatus, setNetworkSignInHandler, setNetworkStatus,
-  resetNetworkDecline, ownRelay, onOwnRelayChange, relayNetConfig, type NetworkNeed, type NetworkStatus,
+  resetNetworkDecline, ownRelay, onOwnRelayChange, relayNetConfig, probeRelayToken, type NetworkNeed, type NetworkStatus,
 } from '../net-signin';
 import { netStackOf } from '../kernel/net';
 import type { Kernel } from '../kernel/kernel';
@@ -85,7 +85,10 @@ export async function testOwnRelay(url: string, tokenUrl?: string, timeoutMs = 6
   });
 }
 
-/** Ask the relay whether it would let this browser connect: updates the status. */
+/**
+ * Ask the relay whether it would let this browser connect: updates the status.
+ * 'unavailable' when the server has no relay, or it refuses this page.
+ */
 export async function probeRelay(): Promise<NetworkStatus> {
   if (guestInfo()?.noNetwork) { setNetworkStatus('unavailable'); return 'unavailable'; }
   if (!navigator.onLine) { setNetworkStatus('offline'); return 'offline'; }
@@ -97,15 +100,14 @@ export async function probeRelay(): Promise<NetworkStatus> {
     return s;
   }
   const cred = networkCredential();
-  try {
-    const res = await fetch('/tcp/token', { method: 'POST', credentials: 'same-origin', ...(cred ? { headers: { Authorization: `Bearer ${cred}` } } : {}) });
-    const s: NetworkStatus = res.ok ? (cred ? 'signed-in' : 'online') : res.status === 401 ? 'needs-sign-in' : res.status === 404 ? 'unavailable' : 'online';
-    setNetworkStatus(s);
-    return s;
-  } catch {
-    setNetworkStatus('offline');
-    return 'offline';
-  }
+  // A 2xx is not enough: a server with no relay answers this path with the app shell
+  const probe = await probeRelayToken('/tcp/token', { credential: cred });
+  const s: NetworkStatus = probe === 'on' ? (cred ? 'signed-in' : 'online')
+    : probe === 'signin' ? 'needs-sign-in'
+    : probe === 'unknown' ? 'offline'
+    : 'unavailable';
+  setNetworkStatus(s);
+  return s;
 }
 
 /** The GitHub login of the saved token, if it is still valid. */

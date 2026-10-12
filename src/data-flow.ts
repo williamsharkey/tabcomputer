@@ -448,21 +448,15 @@ function has(key: string): boolean {
   try { return !!localStorage.getItem(key); } catch { return false; }
 }
 
-/** Ask this site's relay for a token: 'on' when it issues one. Sends no credential. */
-async function probeSiteRelay(fetchImpl: typeof fetch, timeoutMs = 3000): Promise<'on' | 'off' | 'unknown'> {
-  try {
-    const r = await fetchImpl('/tcp/token', { method: 'POST', credentials: 'omit', signal: AbortSignal.timeout(timeoutMs) });
-    // A server without the relay answers this path with the app shell, or a 404
-    if (r.status === 401) return 'on';
-    if (!r.ok) return r.status === 404 ? 'off' : 'unknown';
-    const j = await r.json().catch(() => null);
-    return j && typeof j.token === 'string' ? 'on' : 'off';
-  } catch { return 'unknown'; }
+/** Ask this site's relay for a token: 'on' when it issues one or wants a sign-in first. Sends no credential. */
+async function probeSiteRelay(fetchImpl: typeof fetch, probe: typeof import('./net-signin').probeRelayToken, timeoutMs = 3000): Promise<'on' | 'off' | 'unknown'> {
+  const r = await probe('/tcp/token', { fetch: fetchImpl, timeoutMs });
+  return r === 'on' || r === 'signin' ? 'on' : r === 'off' ? 'off' : 'unknown';
 }
 
 /** What this tab is and holds, as presence only. */
 export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desktop' | 'terminal'; fetch?: typeof fetch } = {}): Promise<DataFlowInputs> {
-  const [{ guestInfo, guestConfig }, { ownRelay }, { hasClaudeCredentials }] = await Promise.all([
+  const [{ guestInfo, guestConfig }, { ownRelay, probeRelayToken }, { hasClaudeCredentials }] = await Promise.all([
     import('./guest'), import('./net-signin'), import('./claude-signin'),
   ]);
   const guest = guestInfo();
@@ -474,7 +468,7 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     guestConfig(),
     hasClaudeCredentials(fs as never).catch(() => false),
     (async () => { try { return (await navigator.storage?.persisted?.()) ?? null; } catch { return null; } })(),
-    skipProbe ? Promise.resolve('unknown' as const) : probeSiteRelay(fetchImpl),
+    skipProbe ? Promise.resolve('unknown' as const) : probeSiteRelay(fetchImpl, probeRelayToken),
   ]);
   const same = !!guest && !!cfg.guest && cfg.guest.name === guest.name && cfg.guest.noNetwork === guest.noNetwork && cfg.guest.ephemeral === guest.ephemeral;
   return {

@@ -1585,6 +1585,8 @@ export class Shell {
       this.processAbort.abort();
     }
   }
+  /** The signal that ended this shell process (processSignals), for whoever waits for it */
+  endedBySignal?: number;
   /** A shell process's own abort (startProcess): its parent's aborts reach it, not the reverse */
   private processAbort?: AbortController;
   /** Detaches processAbort from the parent's abort (endProcess) */
@@ -1613,6 +1615,7 @@ export class Shell {
       const d = defaultAction(sig);
       // An interactive shell survives the usual terminating signals
       if (!this.scriptShell || d === 'ign' || d === 'stop' || d === 'cont') continue;
+      this.endedBySignal = sig;
       throw new ExitSignal(128 + sig);
     }
   }
@@ -9737,9 +9740,12 @@ export class Shell {
     writeStderr: (s: string) => void,
     argv0?: string,
     opts?: { on: string[]; off: string[] },
+    /** This shell is a kernel process running the script as itself (kernel.ts runShellProcess): the script's $$ and $PPID are the process's (#106) */
+    proc?: { pid: number; ppid: number },
   ): Promise<number> {
     const child = this.fork();
-    child.startProcess();
+    child.startProcess(proc?.pid, proc?.ppid);
+    if (proc) child.bashPid = child.kernelPid = proc.pid;
     child.setPositional(args, argv0);
     if (argv0 !== undefined) child.setScriptSource(argv0);
     // sh -x / -e … SCRIPT

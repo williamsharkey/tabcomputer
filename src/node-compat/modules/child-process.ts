@@ -353,16 +353,24 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     }
     // spawn(…, { env }): the child sees that environment (Gemini CLI relaunches
     // itself with { ...process.env, GEMINI_CLI_NO_RELAUNCH: 'true' })
+    // The child is a shell process of its own, as node's `sh -c` is: its own $$ (it was the
+    // caller's, so `kill -9 $$` in a child killed the command that ran node, #92), only the
+    // exported variables and functions, and a signal it sends itself ends it
+    sh.startProcess();
+    sh.commandStringFlag = true;
     if (env) {
+      const own = sh.env;
       sh.env = {};
       for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== null) sh.env[k] = String(v);
+      // (the shell's own: OPTIND, SHELLOPTS…, which startProcess set)
+      for (const n of sh.localVars) if (n in own) sh.env[n] = own[n];
     }
     // { input }: the child's stdin (execSync, spawnSync, execFileSync)
-    const exitCode = input !== undefined
-      ? await sh.executeWithStdin(normalized, input, (s) => { stdout += s; }, (s) => { stderr += s; })
-      : await sh.execute(normalized, (s) => { stdout += s; }, (s) => { stderr += s; }, false,
-        // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
-        inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined, true);
+    if (input !== undefined) sh.setInjectedStdin(input);
+    const exitCode = await sh.runScriptText(normalized,
+      // (the terminal only when node's own stdin and stdout are it: `node x.js | cat` keeps the child's output)
+      inherit?.every(Boolean) && ctx.terminal && ctx.stdinIsTTY !== false && ctx.stdoutIsTTY !== false ? ctx.terminal : undefined,
+      (s) => { stdout += s; }, (s) => { stderr += s; });
 
     // Refresh fileCache from Shiro FS cache — shell commands may have created,
     // modified, or deleted files that fileCache still has stale entries for.
@@ -383,7 +391,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     stdout = stdout.replace(/\r\n/g, '\n');
     stderr = stderr.replace(/\r\n/g, '\n');
 
-    return { stdout, stderr, exitCode };
+    // (a signal the shell sent itself ended it: `kill -9 $$`)
+    return { stdout, stderr, exitCode, ...(sh.endedBySignal !== undefined ? { signal: sh.endedBySignal } : {}) };
   };
   /**
    * Run `node ARGS` as the child, its stdin a pipe the parent writes into as it
@@ -807,17 +816,22 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       let stdout = '';
       let stderr = '';
-      let status = 0;
-      const p = execAsync(fullCmd, undefined, inputOf(opts), undefined, inheritOf(opts)).then(r => { r = inherited(r, opts); stdout = r.stdout; stderr = r.stderr; status = r.exitCode; });
+      let status: number | null = 0;
+      let signal: string | null = null; // the signal that ended it: then status is null, as node's
+      const p = execAsync(fullCmd, undefined, inputOf(opts), undefined, inheritOf(opts)).then(r => {
+        signal = signalName(r.signal);
+        r = inherited(r, opts); stdout = r.stdout; stderr = r.stderr; status = signal ? null : r.exitCode;
+      });
       pendingPromises.push(p);
       return {
         get stdout() { return wrap(stdout); },
         get stderr() { return wrap(stderr); },
         get status() { return status; },
-        get error() { return status !== 0 ? new Error(`spawnSync exited with ${status}`) : undefined; },
+        get signal() { return signal; },
+        get error() { return status !== 0 && !signal ? new Error(`spawnSync exited with ${status}`) : undefined; },
         // awaited (sync-await.ts): the whole result, as node's spawnSync returns it
         then: (resolve: any, reject: any) => p.then(() => resolve({
-          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal: null,
+          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal,
         })).catch(reject),
       };
     },

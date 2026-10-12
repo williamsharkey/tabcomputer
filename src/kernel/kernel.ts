@@ -1794,7 +1794,7 @@ export class Kernel {
     let code: number;
     if (script.includes('\n')) {
       // Multi-line: compound statements accumulate across lines
-      code = await shell.executeShellScript(script, positional.slice(1), { stdin: '', liveStdin: live } as CommandContext, stdio.out, stdio.err);
+      code = await shell.executeShellScript(script, positional.slice(1), { stdin: '', liveStdin: live } as CommandContext, stdio.out, stdio.err, undefined, undefined, proc);
     } else {
       positional.slice(1).forEach((v, k) => { shell.env[String(k + 1)] = v; });
       shell.env['#'] = String(Math.max(0, positional.length - 1));

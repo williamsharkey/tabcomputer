@@ -50,7 +50,7 @@ const CSS = `
 /* The app's window takes this one's place at once: no fade under it */
 .sd-win.sd-launch-win.sd-launch-gone { display: none; }
 .sd-launch {
-  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 6px;
   padding: 4px 20px 18px; overflow: auto; text-align: center; color: var(--sd-text); container-type: size;
 }
 .sd-launch-icon { width: 64px; height: 64px; flex: none; margin-bottom: 6px; display: grid; place-items: center; opacity: .92; }
@@ -79,7 +79,15 @@ const CSS = `
   .sd-launch-note { display: none; }
   .sd-launch-actions { margin-top: 4px; }
 }
-@container (max-height: 190px) { .sd-launch-icon, .sd-launch-last { display: none; } }
+/* A phone on its side: the stage, the bar and the buttons (the menu bar has the name) */
+@container (max-height: 190px) {
+  .sd-launch { gap: 3px; padding: 0 16px 6px; }
+  .sd-launch-icon, .sd-launch-last, .sd-launch-name { display: none; }
+  .sd-launch-bar { margin: 4px 0 0; }
+  .sd-launch-actions { margin-top: 2px; }
+  .sd-launch-actions .sd-btn { height: 24px; }
+}
+@container (max-height: 150px) { .sd-launch-amount { display: none; } }
 /* No motion: the bar of an unknown amount is a still, striped track */
 @media (prefers-reduced-motion: reduce) {
   .sd-launch-bar.sd-indeterminate > i, .sd-launch-line.sd-indeterminate > i {
@@ -108,16 +116,22 @@ export interface LaunchUIDeps {
   toast(text: string): void;
 }
 
-/** True when no part of the window's title bar can be seen (other windows are over all of it) */
-function titleHidden(win: DesktopWindow): boolean {
-  if (typeof document.elementFromPoint !== 'function') return false;
-  const r = win.element.getBoundingClientRect();
-  if (!r.width) return false;
-  for (const f of [0.08, 0.3, 0.5, 0.7, 0.92]) {
-    const hit = document.elementFromPoint(r.left + r.width * f, r.top + 19);
-    if (hit && win.element.contains(hit)) return false;
-  }
-  return true;
+/**
+ * True when none of a bottom-most window's title bar can be seen: every point
+ * sampled along it is under another window's frame. From the windows'
+ * geometry, not the page (the window is still animating in when this asks).
+ */
+function titleHidden(wm: WindowManager, win: DesktopWindow): boolean {
+  const g = win.geometry();
+  const over = wm.windows().filter((w) => w !== win && w.state !== 'minimized' && w.state !== 'closed').map((w) => {
+    const o = w.geometry();
+    return { x: o.x, y: o.y, r: o.x + o.width, b: o.y + o.height + (w.options.decorations === 'none' || w.options.override ? 0 : 38) };
+  });
+  const y = g.y + 19;
+  return [0.08, 0.3, 0.5, 0.7, 0.92].every((f) => {
+    const x = g.x + g.width * f;
+    return over.some((o) => x >= o.x && x < o.r && y >= o.y && y < o.b);
+  });
 }
 
 function esc(s: string): string {
@@ -191,10 +205,10 @@ export function initLaunchUI(wm: WindowManager, tracker: LaunchTracker, deps: La
     p = { launch: l, win, remembered: g.remembered, touched: false, details: false, said: '', paint: () => paint(p, body) };
     // A guessed spot whose title bar would be hidden under another window: the top of the work
     // area instead, if the title bar shows there (a remembered spot is the app's own: it stays)
-    if (!g.remembered && !front && win.state === 'normal' && titleHidden(win)) {
+    if (!g.remembered && !front && win.state === 'normal' && titleHidden(wm, win)) {
       const at = win.geometry();
       win.move(at.x, 0);
-      if (titleHidden(win)) win.move(at.x, at.y);
+      if (titleHidden(wm, win)) win.move(at.x, at.y);
     }
     win.on('move', () => { p.touched = true; });
     win.on('resize', () => { p.touched = true; });

@@ -404,6 +404,29 @@ describe('the Debian GUI launch path, with a stand-in installer and process', ()
     expect(placeholder()).toBeUndefined();
   });
 
+  it('a guessed spot under another window moves up so the title bar, with the stage, shows', async () => {
+    const f = fakeApps({ installed: true });
+    // over where a 300 × 200 window would be centered, but not over the top of the work area
+    const term = wm.createWindow({ appId: 'terminal', title: 'Terminal', x: 200, y: 60, width: 600, height: 400 });
+    await startGuiApp(fs, f.kernel, 'xeyes', { name: 'xeyes' });
+    await tick(300);
+    const ph = wm.get(placeholderId('xeyes'))!;
+    expect([ph.geometry().y, wm.windows()[0], wm.focused(), ph.title]).toEqual([0, ph, term, 'xeyes — Starting…']);
+    // …and nowhere to show it at all: it stays where it was put
+    launches.get('xeyes')!.cancel();
+    const big = wm.createWindow({ appId: 'files', title: 'Files', x: 0, y: 0, width: 1000, height: 560 });
+    await startGuiApp(fs, f.kernel, 'xeyes', { name: 'xeyes' });
+    await tick(300);
+    expect(wm.get(placeholderId('xeyes'))!.geometry().y).toBeGreaterThan(0);
+    big.close(true);
+    // a remembered spot is the app's own: it is not moved
+    launches.get('xeyes')!.cancel();
+    rememberGeometry('xeyes', { x: 400, y: 200, width: 220, height: 150 });
+    await startGuiApp(fs, f.kernel, 'xeyes', { name: 'xeyes' });
+    await tick(300);
+    expect(wm.get(placeholderId('xeyes'))!.geometry()).toEqual({ x: 400, y: 200, width: 220, height: 150 });
+  });
+
   it('reserves the remembered geometry and gives it to the app', async () => {
     rememberGeometry('gimp', { x: 30, y: 40, width: 720, height: 450 });
     const f = fakeApps({ installed: true });

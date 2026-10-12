@@ -58,7 +58,13 @@ export interface InstallProgress {
   total: number;
   bytes: number;
   totalBytes: number;
-  /** Bytes of the packages unpacked so far, downloaded or from the cache: `doneBytes / totalBytes` is the fraction done */
+  /**
+   * Work done, in package bytes: a package counts half once it is fetched and
+   * decoded (from the network or the cache) and half once its files are
+   * written, so `doneBytes / totalBytes` is the fraction of the install done.
+   * Packages are decoded in parallel and written largest first; counting
+   * written ones only would sit at 0 for most of the install.
+   */
   doneBytes?: number;
 }
 
@@ -382,8 +388,8 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   const ownBins = new Set([app.bin]);
   const triggers = new Set<number>();
   let done = 0;
-  let doneBytes = 0;
-  const report = (phase: InstallProgress['phase'], pkg?: string) => onProgress?.({ phase, pkg, done, total: want.length, bytes: res.bytes, totalBytes, doneBytes });
+  let readyBytes = 0, writtenBytes = 0;
+  const report = (phase: InstallProgress['phase'], pkg?: string) => onProgress?.({ phase, pkg, done, total: want.length, bytes: res.bytes, totalBytes, doneBytes: (readyBytes + writtenBytes) / 2 });
   // Fetch with a few requests in flight and decode each .deb (workers) as it
   // arrives; write the files in that order
   const ready = new Map<string, Promise<{ entries: TarEntry[]; size: number; cached: boolean }>>();
@@ -391,7 +397,12 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   const startMore = () => {
     while (next < want.length && ready.size < 16) {
       const n = want[next++];
-      ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => ({ size: data.length, cached, entries: await debEntriesOffThread(data) })));
+      ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => {
+        const entries = await debEntriesOffThread(data);
+        readyBytes += m.packages[n].size;
+        report('fetch', n);
+        return { size: data.length, cached, entries };
+      }));
     }
   };
   startMore();
@@ -411,7 +422,7 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
     res.ms.unpack += Date.now() - tu;
     status.packages[n] = m.packages[n].version;
     done++;
-    doneBytes += m.packages[n].size;
+    writtenBytes += m.packages[n].size;
     report('unpack', n);
   }
   for (const path of app.remove ?? []) await fs.rm(path, { recursive: true }).catch(() => {});

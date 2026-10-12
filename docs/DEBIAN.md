@@ -184,6 +184,7 @@ layers have). Chunks are gzip, so a layer comes out 1.1 to 1.5 times its
 
 | id | packages asked for | Debian packages | `.deb`s | unpacked |
 | --- | --- | ---: | ---: | ---: |
+| `rescue` | libwpd-tools, libmspub-tools, libwps-tools, libmwaw-tools, mdbtools, pandoc | 23 | 43 MB | 253 MB (194 MB of it pandoc) |
 | `tex-full` | `tex`'s, and texlive-latex-extra, texlive-pictures, texlive-science, texlive-bibtex-extra, biber, texlive-plain-generic, texlive-fonts-recommended, texlive-fonts-extra, texlive-xetex, texlive-luatex | 222 (157 more than `tex`) | 1019 MB | 2.7 GB |
 
 `tex-full` **extends** `tex`: the builder installs `tex`'s packages and then
@@ -202,7 +203,19 @@ so expect `toolchain install tex-full` to take longer than the 1.5 s of
 (`disk_gb`, 8 for `tex-full`): the builder skips it on a host with less,
 and the tab uses apt.
 
-Not in it: the LaTeX `svg` package runs Inkscape through `--shell-escape`
+`rescue` (#114) converts files no current program opens: `wpd2html` and
+`wpd2text` (WordPerfect), `pub2xhtml` (Publisher), `wps2html`, `wks2csv`
+(Works, Lotus 1-2-3), `mwaw2html` (ClarisWorks and other old Mac formats),
+`mdb-tables`, `mdb-export`, `mdb-schema` (Access), and `pandoc` to turn the
+HTML into DOCX, Markdown or EPUB. LibreOffice's headless converter
+(`soffice --headless --convert-to pdf`) is not in it. By the same sum,
+libreoffice-writer-nogui, -calc-nogui, -impress-nogui and -draw-nogui are
+163 more packages, 122 MB of `.deb`s and 394 MB unpacked on top of `rescue`
+(174 packages, 138 MB and 450 MB alone), four times the rest of the set,
+and whether `soffice` starts under Blink has not been tried. If it does, it
+belongs in a set of its own that extends `rescue`.
+
+Not in `tex-full`: the LaTeX `svg` package runs Inkscape through `--shell-escape`
 (`sudo apt-get install inkscape`, 133 more packages), and `minted` needs
 `python3-pygments`.
 

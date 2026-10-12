@@ -285,7 +285,8 @@ Install software
   sudo apt update        then: sudo apt install -y NAME   (Debian's apt; about a
                          minute per small package, python3 about 4 minutes)
   toolchain install c    a whole Debian toolchain in seconds (also python, tex,
-                         tex-full, classic, node, java); toolchain list shows them
+                         tex-full, classic, node, java, rescue for old file
+                         formats); toolchain list shows them
   pkg install NAME       tabcomputer's 72 prebuilt programs (WebAssembly or static
                          x86-64): vim, htop, git, python3, jq, ... in about a second;
                          pkg available lists them. Before debian install, apt is pkg.

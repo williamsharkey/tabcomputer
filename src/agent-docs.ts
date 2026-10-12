@@ -167,7 +167,8 @@ ${bootSection(ctx, name)}
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`tex-full\` (TikZ, biblatex/biber, XeTeX, LuaTeX,
   fonts), \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\` or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
-  dpkg knows them, so apt keeps working. \`toolchain list\` shows the sets. The first run of each program
+  dpkg knows them, so apt keeps working. \`rescue\` has converters for dead file formats
+  (wpd2html, pub2xhtml, wps2html, mwaw2html, mdb-export) and pandoc. \`toolchain list\` shows the sets. The first run of each program
   downloads it (gcc's hello world takes about 9 s from a fresh tab).
 - Prebuilt: \`pkg install NAME\` installs one of ${name}'s 72 prebuilt programs
   (WebAssembly or static x86-64: vim, htop, git, python3, jq, curl, make, clang,

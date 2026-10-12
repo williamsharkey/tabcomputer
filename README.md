@@ -71,6 +71,7 @@ toolchain install c              # build-essential (gcc, g++, make), gdb, cmake,
 printf '#include <stdio.h>\nint main(void){puts("hi");}\n' > hi.c && gcc hi.c && ./a.out
 toolchain install python         # also: go, tex, classic (Fortran, COBOL, Pascal, Ada), node, java
 toolchain install tex-full       # tex plus TikZ, biblatex and biber, the extra fonts, XeTeX, LuaTeX
+toolchain install rescue         # converters for WordPerfect, Publisher, Works, Lotus, Access files; pandoc
 ```
 
 From a fresh tab to the first working program: `c` 8.9 s (`gcc hi.c && ./a.out`), `python` 6.6 s,

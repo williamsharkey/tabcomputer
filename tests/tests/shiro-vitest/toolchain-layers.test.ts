@@ -78,6 +78,14 @@ describe('the sets (src/debian/toolchains.json)', () => {
     expect(builder('tex', 'disk_gb')).toBe('0');
   });
 
+  it('rescue has the converters for dead formats and pandoc (#114), and builds before the big tex-full', () => {
+    expect(sets.rescue.packages).toEqual(['libwpd-tools', 'libmspub-tools', 'libwps-tools', 'libmwaw-tools', 'mdbtools', 'pandoc']);
+    // LibreOffice is not in it: 163 more packages, and soffice is untested under Blink
+    expect(sets.rescue.packages.join(' ')).not.toMatch(/libreoffice/);
+    // The builder goes in file order and stops at a failure: the set most likely to fail goes last
+    expect(Object.keys(sets).at(-1)).toBe('tex-full');
+  });
+
   it('the builder reads prepare steps as the set wrote them', () => {
     expect(builder('go', 'prepare').split('\n')).toEqual(sets.go.prepare);
     expect(JSON.parse(builder('go', 'prepare-json'))).toEqual(sets.go.prepare);

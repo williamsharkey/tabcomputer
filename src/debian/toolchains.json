@@ -92,6 +92,19 @@
       ],
       "check": "printf 'package main\\nimport \"fmt\"\\nfunc main(){fmt.Println(\"hello\")}\\n' > /tmp/tc-hello.go && cd /tmp && go run tc-hello.go"
     },
+    "rescue": {
+      "title": "File rescue",
+      "description": "converters for dead formats: WordPerfect, Publisher, Works, Lotus 1-2-3, ClarisWorks and old Mac files, Access (mdbtools), and pandoc",
+      "packages": [
+        "libwpd-tools",
+        "libmspub-tools",
+        "libwps-tools",
+        "libmwaw-tools",
+        "mdbtools",
+        "pandoc"
+      ],
+      "check": "command -v wpd2html pub2xhtml wps2html wks2csv mwaw2html mdb-export > /dev/null && pandoc --version | head -n 1"
+    },
     "tex-full": {
       "title": "LaTeX, full",
       "description": "tex plus TikZ, biblatex and biber, latex-extra, science, the extra fonts, XeTeX and LuaTeX",

@@ -44,7 +44,7 @@ export interface AppContext {
   fs: FileSystem;
   shell: Shell;
   kernel: Kernel;
-  openTerminal: (opts?: { command?: string; cwd?: string; title?: string; appId?: string }) => DesktopWindow | null;
+  openTerminal: (opts?: { command?: string; cwd?: string; title?: string; appId?: string; env?: Record<string, string> }) => DesktopWindow | null;
   /** The dock's icon set (iconsets.ts) */
   iconSet(): IconSetId;
   /** Switch icon sets: no layout change, a 0.3 s crossfade; resolves once shown */
@@ -194,15 +194,15 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   let mainTerm: ShiroTerminal | null = null;
   wm.registerContentKind('terminal', (win, content, body) => {
     const view = new TerminalView(win, wm, termDeps, body);
-    const c = content as { command?: string; cwd?: string; adoptMain?: boolean; title?: string };
+    const c = content as { command?: string; cwd?: string; adoptMain?: boolean; title?: string; env?: Record<string, string> };
     if (c.title) view.fixedTitle = c.title;
     const parked = c.adoptMain ? takeParkedMain() : null;
     if (parked) view.adoptMain(parked.pane, parked.term);
-    else view.newTab({ command: c.command, cwd: c.cwd });
+    else view.newTab({ command: c.command, cwd: c.cwd, env: c.env });
     return view;
   });
 
-  const openTerminal = (opts: { command?: string; cwd?: string; title?: string; appId?: string } = {}): DesktopWindow => {
+  const openTerminal = (opts: { command?: string; cwd?: string; title?: string; appId?: string; env?: Record<string, string> } = {}): DesktopWindow => {
     const wa = wm.workArea();
     const width = Math.min(820, Math.max(320, wa.width - 80));
     const height = Math.min(500, Math.max(200, wa.height - 120));
@@ -211,7 +211,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       // The window holding the main terminal is /dom/windows/terminal (when that id is free)
       ...(adoptMain && hasParkedMain() ? { id: 'terminal' } : {}),
       appId: opts.appId ?? 'terminal', title: opts.title ?? 'Terminal', width, height,
-      content: { kind: 'terminal', command: opts.command, cwd: opts.cwd, adoptMain, title: opts.title },
+      content: { kind: 'terminal', command: opts.command, cwd: opts.cwd, adoptMain, title: opts.title, env: opts.env },
     });
   };
   // Icon sets: the dock's attribute picks the material; a live set's engine draws behind the glyphs

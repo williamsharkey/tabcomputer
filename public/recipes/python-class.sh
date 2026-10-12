@@ -4,7 +4,6 @@
 # needs: debian toolchain:python net
 # args: repo (optional https URL of the course's repository), pip (optional package names, space-separated)
 # on-open: cd ~/run/python-class/work
-# status: untested
 set -e
 # python3 is a tabcomputer builtin until Debian's is installed, so ask toolchain rather than PATH
 toolchain list | grep -q '^python  *yes' || toolchain install python

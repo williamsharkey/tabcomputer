@@ -3,7 +3,6 @@
 # for: people with old files they can't open and won't upload
 # needs: debian
 # on-open: cd ~/run/wordperfect-rescue
-# status: untested
 set -e
 have() { command -v "$1" >/dev/null 2>&1; }
 

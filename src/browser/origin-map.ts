@@ -147,6 +147,8 @@ export function parentAppOrigin(patterns: string[], loc: Location = location): s
   const anc = (loc as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
   if (anc && anc.length) {
     const top = anc[anc.length - 1];
+    // Never a guest (src/guest.ts): its script must not act as a site's broker
+    if (/^https?:\/\/guest--[a-z0-9-]+\./i.test(top)) return null;
     return originMatches(top, patterns) && !templateFromBrowseOrigin(top) ? top : null;
   }
   // No ancestorOrigins (Firefox): only an exact single origin will do

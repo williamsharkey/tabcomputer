@@ -17,6 +17,8 @@
  * (localStorage `tabcomputer_github_token`, src/github-auth.ts).
  */
 
+import { guestInfo } from './guest';
+
 /** Same key as GITHUB_TOKEN_KEY in github-auth.ts (not imported: that module is lazy) */
 const GITHUB_TOKEN_KEY = 'tabcomputer_github_token';
 
@@ -142,6 +144,8 @@ export function onOwnRelayChange(cb: (r: OwnRelay | null) => void): () => void {
  * they gave a URL, and never their GitHub sign-in), or this site's /tcp.
  */
 export function relayNetConfig(loc: Pick<Location, 'protocol' | 'host'> = location): { relayUrl: string | null; tokenUrl: string | null; credentials: boolean } {
+  // A no-network guest (src/guest.ts) has no relay, the user's own included
+  if (guestInfo()?.noNetwork) return { relayUrl: null, tokenUrl: null, credentials: false };
   const own = ownRelay();
   if (own) return { relayUrl: own.url, tokenUrl: own.tokenUrl ?? null, credentials: false };
   const web = (loc.protocol === 'https:' || loc.protocol === 'http:') && !!loc.host;

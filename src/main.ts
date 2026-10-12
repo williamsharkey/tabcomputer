@@ -52,7 +52,7 @@ import { setupCmd } from './commands/setup';
 import { psCmd, killCmd } from './commands/ps';
 import { htmlCmd, imgCmd } from './commands/html';
 import { dougCmd } from './commands/doug';
-import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode } from './commands/become';
+import { becomeCmd, unbecomeCmd, getBecomeConfig, activateBecomeMode, deactivateBecomeMode, startBecomeServer } from './commands/become';
 import { pageCmd } from './commands/page';
 import { titleCmd } from './commands/title';
 
@@ -115,6 +115,8 @@ import { installNodeWorkerBoot } from './node-worker/boot';
 import { bootStarted, bootFinished, bootStep, safeMode } from './safe-mode';
 import { safeModeCmd } from './commands/safe-mode';
 import * as agentResume from './agent-resume';
+import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, parseGuestOrigin, RESERVED_PATHS } from './guest';
+import { guestCmd } from './commands/guest';
 
 /**
  * Register a command in both the CommandRegistry (for execution) and
@@ -135,6 +137,10 @@ async function main() {
     const u = new URL(location.href);
     if (u.searchParams.has('reload')) { u.searchParams.delete('reload'); history.replaceState(history.state, '', u.toString()); }
   } catch { /* not a page */ }
+  // A guest (src/guest.ts): this load may be on its way to one, or be one's discard.
+  // Before anything opens storage, and before any link's seed, repository or recipe is looked at
+  const guest = await bootGuest();
+  if (guest === 'stop') return;
   logIsolationStatus();
   // Safe mode (src/safe-mode.ts): ?safe=1, or this tab's last loads never reached the prompt
   const safe = safeMode();
@@ -167,8 +173,11 @@ async function main() {
   void import('./storage-lost').then(m => m.watchStorageLost(fs)).catch(e => console.warn('[fs]', e));
   // Persistent storage (no eviction under storage pressure) once the machine
   // holds a lot: Firefox asks the user, so not for a page that stores little
-  fs.onBigWrite(PERSIST_AFTER_BYTES, () => void requestPersistentStorage('large write'));
-  void storageInfo().then(s => { if ((s.usage ?? 0) >= PERSIST_AFTER_BYTES) void requestPersistentStorage('stored data'); });
+  // (not for a thrown-away guest)
+  if (!guest?.ephemeral) {
+    fs.onBigWrite(PERSIST_AFTER_BYTES, () => void requestPersistentStorage('large write'));
+    void storageInfo().then(s => { if ((s.usage ?? 0) >= PERSIST_AFTER_BYTES) void requestPersistentStorage('stored data'); });
+  }
   const runtimeContext = (() => {
     if (window.parent === window) return defaultRuntimeContext();
     try {
@@ -187,6 +196,8 @@ async function main() {
 
   // Listen for seed hydration from parent (when loaded via seed snippet)
   window.addEventListener('message', async (e) => {
+    // Never from a guest's page (src/guest.ts): it may be same-site with this profile
+    if (!guest && parseGuestOrigin(e.origin)) return;
     // Legacy format (v1): single JSON blob
     if (e.data && e.data.type === 'shiro-seed') {
       try {
@@ -545,6 +556,7 @@ async function main() {
   registerCommand(commands, lazyCommand('ipcrm', 'Remove System V IPC objects (by id or key)',
     () => import('./commands/ipcs').then(m => m.ipcrmCmd)), 'src/commands/ipcs.ts');
   registerCommand(commands, safeModeCmd, 'src/commands/safe-mode.ts');
+  registerCommand(commands, guestCmd, 'src/commands/guest.ts');
   registerCommand(commands, lazyCommand('doctor', 'Check this tab (deploy, browser, engine, network, sign-ins, storage) for a bug report',
     () => import('./commands/doctor').then(m => m.doctorCmd)), 'src/commands/doctor.ts');
   registerCommand(commands, lazyCommand('tabinfo', 'Same as doctor',
@@ -826,6 +838,16 @@ async function main() {
     });
   }
 
+  // A guest states its boundary above the first prompt (the desktop also has the menu bar's Guest button)
+  if (guest) {
+    const cfg = await Promise.race([guestConfig(), new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
+    const st = boundaryStatement(guest, { host: location.host, enforced: !!cfg?.enforced && cfg.guest?.noNetwork === guest.noNetwork });
+    terminal.term.writeln(`\x1b[1;33m${st.title}\x1b[0m`);
+    for (const l of st.lines) terminal.term.writeln(`\x1b[33m${l}\x1b[0m`);
+  } else if (guestUnavailable()) {
+    terminal.term.writeln('\x1b[1;33mThis address asked for a guest, but this server has none. Nothing it carried was run.\x1b[0m');
+  }
+
   await terminal.start();
   fs.releaseKeyIndex();
   // The prompt is up: the next load of this tab is a normal one
@@ -843,15 +865,15 @@ async function main() {
       history.replaceState({}, '', '/');
     } else if (pathname === '/' + becomeConfig.slug) {
       // Only re-enter become mode on the slug path, NOT on root /
-      let startResult: number;
-      startResult = await shell.execute(
-          `serve "${becomeConfig.directory}" ${becomeConfig.port}`,
-          () => {}, () => {},
-        );
-        if (startResult === 0) {
-          await activateBecomeMode(becomeConfig);
-        }
-      if (startResult !== 0) {
+      // (the app's own server when `become --start` recorded its command, else a static serve)
+      const started = await startBecomeServer(becomeConfig, (cmd) => {
+        const side = shell.fork();
+        (side as any).terminal = null; // no terminal: the server's output must not paint under the app
+        return side.execute(cmd, () => {}, () => {});
+      });
+      if (started) {
+        await activateBecomeMode(becomeConfig);
+      } else {
         // Server failed to start — clear become config and show terminal
         localStorage.removeItem('tabcomputer-become');
         document.body.classList.remove('become-active');
@@ -864,7 +886,8 @@ async function main() {
   }
 
   // A run link (?run=, src/run-url.ts, docs/RUN_LINKS.md): its script in a new Terminal
-  if (!safe && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
+  // (never here when the link asked for a guest and the server has none: src/guest.ts)
+  if (!safe && !guestUnavailable() && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('run')) {
     void startRunLink();
   }
 
@@ -919,7 +942,7 @@ async function main() {
   if (ghMatch && !seedMatch) {
     const [, user, repo] = ghMatch;
     // Avoid collision with reserved paths
-    const reserved = ['api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets'];
+    const reserved = RESERVED_PATHS;
     if (!reserved.includes(user.toLowerCase())) {
       const repoUrl = `https://github.com/${user}/${repo}`;
       terminal.term.writeln(`\r\nCloning ${repoUrl}...`);
@@ -982,7 +1005,7 @@ async function main() {
 
   // Have Claude Code ready before anyone types `claude` (the profile's preinstall
   // list). Waits a few seconds so the 18 MB tarball download doesn't compete with boot.
-  if (!safe && profile.preinstall.includes('claude-code')) setTimeout(() => {
+  if (!safe && !guest?.noNetwork && profile.preinstall.includes('claude-code')) setTimeout(() => {
     ensureClaudeCodeInstalled(fs)
       .then(() => console.log('[tabcomputer] Claude Code ready'))
       .catch((e) => console.warn('[tabcomputer] Claude Code background install failed:', e?.message || e));

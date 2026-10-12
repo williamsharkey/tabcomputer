@@ -24,7 +24,7 @@
  */
 
 /** Query parameters that are the page's own: never arguments, and left in the address */
-export const PAGE_PARAMS = new Set(['run', 'safe', 'ui', 'profile', 'reload', 'hotswap', 'watchdog', 'demo', 'unbecome', 'apps']);
+export const PAGE_PARAMS = new Set(['run', 'safe', 'ui', 'profile', 'reload', 'hotswap', 'watchdog', 'demo', 'unbecome', 'apps', 'guest', 'nonet']);
 
 const RECIPE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** `gh-…` and `sh-…` are the directories of scripts that aren't curated */

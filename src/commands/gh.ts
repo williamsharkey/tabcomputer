@@ -1,4 +1,5 @@
 import git from './git-cached';
+import { guestInfo } from '../guest';
 import { Command, CommandContext } from './index';
 import { ghApiHandler } from './gh-api';
 import { ghIssueHandler } from './gh-issue';
@@ -239,6 +240,10 @@ async function ghDispatch(ctx: CommandContext, sub: string): Promise<number> {
 
         } else if (authSub === 'login') {
           const { flags } = parseFlags(ctx.args.slice(2), ['scopes', 's', 'hostname', 'h', 'git-protocol', 'p']);
+          if (guestInfo()) {
+            const note = 'gh: this is a guest. A token saved here can be used by everything that runs here.\n';
+            if (ctx.terminal) ctx.terminal.writeOutput(note.replace(/\n/g, '\r\n')); else ctx.stderr += note;
+          }
           if (flags['with-token'] !== 'true') {
             const extra = parseScopes(flags);
             return deviceLogin(ctx, [...new Set([...DEFAULT_GITHUB_SCOPES, ...extra])]);

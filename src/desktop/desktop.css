@@ -100,6 +100,12 @@ body.sd-active #shiro-layout { display: none; }
 .sd-mb-menus { display: contents; }
 .sd-mb-spacer { flex: 1; }
 .sd-mb-status svg { width: 16px; height: 16px; display: block; }
+/* A guest (src/guest.ts): always on screen, also on phones */
+.sd-mb-guest { font-weight: 600; color: #b25e00; background: rgba(255, 179, 64, .22); white-space: nowrap; flex: none; }
+.sd-dark .sd-mb-guest { color: #ffc266; }
+.sd-guest-pop { width: min(340px, calc(100vw - 16px)); }
+.sd-guest-pop p { margin: 8px 0 0; line-height: 1.4; }
+.sd-acct-guest { padding: 0 0 8px; }
 .sd-mb-clock { font-variant-numeric: tabular-nums; padding: 0 8px; }
 
 /* ── Menus ── */

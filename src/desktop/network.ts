@@ -16,6 +16,7 @@ import type { Kernel } from '../kernel/kernel';
 import type { FileSystem } from '../filesystem';
 import type { WindowManager } from './wm';
 import { GLYPHS } from './icons';
+import { guestInfo } from '../guest';
 
 const GLOBE = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M12 3c2.6 2.6 3.8 5.7 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.7-3.8-9S9.4 5.6 12 3z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>`;
 
@@ -32,10 +33,11 @@ export function initNetwork(wm: WindowManager, fs: FileSystem, button: HTMLEleme
   const applyRelay = () => { if (kernel) netStackOf(kernel)?.configure(relayNetConfig()); };
   applyRelay();
   onOwnRelayChange(() => { applyRelay(); setNetworkStatus(navigator.onLine ? 'online' : 'offline'); });
-  setNetworkSignInHandler((need) => showSignInSheet(need));
-  const initial: NetworkStatus = !navigator.onLine ? 'offline' : networkCredential() ? 'signed-in' : 'online';
+  // A guest never asks for a sign-in by itself: a token saved there is the guest's to read
+  if (!guestInfo()) setNetworkSignInHandler((need) => showSignInSheet(need));
+  const initial: NetworkStatus = guestInfo()?.noNetwork ? 'unavailable' : !navigator.onLine ? 'offline' : networkCredential() ? 'signed-in' : 'online';
   setNetworkStatus(initial);
-  window.addEventListener('online', () => setNetworkStatus(networkCredential() ? 'signed-in' : 'online'));
+  window.addEventListener('online', () => setNetworkStatus(guestInfo()?.noNetwork ? 'unavailable' : networkCredential() ? 'signed-in' : 'online'));
   window.addEventListener('offline', () => setNetworkStatus('offline'));
   const paint = (s: NetworkStatus) => {
     // Globe + status dot: green signed in, blue online, amber needs sign-in, gray offline
@@ -55,7 +57,7 @@ export function statusText(s: NetworkStatus): string {
     case 'online': return 'Online';
     case 'needs-sign-in': return 'Sign in to connect to the internet';
     case 'offline': return 'Offline';
-    case 'unavailable': return 'Internet relay is off on this server';
+    case 'unavailable': return guestInfo()?.noNetwork ? 'No network in this guest' : 'Internet relay is off on this server';
     default: return 'Checking…';
   }
 }
@@ -85,6 +87,7 @@ export async function testOwnRelay(url: string, tokenUrl?: string, timeoutMs = 6
 
 /** Ask the relay whether it would let this browser connect: updates the status. */
 export async function probeRelay(): Promise<NetworkStatus> {
+  if (guestInfo()?.noNetwork) { setNetworkStatus('unavailable'); return 'unavailable'; }
   if (!navigator.onLine) { setNetworkStatus('offline'); return 'offline'; }
   const own = ownRelay();
   if (own) {

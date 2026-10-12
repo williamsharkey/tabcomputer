@@ -4,7 +4,6 @@
 # needs: debian toolchain:tex net
 # args: repo (optional https URL of the paper's repository), main (main .tex file, default main.tex)
 # on-open: cd ~/run/latex-paper/work
-# status: untested
 set -e
 have() { command -v "$1" >/dev/null 2>&1; }
 

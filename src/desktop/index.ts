@@ -20,6 +20,7 @@ import { WindowManager, compactViewport, isDesktopShortcut, type DockGroup, type
 import { ICONS, GLYPHS, appIcon } from './icons';
 import { TerminalView, takeParkedMain, hasParkedMain, applyTerminalTheme, useMonoFont, allTerminalViews, terminalTheme, TERMINAL_FONT } from './terminal-app';
 import { initNetwork } from './network';
+import { guestConfig, guestInfo, openGuest } from '../guest';
 import { loadSession, place, restoreSession, trackSession } from './session';
 import { previousLoadWedge } from '../watchdog';
 import { BRAND } from '../brand';
@@ -265,6 +266,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'browser', name: 'Browser', icon: ICONS.browser, order: 4, launch: focusOrLaunch('browser', lazy(() => import('./apps/browser'))) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
+    // The hardwired half of the app-maker comparison (docs/research/APP_MAKER.md): not in the dock
+    { id: 'converter', name: 'Converter', icon: ICONS.files, order: 91, dock: false, launch: focusOrLaunch('converter', lazy(() => import('./apps/converter'))) },
   ];
   for (const a of apps) wm.registerApp(a);
 
@@ -604,9 +607,22 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   wm.on('focus-changed', updateAppName);
   updateAppName();
 
+  // Guests (src/guest.ts): offered when the server has them; a guest offers its own discard
+  const guest = guestInfo();
+  let guestsOffered = false;
+  if (!guest) void guestConfig().then((c) => { guestsOffered = !!c.origin; });
+  const guestItems = (): MenuSpec['items'] => guest ? [
+    { label: 'About This Guest…', action: () => menubar.querySelector<HTMLElement>('.sd-mb-guest')?.click() },
+    'separator',
+  ] : guestsOffered ? [
+    { label: 'New Guest Window', action: () => void openGuest({}) },
+    { label: 'New Guest Window (No Network)', action: () => void openGuest({ noNetwork: true }) },
+    'separator',
+  ] : [];
   const systemMenu = (): MenuSpec => ({ title: 'System', items: [
     { label: 'About This Computer', action: () => void wm.openApp('about') },
     'separator',
+    ...guestItems(),
     { label: 'Settings…', shortcut: 'Alt+Shift+,', action: () => void wm.openApp('settings') },
     { label: 'Activity', action: () => void wm.openApp('activity') },
     'separator',
@@ -779,6 +795,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
 
   // ── Network ──
   initNetwork(wm, deps.fs, netBtn, deps.kernel);
+  if (guest) void import('./guest-ui').then((m) => m.initGuestUI(root, menubar, searchBtn, guest));
   // Claude Code's sign-in shows as a desktop sheet (accounts.ts, loaded when asked for)
   setClaudeSignInUI((o) => import('./accounts').then(m => m.openClaudeSheet(wm, deps.fs, o)));
   // Previews of in-tab servers are Preview windows (preview.ts, loaded when asked for); in the dock while open

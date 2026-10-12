@@ -116,6 +116,14 @@ tabcomputer's node loads N-API addons (or the addons get wasm builds).
 
 ## Proposal: dock groups (for the desktop worker)
 
+> **What shipped** (docs/DESKTOP.md "Developer tools"): three stacks by
+> what the tools are, each always one tile with nothing loose. **Text
+> Editors**: nano, Vim, Neovim, Emacs, Code, Geany. **Developer Tools**: the
+> Git app (built in, instead of lazygit), tmux. **AI agents**: Claude Code,
+> Gemini CLI, Codex, Grok, agy, aider. The proposal below kept nano, Vim,
+> Code, Git and Claude Code as loose tiles; that was dropped as harder to
+> read than grouping by kind.
+
 The dock already has stacks (`wm.registerGroup`; `system`, `programs`,
 `debian`) and a "click to install" mechanism (`FEATURED_PACKAGES` /
 `OPTIONAL_PACKAGES` in `src/desktop/index.ts`, which run

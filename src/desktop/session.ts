@@ -29,6 +29,7 @@ import type { TabState, TerminalView } from './terminal-app';
 import * as store from './session-store';
 import * as agentResume from '../agent-resume';
 import type { ResumeCommand } from '../agent-resume';
+import { isPlaceholder, rememberGeometry } from './launch-state';
 
 export const SESSION_KEY = 'tabcomputer-desktop-session';
 /** '0': don't restore the session on reload (Settings → Desktop) */
@@ -82,7 +83,7 @@ export interface Reopenable { restoreCommand?: { cmd: string; cwd: string } }
 const screenKey = (w: number, t: number) => `screen:${w}:${t}`;
 
 function describe(w: DesktopWindow, base: Record<string, string>, withScreens: boolean): SavedWindow | null {
-  if (!w.appId || w.state === 'closed' || w.options.override || w.options.transientFor) return null;
+  if (!w.appId || w.state === 'closed' || w.options.override || w.options.transientFor || isPlaceholder(w)) return null;
   const c = (w as { content?: any }).content;
   const out: SavedWindow = { id: w.id, app: w.appId, g: w.geometry(), state: w.state };
   if (w.focused) out.focused = true;
@@ -231,12 +232,15 @@ export async function restoreSession(wm: WindowManager, saved: SavedWindow[], de
       } else if (s.restore) {
         if (d.run) {
           const before = new Set(wm.windows());
+          // A slow app's placeholder window (launch-ui.ts) is reserved where the window was
+          rememberGeometry(s.app, s.g);
           d.run(s.restore.cmd, s.restore.cwd);
           // a command's window may come later (GUI apps): place it when it does, for a while
-          w = wm.windows().find((x) => !before.has(x) && x.appId === s.app) ?? null;
+          w = wm.windows().find((x) => !before.has(x) && x.appId === s.app && !isPlaceholder(x)) ?? null;
           if (!w) {
             const off = wm.on('window-created', (nw) => {
-              if (!nw || nw.appId !== s.app) return;
+              // (not its placeholder, a splash screen or a menu: the app's own window)
+              if (!nw || nw.appId !== s.app || isPlaceholder(nw) || nw.options.splash || nw.options.override) return;
               off(); clearTimeout(t);
               place(nw, s, wm.workArea());
             });

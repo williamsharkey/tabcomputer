@@ -58,6 +58,14 @@ export interface InstallProgress {
   total: number;
   bytes: number;
   totalBytes: number;
+  /**
+   * Work done, in package bytes: a package counts half once it is fetched and
+   * decoded (from the network or the cache) and half once its files are
+   * written, so `doneBytes / totalBytes` is the fraction of the install done.
+   * Packages are decoded in parallel and written largest first; counting
+   * written ones only would sit at 0 for most of the install.
+   */
+  doneBytes?: number;
 }
 
 export interface InstallResult {
@@ -143,10 +151,18 @@ async function installWithApt(fs: FileSystem, kernel: Kernel, name: string, app:
   // `sudo` is Shiro's builtin (uid 0 for apt); a bare name reaches it through the kernel's builtin loader
   const run = async (cmd: string) => {
     const out = new BufferFile(null);
+    // apt's output as it comes (the launch placeholder shows the last line); whole lines only
+    const dec = new TextDecoder();
+    let pending = '';
+    out.onData = (d) => {
+      const parts = (pending + dec.decode(d, { stream: true })).split('\n');
+      pending = parts.pop() ?? '';
+      for (const line of parts) { const l = line.split('\r').pop()!.trimEnd(); if (l) log(l); }
+    };
     const argv = cmd.split(' ');
     const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: appEnv({ DEBIAN_FRONTEND: 'noninteractive' }), fds: { 0: new BufferFile(''), 1: out, 2: out } });
     const st = await p.wait();
-    for (const line of out.text().split('\n').filter(Boolean).slice(-6)) log(line);
+    if (pending.trim()) log(pending.trim());
     return st;
   };
   // lists may be empty right after `debian install`
@@ -372,7 +388,8 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   const ownBins = new Set([app.bin]);
   const triggers = new Set<number>();
   let done = 0;
-  const report = (phase: InstallProgress['phase'], pkg?: string) => onProgress?.({ phase, pkg, done, total: want.length, bytes: res.bytes, totalBytes });
+  let readyBytes = 0, writtenBytes = 0;
+  const report = (phase: InstallProgress['phase'], pkg?: string) => onProgress?.({ phase, pkg, done, total: want.length, bytes: res.bytes, totalBytes, doneBytes: (readyBytes + writtenBytes) / 2 });
   // Fetch with a few requests in flight and decode each .deb (workers) as it
   // arrives; write the files in that order
   const ready = new Map<string, Promise<{ entries: TarEntry[]; size: number; cached: boolean }>>();
@@ -380,7 +397,12 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   const startMore = () => {
     while (next < want.length && ready.size < 16) {
       const n = want[next++];
-      ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => ({ size: data.length, cached, entries: await debEntriesOffThread(data) })));
+      ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => {
+        const entries = await debEntriesOffThread(data);
+        readyBytes += m.packages[n].size;
+        report('fetch', n);
+        return { size: data.length, cached, entries };
+      }));
     }
   };
   startMore();
@@ -400,6 +422,7 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
     res.ms.unpack += Date.now() - tu;
     status.packages[n] = m.packages[n].version;
     done++;
+    writtenBytes += m.packages[n].size;
     report('unpack', n);
   }
   for (const path of app.remove ?? []) await fs.rm(path, { recursive: true }).catch(() => {});
@@ -536,7 +559,7 @@ async function shipLib(fs: FileSystem, name: string, path: string): Promise<bool
 export interface LaunchedApp { pid: number; exited: Promise<number>; output: () => string }
 
 /** Start an installed app as a background kernel process. */
-export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}): Promise<LaunchedApp> {
+export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}, opts: { onOutput?: (text: string) => void } = {}): Promise<LaunchedApp> {
   const m = await guiManifest();
   const app = m.apps[name];
   if (!app) throw new Error(`no GUI app named ${name}`);
@@ -550,6 +573,10 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   const bus = await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
   const out = new BufferFile(null);
+  if (opts.onOutput) {
+    const dec = new TextDecoder();
+    out.onData = (d) => { try { opts.onOutput!(dec.decode(d, { stream: true })); } catch { /* a listener's problem */ } };
+  }
   const p = kernel.spawn({
     // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
     // oosplash finds soffice.bin next to argv[0])

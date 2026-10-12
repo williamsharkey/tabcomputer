@@ -46,9 +46,28 @@ export const guiCmd: Command = {
     }
     const name = sub === 'run' ? rest.shift() : sub;
     if (!name || !m.apps[name]) { err(`gui: no app named ${name ?? ''} (gui list)\n`); return 1; }
-    if (!(await apps.isAppInstalled(ctx.fs, name)) && await install(ctx, name, out, err) !== 0) return 1;
+    // Through the launcher (src/gui/launch.ts): on the desktop the dock icon and a placeholder
+    // window show the stages, and an app that is still starting isn't started twice
+    const { startGuiApp } = await import('../gui/launch');
+    const desk = (globalThis as { __shiroDesktop?: { app?(id: string): { name: string; icon?: string } | undefined } }).__shiroDesktop;
+    const known = desk?.app?.(name);
     const t0 = Date.now();
-    const p = await apps.launchApp(kernel, name, rest);
+    let last = 0, progressed = false;
+    const r = await startGuiApp(ctx.fs, kernel, name, {
+      name: known?.name, icon: known?.icon, args: rest,
+      onProgress: (p) => {
+        if (p.phase === 'unpack' && (Date.now() - last > 1000 || p.done === p.total)) {
+          last = Date.now(); progressed = true;
+          out(`\r${name}: ${p.done}/${p.total} packages, ${(p.bytes / 1e6).toFixed(1)}/${(p.totalBytes / 1e6).toFixed(1)} MB`);
+        }
+      },
+      log: (line) => { progressed = true; out(`\n${line}`); },
+    });
+    if (progressed) out('\n');
+    if (r.status === 'busy') { err(`gui: ${name} is already starting; its window has not appeared yet\n`); return 0; }
+    if (r.status === 'cancelled') { err(`gui: ${name}: cancelled\n`); return 130; }
+    if (r.status === 'failed') { err(`gui: ${r.error}\n`); return 1; }
+    const p = r.app;
     out(`${name} started (pid ${p.pid}) on display :0\n`);
     void p.exited.then((st) => {
       if (st !== 0) console.warn(`[gui] ${name} exited with status ${st >> 8 || st} after ${Date.now() - t0} ms:\n${p.output().slice(-2000)}`);

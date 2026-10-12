@@ -2,10 +2,13 @@
  * Debian GUI apps on the desktop (src/gui/apps.ts). The dock's "Apps" entry
  * opens the Apps window (apps-sheet.ts), which lists them with sizes and
  * installs them; installed apps get their own dock icons. Opening an app
- * that isn't installed (`openApp`) installs it with a progress window first.
+ * (`openApp`) goes through launch.ts: its dock icon shows it is starting and
+ * a placeholder window says what stage it is in (installing first when it
+ * isn't installed) until its own window appears.
  * Its X windows carry the app's id, so later clicks focus them.
  */
-import type { DesktopAPI, DesktopWindow } from '../desktop/wm';
+import type { DesktopAPI } from '../desktop/wm';
+import { startGuiApp } from './launch';
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from '../kernel/kernel';
 import type { SheetApp } from './apps-sheet';
@@ -67,10 +70,15 @@ const APPS_ICON = `<span class="sd-tile" style="--t1:#5b8cff;--t2:#7a4dff"><svg 
 /** Registers the apps; resolves once the installed ones are in the dock */
 export function registerGuiApps(wm: DesktopAPI, fs: FileSystem, kernel: Kernel): Promise<void> {
   const icons = APPS.map(([, , icon], i) => icon.includes('/') ? icon : glyphIcon(icon, (i * 47) % 360));
-  const register = (installed: Set<string>) => APPS.forEach(([id, name], i) => {
+  const register = (installed: Set<string>) => APPS.forEach(([id, name, , , note], i) => {
     wm.registerApp({
       id, name, dock: installed.has(id), order: 60 + i, icon: icons[i],
-      launch: () => launch(wm, fs, kernel, id, name, refresh),
+      // Asked for before anything is awaited (wm.openApp sees the launch); its window comes later
+      launch: () => {
+        void startGuiApp(fs, kernel, id, { name, icon: icons[i], note, installed: () => void refresh() })
+          .catch((e) => console.warn('[gui]', id, e));
+        return null;
+      },
     });
   });
   const refresh = async () => {
@@ -90,39 +98,4 @@ export function registerGuiApps(wm: DesktopAPI, fs: FileSystem, kernel: Kernel):
   // installs from the shell (`gui install`) too
   fs.onChange((_ev, path) => { if (path === '/var/lib/shiro-gui/status.json') void refresh(); });
   return refresh();
-}
-
-async function launch(wm: DesktopAPI, fs: FileSystem, kernel: Kernel, id: string, name: string, installed: () => void): Promise<DesktopWindow | null> {
-  const apps = await import('./apps');
-  let progress: DesktopWindow | null = null;
-  if (!(await apps.isAppInstalled(fs, id))) {
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:18px;font:13px system-ui,sans-serif;display:flex;flex-direction:column;gap:10px';
-    const label = document.createElement('div');
-    label.textContent = `Downloading ${name} from Debian…`;
-    const bar = document.createElement('progress');
-    bar.max = 1; bar.value = 0; bar.style.width = '100%';
-    body.append(label, bar);
-    progress = wm.createWindow({ title: `Installing ${name}`, appId: id, width: 360, height: 90, resizable: false, content: { kind: 'dom', element: body } });
-    try {
-      await apps.installApp(fs, kernel, id, (p) => {
-        if (p.phase === 'triggers') { label.textContent = `Setting up ${name}…`; bar.removeAttribute('value'); return; }
-        bar.value = p.totalBytes ? p.bytes / p.totalBytes : p.done / Math.max(1, p.total);
-        label.textContent = `Downloading ${name} from Debian… ${p.done}/${p.total} packages, ${(p.bytes / 1e6).toFixed(1)} of ${(p.totalBytes / 1e6).toFixed(1)} MB`;
-      });
-    } catch (e) {
-      label.textContent = `Could not install ${name}: ${(e as Error).message}`;
-      return progress;
-    }
-    installed();
-    label.textContent = `Starting ${name}…`;
-  }
-  const p = await apps.launchApp(kernel, id);
-  if (progress) {
-    // close the progress window when the app's first window appears (or it exits)
-    const done = () => { off(); progress?.close(true); };
-    const off = wm.on('window-created', (w) => { if (w && w.appId === id && w !== progress) done(); });
-    void p.exited.then(done);
-  }
-  return progress;
 }

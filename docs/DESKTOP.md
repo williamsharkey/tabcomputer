@@ -20,6 +20,14 @@ full-page terminal (the `shiro` profile's UI) is still there with
 
 All changes are additive. Nothing below renames or removes an earlier name.
 
+- **2026-10-12 (unix/launch-feedback), v1.5.** `WindowOptions.behind` (open
+  below the other windows) and `WindowOptions.splash` (a start-up splash
+  screen: it doesn't end its app's launch); optional `launches` on
+  `DesktopAPI`, the launches in progress (`LaunchTracker`,
+  `src/desktop/launch-state.ts`; see "Launch feedback"). `openApp` on an app
+  that is still starting starts nothing and returns its placeholder window
+  (or `null`).
+
 - **2026-10-09 (unix/desktop), v1.4.** `DockGroup.loose`: members that keep
   their own dock tile while the rest of the group is stacked (not on a
   crowded phone dock). Groups `developer` and `agents` (below).
@@ -79,7 +87,8 @@ destroyed), and the next Terminal window adopts it again.
   programs: Vim, htop and Python, plus Neovim, Emacs, nano, tmux, Lua and
   SQLite once they are installed. A program that is not installed has a ↓
   badge; clicking it runs `apt install NAME && NAME` in a new Terminal
-  window. A dot under an icon marks a running app. Right-click an icon to
+  window. A dot under an icon marks a running app; a larger, pulsing dot
+  one that is starting ("Launch feedback" below). Right-click an icon to
   list its windows, open a new window, or close it.
 - **Browser** (docs/BROWSER.md): tabs, address bar, back/forward/reload,
   history, bookmarks and saved passwords, showing real sites on per-site
@@ -208,6 +217,109 @@ destroyed), and the next Terminal window adopts it again.
 - **Fonts** are self-hosted: Inter and JetBrains Mono (latin, variable,
   `public/fonts/`, SIL OFL, license files next to them). Only the desktop
   loads them.
+
+## Launch feedback
+
+An app that was asked for and has no window yet is **starting**. The state
+machine is `src/desktop/launch-state.ts` (no DOM; `wm.launches`):
+
+```
+requested → installing → starting → window → running
+     └───────────┴──────────┴─────────┴──→ failed | cancelled
+```
+
+| stage | meaning | what is known |
+|---|---|---|
+| requested | asked for | nothing yet |
+| installing | packages are fetched and unpacked | a real fraction (`InstallProgress.doneBytes / totalBytes`: a package counts half once fetched and decoded, half once written); none while triggers run or apt installs (Debian mode: apt's output lines instead) |
+| starting | the process exists | its stdout and stderr, as lines |
+| window | it reached the display: a client connected to Xshiro since it started, or its splash screen mapped | the same |
+| running | its first window was created: the launch is over | |
+
+Stages only move forward. Nothing has a time limit: a launch ends when a
+window appears, the install fails, the process exits without a window, or
+the person cancels. Who drives it: `wm.openApp` for any app whose `launch`
+returns a promise (the lazily loaded built-in apps: asked for → its window;
+an app that opens at once, like Terminal, is never tracked), and
+`src/gui/launch.ts` (`startGuiApp`) for Debian GUI apps, which the dock, a
+stack, the launcher, the Apps window's Open, `desktop open APP`,
+`/dom/windows/ctl` and `gui APP` all reach. The window manager ends a launch
+when a window with the app's id is created (`LaunchTracker.attach`): not an
+override window, a dialog of another window, or a splash (`splash: true`,
+from `_NET_WM_WINDOW_TYPE_SPLASH`), which moves it to `window`.
+
+- **Dock.** The app's tile gets a 6 px dot in the text color under it, with
+  an accent ring that pulses outward (`.sd-starting`; the dot is on the
+  dock, outside the tile, so it is the same in every icon set and theme).
+  With reduced motion the ring is steady: a larger, ringed dot, unlike the
+  4 px running dot. The tile is labelled "GIMP is starting"
+  (`aria-busy`), and its tooltip says the stage. An app that isn't in the
+  dock gets a tile while it starts; a stack's tile carries the mark for its
+  member ("Debian apps (6): GIMP is starting"), as does the member's
+  entry in the open stack. On a phone the dock scrolls to the tile. A
+  launch that failed has a hollow amber dot and "GIMP did not start" until
+  its placeholder is closed.
+- **One launch at a time per app.** While an app is starting, another
+  request for it (any of the ways above) starts nothing: its placeholder
+  comes to the front, takes the focus and flashes; `gui APP` says "already
+  starting" and exits 0. The same while a failed launch is still showing
+  (the failure is what you get, not a silent second try; Retry is on it).
+  Once the app's first window is up the app's own rule applies again, as
+  before: Terminal and Files open another window, Settings and a dock click
+  on a running GUI app focus it, and New Window or `gui APP` start another
+  instance. The cost: two quick requests for a second Files window while
+  its module is still loading (the first time only) open one.
+- **Placeholder window** (`src/desktop/launch-ui.ts`, loaded with the first
+  launch that asks for one: the Debian GUI apps). Reserved where the app's
+  first window is likely to go: the geometry its main window had last
+  (localStorage `tabcomputer-launch-geometry`, kept as the window moves),
+  else a size from `SIZE_GUESS` in `src/gui/launch.ts` (guesses, not
+  measurements; 800 × 560 for the rest), fitted to the work area and placed
+  by the cascade. It opens behind the other windows without taking focus,
+  after 250 ms (at once when installing), partly transparent, with the
+  app's icon and name, the stage in words ("Installing 66 MB…", "Setting
+  up…", "Starting…", "Opening window…"), a bar that is the real fraction or
+  indeterminate (never a made-up number; a still striped track with reduced
+  motion), the amount ("21 of 66 MB") or, from 10 s into starting, the time
+  it has taken, the app's note ("first start takes a few minutes"), the
+  newest output line and **Show details** (the last 80 lines, selectable).
+  Its title bar repeats the stage with a thin progress line: that strip is
+  what shows when another window covers its middle, and a guessed spot whose
+  title bar would be hidden moves to the top of the work area. On a phone,
+  where every window fills the screen, it opens in front instead.
+- **Handing over.** When the app's first window is created it takes the
+  placeholder's place in the same task, without its opening animation: the
+  position always; the size when that was the app's own last size or the
+  person resized the placeholder (a guess is never forced on the app, and a
+  window that can't be resized keeps its size). The window comes to the
+  front and takes the focus, as a new window does. A splash screen leaves
+  the placeholder where it is.
+- **Failure.** A failed install, or the process exiting before a window
+  ("GIMP quit before opening a window (exit status 127)."): the placeholder
+  comes to the front without taking the keyboard, with the error and the
+  output selectable, **Close** and **Retry**. An exit with status 0 while
+  the app already has a window (a single-instance app handing over) just
+  focuses that window.
+- **Cancel.** Closing the placeholder (or its Cancel) cancels, and a note
+  says what that did. While installing: the app won't open, and the install
+  finishes in the background, because stopping an unpack or apt half way
+  would leave packages half installed; the app is then installed and opens
+  without installing next time. While starting: the process and the
+  processes it started get SIGTERM, then SIGKILL after 2 s; nothing of the
+  app's can be unsaved before its first window.
+- **Session restore.** A GUI app's saved window is reopened with `gui APP`,
+  so it comes back the same way; its saved geometry is the placeholder's.
+  An app that was still starting at the reload is not started again.
+- Not covered: X programs started by hand (`xterm &`, a tool whose
+  Terminal window runs `DISPLAY=:0 PROGRAM &`): no launch is recorded for
+  them.
+- Tests: `tests/tests/shiro-vitest/desktop-launch.test.ts` (the state
+  machine, `openApp`, the launch path with a stand-in installer and
+  process, the placeholder); `tests/browser/launch-feedback.mjs` (the same
+  stand-in in Chromium, from the dock and the `gui` command down: marks,
+  double requests, hand-over, failure, cancel, reduced motion, session
+  restore, 360 px; `--shots DIR`); `tests/browser/small-screens.mjs`
+  (the placeholder on every small screen).
 
 ## Previews
 
@@ -459,6 +571,7 @@ interface DesktopAPI {
   registerApp(app: AppDescriptor): void;         // dock + `desktop open ID` + /dom/windows/ctl
   apps(): AppDescriptor[];
   openApp(id: string, args?: Record<string, unknown>): Promise<DesktopWindow | null>;
+  readonly launches?: LaunchTracker;             // v1.5: apps that are starting (launch-state.ts)
   theme(): 'light' | 'dark';
   setTheme(pref: 'light' | 'dark' | 'system'): void;
   on(ev: 'window-created' | 'window-closed' | 'window-changed' | 'focus-changed' | 'apps-changed' | 'theme-changed',
@@ -482,6 +595,8 @@ interface DesktopAPI {
 | `alwaysOnTop`, `skipTaskbar` | layer above normal windows; leave out of dock and cycling |
 | `state` | `'normal'`, `'maximized'` or `'minimized'` at creation |
 | `focus` | take focus on creation (default `true`, `false` for override windows) |
+| `behind` | open below the other windows instead of on top (with `focus: false`): launch placeholders |
+| `splash` | a start-up splash screen: it doesn't end its app's launch |
 | `onClose(win)` | runs before closing; returning `false` keeps the window open |
 
 ### DesktopWindow

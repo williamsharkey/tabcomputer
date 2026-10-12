@@ -184,7 +184,7 @@ export async function installNativeClaude(ctx: CommandContext, target: string, v
     try { return json ? JSON.parse(json).platforms?.[PLATFORM] : undefined; } catch { return undefined; }
   };
 
-  say('Installing native Claude Code (experimental: about 2 minutes per request in Blink)\n');
+  say('Installing native Claude Code (`claude` runs its JavaScript on the Node runtime; `claude --x86` runs the binary in the emulator, much slower)\n');
 
   // 1. From this site (server.mjs /claude-releases/), with the page's fetch
   let bin: Uint8Array | null = null;

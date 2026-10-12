@@ -170,6 +170,20 @@ async function run(cmd, outFile) {
   return { ms: r.ms };
 }
 
+// pub2xhtml writes XHTML whose drawing is namespace-prefixed SVG (<svg:svg>, <svg:text>).
+// A browser opening that as .html (the HTML parser) draws none of it: only loose text shows.
+// Without the prefix it is inline SVG, which the HTML parser draws.
+function htmlFromPubXhtml(file) {
+  const x = fs.readFileSync(file, 'utf8');
+  if (!x.includes('<svg:svg')) return;
+  const body = x.slice(x.indexOf('<body>') + 6, x.lastIndexOf('</body>'))
+    .replace(/<\?import[^>]*\?>/g, '').replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(\/?)svg:/g, '<$1').replace(/\sxmlns:svg="[^"]*"/g, '')
+    .replace(/<svg /g, '<svg xmlns="http://www.w3.org/2000/svg" ');
+  const title = path.basename(file, '.html').replace(/[<&]/g, '');
+  fs.writeFileSync(file, `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>${title}</title>\n<style>body{margin:0;background:#888}svg{display:block;margin:12px auto;background:#fff;box-shadow:0 1px 6px #0006;max-width:100%;height:auto}</style></head>\n<body>\n${body}\n</body></html>\n`);
+}
+
 async function convert(job, rel, to) {
   const t0 = Date.now();
   const input = path.join(WORK, job, 'in', rel);
@@ -237,6 +251,7 @@ async function convert(job, rel, to) {
       fs.writeFileSync(html, csvToHtml(fs.readFileSync(out('.csv'), 'utf8'), stem));
       fs.unlinkSync(out('.csv'));
     } else if (r.error) return fail(r.error, { toolMs });
+    else if (fam.html === 'pub2xhtml') htmlFromPubXhtml(html);
   } else {
     const c = await run(`${csvTool} ${q(input)}`, out('.csv'));
     toolMs += c.ms;

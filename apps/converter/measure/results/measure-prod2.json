@@ -1,0 +1,502 @@
+{
+  "url": "https://tabcomputer.com/",
+  "at": "2026-10-12T07:24:57.591Z",
+  "bootSecondMs": [
+    364,
+    115,
+    134
+  ],
+  "deployed": "2151f107d733044793138751b066e8720f438759",
+  "appStartSecondVisit": [
+    {
+      "backendUpMs": 39,
+      "pageInteractiveMs": 150,
+      "totalMs": 189
+    },
+    {
+      "backendUpMs": 23,
+      "pageInteractiveMs": 97,
+      "totalMs": 120
+    },
+    {
+      "backendUpMs": 24,
+      "pageInteractiveMs": 95,
+      "totalMs": 119
+    }
+  ],
+  "statusReady": {
+    "ready": true,
+    "checkMs": 54
+  },
+  "memStartMB": {
+    "heapOnly": 99
+  },
+  "docSet": {
+    "n": 20,
+    "bytes": 3972306
+  },
+  "lastRoundRows": {
+    "user": [
+      {
+        "rel": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+        "status": "done",
+        "totalMs": 490,
+        "uploadMs": 23,
+        "serverMs": 466,
+        "toolMs": 463
+      },
+      {
+        "rel": "lo-bugs__bug130289-Publication_16.pub",
+        "status": "done",
+        "totalMs": 586,
+        "uploadMs": 13,
+        "serverMs": 567,
+        "toolMs": 549
+      },
+      {
+        "rel": "lo-bugs__bug133297-TEST.pub",
+        "status": "done",
+        "totalMs": 295,
+        "uploadMs": 25,
+        "serverMs": 264,
+        "toolMs": 264
+      },
+      {
+        "rel": "lo-bugs__bug61579-Flyer_04a.pub",
+        "status": "done",
+        "totalMs": 386,
+        "uploadMs": 25,
+        "serverMs": 355,
+        "toolMs": 355
+      },
+      {
+        "rel": "lo-mspub__fdo59355-1.pub",
+        "status": "done",
+        "totalMs": 233,
+        "uploadMs": 17,
+        "serverMs": 211,
+        "toolMs": 211
+      },
+      {
+        "rel": "lo-mwaw__ClarisWorks_6.0.cwk",
+        "status": "done",
+        "totalMs": 518,
+        "uploadMs": 14,
+        "serverMs": 499,
+        "toolMs": 499
+      },
+      {
+        "rel": "lo-wpd__WP1.wpd",
+        "status": "done",
+        "totalMs": 125,
+        "uploadMs": 24,
+        "serverMs": 94,
+        "toolMs": 94
+      },
+      {
+        "rel": "lo-wpd__WP3.wpd",
+        "status": "done",
+        "totalMs": 124,
+        "uploadMs": 14,
+        "serverMs": 104,
+        "toolMs": 104
+      },
+      {
+        "rel": "lo-wpd__WP4.wp",
+        "status": "done",
+        "totalMs": 121,
+        "uploadMs": 15,
+        "serverMs": 100,
+        "toolMs": 100
+      },
+      {
+        "rel": "lo-wpd__WP5.wp",
+        "status": "done",
+        "totalMs": 116,
+        "uploadMs": 16,
+        "serverMs": 94,
+        "toolMs": 93
+      },
+      {
+        "rel": "lo-wpd__WP6.wpd",
+        "status": "done",
+        "totalMs": 136,
+        "uploadMs": 17,
+        "serverMs": 114,
+        "toolMs": 114
+      },
+      {
+        "rel": "lo-wps__Works_2.00A_DOS.wps",
+        "status": "done",
+        "totalMs": 111,
+        "uploadMs": 14,
+        "serverMs": 90,
+        "toolMs": 90
+      },
+      {
+        "rel": "lo-wps__Works_3.0.wps",
+        "status": "done",
+        "totalMs": 125,
+        "uploadMs": 15,
+        "serverMs": 103,
+        "toolMs": 103
+      },
+      {
+        "rel": "lo-wps__Works_4.5.wps",
+        "status": "done",
+        "totalMs": 126,
+        "uploadMs": 15,
+        "serverMs": 104,
+        "toolMs": 104
+      },
+      {
+        "rel": "lo-wps__Works_5.0.wps",
+        "status": "done",
+        "totalMs": 123,
+        "uploadMs": 17,
+        "serverMs": 100,
+        "toolMs": 100
+      },
+      {
+        "rel": "lo-wps__Works_6.0.wps",
+        "status": "done",
+        "totalMs": 130,
+        "uploadMs": 15,
+        "serverMs": 109,
+        "toolMs": 108
+      },
+      {
+        "rel": "tika-misc__testWordPerfect.wpd",
+        "status": "done",
+        "totalMs": 126,
+        "uploadMs": 15,
+        "serverMs": 104,
+        "toolMs": 104
+      },
+      {
+        "rel": "tika-misc__testWordPerfect_5_0.wp",
+        "status": "done",
+        "totalMs": 162,
+        "uploadMs": 19,
+        "serverMs": 138,
+        "toolMs": 137
+      },
+      {
+        "rel": "tika-misc__testWordPerfect_5_1.wp",
+        "status": "done",
+        "totalMs": 201,
+        "uploadMs": 17,
+        "serverMs": 178,
+        "toolMs": 177
+      },
+      {
+        "rel": "tika-ms__testPUBLISHER.pub",
+        "status": "done",
+        "totalMs": 263,
+        "uploadMs": 19,
+        "serverMs": 239,
+        "toolMs": 237
+      }
+    ],
+    "hardwired": [
+      {
+        "name": "lo-bugs__bug100639-MISSAL_MARIANA_E_PEDRO.pub",
+        "status": "done",
+        "writeMs": 1,
+        "toolMs": 425,
+        "totalMs": 425
+      },
+      {
+        "name": "lo-bugs__bug130289-Publication_16.pub",
+        "status": "done",
+        "writeMs": 4,
+        "toolMs": 522,
+        "totalMs": 525
+      },
+      {
+        "name": "lo-bugs__bug133297-TEST.pub",
+        "status": "done",
+        "writeMs": 10,
+        "toolMs": 227,
+        "totalMs": 237
+      },
+      {
+        "name": "lo-bugs__bug61579-Flyer_04a.pub",
+        "status": "done",
+        "writeMs": 3,
+        "toolMs": 325,
+        "totalMs": 328
+      },
+      {
+        "name": "lo-mspub__fdo59355-1.pub",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 173,
+        "totalMs": 176
+      },
+      {
+        "name": "lo-mwaw__ClarisWorks_6.0.cwk",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 434,
+        "totalMs": 436
+      },
+      {
+        "name": "lo-wpd__WP1.wpd",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 56,
+        "totalMs": 58
+      },
+      {
+        "name": "lo-wpd__WP3.wpd",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 65,
+        "totalMs": 67
+      },
+      {
+        "name": "lo-wpd__WP4.wp",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 67,
+        "totalMs": 70
+      },
+      {
+        "name": "lo-wpd__WP5.wp",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 55,
+        "totalMs": 57
+      },
+      {
+        "name": "lo-wpd__WP6.wpd",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 72,
+        "totalMs": 74
+      },
+      {
+        "name": "lo-wps__Works_2.00A_DOS.wps",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 57,
+        "totalMs": 59
+      },
+      {
+        "name": "lo-wps__Works_3.0.wps",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 67,
+        "totalMs": 69
+      },
+      {
+        "name": "lo-wps__Works_4.5.wps",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 73,
+        "totalMs": 75
+      },
+      {
+        "name": "lo-wps__Works_5.0.wps",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 70,
+        "totalMs": 72
+      },
+      {
+        "name": "lo-wps__Works_6.0.wps",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 68,
+        "totalMs": 70
+      },
+      {
+        "name": "tika-misc__testWordPerfect.wpd",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 66,
+        "totalMs": 68
+      },
+      {
+        "name": "tika-misc__testWordPerfect_5_0.wp",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 111,
+        "totalMs": 113
+      },
+      {
+        "name": "tika-misc__testWordPerfect_5_1.wp",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 150,
+        "totalMs": 152
+      },
+      {
+        "name": "tika-ms__testPUBLISHER.pub",
+        "status": "done",
+        "writeMs": 2,
+        "toolMs": 199,
+        "totalMs": 201
+      }
+    ],
+    "shell": [
+      423,
+      524,
+      226,
+      322,
+      171,
+      436,
+      56,
+      65,
+      66,
+      55,
+      72,
+      56,
+      66,
+      72,
+      69,
+      68,
+      67,
+      110,
+      149,
+      200
+    ]
+  },
+  "oneAtATime": {
+    "user": [
+      {
+        "wallMs": 4503,
+        "done": 20,
+        "sumTotalMs": 4459,
+        "medianTotalMs": 128,
+        "medianToolMs": 106,
+        "medianUploadMs": 18,
+        "medianBridgeMs": 23
+      },
+      {
+        "wallMs": 4712,
+        "done": 20,
+        "sumTotalMs": 4639,
+        "medianTotalMs": 173,
+        "medianToolMs": 149,
+        "medianUploadMs": 18,
+        "medianBridgeMs": 24
+      },
+      {
+        "wallMs": 4509,
+        "done": 20,
+        "sumTotalMs": 4497,
+        "medianTotalMs": 136,
+        "medianToolMs": 114,
+        "medianUploadMs": 17,
+        "medianBridgeMs": 23
+      }
+    ],
+    "shell": [
+      {
+        "wallMs": 3422,
+        "sumMs": 3390,
+        "medianMs": 70
+      },
+      {
+        "wallMs": 3352,
+        "sumMs": 3316,
+        "medianMs": 71
+      },
+      {
+        "wallMs": 3304,
+        "sumMs": 3273,
+        "medianMs": 72
+      }
+    ],
+    "hardwired": [
+      {
+        "wallMs": 3389,
+        "done": 20,
+        "sumTotalMs": 3294,
+        "medianTotalMs": 72,
+        "medianToolMs": 71,
+        "medianWriteMs": 1
+      },
+      {
+        "wallMs": 3488,
+        "done": 20,
+        "sumTotalMs": 3408,
+        "medianTotalMs": 78,
+        "medianToolMs": 76,
+        "medianWriteMs": 2
+      },
+      {
+        "wallMs": 3386,
+        "done": 20,
+        "sumTotalMs": 3332,
+        "medianTotalMs": 75,
+        "medianToolMs": 73,
+        "medianWriteMs": 2
+      }
+    ]
+  },
+  "fiftyBytes": 11788719,
+  "fifty": {
+    "user c=1": {
+      "wallMs": 11944,
+      "done": 50,
+      "medianTotalMs": 134,
+      "maxTotalMs": 607,
+      "memBeforeMB": 84,
+      "memAfterMB": {
+        "heapOnly": 102
+      }
+    },
+    "user c=2": {
+      "wallMs": 6783,
+      "done": 50,
+      "medianTotalMs": 168,
+      "maxTotalMs": 681,
+      "memBeforeMB": {
+        "heapOnly": 102
+      },
+      "memAfterMB": {
+        "heapOnly": 95
+      }
+    },
+    "user c=4": {
+      "wallMs": 4812,
+      "done": 50,
+      "medianTotalMs": 232,
+      "maxTotalMs": 903,
+      "memBeforeMB": 137,
+      "memAfterMB": {
+        "heapOnly": 87
+      }
+    },
+    "hardwired": {
+      "wallMs": 9376,
+      "done": 50,
+      "medianTotalMs": 80,
+      "maxTotalMs": 535,
+      "memBeforeMB": 138,
+      "memAfterMB": 138
+    }
+  },
+  "zipFifty": {
+    "downloaded": true,
+    "wallMs": 501,
+    "marks": {
+      "zipMs": 474,
+      "zipBytes": 9477455
+    }
+  },
+  "responsivenessFifty": {
+    "wallMs": 4726,
+    "longestPageStallMs": 19,
+    "longestAppStallMs": 19
+  },
+  "memEndMB": {
+    "heapOnly": 105
+  },
+  "storage": {
+    "usedMB": 538
+  }
+}

@@ -175,6 +175,11 @@ Sizes are from `.toolchain-build/layers/index.json` (build of 2026-10-09). Nothi
 downloaded at install time beyond the layer's index. A program's chunks are
 fetched the first time it runs.
 
+`pip install NAME` works in Debian's python3 without a venv: tabcomputer writes
+`/etc/pip.conf` with `break-system-packages = true` (`pipInstallsPackages` in
+`src/debian/rootfs.ts`) when the file doesn't exist; edit or empty it to get
+PEP 668's refusal back.
+
 **What a layer is.** `scripts/debian/build-layers.sh` (root, any Linux host)
 rebuilds the exact base rootfs users install from `public/debian`
 (`unpack-rootfs.mjs`) and chroots into it. It points apt at the base's

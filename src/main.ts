@@ -570,6 +570,7 @@ async function main() {
     if (!st) { void createPathShims(fs).catch(() => {}); return; } // no Debian: nothing for commands to wait for
     await import('./debian/layers').then((l) => l.bootLayers(fs)); // toolchain layers' lazy files
     void installAlwaysShims(fs).catch(() => {}); // xdg-open, xclip, ... on PATH in Debian mode too
+    void m.pipInstallsPackages(fs).catch(() => {}); // /etc/pip.conf for installs made before it was written
     const ov = await import('./debian/overlay');
     await ov.enableDebianShadows(fs, (n) => !!commands.get(n));
     for (const [k, v] of Object.entries(m.DEBIAN_ENV)) shell.env[k] ??= v;

@@ -120,7 +120,9 @@ function setup(res) {
   const write = (s) => { try { res.write(s); } catch {} };
   if (!setupRunning) {
     const listeners = new Set();
-    const child = spawn('sh', ['-c', SETUP]);
+    // stdin 'ignore' matters in a tab: with the default piped stdin, sudo under
+    // spawn() never returns there (docs/research/APP_MAKER.md, gap 3)
+    const child = spawn('sh', ['-c', SETUP], { stdio: ['ignore', 'pipe', 'pipe'] });
     setupRunning = { listeners, log: '' };
     const on = (d) => { const s = String(d); setupRunning.log += s; for (const l of listeners) l(s); };
     child.stdout.on('data', on);

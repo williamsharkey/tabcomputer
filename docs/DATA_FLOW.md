@@ -69,7 +69,7 @@ A guest is the app on another origin, `guest--<name>[--t][x].<base>` (`src/guest
 - **No network** (`x`): the page gives programs no relay, the server refuses its relay and proxies to that host, and a Content-Security-Policy makes the browser refuse requests to other sites. Static files, `/debian/` and `/claude-releases/` still answer. It does **not** stop the page navigating itself to another address, so a script can still send out what is in the guest.
 - With a network, a guest uses the same relay and proxies as above, from your address.
 - A guest under the same domain is same-site with the main profile. The separation then also rests on the checks listed in GUEST_PROFILE.md ("Same site").
-- **tabcomputer.com has no guests today**: `TABCOMPUTER_GUESTS=1` is commented out in `profiles/tabcomputer/server.env`. They are on for localhost. The app asks `/guest/config.json` and offers a guest only when the server has them.
+- Guests are a server setting: on for tabcomputer.com (`TABCOMPUTER_GUESTS=1` in `profiles/tabcomputer/server.env`) and for localhost, off on any other server until it sets that. The app asks `/guest/config.json` and offers a guest only when the server has them; otherwise it says there are none.
 
 ## Using your own relay or server
 

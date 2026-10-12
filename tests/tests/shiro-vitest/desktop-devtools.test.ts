@@ -12,12 +12,15 @@ import { cloneScript, mainRoot, worktreeScript } from '@shiro/desktop/gitsheets'
 import { kindsOf } from '@shiro/desktop/apps/git';
 import { createTestShell, run } from './helpers';
 
-describe('Developer and AI agents stacks', () => {
+describe('Text Editors, Developer Tools and AI agents stacks', () => {
   it('lists the tools from the research, each with a glyph', () => {
-    expect(DEV_TOOLS.filter(t => t.group === 'developer').map(t => t.id)).toEqual(['nano', 'vim', 'code', 'git', 'neovim', 'emacs', 'geany', 'tmux']);
+    expect(DEV_TOOLS.filter(t => t.group === 'editors').map(t => t.id)).toEqual(['nano', 'vim', 'neovim', 'emacs', 'code', 'geany']);
+    expect(DEV_TOOLS.filter(t => t.group === 'developer').map(t => t.id)).toEqual(['git', 'tmux']);
     expect(DEV_TOOLS.filter(t => t.group === 'agents').map(t => t.id)).toEqual(['claude', 'gemini', 'codex', 'grok', 'agy', 'aider']);
     for (const t of DEV_TOOLS) expect(glyphFor(t.id), t.id).toMatch(/^M/);
-    for (const g of DEV_GROUPS) for (const id of g.loose) expect(DEV_TOOLS.some(t => t.id === id && t.group === g.id), id).toBe(true);
+    // Every tool is in a group, and every group has tools
+    for (const t of DEV_TOOLS) expect(DEV_GROUPS.some(g => g.id === t.group), t.id).toBe(true);
+    for (const g of DEV_GROUPS) expect(DEV_TOOLS.some(t => t.group === g.id), g.id).toBe(true);
   });
 
   it('installs on first use: checks PATH, says what and how long, then runs it', () => {

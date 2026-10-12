@@ -81,35 +81,44 @@ const G = {
   // The rest of the dock, on the same rules
   /** The otter (tabcomputer's mark) on the 24 grid: a rounded tab, eyes, nose, whiskers */
   about: 'M1.5 18h2.8v-6.4a5.6 5.6 0 0 1 5.6-5.6h4.2a5.6 5.6 0 0 1 5.6 5.6V18h2.8' + dot(9.3, 11.8) + dot(14.7, 11.8) + 'M11.3 13.9h1.4M9.4 14.6l-2.6.5M14.6 14.6l2.6.5',
-  vim: 'M3.5 5.5h6M14.5 5.5h6M6.5 5.5L12 18.5l5.5-13',
+  /** Vim: the V with its serifs, in the diamond */
+  vim: 'M12 2.5l9.5 9.5-9.5 9.5L2.5 12zM7.5 8h4M13.5 8h3.5M9.2 8l3 7.5 3.2-7.5',
   htop: 'M4 19.5h16M6.5 16v-5M10.5 16V6.5M14.5 16v-6.5M18.5 16V9',
-  python3: 'M4.5 8l3.5 4-3.5 4M10 8l3.5 4-3.5 4M15.5 8l3.5 4-3.5 4',
+  /** Python: the two snakes, each with its eye */
+  python3: 'M12 7.5H8.5V5.5a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-3.5a2 2 0 0 0-2 2v1H5.5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3M12 16.5h3.5v2a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h3.5a2 2 0 0 0 2-2v-1h2a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3' + dot(10.6, 5.5) + dot(13.4, 18.5),
   apps: 'M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z',
-  neovim: 'M6 18.5v-13l12 13v-13',
-  emacs: 'M6.5 12.5h11a5.5 5.5 0 1 0-1.7 4',
+  /** Neovim: the N of two slanted bars */
+  neovim: 'M5 19V8l3.5-3.5v11zM19 5v11l-3.5 3.5v-11zM8.5 5l7 14',
+  /** Emacs: the swooping E in its circle */
+  emacs: circ(12, 12, 9) + 'M16 7.5h-5.6c-1.6 0-1.7 1.9-.2 2.3l4.4 1.2c1.5.4 1.4 2.3-.2 2.5l-4.2.6c-1.6.3-1.6 2.4.1 2.4H16',
   nano: 'M5 7h14M5 12h14M5 17h9',
-  tmux: 'M4 5.5h16v13H4zM12 5.5v13M12 12h8',
-  lua: circ(11, 13, 6.5) + circ(18.5, 5.5, 1.7),
-  sqlite: 'M5 6.5c0-1.4 3.1-2.5 7-2.5s7 1.1 7 2.5-3.1 2.5-7 2.5-7-1.1-7-2.5zM5 6.5v11c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-11M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5',
+  /** tmux: panes over a status line */
+  tmux: 'M4 5.5h16v13H4zM12 5.5v9.5M12 10.2h8M4 15h16',
+  /** Lua: the planet, its moon, the moon's shadow */
+  lua: circ(11, 13, 6.5) + circ(18.5, 5.5, 1.7) + circ(13.3, 10.7, 1.6),
+  /** SQLite: the quill */
+  sqlite: 'M19.5 4C12.5 4.5 8 9.5 7.5 16.5c6.5-.5 11.5-5 12-12.5zM7.5 16.5L4 20.5M11 13l4.5-5',
   editor: 'M6.5 3.5h7l4 4v13h-11zM13.5 3.5v4h4M9 12h6M9 15.5h6',
   image: 'M3.5 5.5h17v13h-17zM3.5 15.5l5-4.5 4 3.5 3-2.5 5 4' + circ(15.5, 9, 1.3),
   clock: circ(12, 12, 8.5) + 'M12 7.5V12l3 2',
   calc: 'M6 3.5h12v17H6zM8.5 6.5h7v3h-7z' + dot(9, 13) + dot(12, 13) + dot(15, 13) + dot(9, 16.5) + dot(12, 16.5) + dot(15, 16.5),
   eyes: circ(8.5, 12, 4.5) + circ(15.5, 12, 4.5) + dot(9.5, 12.5) + dot(16.5, 12.5),
-  // Developer and AI agents stacks (devtools.ts)
-  /** A branch: two commits and a merge line */
-  git: 'M7 5v14M7 15.5a4 4 0 0 1 4-4h2a4 4 0 0 0 4-4V7' + circ(7, 4.2, 1.8) + circ(7, 19.8, 1.8) + circ(17, 5.2, 1.8),
+  // Developer and AI agents stacks (devtools.ts): the brands' marks, redrawn on the grid
+  /** Git: the rotated square, a branch inside */
+  git: 'M12 2.8l9.2 9.2-9.2 9.2L2.8 12zM9.2 9.2l5.6 5.6M12 12l2.8-2.8' + circ(9.2, 9.2, .9) + circ(14.8, 14.8, .9) + circ(14.8, 9.2, .9),
   /** An IDE window: sidebar and code lines */
   geany: 'M3.5 5.5h17v13h-17zM8.5 5.5v13M11 9.5h6M11 12.5h4.5M11 15.5h5.5',
-  /** Two sparkles */
-  gemini: 'M10 3.5l1.6 5.4 5.4 1.6-5.4 1.6L10 17.5l-1.6-5.4-5.4-1.6 5.4-1.6zM17.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z',
-  /** A prompt in a hexagon */
-  codex: 'M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9zM8.8 10l2.4 2-2.4 2M12.8 15h2.6',
-  /** A slash through a ring */
-  grok: circ(12, 12, 7.5) + 'M6.5 19.5L18 4.5',
-  /** An arrow rising off a line */
-  agy: 'M12 17V5M7.5 9.5L12 5l4.5 4.5M5 20h14',
-  /** Two speech bubbles */
+  /** Claude: the spark, twelve uneven rays */
+  claude: 'M12 10.8L12 3M12.67 11.01L16.08 5.95M13.04 11.4L19.27 7.8M13.2 12.08L18.88 12.48M13.04 12.6L19.71 16.45M12.53 13.08L15.24 18.65M12 13.2L12 20.2M11.33 12.99L8.09 17.8M10.96 12.6L4.38 16.4M10.8 11.92L4.82 11.5M10.96 11.4L4.64 7.75M11.47 10.92L9.02 5.89',
+  /** Gemini: the four-point star with curved sides */
+  gemini: 'M12 2.5C12 8 16 12 21.5 12 16 12 12 16 12 21.5 12 16 8 12 2.5 12 8 12 12 8 12 2.5z',
+  /** Codex: OpenAI's blossom */
+  codex: 'M12 4.4A4.3 4.3 0 0 1 18.58 8.2A4.3 4.3 0 0 1 18.58 15.8A4.3 4.3 0 0 1 12 19.6A4.3 4.3 0 0 1 5.42 15.8A4.3 4.3 0 0 1 5.42 8.2A4.3 4.3 0 0 1 12 4.4M13.7 9.06L15.4 12L13.7 14.94L10.3 14.94L8.6 12L10.3 9.06zM13.7 9.06L12 4.4M13.7 14.94L18.58 15.8M8.6 12L5.42 15.8',
+  /** Grok: the ring the slash breaks through */
+  grok: 'M18.24 8.4A7.2 7.2 0 0 1 10.14 18.95M5.76 15.6A7.2 7.2 0 0 1 13.86 5.05M5.5 20.5L19 3.5',
+  /** Antigravity: the arch */
+  agy: 'M3.5 19.5c2 0 3-1.5 3.5-4C8 10 9.5 6 12 6s4 4 5 9.5c.5 2.5 1.5 4 3.5 4',
+  /** aider: two speech bubbles */
   aider: 'M4 5.5h10v7H8l-3 2.5v-2.5H4zM10 15h5l3 2.5V15h2V8.5h-3',
 };
 
@@ -122,7 +131,6 @@ const APP_GLYPH: Record<string, string> = {
   l3afpad: G.editor, mousepad: G.editor, featherpad: G.editor, xedit: G.editor,
   ristretto: G.image, gpicview: G.image, 'lximage-qt': G.image,
   xclock: G.clock, xcalc: G.calc, xeyes: G.eyes,
-  claude: G.agents,
 };
 
 /** Glyphs apps registered with (AppDescriptor.glyph), ahead of the built-in ones */

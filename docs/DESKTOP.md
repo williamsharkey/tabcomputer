@@ -20,6 +20,10 @@ full-page terminal (the `shiro` profile's UI) is still there with
 
 All changes are additive. Nothing below renames or removes an earlier name.
 
+- **2026-10-11, v1.5.** Dock groups by what the apps are: `editors` (Text
+  Editors, new), `developer` (Developer Tools) and `agents` (AI agents), each
+  always one stack (`collapse: 'always'`) with no `loose` members. No API
+  change: `DockGroup.loose` stays for other groups.
 - **2026-10-09 (unix/desktop), v1.4.** `DockGroup.loose`: members that keep
   their own dock tile while the rest of the group is stacked (not on a
   crowded phone dock). Groups `developer` and `agents` (below).
@@ -190,9 +194,10 @@ destroyed), and the next Terminal window adopts it again.
   in the menu bar turns the bar on or off; Settings → Appearance → Extra keys
   picks Off, Auto (hidden while the phone's keyboard is open) or Always
   (localStorage `tabcomputer-keybar`). The classic UI keeps `src/mobile-input.ts`.
-- **Dock stacks**: when the dock would not fit (phones), Settings and
-  Activity share a System stack and Vim, Python and installed programs a
-  Programs stack; Terminal, Files and htop stay loose. Debian GUI apps stack
+- **Dock stacks**: Text Editors, Developer Tools and AI agents are always
+  stacks (see "Developer tools"). When the dock would not fit (phones),
+  Settings and Activity share a System stack and Python and installed
+  programs a Programs stack; Terminal, Files and htop stay loose. Debian GUI apps stack
   once there are more than four, at any width. Tap a stack to open it.
 - **Fonts** are self-hosted: Inter and JetBrains Mono (latin, variable,
   `public/fonts/`, SIL OFL, license files next to them). Only the desktop
@@ -226,13 +231,17 @@ and opens it in a browser tab.
 
 ## Developer tools
 
-Two dock stacks from the research in `docs/research/DEV-TOOLS.md` (catalog:
-`src/desktop/devtools.ts`):
+Three dock stacks, grouped by what the tools are, from the research in
+`docs/research/DEV-TOOLS.md` (catalog: `src/desktop/devtools.ts`). Each is
+always one tile; tap it to open it.
 
-| stack | loose | stacked |
+| stack | group | members, in order |
 |---|---|---|
-| Developer | nano, Vim, Code (the CodeMirror window), Git | Neovim, Emacs, Geany, tmux |
-| AI agents | Claude Code | Gemini CLI, Codex, Grok, Antigravity (`agy`), aider |
+| Text Editors | `editors` | nano, Vim, Neovim, Emacs, Code (the CodeMirror window), Geany |
+| Developer Tools | `developer` | Git (the Git app), tmux |
+| AI agents | `agents` | Claude Code, Gemini CLI, Codex, Grok, Antigravity (`agy`), aider |
+
+Geany is a Debian GUI app: it shows once Debian mode is installed.
 
 A tool that isn't installed has a ↓ badge whose tooltip gives its install
 time. The first click opens its Terminal window, which says what it installs
@@ -373,6 +382,13 @@ only the material. Settings → Dock & Icons picks one (localStorage
 - **Glyphs**: every app the desktop knows has one, including the Debian GUI
   apps (mapped onto what they are: GIMP → paint, Mousepad → editor…).
   Others bring `AppDescriptor.glyph` or get a monogram in the set's style.
+- **Brand marks**: an app with a well-known logo gets that logo redrawn on
+  the grid with the same round strokes, not a generic symbol: Claude's
+  spark, Gemini's four-point star, the OpenAI blossom (Codex), Grok's broken
+  ring, the Antigravity arch, Git's diamond, Vim's V in a diamond, Neovim's
+  N, Emacs' E, Python's snakes, Lua's planet and moon, the SQLite quill and
+  tmux's panes. In Classic, the agents and Git without art of their own get
+  a tile in their brand's colors (`DevTool.tile`).
 - **Swapping changes no layout.** Every set's tile (`.sd-ic`) has Classic's
   box; the static sets differ only by the `data-iconset` attribute on the
   dock. A swap crossfades over 0.3 s: a copy of the old dock fades out over

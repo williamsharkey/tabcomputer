@@ -82,3 +82,16 @@ describe('upload and download (#110)', () => {
     expect((await sh(shell, 'download /tmp/no-such-file')).code).toBe(1);
   });
 });
+
+describe('help (#110)', () => {
+  it('says how to save your work: download, zip, upload', async () => {
+    const { shell } = await createTestShell();
+    const { code, out } = await sh(shell, 'help');
+    expect(code).toBe(0);
+    const section = out.slice(out.indexOf('Save your work'));
+    expect(out).toContain('Save your work');
+    expect(section).toMatch(/^ {2}download FILE /m);
+    expect(section).toMatch(/^ {2}zip -r work\.zip DIR /m);
+    expect(section).toMatch(/^ {2}upload \[DIR\] /m);
+  });
+});

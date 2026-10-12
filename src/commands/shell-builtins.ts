@@ -320,6 +320,11 @@ Everyday
   page :PORT text        read or drive that page (click, input, eval)
   finder                 file manager
 
+Save your work
+  download FILE          save a file to this device (no FILE: pick from a list)
+  zip -r work.zip DIR    pack a folder, then: download work.zip
+  upload [DIR]           copy files from this device into DIR (default: here)
+
 Something wrong?
   doctor                 check this tab (deploy, browser, network, sign-ins, storage):
                          paste its output into a bug report (also: tabinfo)

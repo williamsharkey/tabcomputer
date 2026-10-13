@@ -82,6 +82,14 @@ async function clickDock(page, name) {
     const tip = await items.nth(i).locator('.sd-dock-tip').textContent();
     if (tip?.startsWith(name)) { await items.nth(i).click(); return; }
   }
+  // Not on the dock itself: in one of its stacks (Text Editors holds Vim)
+  const stacks = page.locator('.sd-stack-tile');
+  for (let i = 0; i < await stacks.count(); i++) {
+    await stacks.nth(i).click();
+    const item = page.locator('.sd-stack-item', { has: page.locator('.sd-stack-name', { hasText: new RegExp(`^${name}`) }) });
+    if (await item.count()) { await item.first().click(); return; }
+    await page.keyboard.press('Escape');
+  }
   throw new Error(`no dock item "${name}"`);
 }
 

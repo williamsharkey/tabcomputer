@@ -9,6 +9,18 @@ import { ghCmd } from '@shiro/commands/gh';
 // wrote nothing and `gh auth git-credential` didn't exist.
 const TOKEN = 'gho_testToken123';
 
+// A profile that signed in before the helper existed gets it at boot (main.ts), so the
+// full git can push: the boot line must stay next to where the stored token is read.
+describe('the helper for a profile signed in before it existed', () => {
+  it('boot writes it when a GitHub token is stored', async () => {
+    const { readFileSync } = await import('node:fs');
+    const main = readFileSync(new URL('../../../src/main.ts', import.meta.url), 'utf8');
+    const at = main.indexOf("shell.env['GITHUB_TOKEN'] = storedGithubToken;");
+    expect(at).toBeGreaterThan(-1);
+    expect(main.slice(at, at + 600)).toMatch(/if \(storedGithubToken\) void import\('\.\/git-credential'\)\.then\(\(m\) => m\.ensureGitCredentialHelper\(fs\)\)/);
+  });
+});
+
 describe('gh as git credential helper', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
   const fresh = async () => {

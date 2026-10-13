@@ -645,6 +645,9 @@ async function main() {
   if (storedGoogleKey) shell.env['GOOGLE_API_KEY'] = storedGoogleKey;
   const storedGithubToken = localStorage.getItem('tabcomputer_github_token');
   if (storedGithubToken) shell.env['GITHUB_TOKEN'] = storedGithubToken;
+  // A profile signed in before the credential helper existed (#39) never got it: the full git
+  // (`pkg install git`) then asks for a username on push. Written once, when missing (git-credential.ts).
+  if (storedGithubToken) void import('./git-credential').then((m) => m.ensureGitCredentialHelper(fs)).catch(() => {});
 
   // Extra terminals (panes, desktop windows) get fresh shells with this one's env and cwd
   const makeShell = () => {

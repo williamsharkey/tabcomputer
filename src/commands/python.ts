@@ -3,8 +3,11 @@ import { Command, CommandContext } from './index';
 /**
  * python/python3: Python interpreter via Pyodide (WebAssembly CPython)
  *
- * Downloads Pyodide (~12MB) on first use, caches in IndexedDB.
- * Provides full CPython 3.12 with access to Shiro's virtual filesystem.
+ * The \`pyodide\` command (and python/python3 under the "pyodide" python shim).
+ * On a cross-origin isolated page it runs as a kernel process in a Worker
+ * (src/pyodide-worker/): the tab's own files, a terminal's stdin, ^C. The
+ * code below that is the older Pyodide in the page (a copy of the working
+ * directory in, nothing copied back), kept for a page that can't block.
  *
  * Usage:
  *   python3 -c "print('hello')"     # one-liner
@@ -13,7 +16,7 @@ import { Command, CommandContext } from './index';
  *   pip install numpy                # install packages via micropip
  */
 
-const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full';
+import { pyodideIndexURL } from '../python/pyodide-dist';
 
 let pyodide: any = null;
 let loadPromise: Promise<any> | null = null;
@@ -26,13 +29,14 @@ async function ensurePyodide(ctx: CommandContext): Promise<any> {
     ctx.stdout += 'Loading Python (Pyodide)... ';
 
     // Load Pyodide loader script via importScripts-like eval
-    const loaderUrl = `${PYODIDE_CDN}/pyodide.mjs`;
+    const base = pyodideIndexURL();
+    const loaderUrl = `${base}pyodide.mjs`;
     const mod = await import(/* @vite-ignore */ loaderUrl);
     const loadPyodide = mod.loadPyodide || mod.default?.loadPyodide;
     if (!loadPyodide) throw new Error('Failed to load Pyodide loader');
 
     pyodide = await loadPyodide({
-      indexURL: PYODIDE_CDN,
+      indexURL: base,
     });
 
     ctx.stdout += 'done.\n';
@@ -130,6 +134,16 @@ export const pythonCmd: Command = {
       const code = await ctx.shell.execute('pkg install python3 >/dev/null', out, err);
       if (code !== 0) return code;
       return ctx.shell.execute(`/usr/bin/python3 ${quoteArgsForShell(ctx.args)}`, out, err);
+    }
+    // Where the page can block, Pyodide is a kernel process in a Worker with the tab's files
+    // (src/pyodide-worker/); what follows is the old Pyodide in the page, for a page that can't
+    const { pyodideWorkerMode } = await import('../pyodide-worker/boot');
+    if (pyodideWorkerMode()) {
+      const { routePython } = await import('../python/route');
+      const route = await routePython(ctx.fs, ['--pyodide', ...ctx.args], { cwd: ctx.cwd, env: ctx.env, canPyodide: true, stdinIsTTY: !!ctx.terminal && !ctx.stdin });
+      if (route.engine === 'pyodide') return (await import('../pyodide-worker/host')).runPyodide(ctx, route.run, 'pyodide');
+      ctx.stdout += `Python ${(await import('../python/pyodide-dist')).PYODIDE_PYTHON} (Pyodide ${(await import('../python/pyodide-dist')).PYODIDE_VERSION})\n`;
+      return 0;
     }
     let py: any;
     try {

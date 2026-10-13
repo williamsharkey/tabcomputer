@@ -436,7 +436,9 @@ export class Kernel {
   async findProgram(path: string, proc: Process): Promise<Runner | null> {
     for (const l of this.loaders) {
       const r = await l(path, proc, this);
-      if (r) return this.withJvmDefaults(path, await this.withPackageArgs(path, r));
+      // (the usual case returns as it always did: a second await here changes when a
+      // process starts relative to its caller, and tmux's pane shells lost a race for it)
+      if (r) return mayBeJdkLauncher(path) ? this.withJvmDefaults(path, await this.withPackageArgs(path, r)) : this.withPackageArgs(path, r);
     }
     return null;
   }
@@ -3738,7 +3740,7 @@ export class Kernel {
     // A package command with its own arguments (zcat = gzip -dc) can't be
     // reloaded in place with the caller's argv: start it like any program
     // (nor can a JDK launcher that gets the emulator's JVM options: withJvmDefaults)
-    const jdkTool = isElf && req.inproc ? await this.jdkLauncherAt(path) : null;
+    const jdkTool = isElf && req.inproc && mayBeJdkLauncher(path) ? await this.jdkLauncherAt(path) : null;
     const inproc = isElf && !!req.inproc && !(this.fs && (await packageArgsForPath(this.fs, path))) &&
       !(jdkTool && jvmDefaultArgs(jdkTool, argv, env));
     const runner = embryo || !inproc ? await this.findProgram(path, probe) : null;

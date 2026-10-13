@@ -1,0 +1,8 @@
+{
+  "name": "Markdown to Word",
+  "about": "Turns Markdown or plain text files into Word documents.",
+  "accept": [".md", ".markdown", ".txt"],
+  "run": "pandoc {in} -o {out}",
+  "out": "{name}.docx",
+  "needs": ["pandoc"]
+}

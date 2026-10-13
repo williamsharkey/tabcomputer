@@ -1,0 +1,11 @@
+{
+  "name": "Make pictures smaller",
+  "about": "Shrinks each picture to fit a size, keeping its shape. A picture that is already smaller is left as it is.",
+  "accept": [".jpg", ".jpeg", ".png", ".webp", ".gif", ".tif", ".tiff"],
+  "options": {
+    "size": { "label": "Longest side", "choices": { "800 pixels": "800x800>", "1600 pixels": "1600x1600>", "2560 pixels": "2560x2560>" }, "value": "1600 pixels" }
+  },
+  "run": "convert {in} -auto-orient -resize {size} {out}",
+  "out": "{name}-small.{ext}",
+  "needs": ["imagemagick"]
+}

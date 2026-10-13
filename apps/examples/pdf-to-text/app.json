@@ -1,0 +1,8 @@
+{
+  "name": "Get the text out of a PDF",
+  "about": "Writes the text of each PDF to a plain text file, keeping its columns.",
+  "accept": [".pdf"],
+  "run": "pdftotext -layout {in} -",
+  "out": "{name}.txt",
+  "needs": ["poppler-utils"]
+}

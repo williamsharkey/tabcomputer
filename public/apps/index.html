@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tabcomputer apps</title>
+  <meta name="description" content="Small apps that run in a browser tab: make scans searchable, shrink or join PDFs, convert old office files, turn iPhone photos into JPEGs. Your files stay on your computer.">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0f1a; color: #e0e0e0; line-height: 1.6; -webkit-font-smoothing: antialiased;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    }
+    a { color: #00d4ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: 'SF Mono', Consolas, 'Liberation Mono', monospace; font-size: 0.88em;
+      background: rgba(255, 255, 255, 0.08); padding: 2px 6px; border-radius: 3px; overflow-wrap: anywhere;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 40px 20px 64px; }
+    h1 { font-size: 1.9rem; color: #fff; margin-bottom: 8px; }
+    .lede { color: #a8a8c0; max-width: 62ch; margin-bottom: 28px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .card {
+      display: flex; flex-direction: column; gap: 8px; padding: 18px;
+      background: #13132a; border: 1px solid #2a2a3e; border-radius: 10px;
+    }
+    .card h2 { font-size: 1.05rem; color: #fff; line-height: 1.35; }
+    .card p { color: #a8a8c0; font-size: 0.92rem; }
+    .card .meta { font-size: 0.8rem; color: #7c7c98; overflow-wrap: anywhere; }
+    .card .grow { flex: 1; }
+    .run {
+      align-self: flex-start; margin-top: 6px; padding: 7px 16px; border-radius: 6px;
+      background: #00d4ff; color: #0f0f1a; font-weight: 600; font-size: 0.92rem;
+    }
+    .run:hover { text-decoration: none; filter: brightness(1.1); }
+    .tag { display: inline-block; padding: 0 7px; border: 1px solid #5a4a1e; border-radius: 999px; color: #e0b34a; font-size: 0.72rem; vertical-align: 2px; margin-left: 6px; }
+    section { margin-top: 40px; max-width: 72ch; }
+    section h2 { font-size: 1.2rem; color: #fff; margin-bottom: 8px; }
+    section p { color: #a8a8c0; margin-bottom: 10px; }
+    #empty { color: #a8a8c0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Apps</h1>
+  <p class="lede">Each link opens a small app in this browser tab. You give it files and it gives you the result. Your files stay on this computer: the app runs a program in the tab, and nothing is uploaded. The first time, the app fetches the program it needs, which takes a few seconds.</p>
+  <div class="grid" id="grid"></div>
+  <p id="empty" hidden>The list of apps could not be loaded.</p>
+
+  <section>
+    <h2>Make your own</h2>
+    <p>An app is one small file. This one is the whole of "Make scans searchable":</p>
+    <p><code>{ "name": "Make scans searchable", "accept": [".png", ".jpg"], "run": "tesseract {in} stdout pdf", "needs": ["tesseract-ocr"] }</code></p>
+    <p>Put the file in a GitHub repository or a gist as <code>app.json</code>, or write its keys after the <code>#</code> of the address. <a href="/link">Try it on the link page</a>. The format is in <a href="https://github.com/williamsharkey/tabcomputer/blob/main/docs/APPS.md">docs/APPS.md</a>.</p>
+    <p>Each person who opens a link gets their own copy of the app and their own data. Nothing is shared between them.</p>
+  </section>
+</main>
+<script>
+  // Cards from /apps/index.json (scripts/apps/site-apps.mjs). Text only: nothing from the list is parsed as HTML.
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  fetch('/apps/index.json', { cache: 'no-cache' }).then((r) => r.json()).then(({ apps }) => {
+    const grid = document.getElementById('grid');
+    for (const a of apps) {
+      if (!/^[a-z][a-z0-9-]*$/.test(a.id)) continue;
+      const card = el('div', '', 'card');
+      card.append(el('h2', a.name || a.id), el('p', a.description || ''), el('div', '', 'grow'));
+      const link = `/?app=${a.id}`;
+      card.append(el('p', location.host + link, 'meta'));
+      const open = el('a', 'Open', 'run');
+      open.href = link;
+      card.append(open);
+      grid.append(card);
+    }
+    if (!grid.children.length) document.getElementById('empty').hidden = false;
+  }).catch(() => { document.getElementById('empty').hidden = false; });
+</script>
+</body>
+</html>

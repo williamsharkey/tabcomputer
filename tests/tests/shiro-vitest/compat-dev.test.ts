@@ -203,7 +203,7 @@ import { createHash } from 'node:crypto';
 import {
   parseVersion, compareVersions, satisfies, parseSpecifiers, parseRequirement, evalMarker, markerEnv, wheelCompatible, parseWheelName,
 } from '@shiro/utils/pep440';
-import { pipMain, systemTarget, createVenv, listInstalled, venvTarget, PY_PREFIX } from '@shiro/commands/pip';
+import { pipMain, systemTarget, createVenv, listInstalled, venvTarget, PY_PREFIX, PY_BIN } from '@shiro/commands/pip';
 
 /** A zip (deflated entries), as wheels are. */
 function makeZip(files: Record<string, string>): Uint8Array {
@@ -341,7 +341,8 @@ describe('pip (fake PyPI)', () => {
     expect(await fs.readFile(`${site}/colorish.py`, 'utf8')).toContain('<red>');
     expect(await fs.exists(`${site}/winonly.py`)).toBe(false);
     const launcher = await fs.readFile('/usr/local/bin/greet', 'utf8') as string;
-    expect(launcher.startsWith('#!/usr/bin/python3\n')).toBe(true);
+    // (the built-in Python by its own path: /usr/bin/python3 is Debian's once the python toolchain is installed, #124)
+    expect(launcher.startsWith(`#!${PY_BIN}\n`)).toBe(true);
     expect(launcher).toContain('from greet.cli import main');
     expect((await listInstalled(fs, site)).get('greet')?.version).toBe('2.0');
   });

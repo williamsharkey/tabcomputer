@@ -1280,7 +1280,7 @@ export class Kernel {
     if (typeof p === 'number') return p;
     // (proc.data.openLog: the paths a process opens or looks for, for whoever set it: a GUI app's snapshot is
     // good while those files are what they were)
-    if (proc.data.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
+    if (proc.data?.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     // O_TMPFILE: an unnamed regular file in directory `p` (linkat names it)
     if (flags & A.__O_TMPFILE) {
@@ -1442,7 +1442,7 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.devices.has(p) || /^\/(?:dev|proc)\//.test(p)) return undefined;
-    if (proc.data.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
+    if (proc.data?.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
     if (flags & (A.O_CREAT | A.O_TRUNC | A.O_NOFOLLOW)) {
@@ -1579,7 +1579,7 @@ export class Kernel {
     if (!fs || trailingSlash(path)) return undefined;
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
-    if (proc.data.openLog) this.logLookup(proc, p, false);
+    if (proc.data?.openLog) this.logLookup(proc, p, false);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     if (this.devices.has(p) || p === '/proc' || p.startsWith('/proc/') || this.socketPaths?.has(p)) return undefined;
     const hit = fs.lookupCached(p, follow);
@@ -1621,7 +1621,7 @@ export class Kernel {
     }
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
-    if (proc.data.openLog) this.logLookup(proc, p, false);
+    if (proc.data?.openLog) this.logLookup(proc, p, false);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const dev = this.devices.get(p);
     if (dev) {
@@ -3606,7 +3606,7 @@ export class Kernel {
     if (!f) return -A.EBADF;
     if (!(f instanceof DirFile)) return -A.ENOTDIR;
     // (a directory it lists: its snapshot is good while the names in it are the same)
-    if (proc.data.openLog && f.path) (proc.data.openLog as Set<string>).add(f.path.replace(/\/+$/, '') + '/');
+    if (proc.data?.openLog && f.path) (proc.data.openLog as Set<string>).add(f.path.replace(/\/+$/, '') + '/');
     const entries = await f.readdir();
     if (typeof entries === 'number') return entries;
     const dv = new DataView(out.buffer, out.byteOffset, out.length);

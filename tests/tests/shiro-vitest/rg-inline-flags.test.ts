@@ -49,7 +49,12 @@ describe('toJs: Rust flag groups', () => {
   });
 });
 
-describe('rg with flag groups', () => {
+// rg turns ripgrep's flag groups into regular-expression modifiers, (?i:…), which
+// this JavaScript engine must have (Node 23+, Chrome 125+): without them the
+// pattern is refused with "Invalid group" (tabcomputer#157)
+const MODIFIERS = (() => { try { new RegExp('(?i:a)'); return true; } catch { return false; } })();
+
+describe.skipIf(!MODIFIERS)('rg with flag groups', () => {
   it('matches as ripgrep does', async () => {
     expect((await sh("rg '(?i)(?m)^hello' f.txt")).out).toBe('Hello\nHELLO there\n');
     expect((await sh("rg 'world (?i)WORLD' f.txt")).out).toBe('world WORLD\n');

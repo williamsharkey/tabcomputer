@@ -3,9 +3,10 @@ name: CI
 # The gate, off the development machine: every push to a work branch and every
 # pull request to main. What the droplet's release.sh runs (npm ci, tsc, the
 # build) and both vitest configs. Each step runs even when an earlier one
-# failed, so one run shows everything that is wrong. Node 24: the builtin rg turns
-# ripgrep's inline flag groups into regular-expression modifiers, which Node 22
-# does not have (the droplet builds with 22; the build needs nothing newer).
+# failed, so one run shows everything that is wrong. Node 22, as the droplet has:
+# on Node 24 and later the WASI package tests (pkg, wasi, the ripgrep package)
+# and net.BlockList's listing order fail, which is also why they fail on a
+# developer's Mac with a newer Node (tabcomputer#157).
 on:
   push:
     branches: ['unix/**', 'coord/**']
@@ -24,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
       # the suite's own dependencies (linkedom, …) live in tests/package.json

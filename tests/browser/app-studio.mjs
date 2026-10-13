@@ -240,6 +240,20 @@ async function studio(s) {
     await closeStudio(s);
   }
 
+  // Started from one of the site's apps: the same three, each to a link
+  for (const [id, name] of [['jq-playground', 'jq playground'], ['resize-pictures', 'Make pictures smaller'], ['expenses', 'Expenses']]) {
+    const c = new Count(s.touch);
+    const t0 = Date.now();
+    await openStudio(s, c);
+    await page.waitForSelector(`[data-act=from-${id}]`, { timeout: 15_000 });
+    await tap(s, c, `[data-act=from-${id}]`);
+    const loaded = await until(page, () => page.$eval('[data-k=name]', (i, n) => (i.value === n ? i.value : null), name));
+    const link = await shareLink(s, c);
+    record(s, 'Studio, started from the app', name, c, Date.now() - t0, link);
+    check(`${D} studio: started from ${name}, the form holds it and Share gives its link`, loaded === name && link.startsWith(`${origin}/#`), link.slice(0, 80));
+    await closeStudio(s);
+  }
+
   // Problems beside their field, in app check's words; Try it on a picture through the built-in convert
   {
     const c = new Count(s.touch);
@@ -301,7 +315,8 @@ async function codeFlow(s, app, id, template, name, opts = {}) {
     await page.keyboard.press('ControlOrMeta+A');
   }
   await page.keyboard.insertText(text);
-  c.keys += text.length; c.parts++;
+  // (each key of app.json is a thing to know and decide: a part, as each box of the Studio's form is)
+  c.keys += text.length; c.parts += (text.match(/":/g) ?? []).length;
   await page.keyboard.press('ControlOrMeta+S'); c.keys++;
   const h1 = await until(page, async () => { const f = await inner(page, id); const t = await f?.evaluate(() => document.querySelector('main h1')?.textContent); return t === name ? t : null; });
   check(`${D} code ${app}: saving reloads the app in the pane`, h1 === name, h1);

@@ -1095,13 +1095,9 @@ function drawWelcome(t: ShiroTerminal): void {
   const narrow = t.term.cols < 72;
   // (under 50 columns, a phone: one suggestion fewer, so the second line does not wrap inside a word)
   t.term.write(`\x1b[1m${BRAND.domain}\x1b[0m ${dim(narrow ? '— Unix in a browser tab.' : `— ${BRAND.tagline}. Real shell, real packages.`)}\r\n`);
-<<<<<<< ours
-  t.term.write(`${dim('try:')} ${WELCOME_TRY.map(([text, cmd]) => link(text, cmd)).join(` ${dim('·')} `)}\r\n\r\n`);
-||||||| base
-  t.term.write(`${dim('try:')} ${link('apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`)} ${dim('·')} ${link('htop', 'apt install htop && htop')} ${dim('·')} ${link('python3', 'apt install python3 && python3')} ${dim('·')} ${link('ls /dom')} ${dim('·')} ${link('help')}\r\n\r\n`);
-=======
-  t.term.write(`${dim('try:')} ${link('apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`)} ${dim('·')} ${link('htop', 'apt install htop && htop')} ${dim('·')} ${link('python3', 'apt install python3 && python3')} ${t.term.cols < 50 ? '' : `${dim('·')} ${link('ls /dom')} `}${dim('·')} ${link('help')}\r\n\r\n`);
->>>>>>> theirs
+  // (under 50 columns, a phone: `ls /dom` is left out so the line does not wrap inside a word)
+  const tries = t.term.cols < 50 ? WELCOME_TRY.filter(([text]) => text !== 'ls /dom') : WELCOME_TRY;
+  t.term.write(`${dim('try:')} ${tries.map(([text, cmd]) => link(text, cmd)).join(` ${dim('·')} `)}\r\n\r\n`);
 }
 
 /**

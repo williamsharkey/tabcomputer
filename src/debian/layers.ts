@@ -236,6 +236,8 @@ export interface ApplyResult {
   ms: number;
   /** The chunks that hold the written files' bytes, programs and libraries first (src/debian/rootfs.ts warmChunks). */
   chunks: string[];
+  /** How many of `chunks`, from the start, hold a program or a library: what a first run reads before anything else. */
+  chunksFirst: number;
 }
 
 /**
@@ -362,5 +364,6 @@ export async function applyLayerInfo(fs: FileSystem, layer: LayerInfo, base: str
     paths: nodes.length,
     ms: Date.now() - t0,
     chunks: [...first, ...[...later].filter((c) => !first.has(c))],
+    chunksFirst: first.size,
   };
 }

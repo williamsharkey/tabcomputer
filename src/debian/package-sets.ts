@@ -163,8 +163,12 @@ export async function installPackageSet(fs: FileSystem, names: string[], opts: S
         await opts.afterApply?.();
         const n = result.installed.length;
         opts.progress?.(`${set.join(', ')}: ${n} ${n === 1 ? 'package' : 'packages'} installed in ${((now() - t0) / 1000).toFixed(1)} s (${result.paths} paths; files load on first use).`);
-        // What a first run needs is fetched now, several at a time, so it does not ask for it file by file
-        void warmChunks(a.layer.id, result.chunks).catch(() => {});
+        // What a first run needs (programs and libraries) is fetched now, several at a time, so it does
+        // not ask for it file by file. The rest follows one chunk at a time, leaving the line to what
+        // the program asks for itself; with all of it here, the set works when the server drops it.
+        const id = a.layer.id;
+        void warmChunks(id, result.chunks.slice(0, result.chunksFirst), 6)
+          .then(() => warmChunks(id, result.chunks.slice(result.chunksFirst), 1)).catch(() => {});
         return { ok: true, key: a.key, result, built: waited, waitedMs: now() - t0 };
       } catch (e) {
         return { ok: false, reason: 'apply', message: (e as Error)?.message ?? String(e) };

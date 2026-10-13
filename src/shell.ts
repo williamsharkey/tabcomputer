@@ -707,7 +707,8 @@ const STREAM_REDIRECT_CMDS = new Set(['node', 'nodejs', 'npm', 'npx']);
  * stream writers (ctx.streamStdout). Not every command: cat follows a /dom event
  * file for as long as it has one.
  */
-const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo', 'nohup']);
+// (apt and toolchain: an install that waits for the server's build says how far it is, src/debian/package-sets.ts)
+const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo', 'nohup', 'apt', 'apt-get', 'toolchain']);
 
 /** Is fd 2 still the terminal after these redirects? (`stdoutTty`: fd 1 is, before them) */
 function stderrIsTty(redirects: Redirect[], stdoutTty: boolean): boolean {

@@ -876,6 +876,9 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
   async function request({ packages, baseId, address = '', build = true }) {
     const set = packageSetNames(packages, cfg.maxNames);
     if (!set.ok) return { state: 'unavailable', reason: set.reason, message: set.message };
+    // What is remembered stays small: failures for ten minutes, an address's builds for an hour
+    for (const [k, j] of jobs) if (j.state === 'failed' && now() - j.at >= cfg.failedMs) jobs.delete(k);
+    for (const [a, times] of started) if (!times.some((t) => now() - t < 3600_000)) started.delete(a);
     const b = await base();
     if (!b) return { state: 'unavailable', reason: 'no-builder', message: 'This server has no Debian base.' };
     if (baseId && baseId !== b.id) return { state: 'unavailable', reason: 'base', message: 'This server builds for another Debian base than this tab has.' };

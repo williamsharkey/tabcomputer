@@ -132,5 +132,5 @@ Put the setup script at `.tabcomputer/run.sh` in the repository, then:
 ## Not built yet
 
 - Recipe snapshots: a heavy recipe's resulting files built on the server and streamed, as toolchain layers are.
-- `gh:` and `sh:` links opening in a guest by themselves, and the `claude-sandbox` and `untrusted-repo` gallery links carrying `&guest` (once the site has guests; GUEST_PROFILE.md "Owner decisions").
+- `gh:` and `sh:` links opening in a guest by themselves, and the `claude-sandbox` gallery link carrying `&guest` (GUEST_PROFILE.md "Owner decisions"; Claude Code would need a sign-in of its own in the guest). The gallery's `untrusted-repo` card does carry `&guest` where the server has guests (`public/recipes/index.html` asks `/guest/config.json`).
 - Acting on `needs` (a warning when the page can't run what the recipe needs) and measured `first-run` times.

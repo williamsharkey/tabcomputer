@@ -1,4 +1,4 @@
-# Converter: an app on tabcomputer's toolkit
+# Convert Old Files (`converter`): an app on tabcomputer's toolkit
 
 Drop Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks or Access files (or
 a folder of them), pick HTML or CSV, get a results folder, a list of what
@@ -25,7 +25,7 @@ https://tabcomputer.com/?app=converter            a window on the desktop
 https://tabcomputer.com/?app=converter&become     the tab is the app
 ```
 
-or, in a shell: `app install converter && app open converter`. From a checkout
+or the "Convert Old Files" entry in the dock, which every profile has before the app is installed (docs/APPS.md "Shipped apps"); or, in a shell: `app install converter && app open converter`. From a checkout
 of this repository in the tab:
 
 ```sh

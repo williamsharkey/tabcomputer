@@ -14,6 +14,7 @@ import type { AppManifest } from './manifest';
 import { AppHost, type HostDeps, type RunHandle, type RunRequest } from './host';
 import { resolveAllowed, normalizePath } from './access';
 import { Supervisor, pickPort, type BackendState } from './supervisor';
+import { firstInstallText, plainInstallLine } from './progress';
 import { AppError, appDataDir, expectedPath } from './registry';
 import { iframeServer, type VirtualResponse } from '../iframe-server';
 import { PAGE_SET_TIMEOUT, PAGE_CLEAR_TIMEOUT } from '../node-compat/page-globals';
@@ -75,8 +76,21 @@ const realToolchains: HostDeps['toolchains'] = {
       buf = parts.pop() ?? '';
       for (const l of parts) if (l.trim()) onLine(l);
     };
+    // The builtin itself, with stream writers. Through a shell line a builtin's output arrives
+    // when it ends, and a first install takes minutes: the window would show nothing new until then.
     // (the set's name is one of the manifest's, checked to be a plain name)
-    const code = await runLine({ line: `toolchain install ${set}`, cwd: homeDir(), env: {}, onStdout: out, onStderr: out }).done;
+    const side = appsDeps().shell.fork();
+    (side as unknown as { terminal: unknown }).terminal = null;
+    side.cwd = homeDir();
+    const cmd = side.commands.get('toolchain') ?? (await import('../commands/toolchain')).toolchainCmd;
+    const ctx = {
+      args: ['install', set], fs: appsDeps().fs, cwd: side.cwd, env: side.env, stdin: '', stdout: '', stderr: '', shell: side,
+      stdinIsTTY: false, stdoutIsTTY: false, stderrIsTTY: false, streamStdout: out, streamStderr: out,
+    };
+    let code: number;
+    try { code = await cmd.exec(ctx); } catch (e) { out(`toolchain: ${(e as Error)?.message ?? e}\n`); code = 1; }
+    // (a command that ignores the stream writers leaves its output here)
+    out(ctx.stdout + ctx.stderr);
     if (buf.trim()) onLine(buf);
     return code;
   },
@@ -245,9 +259,11 @@ export class AppInstance {
         const have = await tc.installed(todo);
         for (const set of todo) {
           if (!have[set]) {
-            report(`Installing ${set}…`);
+            // The stage is a sentence for the person (progress.ts); the installer's own lines are the details
+            let stage = firstInstallText(this.manifest.name);
+            report(stage);
             this.say(`[app] ${this.id}: toolchain install ${set}\n`);
-            const code = await tc.install(set, (line) => { report(`Installing ${set}…`, line); this.say(line + '\n'); });
+            const code = await tc.install(set, (line) => { stage = plainInstallLine(line) ?? stage; report(stage, line); this.say(line + '\n'); });
             if (code !== 0) throw new AppError(`toolchain install ${set} failed (exit ${code}); ${this.manifest.name} needs it`);
           }
           done.add(set);

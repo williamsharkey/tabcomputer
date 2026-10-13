@@ -22,6 +22,7 @@ import { createAppFrame, type AppFrame } from './frame';
 import { AppInstance, appsDeps, homeDir, instanceFor, instanceOf, type AppRef, type AppView } from './runtime';
 import { AppError, findInstalled, listInstalled, loadManifest, type InstalledApp } from './registry';
 import { ManifestError } from './manifest';
+import { isShipped, shippedGlyph } from './shipped';
 
 const STYLE_ID = 'tc-app-style';
 const CSS = `
@@ -277,6 +278,8 @@ export function registerInstalledApp(app: InstalledApp): void {
   registered.add(app.id);
   wm.registerApp({
     id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), order: 40, dock: true,
+    // (the site's own copy of a shipped app keeps the glyph its entry had before it was installed)
+    glyph: app.source === 'site' ? shippedGlyph(app.id) : undefined,
     launch: (args) => {
       const open = windowsOf(wm, app.id);
       const newWindow = !!args?.newWindow;
@@ -306,7 +309,8 @@ export function unregisterInstalledApp(id: string): void {
 /** Is `id` an app of the desktop that the toolkit did not put there? */
 export function idTaken(id: string): boolean {
   const wm = desktop();
-  return !!wm && !registered.has(id) && wm.apps().some((a) => a.id === id);
+  // (a shipped app's entry before it is installed is the toolkit's own: shipped.ts)
+  return !!wm && !registered.has(id) && !isShipped(id) && wm.apps().some((a) => a.id === id);
 }
 
 /** Boot: every installed app gets its dock entry (the registry holds name and icon; no app file is read) */
@@ -367,7 +371,7 @@ export async function becomeApp(ref: AppRef): Promise<void> {
   document.title = m.name;
   inst.attach(view);
   try {
-    await inst.prepare((stage, line) => cover.show(`Starting ${m.name}…`, line ?? stage));
+    await inst.prepare((stage) => cover.show(`Starting ${m.name}…`, stage));
     if (!await inst.startBackend()) {
       cover.show(`${m.name} did not start`, inst.supervisor?.error ?? '', inst.supervisor?.tail() ?? [], [['Retry', () => { void becomeApp(ref); }], ['Back to the desktop', leave]]);
       return;

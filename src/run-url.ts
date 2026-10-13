@@ -165,6 +165,8 @@ export function cleanRunUrl(href: string): string {
   for (const k of [...u.searchParams.keys()]) {
     if (LINK_PARAMS.has(k.toLowerCase()) || !PAGE_PARAMS.has(k.toLowerCase())) u.searchParams.delete(k);
   }
+  // A shared app's files travel after the # (src/apps/share.ts): they go with the link
+  if (u.hash.startsWith('#app=')) u.hash = '';
   return u.toString();
 }
 

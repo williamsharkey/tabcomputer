@@ -187,9 +187,14 @@ ${bootSection(ctx, name)}
   and which are Debian's; \`--set NAME debian\` and \`--auto NAME\` switch one.
 - \`npm install\` works. \`pip install\` on the built-in Python installs pure-Python
   packages, and ones whose compiled part is optional without it (Flask, PyYAML,
-  tornado). It can't load compiled extensions: numpy, pandas, check50 and Jupyter
-  need Debian's Python (\`toolchain install python\`, which has numpy).
-- \`python3\` is Pyodide until a \`pkg\` or Debian python3 is installed.
+  tornado). It can't load compiled extensions, so for the compiled packages Pyodide
+  has (numpy, pandas, matplotlib, scipy, scikit-learn, pillow) \`pip install\` records
+  them, and \`python3 FILE.py\`, \`-c\` or \`-m\` whose imports need one runs in Pyodide
+  (Python 3.13 too; a second or so slower to start, the same files, \`plt.show()\` opens
+  a window). There: no sockets, no subprocess, no threads. \`python3 --pyodide ...\` or
+  \`TABCOMPUTER_PYTHON=pyodide\` forces it (pytest on code that imports numpy, the
+  REPL), \`--wasi\` forces the built-in one. check50, Jupyter and other compiled
+  packages need Debian's Python (\`toolchain install python\`).
 - \`gui\` lists X11 desktop apps; \`gui NAME\` opens one in a window.
 
 ## Useful here

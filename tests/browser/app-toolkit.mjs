@@ -12,6 +12,10 @@
 //             by a reload, stopped with its last window; app mode and its reload; remove
 //   links     the manifest prompt for a gh: app (Cancel focused, a scripted click does
 //             nothing, Cancel installs nothing, Install installs); ?app=gh:… and ?app=<id>
+//   share     app share ID: the share screen says each person gets their own copy and their
+//             own data; the link opened in another profile asks first (Cancel installs nothing,
+//             a scripted click does nothing), Install gives that profile its own copy without
+//             the sharer's data; "Open in a guest" carries the link there
 //   phone     360 px wide: the window, the page and the prompt fit
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
@@ -376,9 +380,93 @@ if (wants('links')) {
   await page.goto(new URL('/?app=converter', url).toString());
   await booted(page);
   const c = await ready(page, WIN('converter'), 40_000);
-  check('?app=<id>: an app of this site installs and opens without a prompt', !!c && !await page.$(P) && await dockHas(page, 'converter') && /converter +Converter .* site/.test(await appList(page)) && !/app=/.test(page.url()), (await appList(page)).split('\n').find((l) => /^converter/.test(l)));
+  check('?app=<id>: an app of this site installs and opens without a prompt', !!c && !await page.$(P) && await dockHas(page, 'converter') && /converter +Convert Old Files .* site/.test(await appList(page)) && !/app=/.test(page.url()), (await appList(page)).split('\n').find((l) => /^converter/.test(l)));
   const refusedLink = await (async () => { await page.goto(new URL('/?app=..%2F..%2Fetc', url).toString()); await booted(page); return until(page, () => page.evaluate(() => /app link: no such app/.test(window.__tabcomputer.terminal.term.buffer.active.getLine(window.__tabcomputer.terminal.term.buffer.active.cursorY - 1)?.translateToString() + [...Array(window.__tabcomputer.terminal.term.rows).keys()].map((i) => window.__tabcomputer.terminal.term.buffer.active.getLine(i)?.translateToString() ?? '').join('\n'))), 8000); })();
   check('a bad app link is refused and says why', !!refusedLink && !/app=/.test(page.url()));
+  await page.context().close();
+}
+
+// ── share: an app as a link ──
+if (wants('share')) {
+  const page = await newTab({ width: 1440, height: 900 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+  await page.goto(url);
+  await booted(page);
+  const made = await side(page, 'cd /home/user && app new sharer --template table --name "Shared Table" && app install /home/user/sharer');
+  await put(page, { '/home/user/.local/share/apps/sharer/own.csv': 'the,sharer,own,data\n' });
+  const said = await side(page, 'app share sharer');
+  const PROMISE = ['Each person who opens this link gets their own copy of Shared Table.', 'Each copy keeps its own data on that person\'s computer.', 'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.'];
+  check('app share prints the link and what it means', made.code === 0 && said.code === 0 && PROMISE.every((l) => said.o.includes(l)) && /\?app=link#app=[A-Za-z0-9_-]+/.test(said.o), (made.o + said.o).trim().split('\n').pop());
+  const S = '.tc-app-share';
+  await page.waitForSelector(S, { timeout: 10_000 }).catch(() => null);
+  const screen = await page.evaluate((S) => {
+    const el = document.querySelector(S);
+    if (!el) return null;
+    return { title: el.querySelector('h3').textContent, promise: [...el.querySelectorAll('.tc-app-share-promise li')].map((li) => li.textContent), details: el.querySelector('.tc-app-share-details').textContent, link: el.querySelector('textarea').value };
+  }, S);
+  const link = screen?.link ?? '';
+  check('the share screen says each person gets their own copy and their own data, nothing shared', screen?.title === 'Share Shared Table as a link' && JSON.stringify(screen.promise) === JSON.stringify(PROMISE)
+    && /does not hold the data you stored in Shared Table/.test(screen.details) && /installs it only when they choose Install/.test(screen.details) && /not stored on a server/.test(screen.details), JSON.stringify(screen?.promise));
+  check('the link is this site\'s, with the app after the #', link.startsWith(new URL('/?app=link#app=', url).toString()) && said.o.includes(link), `${link.length} characters`);
+  await page.bringToFront();
+  await page.click(`${S} [data-act=copy]`);
+  const copied = await until(page, () => page.evaluate((S) => document.querySelector(`${S} [role=status]`).textContent || null, S), 5000);
+  check('Copy link says what happened', copied === 'The link is copied.' || /did not allow the copy/.test(copied ?? ''), String(copied));
+  if (shots) await page.screenshot({ path: join(shots, 'toolkit-share.png') });
+
+  // another person: a profile of their own opens the link
+  const other = await newTab({ width: 1440, height: 900 });
+  const requests = [];
+  other.on('request', (r) => requests.push(r.url()));
+  await other.goto(link);
+  await booted(other);
+  const P = '.tc-app-prompt';
+  await other.waitForSelector(P, { timeout: 20_000 }).catch(() => null);
+  const shown = await other.evaluate((P) => {
+    const el = document.querySelector(P);
+    return el ? { title: el.querySelector('h3')?.textContent, text: el.textContent, focus: document.activeElement?.getAttribute('data-act'), installDisabled: el.querySelector('[data-act=install]').disabled, guest: !!el.querySelector('[data-act=guest]') } : null;
+  }, P);
+  check('the link asks first in a profile that never saw the app', shown?.title === 'Install Shared Table?' && /From a link that carries the app's own files \(\d+ files, \d+ KB\)\. tabcomputer has not reviewed it/.test(shown.text) && shown.focus === 'cancel' && shown.installDisabled === true, shown?.title);
+  check('the address is cleaned, and the app\'s files went to no server', !/app=/.test(other.url()) && !new URL(other.url()).hash && !requests.some((u) => u.includes(link.split('#app=')[1].slice(0, 40))), other.url());
+  if (shots) await other.screenshot({ path: join(shots, 'toolkit-share-prompt.png') });
+  await other.waitForTimeout(900);
+  await other.evaluate((P) => { document.querySelector(`${P} [data-act=install]`).click(); }, P);
+  await other.waitForTimeout(300);
+  check('a scripted click on Install does nothing', !!await other.$(P) && !await other.evaluate(() => window.__tabcomputer.fs.exists('/home/user/Apps/sharer')));
+  await other.click(`${P} [data-act=cancel]`);
+  await other.waitForTimeout(500);
+  check('Cancel installs nothing', !await other.$(P) && !await other.evaluate(() => window.__tabcomputer.fs.exists('/home/user/Apps/sharer')) && !await dockHas(other, 'sharer'));
+
+  if (shown?.guest) {
+    await other.goto(link);
+    await booted(other);
+    await other.waitForSelector(P, { timeout: 20_000 }).catch(() => null);
+    await other.waitForTimeout(900);
+    const popup = other.context().waitForEvent('page', { timeout: 15_000 }).catch(() => null);
+    await other.click(`${P} [data-act=guest]`);
+    const g = await popup;
+    const inGuest = g && await g.waitForSelector(P, { timeout: 60_000 }).then(() => g.evaluate((P) => document.querySelector(`${P} h3`)?.textContent, P)).catch(() => null);
+    check('"Open in a guest" carries the link to a guest, which asks there', !!g && /^guest--/.test(new URL(g.url()).hostname) && inGuest === 'Install Shared Table?' && !await other.evaluate(() => window.__tabcomputer.fs.exists('/home/user/Apps/sharer')), g ? new URL(g.url()).hostname : 'no tab');
+    await g?.close();
+  }
+
+  await other.goto(link);
+  await booted(other);
+  await other.waitForSelector(P, { timeout: 20_000 }).catch(() => null);
+  await other.waitForTimeout(900);
+  await other.click(`${P} [data-act=install]`);
+  const f = await ready(other, WIN('sharer'), 40_000);
+  const theirs = await other.evaluate(async () => {
+    const fs = window.__tabcomputer.fs;
+    return { manifest: await fs.readFile('/home/user/Apps/sharer/app.json', 'utf8').catch(() => ''), own: await fs.exists('/home/user/.local/share/apps/sharer/own.csv') };
+  });
+  const mine = await page.evaluate(() => window.__tabcomputer.fs.readFile('/home/user/Apps/sharer/app.json', 'utf8'));
+  check('Install gives that profile its own copy: the same app, none of the sharer\'s data', !!f && theirs.manifest === mine && theirs.own === false && await dockHas(other, 'sharer') && / link:[0-9a-f]{16}/.test(await appList(other)), (await appList(other)).split('\n')[1]);
+  await other.goto(link);
+  await booted(other);
+  check('the same link again opens the copy it installed', !!await ready(other, WIN('sharer'), 40_000) && !await other.$(P));
+  await other.context().close();
+  check('the sharer\'s data is where it was', (await side(page, 'cat /home/user/.local/share/apps/sharer/own.csv')).o === 'the,sharer,own,data\n');
   await page.context().close();
 }
 

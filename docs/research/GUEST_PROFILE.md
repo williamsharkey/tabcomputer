@@ -270,6 +270,11 @@ the mode (`/guest/config.json`), so it says less when less is true:
 
 ## Turning it on
 
+State on 2026-10-12: step 1 is done (Build 1003, docs/RELEASES.md). `profiles/tabcomputer/server.env` sets `TABCOMPUTER_GUESTS=1`, and `https://guest--<name>--t.tabcomputer.com/guest/config.json` answers `"enforced": true`. `server.mjs` itself still defaults to no guests away from localhost: a server without that line in its environment has none. Step 3 (the browser check against the site's own hostnames) is not recorded as run in docs/RELEASES.md or on #113.
+
+What stands between this and guests as the default for untrusted work: the owner decisions below (the domain, the relay policy, which links go to a guest by themselves), and the list under "Still open after the slice". Shipped since the slice: `/s/<id>` and `/<user>/<repo>` go to a guest by themselves (`bootGuest`), the install prompt for an app offers "Open in a guest", and the gallery's `untrusted-repo` card opens in one.
+
+
 1. Decide the guest domain (below). For subdomains nothing is needed outside
    the repository: add `TABCOMPUTER_GUESTS=1` to
    `profiles/tabcomputer/server.env` and release.

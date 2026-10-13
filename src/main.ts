@@ -139,6 +139,10 @@ async function main() {
   } catch { /* not a page */ }
   // A guest (src/guest.ts): this load may be on its way to one, or be one's discard.
   // Before anything opens storage, and before any link's seed, repository or recipe is looked at
+  // The shared-computer sign-out (src/sign-out.ts): this document deletes the profile and opens nothing
+  let signingOut = false;
+  try { signingOut = sessionStorage.getItem('tabcomputer-signout') === '1'; } catch { /* no storage */ }
+  if (signingOut && await (await import('./sign-out')).bootSignOut()) return;
   const guest = await bootGuest();
   if (guest === 'stop') return;
   logIsolationStatus();
@@ -418,6 +422,10 @@ async function main() {
     () => import('./commands/finder').then(m => m.finderCmd)), 'src/commands/finder.ts');
   registerCommand(commands, lazyCommand('code', 'Rich code editor (CodeMirror)',
     () => import('./commands/code-editor').then(m => m.codeEditorCmd)), 'src/commands/code-editor.ts');
+  registerCommand(commands, lazyCommand('lab', 'Class repositories: open one, run it, test it, submit it',
+    () => import('./commands/lab').then(m => m.labCmd)), 'src/commands/lab.ts');
+  registerCommand(commands, lazyCommand('signout', 'Sign out of a shared computer: remove the sign-ins and every file from this browser',
+    () => import('./commands/signout').then(m => m.signoutCmd)), 'src/commands/signout.ts');
   registerCommand(commands, lazyCommand('monaco', 'VS Code editor (Monaco)',
     () => import('./commands/monaco-editor').then(m => m.monacoEditorCmd)), 'src/commands/monaco-editor.ts');
   registerCommand(commands, lazyCommand('mdview', 'Render markdown as formatted HTML',
@@ -746,8 +754,12 @@ async function main() {
   // Cleanup iframe servers on page unload (hot reload)
   window.addEventListener('beforeunload', (e) => {
     iframeServer.cleanup();
+    // The shared-computer sign-out (src/sign-out.ts) leaves on purpose: everything is about to be deleted
+    if ((globalThis as { __tabcomputerLeaving?: boolean }).__tabcomputerLeaving) return;
     // Leaving mid-write (e.g. during npm install) loses the unsaved files
-    if (fs.pendingWrites > 0) {
+    // Or with work in the Code app that GitHub does not have (src/lab.ts): on a shared computer the push is the only copy
+    const unsaved = (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork?.() === true;
+    if (fs.pendingWrites > 0 || unsaved) {
       e.preventDefault();
       e.returnValue = '';
     }

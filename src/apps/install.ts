@@ -5,10 +5,10 @@
  * dock entry and the launch feedback are window.ts and the desktop.
  */
 import type { Launch } from '../desktop/launch-state';
-import type { WindowManager } from '../desktop/wm';
+import type { DesktopWindow, WindowManager } from '../desktop/wm';
 import { appsConfig } from './frame';
 import {
-  archiveApp, fetchArchive, fetchGhApp, fetchSiteApp, handleAppLink,
+  archiveApp, fetchArchive, fetchGhApp, fetchSiteApp, handleAppLink, linkApp,
   type AppLinkOutcome, type AppTarget, type FetchedApp, type InstallChoice, type InstallPromptInfo,
 } from './links';
 import { AppError, findInstalled, installFromDir, installFromFiles, type InstalledApp } from './registry';
@@ -16,6 +16,7 @@ import { appsDeps, homeDir, instanceFor, instanceOf, runLine } from './runtime';
 import { becomeApp, idTaken, installedRef, monogramIcon, openInstalled, registerInstalledApp, stopApp } from './window';
 import type { AppManifest } from './manifest';
 import { cleanRunUrl } from '../run-url';
+import { setShippedHidden } from './shipped';
 
 const desktop = (): WindowManager | null => ((globalThis as { __shiroDesktop?: WindowManager }).__shiroDesktop ?? null);
 
@@ -49,6 +50,7 @@ export async function confirmInstall(app: FetchedApp): Promise<InstallChoice> {
 export async function fetchApp(target: AppTarget, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<FetchedApp> {
   if (target.kind === 'site') return fetchSiteApp(target.id, location.origin, fetchFn);
   if (target.kind === 'gh') return fetchGhApp(target, fetchFn);
+  if (target.kind === 'link') return linkApp(target.payload);
   return archiveApp(await unpack(await fetchArchive(target.url, fetchFn), target.url), target.url);
 }
 
@@ -84,7 +86,27 @@ async function unpack(bytes: Uint8Array, url: string): Promise<Map<string, Uint8
 }
 
 function afterInstall(app: InstalledApp): void {
+  setShippedHidden(app.id, false);
   if (!idTaken(app.id)) registerInstalledApp(app);
+}
+
+/**
+ * The dock's click on an app this site ships that is not installed yet
+ * (shipped.ts): install the site's copy, then open it. The launch shows each
+ * step and, when one fails, why.
+ */
+export async function openShipped(id: string, launch: Launch): Promise<DesktopWindow | null> {
+  try {
+    if (!await findInstalled(appsDeps().fs, id)) {
+      launch.installing(null, 'Its files are being downloaded from this site.');
+      await installFetched(await fetchApp({ kind: 'site', id }));
+    }
+  } catch (e) {
+    if (launch.active) launch.fail(`It could not be installed: ${(e as Error)?.message ?? e}`);
+    return null;
+  }
+  if (!launch.active) return null;
+  return openInstalled(id, { launch });
 }
 
 /** Write a fetched app's files, list it, put it in the dock. A running copy is stopped first. */
@@ -143,7 +165,7 @@ export async function startAppLink(o: {
   let framed = true;
   try { framed = window.top !== window; } catch { /* a cross-origin parent */ }
   return handleAppLink({
-    search: location.search, origin: location.origin, framed,
+    search: location.search, hash: location.hash, origin: location.origin, framed,
     fetch: (url, init) => fetch(url, init),
     cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
     ready: o.ready,

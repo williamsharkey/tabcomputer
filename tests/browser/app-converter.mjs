@@ -13,6 +13,10 @@
 //             brings it back with the batch
 //   site      ?app=converter: the copy this site ships installs without a prompt
 //   phone     360 px wide: nothing scrolls sideways
+//   dock      no terminal: the entry "Convert Old Files" is in the dock of a fresh profile; a
+//             click installs the site's copy, shows the first-run download in sentences (the
+//             installer is a stand-in), and opens the window, which says the files stay here;
+//             `app remove` takes the entry out across a reload and `app install` brings it back
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
 import { createRequire } from 'node:module';
@@ -134,16 +138,16 @@ async function zipOf(page, sel, f) {
   await page.goto(url);
   await booted(page);
   const inst = await install(page);
-  check('app install: the converter is in ~/Apps and in the dock', inst.code === 0 && /Installed Converter \(converter\)/.test(inst.o) && await page.evaluate(() => !!document.querySelector('.sd-dock-item[data-app="converter"]')), inst.o.trim().split('\n')[0]);
+  check('app install: the converter is in ~/Apps and in the dock', inst.code === 0 && /Installed Convert Old Files \(converter\)/.test(inst.o) && await page.evaluate(() => !!document.querySelector('.sd-dock-item[data-app="converter"]')), inst.o.trim().split('\n')[0]);
   const t0 = Date.now();
   const opened = await side(page, 'app open converter');
   let f = await ready(page, WIN);
   check('app open: its own window, the page ready', opened.code === 0 && !!f, `${Date.now() - t0} ms`);
-  check('the page is on an origin of its own, with no server behind it', !!f && /^http:\/\/app--converter--[0-9a-f]{16}\./.test(f.url()) && /converter +Converter +open /.test((await side(page, 'app list')).o), f?.url());
+  check('the page is on an origin of its own, with no server behind it', !!f && /^http:\/\/app--converter--[0-9a-f]{16}\./.test(f.url()) && /converter +Convert Old Files +open /.test((await side(page, 'app list')).o), f?.url());
   check('the window has the app\'s name and size, and no preview toolbar', await page.evaluate(() => {
     const w = window.__tabcomputer.desktop.windows().find((x) => x.appId === 'converter');
     const g = w.geometry();
-    return w.title === 'Converter' && g.width === 620 && g.height === 640 && !w.element.querySelector('.sd-toolbar');
+    return w.title === 'Convert Old Files' && g.width === 620 && g.height === 640 && !w.element.querySelector('.sd-toolbar');
   }));
 
   await f.setInputFiles('#pick', [file('letter.wpd', 3000), file('newsletter.pub', 70_000), file('broken.pub', 10), file('ledger.wk1', 500), file('club.mdb', 200_000), file('notes.txt', 5)]);
@@ -158,7 +162,7 @@ async function zipOf(page, sel, f) {
   const tree = (await side(page, 'cd /home/user/Converted/* && find . -type f | sort')).o.trim().split(/\r?\n/);
   check('the results folder', ['./letter.html', './newsletter.html', './ledger.html', './club/People.html', './club/Orders.html', './club/schema.sql'].every((n) => tree.includes(n)), tree.join(' '));
   check('the dropped originals are not kept once converted', await until(page, async () => !(await side(page, 'find /home/user/.local/share/apps/converter/in -type f 2>/dev/null')).o.trim()));
-  check('the window\'s title follows the batch and returns', await until(page, () => page.evaluate(() => window.__tabcomputer.desktop.windows().find((x) => x.appId === 'converter').title === 'Converter')));
+  check('the window\'s title follows the batch and returns', await until(page, () => page.evaluate(() => window.__tabcomputer.desktop.windows().find((x) => x.appId === 'converter').title === 'Convert Old Files')));
 
   // a drop (no folder entries on a synthetic DataTransfer: its files)
   await f.evaluate(() => {
@@ -226,6 +230,63 @@ async function zipOf(page, sel, f) {
     await f.setInputFiles('#pick', [file('letter.wpd', 3000)]);
     check('the site\'s copy converts', (await settled(page, f, 1))?.[0]?.status === 'done');
   }
+  await page.context().close();
+}
+
+// ── dock: reached with a click, no terminal ──
+{
+  const page = await newTab({ width: 1440, height: 900 });
+  await page.goto(url);
+  await booted(page);
+  const entry = '.sd-dock-item[data-app="converter"]';
+  const tip = await until(page, () => page.evaluate((entry) => document.querySelector(`${entry} .sd-dock-tip`)?.textContent ?? null, entry), 10_000);
+  check('a fresh profile has the entry in the dock, named for what it does', tip === 'Convert Old Files' && /No apps are installed/.test((await side(page, 'app list')).o), String(tip));
+  // The converter programs, without the mark that says their set is installed; `toolchain install`
+  // is a stand-in that prints what the real one prints, slowly enough to read the window
+  await page.evaluate(async (stubs) => {
+    const fs = window.__tabcomputer.fs;
+    for (const [name, text] of Object.entries(stubs)) { await fs.mkdir('/usr/local/bin', { recursive: true }); await fs.writeFile(`/usr/local/bin/${name}`, text); }
+    window.__tcCalls = [];
+    window.__tabcomputer.shell.commands.register({
+      name: 'toolchain', description: 'stand-in',
+      async exec(ctx) {
+        window.__tcCalls.push(ctx.args.join(' '));
+        const out = (t) => { if (ctx.streamStdout) ctx.streamStdout(t); else ctx.stdout += t; };
+        out('Installing Debian first (debian install)...\n');
+        await new Promise((r) => setTimeout(r, 2500));
+        out('File rescue: 31 packages installed in 0.9 s (4120 paths; files load on first use).\n');
+        await new Promise((r) => setTimeout(r, 300));
+        return 0;
+      },
+    });
+  }, STUBS);
+  check('the dock entry is a drawing, not two letters', await page.evaluate((entry) => !!document.querySelector(`${entry} svg path, ${entry} img`) && !/^CO$/i.test(document.querySelector(entry).textContent.replace('Convert Old Files', '').trim()), entry));
+  await page.click(entry);
+  const first = await until(page, () => page.evaluate(() => { const t = document.querySelector('.sd-launch-stage')?.textContent ?? ''; return /needs some programs|Linux system/.test(t) ? t : null; }), 15_000);
+  const stage = await until(page, () => page.evaluate(() => { const t = document.querySelector('.sd-launch-stage')?.textContent ?? ''; return /Linux system/.test(t) ? t : null; }), 15_000);
+  check('the first-run download is shown in sentences as it goes, not installer output', /^(Convert Old Files needs some programs\. They are being downloaded\. This happens once\.|The Linux system)/.test(first ?? '')
+    && stage === 'The Linux system that these programs run on is being downloaded. This happens once.', `${first} / ${stage}`);
+  if (shots) await page.screenshot({ path: join(shots, 'converter-first-run.png') });
+  const f = await ready(page, WIN, 40_000);
+  check('the click installed the site\'s copy and opened its window', !!f && / site$/m.test((await side(page, 'app list')).o) && await page.evaluate(() => window.__tcCalls.join() === 'install rescue'), (await side(page, 'app list')).o.split('\n')[1]);
+  check('the window says the files stay on this computer', !!f && await f.evaluate(() => /Your files stay on this computer\. The conversion runs in this browser tab\. No file is uploaded\./.test(document.getElementById('private')?.textContent ?? '') && document.getElementById('private').getBoundingClientRect().height > 0));
+  if (f) {
+    await f.setInputFiles('#pick', [file('flyer.pub', 5000)]);
+    check('a dropped file converts', (await settled(page, f, 1))?.[0]?.status === 'done');
+  }
+  if (shots) await page.screenshot({ path: join(shots, 'converter-dock.png') });
+  // the window again from the dock: nothing is installed twice
+  await page.evaluate(() => window.__tabcomputer.desktop.windows().find((x) => x.appId === 'converter')?.close(true));
+  await page.click(entry);
+  check('a second click opens it at once', !!await ready(page, WIN, 20_000) && await page.evaluate(() => window.__tcCalls.length === 1));
+  const removed = await side(page, 'app remove converter');
+  check('app remove takes the entry out of the dock', removed.code === 0 && !await page.$(entry), removed.o.trim());
+  await page.reload();
+  await booted(page);
+  await page.waitForTimeout(1500);
+  check('the entry stays out after a reload', !await page.$(entry));
+  const again = await side(page, 'app install converter');
+  check('app install brings it back', again.code === 0 && !!await page.$(entry), again.o.trim().split('\n')[0]);
   await page.context().close();
 }
 

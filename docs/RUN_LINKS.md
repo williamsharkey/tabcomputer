@@ -21,6 +21,7 @@ An app link, `?app=<id>` or `?app=gh:owner/repo[/path]`, is the same machinery w
 | `?run=gist:<user>/<id>[/<file>]` | A file of a public gist, its first file unless one is named, fetched from `gist.githubusercontent.com/<user>/<id>/raw[/<file>]`. `<file>` is one name, never a path. |
 | `?run=gist:<id>` | The same without the user: the owner is looked up with GitHub's API (`api.github.com/gists/<id>`), and only a plain account name is taken from the answer; the raw address is built here. |
 | `?run=sh:<base64url>` | A script carried in the link itself (UTF-8, base64url, at most 64 KB). |
+| `?run=lab:<owner>/<repo>` | A class repository, private or public: no script is fetched. After a question the first time, `lab open` signs in if needed, clones it, installs the toolchains its `.tabcomputer/lab.json` names and opens the Code app. [CLASSROOM.md](CLASSROOM.md). |
 | `&<name>=<value>` | An argument: the script reads it as `RUN_<NAME>` (`&repo=` is `$RUN_REPO`). |
 
 The script runs in `~/run/<name>/`: the recipe's name, `gh-<owner>-<repo>`, `gist-<user>-<id>` or `sh-<hash>`. The page removes `run` and its arguments from the address (`history.replaceState`) before it fetches anything, so a reload does not run it again. `?ui=`, `?profile=` and the page's other parameters stay. `?safe=1` skips run links.
@@ -131,5 +132,5 @@ Put the setup script at `.tabcomputer/run.sh` in the repository, then:
 ## Not built yet
 
 - Recipe snapshots: a heavy recipe's resulting files built on the server and streamed, as toolchain layers are.
-- `gh:` and `sh:` links opening in a guest by themselves, and the `claude-sandbox` and `untrusted-repo` gallery links carrying `&guest` (once the site has guests; GUEST_PROFILE.md "Owner decisions").
+- `gh:` and `sh:` links opening in a guest by themselves, and the `claude-sandbox` gallery link carrying `&guest` (GUEST_PROFILE.md "Owner decisions"; Claude Code would need a sign-in of its own in the guest). The gallery's `untrusted-repo` card does carry `&guest` where the server has guests (`public/recipes/index.html` asks `/guest/config.json`).
 - Acting on `needs` (a warning when the page can't run what the recipe needs) and measured `first-run` times.

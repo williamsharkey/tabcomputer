@@ -6,6 +6,7 @@
  *   app dev [DIR]                                 the developer loop: a window, the log, restart on save
  *   app install [DIR | ID | gh:OWNER/REPO[/PATH] | URL]
  *   app open ID [--become]
+ *   app share ID                                  a link that gives each person their own copy
  *   app list | stop ID | remove ID | check [DIR] | templates
  */
 import type { Command, CommandContext } from './index';
@@ -22,6 +23,8 @@ const USAGE = `Usage: app new NAME [--template T] [--name "Shown name"] [--dir D
        app install URL                   install an app from a .zip or .tar.gz (asks first)
                  [--guest[=NAME]]        open it in a guest instead of installing it here
        app open ID [--become] [--new]    open an installed app; --become: the tab is the app
+       app share ID [--print]            a link to it: each person who opens the link gets their own copy
+                                         and their own data (--print: only print the link)
        app list [-l]                     installed apps and whether they run
        app stop ID                       close its windows and stop its backend
        app remove ID [--data]            uninstall it; --data deletes what it stored too
@@ -206,6 +209,31 @@ export const appCmd: Command = {
           return 0;
         }
 
+        case 'share': {
+          if (!known('--print')) return 2;
+          if (rest.length !== 1) { err('share needs an app\'s id (app list)'); return 2; }
+          const app = await findInstalled(ctx.fs, rest[0]);
+          if (!app) { err(`no app named ${rest[0]} is installed (app list)`); return 1; }
+          const { shareApp, shareStatement, siteOriginOf } = await import('../apps/share');
+          const { guestInfo } = await import('../guest');
+          const origin = typeof location !== 'undefined' && /^https?:$/.test(location.protocol) ? siteOriginOf(location, !!guestInfo()) : 'https://tabcomputer.com';
+          const share = await shareApp(ctx.fs, app, origin);
+          if (flags.has('--print')) { out(share.url); return 0; }
+          const { promise, details } = shareStatement(share);
+          out(`A link to ${share.name}:`);
+          out('');
+          out(share.url);
+          out('');
+          for (const l of [...promise, ...details]) out(l);
+          if (hasDesktop() && typeof document !== 'undefined') {
+            const [{ showShareScreen }, { writeClipboard }] = await Promise.all([import('../apps/share-ui'), import('../utils/clipboard')]);
+            showShareScreen(share, (globalThis as { __shiroDesktop?: import('../desktop/wm').DesktopAPI }).__shiroDesktop ?? null, (text) => writeClipboard(text).catch(() => false));
+            out('');
+            out('The Share window has a Copy link button.');
+          }
+          return 0;
+        }
+
         case 'stop': {
           if (!known()) return 2;
           if (rest.length !== 1) { err('stop needs an app\'s id'); return 2; }
@@ -227,6 +255,8 @@ export const appCmd: Command = {
           win.stopApp(id);
           await removeInstalled(ctx.fs, id, { home, data: flags.has('--data') });
           win.unregisterInstalledApp(id);
+          // An app this site ships has a dock entry before it is installed: removed, it stays out
+          (await import('../apps/shipped')).setShippedHidden(id, true);
           const data = appDataDir(home, id);
           const kept = !flags.has('--data') && await ctx.fs.exists(data);
           out(`Removed ${app.name} (${id}).${kept ? ` What it stored is still in ${tilde(data)} (app remove --data deletes that too).` : ''}`);

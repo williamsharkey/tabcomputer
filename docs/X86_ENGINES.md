@@ -1099,6 +1099,22 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    for a checkpoint pays two counter updates per kernel call and one store
    per system call. Test: `tests/browser/gui-snapshot.mjs` (xeyes, one
    thread; Geany, four).
+0552. unix/java-fast's: `mmap(0, …)` checks the whole range it returns.
+   `FindVirtual` walks the page tables from the address it is trying and,
+   where an entry at some level is missing, counted that entry's whole span
+   (2 MiB, 1 GiB, 512 GiB) as free; with the address in the middle of the
+   span that is more than was looked at, so the last `address & (span - 1)`
+   bytes of the range were never checked and a mapping there was handed out
+   again. HotSpot met it (tabcomputer#122): glibc's arena for the JVM's main
+   thread is `mmap(0, 128 MiB)` trimmed to a 64 MiB boundary, which leaves a
+   hole just under 64 MiB below it; with `-Xint` or
+   `-XX:TieredStopAtLevel=1` the next 64 MiB reservation was placed in the
+   hole, over the arena's first 0x4c000 bytes, and unmapped again. malloc
+   then faulted, and the JVM's signal handler faulted on its `Thread` object
+   until the stack ran out (exit 139). A missing entry now counts to the end
+   of its span. Tests: `fixtures/x86/mmaphole.c` (reserve, trim, reserve),
+   `tests/browser/java-fast.mjs` (the three commands of #122).
+   [research/JAVA_SPEED.md](research/JAVA_SPEED.md).
 
    fork+exit+wait with 16 MiB of dirty heap went from 30 to 7.5 ms, and
    with 64 MiB from 104 to 12 ms (native: 3.1 ms). Test:

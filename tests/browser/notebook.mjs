@@ -119,11 +119,14 @@ async function openAndRunAll(page, label) {
   times[`${label}: double-click in Files to the notebook drawn`] = Date.now() - t0;
   const win = page.locator('.sd-win:has(.nb-cells)').last();
   await win.locator('[data-act=run-all]').click();
-  await until(page, 'the first cell\'s output', (s) => /numpy 45/.test(s.cells[1].out));
+  // (Run All marks every cell [*] at once: a cell that is no longer [*] has run now, so an output
+  // saved in the file by an earlier run is not taken for this run's)
+  const ran = (c) => c.count !== '[*]';
+  await until(page, 'the first cell\'s output', (s) => ran(s.cells[1]) && /numpy 45/.test(s.cells[1].out));
   times[`${label}: double-click to the first cell's output (numpy, pandas and matplotlib imported)`] = Date.now() - t0;
-  await until(page, 'the pandas table', (s) => /<table/.test(s.cells[2].html));
+  await until(page, 'the pandas table', (s) => ran(s.cells[2]) && /<table/.test(s.cells[2].html));
   times[`${label}: double-click to the pandas table`] = Date.now() - t0;
-  await until(page, 'the plot', (s) => /<img[^>]+src="data:image\/png;base64,/.test(s.cells[3].html));
+  await until(page, 'the plot', (s) => ran(s.cells[3]) && /<img[^>]+src="data:image\/png;base64,/.test(s.cells[3].html));
   times[`${label}: double-click to the inline plot`] = Date.now() - t0;
   // input(): the box appears under the cell that asked
   const input = win.locator('.nb-stdin input');

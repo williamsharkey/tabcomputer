@@ -87,7 +87,7 @@ export class ManifestError extends Error {
 export const APP_ID = /^[a-z][a-z0-9-]{1,31}$/;
 /** Ids the desktop's own apps and the site's routes use */
 export const RESERVED_IDS = new Set([
-  'terminal', 'files', 'settings', 'browser', 'activity', 'about', 'dataflow', 'preview', 'apps', 'git', 'code', 'run-link', 'app', 'studio',
+  'terminal', 'files', 'settings', 'browser', 'activity', 'about', 'dataflow', 'preview', 'apps', 'git', 'code', 'run-link', 'app', 'studio', 'link', 'app-share',
   'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'recipes', 's',
 ]);
 

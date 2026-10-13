@@ -270,14 +270,3 @@ export async function parseSeedNdjson(ndjson: string, batch = 100): Promise<FSNo
   }
   return nodes;
 }
-
-/** What a person is asked before a shared seed (/s/:id) replaces this machine. */
-export function sharedSeedQuestion(id: string, envelope: { files?: number; hostname?: string; timestamp?: number }): string {
-  const from = envelope.hostname ? ` made on ${String(envelope.hostname).slice(0, 60)}` : '';
-  const when = envelope.timestamp ? ` on ${new Date(envelope.timestamp).toISOString().slice(0, 10)}` : '';
-  return `Load the shared seed "${id}"${from}${when}?\n\n`
-    + `It replaces every file in this tabcomputer with its ${Number(envelope.files) || 0} files. `
-    + `Its programs and startup scripts then run here, and can read anything this tabcomputer is signed in to `
-    + `(your sign-ins are kept, not replaced).\n\n`
-    + `Only continue if you trust whoever sent the link. Cancel leaves everything as it is.`;
-}

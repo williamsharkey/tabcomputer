@@ -444,7 +444,7 @@
     "processes",
     "sockets"
    ],
-   "notes": "pip installs pure-Python wheels from PyPI (no native extensions, no sdists yet); python -m venv works. subprocess runs programs through os.posix_spawn (no preexec_fn or uid/gid changes); sockets, getaddrinfo and ssl (OpenSSL 3.5, CA bundle at /etc/ssl/cert.pem from ca-certificates) go through the kernel's sockets and the TCP relay, so urllib fetches http:// and https:// URLs. The REPL reads the terminal where processes have blocking stdin, and is the basic one (PYTHON_BASIC_REPL=1): the new one needs termios, which WASI lacks. pytest runs with --capture=sys -p no:faulthandler -p no:cacheprovider (PYTEST_ADDOPTS).",
+   "notes": "pip installs pure-Python wheels from PyPI, and source distributions that need no compiler (a project whose extension is optional, like MarkupSafe, PyYAML and tornado, installs without it); no native extensions: the interpreter is a static executable without dlopen. python -m venv works. subprocess runs programs through os.posix_spawn (no preexec_fn or uid/gid changes); sockets, getaddrinfo and ssl (OpenSSL 3.5, CA bundle at /etc/ssl/cert.pem from ca-certificates) go through the kernel's sockets and the TCP relay, so urllib fetches http:// and https:// URLs. The REPL reads the terminal where processes have blocking stdin, and is the basic one (PYTHON_BASIC_REPL=1): the new one needs termios, which WASI lacks. pytest runs with --capture=sys -p no:faulthandler -p no:cacheprovider (PYTEST_ADDOPTS).",
    "deps": [
     "ca-certificates"
    ]

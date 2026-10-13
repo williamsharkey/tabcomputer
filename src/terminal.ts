@@ -56,6 +56,8 @@ export class ShiroTerminal {
   private historyIndex = -1;
   private savedLine = '';
   private running = false;
+  /** restoreScreen has drawn this terminal's prompt (start() then doesn't) */
+  private promptRestored = false;
   private userInputCallback: ((input: string) => void) | null = null;
   private userInputBuffer = '';
   private userInputCursorPos = 0;
@@ -507,8 +509,9 @@ export class ShiroTerminal {
     }
     // ~/.profile may have started a command through injectInput (e.g. an autostart
     // that launches Claude); that command prints the prompt when it finishes, and a
-    // prompt now would land on top of its screen.
-    if (!this.running) this.showPrompt();
+    // prompt now would land on top of its screen. Session restore may have put the
+    // old screen back meanwhile, with a prompt under it: a second would follow it on its line.
+    if (!this.running && !this.promptRestored) this.showPrompt();
   }
 
   /**
@@ -895,6 +898,7 @@ export class ShiroTerminal {
     this.lineBuffer = '';
     this.cursorPos = 0;
     this.showPrompt();
+    this.promptRestored = true;
     this.term.scrollToBottom();
   }
 

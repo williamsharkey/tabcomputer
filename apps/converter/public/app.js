@@ -37,7 +37,7 @@
   var basename = function (p) { return p.slice(p.lastIndexOf('/') + 1); };
 
   try { await tab.ready; } catch (e) {
-    $('drop').querySelector('.big').textContent = 'This page is the Converter app of tabcomputer: it works when opened there (' + (e && e.message || e) + ').';
+    $('drop').querySelector('.big').textContent = 'This page is tabcomputer\'s Convert Old Files app. It works when it is opened in tabcomputer (' + (e && e.message || e) + ').';
     document.documentElement.setAttribute('data-ready', 'error');
     return;
   }
@@ -71,7 +71,8 @@
     state.marks.setupStart = Math.round(t0);
     state.setup = tab.toolchain.ensure(function (p) {
       log.textContent += p.line + '\n'; log.scrollTop = log.scrollHeight;
-      $('setup-msg').textContent = p.line.slice(0, 120) + ' (' + Math.round((performance.now() - t0) / 1000) + ' s)';
+      // The sentence the tab gives for this step; the installer's own lines are under Details
+      $('setup-msg').textContent = (p.text || 'The converter programs are being downloaded. This happens once.') + ' (' + Math.round((performance.now() - t0) / 1000) + ' s so far)';
     }).then(loadStatus).then(function (st) {
       state.setup = null;
       state.marks.setupMs = Math.round(performance.now() - t0);
@@ -80,7 +81,7 @@
     }).catch(function (e) {
       state.setup = null;
       $('setup-bar').hidden = true;
-      $('setup-msg').textContent = 'The converters could not be installed (' + (e && e.message || e) + '). This needs tabcomputer\'s Debian and a network connection. Details below.';
+      $('setup-msg').textContent = 'The converter programs could not be installed (' + (e && e.message || e) + '). The install needs a network connection. No file of yours was sent anywhere. The details are below.';
       $('setup').querySelector('details').open = true;
       return false;
     });
@@ -138,7 +139,8 @@
       li.appendChild(w); fl.appendChild(li);
     });
     $('failed').hidden = failed === 0 || left > 0;
-    tab.window.setTitle(left ? 'Converter: ' + (done + failed) + ' of ' + total : 'Converter');
+    var appName = (tab.app && tab.app.name) || 'Convert Old Files';
+    tab.window.setTitle(left ? appName + ': ' + (done + failed) + ' of ' + total : appName);
     if (!left && total && !state.marks.allDone) {
       state.marks.allDone = Math.round(performance.now());
       // The dropped originals are copies: once converted they are not kept

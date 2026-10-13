@@ -207,7 +207,12 @@ and the tab uses apt.
 not have: 23 more packages (Tcl/Tk, libX11, fontconfig, the DejaVu fonts),
 7 MB of `.deb`s, 21 MB unpacked. With it `import turtle` works in Debian's
 `python3` and draws in an X11 window on the desktop (`DISPLAY=:0`). The
-built-in WebAssembly `python3` (`pkg`) still has no tkinter.
+built-in WebAssembly `python3` (`pkg`) still has no tkinter: there `import
+tkinter` and `import turtle` fail with a line naming `toolchain install
+python` (`src/python-hints.ts`). Installing the set makes `python3` Debian's,
+which runs in the x86 emulator and is several times slower (#124: 0.40 s
+against 3.3 s for a 2-million sieve); `toolchain list` and the install say
+so, and the welcome card's Python is the built-in one.
 
 `rescue` (#114) converts files no current program opens: `wpd2html` and
 `wpd2text` (WordPerfect), `pub2xhtml` (Publisher), `wps2html`, `wks2csv`

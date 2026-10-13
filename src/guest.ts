@@ -83,13 +83,14 @@ export function guestRequest(search: string): GuestRequest | null {
   return { ...(name ? { name } : {}), noNetwork: q.has('nonet') && q.get('nonet') !== '0' };
 }
 
-/** Paths main.ts never reads as /<user>/<repo> */
-export const RESERVED_PATHS = ['api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
+/** Paths main.ts never reads as /<user>/<repo> (server.mjs has the same list, REPO_LINK_RESERVED; guest.test.ts checks the two agree) */
+export const RESERVED_PATHS = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
 
 /**
  * A page address that makes boot import or run someone else's code: a shared
  * seed (/s/ID) or a repository (/USER/REPO). In a main profile these open in a
- * guest when the server has guests.
+ * guest when the server has guests; where it has none they ask first
+ * (src/inbound-link.ts). /s/ is only ever a seed.
  */
 export function inboundCodeLink(pathname: string): { kind: 'seed'; id: string } | { kind: 'repo'; user: string; repo: string } | null {
   const seed = /^\/s\/([a-z0-9]{4,16})$/.exec(pathname);
@@ -224,6 +225,17 @@ export const guestDiscarding = (): boolean => discarding;
  */
 export async function wipeGuestStorage(): Promise<string[]> {
   if (!guestInfo()) throw new Error('not a guest: refusing to delete this origin\'s storage');
+  return wipeAllStorage();
+}
+
+/**
+ * Delete everything this origin stores, whatever profile it is. Two callers:
+ * a guest's discard (above), and the shared-computer sign-out after its
+ * confirm (src/sign-out.ts, in a document that opened nothing). From here on
+ * nothing writes storage again (`guestDiscarding`).
+ */
+export async function wipeAllStorage(): Promise<string[]> {
+  discarding = true;
   const left: string[] = [];
   const attempt = async (what: string, fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { left.push(`${what}: ${(e as Error)?.message ?? e}`); } };
   await attempt('service workers', async () => {

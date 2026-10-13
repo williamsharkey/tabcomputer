@@ -15,6 +15,7 @@ import { FileSystem, addProcInfoSource, setProcSelf } from './filesystem';
 import { processTable, type ShiroProcess } from './process-table';
 import { CommandRegistry, CommandContext, type Command } from './commands/index';
 import type { ShiroTerminal } from './terminal';
+import { notFoundHint } from './command-hints';
 import type { KernelStdio } from './shell-stdio';
 import type { OpenFile } from './kernel/fd';
 import { getCompiledModule } from './wasi-packages';
@@ -2740,12 +2741,17 @@ export class Shell {
       // reports on stderr after it (a bare `time` is the builtin below)
       const timed = /^time(\s+-p)?\s+(?=\S)/.exec(trimmedCmd);
       if (timed && !this.disabledBuiltins.has('time')) {
+        const { startCpuMeter, minSec } = await import('./shell-time');
+        const cpuUsed = await startCpuMeter(this, terminalOverride || this.terminal);
         const start = performance.now();
-        exitCode = await this.execute(trimmedCmd.slice(timed[0].length), writeStdout, stderrWriter, false, terminalOverride, true);
+        let cpu = { user: 0, sys: 0 };
+        try {
+          exitCode = await this.execute(trimmedCmd.slice(timed[0].length), writeStdout, stderrWriter, false, terminalOverride, true);
+        } finally { cpu = cpuUsed(); }
         const elapsed = (performance.now() - start) / 1000;
         stderrWriter(timed[1]
-          ? `real ${elapsed.toFixed(2)}\r\nuser 0.00\r\nsys 0.00\r\n`
-          : `\r\nreal\t${Math.floor(elapsed / 60)}m${(elapsed % 60).toFixed(3)}s\r\nuser\t0m0.000s\r\nsys\t0m0.000s\r\n`);
+          ? `real ${elapsed.toFixed(2)}\r\nuser ${cpu.user.toFixed(2)}\r\nsys ${cpu.sys.toFixed(2)}\r\n`
+          : `\r\nreal\t${minSec(elapsed)}\r\nuser\t${minSec(cpu.user)}\r\nsys\t${minSec(cpu.sys)}\r\n`);
         this.lastExitCode = exitCode;
         this.env['?'] = String(exitCode);
         continue;
@@ -2758,6 +2764,24 @@ export class Shell {
         this.lastExitCode = exitCode;
         this.env['?'] = String(exitCode);
         continue;
+      }
+
+      // A pipeline with an element that only waits (`sleep 2 | sh -c 'echo started'`):
+      // its elements run at once, as bash's do, so the rest doesn't wait for the
+      // sleep (tabcomputer#72). Other pipelines of plain commands keep the string path.
+      if (WAITING_ELEMENT.test(trimmedCmd) && !trimmedCmd.includes('<<') && !trimmedCmd.includes('|&') &&
+        // (only where runHeadedPipeline streams; its other way is for compound heads)
+        !this.shoptopts.has('lastpipe') && this.env.TABCOMPUTER_STREAM_PIPES !== '0' && this.injectedStdin === null && !this.env.__PIPE_STDIN) {
+        const parts = splitTopLevelPipes(trimmedCmd);
+        const word = (p: string) => /^\s*([^\s;&|<>()]+)/.exec(p)?.[1] ?? '';
+        // (read and mapfile at the end set this shell's variables; a function or alias may do anything)
+        if (parts.length > 1 && parts.slice(0, -1).some((p) => word(p) === 'sleep') &&
+          parts.every((p) => { const w = word(p); return !!w && !STREAM_KEEPS_SHELL.has(w) && !this.functions[w] && !this.aliases.has(w) && !w.includes('='); })) {
+          exitCode = await this.runHeadedPipeline(parts, pipeIn || heredocStdin ? heredocStdin : null, writeStdout, stderrWriter, terminalOverride);
+          this.lastExitCode = exitCode;
+          this.env['?'] = String(exitCode);
+          continue;
+        }
       }
 
       // [[ … ]] (and ! [[ … ]]): parsed from the raw text
@@ -3247,17 +3271,20 @@ export class Shell {
         if (!_builtinDisabled && effectiveCmdName === 'time') {
           // Args are already parsed and expanded; quote them so re-running doesn't re-split `;` or quotes
           const timeCmd = quoteArgsForShell(cmdArgs);
+          const { startCpuMeter, minSec } = await import('./shell-time');
+          const cpuUsed = await startCpuMeter(this, this.terminal);
           const start = performance.now();
-          if (timeCmd) {
-            this.injectedStdin = nestedStdin;
-            exitCode = await this.execute(timeCmd, writeStdout, stderrWriter, false, undefined, true);
-          }
+          let cpu = { user: 0, sys: 0 };
+          try {
+            if (timeCmd) {
+              this.injectedStdin = nestedStdin;
+              exitCode = await this.execute(timeCmd, writeStdout, stderrWriter, false, undefined, true);
+            }
+          } finally { cpu = cpuUsed(); }
           const elapsed = (performance.now() - start) / 1000;
-          const mins = Math.floor(elapsed / 60);
-          const secs = elapsed % 60;
-          stderrWriter(`\nreal\t${mins}m${secs.toFixed(3)}s\r\n`);
-          stderrWriter(`user\t0m0.000s\r\n`);
-          stderrWriter(`sys\t0m0.000s\r\n`);
+          stderrWriter(`\nreal\t${minSec(elapsed)}\r\n`);
+          stderrWriter(`user\t${minSec(cpu.user)}\r\n`);
+          stderrWriter(`sys\t${minSec(cpu.sys)}\r\n`);
           this.lastExitCode = exitCode;
           this.env['?'] = String(exitCode);
           lastOutput = '';
@@ -5131,6 +5158,7 @@ export class Shell {
               ctx.stderr += `  it can be installed with: pkg install ${provider.name}` +
                 (packageStatus(provider) === 'blocked' ? ` (needs kernel support tabcomputer doesn't have yet)` : '') + '\n';
             }
+            for (const line of notFoundHint(effectiveCmdName)) ctx.stderr += `  ${line}\n`;
             exitCode = 127;
             this.lastExitCode = exitCode;
             this.env['?'] = String(exitCode);
@@ -9889,6 +9917,11 @@ export class Shell {
  * commands (for/while/until/select … done, if … fi, case … esac), so the pipe
  * after `done` or a subshell is found but pipes inside the body are not.
  */
+/** A pipeline text that may have `sleep` as an element before the last (checked properly once split) */
+const WAITING_ELEMENT = /(?:^|\|)\s*sleep\s[^|]*\|/;
+/** Last elements that act on this shell, so the pipeline isn't run as processes */
+const STREAM_KEEPS_SHELL = new Set(['read', 'mapfile', 'readarray']);
+
 export function splitTopLevelPipes(cmd: string): string[] {
   const parts: string[] = [];
   let current = '';

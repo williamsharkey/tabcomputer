@@ -1,8 +1,8 @@
 {
   "manifest": 1,
   "id": "converter",
-  "name": "Converter",
-  "description": "Convert Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files on this computer.",
+  "name": "Convert Old Files",
+  "description": "Drop Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files and get modern files back. The files stay on this computer.",
   "version": "0.2.0",
   "icon": "public/icon.svg",
   "window": { "width": 620, "height": 640, "minWidth": 320, "minHeight": 320 },

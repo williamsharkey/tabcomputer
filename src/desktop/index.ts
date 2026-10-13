@@ -17,6 +17,7 @@ import type { Shell } from '../shell';
 import { ShiroTerminal } from '../terminal';
 import type { Kernel } from '../kernel/kernel';
 import { WindowManager, compactViewport, isDesktopShortcut, type DockGroup, type AppDescriptor, type DesktopWindow, type MenuSpec, type MenuItem, type Geometry } from './wm';
+import { registerShippedApps } from '../apps/shipped';
 import { ICONS, GLYPHS, appIcon } from './icons';
 import { TerminalView, takeParkedMain, hasParkedMain, applyTerminalTheme, useMonoFont, allTerminalViews, terminalTheme, TERMINAL_FONT } from './terminal-app';
 import { initNetwork } from './network';
@@ -24,7 +25,7 @@ import { guestConfig, guestInfo, openGuest } from '../guest';
 import { loadSession, place, restoreSession, trackSession } from './session';
 import { previousLoadWedge } from '../watchdog';
 import { BRAND } from '../brand';
-import { DEV_GROUPS, DEV_TOOLS, TOOL_PATH, launchScript, type DevTool } from './devtools';
+import { DEV_GROUPS, DEV_TOOLS, TOOL_PATH, launchScript, windowCommand, type DevTool } from './devtools';
 import { setClaudeSignInUI } from '../claude-signin-ui';
 import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
@@ -332,12 +333,12 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     }
     if (changed) queueDock();
   };
-  const launchTool = (t: DevTool) => {
+  const launchTool = (t: DevTool, args?: Record<string, unknown>) => {
     if (t.window) {
       // A builtin that opens its own window (code): run it without a Terminal
       const sh = deps.makeShell();
       sh.cwd = '/home/user';
-      void sh.execute(t.run, () => {}, () => {});
+      void sh.execute(windowCommand(t, args), () => {}, () => {});
       return null;
     }
     if (toolMissing.has(t.id)) { toolInstalling.add(t.id); queueDock(); }
@@ -350,17 +351,26 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   for (const t of DEV_TOOLS) {
     // Classic: the existing art where there is one (vim), else the glyph on a tile in the brand's or the group's colors
     const icon = ICONS[t.id] ?? glyphClassicTile(t.id, ...(t.tile ?? (t.group === 'agents' ? ['#e08a5f', '#a24a2a'] : ['#4b5468', '#1e2330'])) as [string, string]);
-    wm.registerApp({ id: t.id, name: t.name, icon, order: t.order, group: t.group, launch: t.id === 'git' ? openGit : () => launchTool(t) });
+    wm.registerApp({ id: t.id, name: t.name, icon, order: t.order, group: t.group, launch: t.id === 'git' ? openGit : (args) => launchTool(t, args) });
   }
   hold(refreshTools());
   // Installed apps (docs/APPS.md): their dock entries come from the registry's names and icons.
   // The toolkit (src/apps/) loads only when something is installed.
-  hold(deps.fs.exists('/var/lib/tabcomputer/apps.json').then(async (any) => {
-    if (!any) return;
-    const [runtime, win] = await Promise.all([import('../apps/runtime'), import('../apps/window')]);
+  const appsCore = async () => {
+    const runtime = await import('../apps/runtime');
     try { runtime.appsDeps(); } catch { runtime.configureApps({ fs: deps.fs, shell: deps.shell }); }
-    await win.registerInstalledApps();
-  }));
+  };
+  hold(deps.fs.exists('/var/lib/tabcomputer/apps.json').then(async (any) => {
+    if (any) {
+      await appsCore();
+      await (await import('../apps/window')).registerInstalledApps();
+    }
+    // The apps this site ships (shipped.ts) have an entry before they are installed: the first click installs
+    registerShippedApps(wm, async (app, launch) => {
+      await appsCore();
+      return (await import('../apps/install')).openShipped(app.id, launch);
+    });
+  }).catch((e) => console.warn('[apps] dock entries', e)));
   // pkg, npm -g and the install scripts write executables into TOOL_PATH (debounced: an install writes many files)
   let toolTimer: ReturnType<typeof setTimeout> | null = null;
   deps.fs.onChange((_ev, path) => {

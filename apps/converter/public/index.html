@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Converter</title>
+<title>Convert Old Files</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main>
   <header>
     <h1>Convert old files</h1>
-    <p class="sub">Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files, converted on this computer. Nothing is uploaded.</p>
+    <p class="sub">Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files become files that today's programs open.</p>
+    <p class="sub" id="private"><b>Your files stay on this computer.</b> The conversion runs in this browser tab. No file is uploaded.</p>
   </header>
 
   <section id="drop" tabindex="0" aria-label="Drop files or a folder here">
@@ -27,7 +28,8 @@
 
   <section id="setup" hidden>
     <h2>Getting the converters ready</h2>
-    <p id="setup-msg">The first time, the converter programs are installed into this tab (about 20 seconds). After that they start at once.</p>
+    <p id="setup-msg">The converter programs are being downloaded. This happens once.</p>
+    <p class="sub">The download brings programs to this computer. Your files are not sent anywhere.</p>
     <progress id="setup-bar"></progress>
     <details><summary>Details</summary><pre id="setup-log"></pre></details>
   </section>

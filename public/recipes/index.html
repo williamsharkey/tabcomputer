@@ -58,7 +58,11 @@
 <script>
   // Cards from /recipes/index.json (scripts/recipes/gen-index.mjs). Text only: nothing from the list is parsed as HTML.
   const el = (tag, text, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
-  fetch('/recipes/index.json', { cache: 'no-cache' }).then((r) => r.json()).then(({ recipes }) => {
+  // Recipes for work nobody should trust open in a guest (docs/research/GUEST_PROFILE.md), where this server has guests:
+  // a tabcomputer on another origin, without the main profile's files and sign-ins. Elsewhere the link is the plain one.
+  const IN_A_GUEST = ['untrusted-repo'];
+  const guests = fetch('/guest/config.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((c) => !!(c && typeof c.origin === 'string')).catch(() => false);
+  Promise.all([fetch('/recipes/index.json', { cache: 'no-cache' }).then((r) => r.json()), guests]).then(([{ recipes }, hasGuests]) => {
     const grid = document.getElementById('grid');
     for (const r of recipes) {
       if (!/^[a-z0-9][a-z0-9-]*$/.test(r.name)) continue;
@@ -69,9 +73,12 @@
       card.append(el('div', '', 'grow'));
       if (r.args) card.append(el('p', `Link arguments: ${r.args}`, 'meta'));
       if (r.needs) card.append(el('p', `Uses: ${r.needs}`, 'meta'));
-      card.append(el('p', `/?run=${r.name}`, 'meta'));
+      const guest = hasGuests && IN_A_GUEST.includes(r.name);
+      const link = `/?run=${r.name}${guest ? '&guest' : ''}`;
+      if (guest) card.append(el('p', 'Opens in a guest: a separate tabcomputer that cannot read your files or sign-ins.', 'meta'));
+      card.append(el('p', link, 'meta'));
       const run = el('a', 'Run', 'run');
-      run.href = `/?run=${r.name}`;
+      run.href = link;
       card.append(run);
       grid.append(card);
     }

@@ -17,6 +17,7 @@
     "python": {
       "title": "Python 3",
       "description": "python3, pip, venv, dev headers, numpy, requests, yaml, tkinter (turtle draws in an X11 window)",
+      "note": "python3 becomes Debian's Python, which runs in the x86 emulator: several times slower than the built-in python3. Install this set when you need tkinter, turtle, numpy or pip's compiled packages.",
       "packages": [
         "python3",
         "python3-pip",

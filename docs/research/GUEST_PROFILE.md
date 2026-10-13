@@ -107,6 +107,10 @@ What is still shared, and what a guest could do with it:
   today is a bug: the build's chunks load from `./assets/` (vite `base: './'`),
   so the app does not start at a two-segment path (`/s/assets/…` is a 404, on
   tabcomputer.com too). Fixing that bug opens the hole.
+  (Both were fixed together later, #116: the server gives the shell a base
+  element at those paths, and `src/inbound-link.ts` asks first wherever the
+  link did not land in a guest made for it. docs/RUN_LINKS.md "Seed and
+  repository links".)
   The rule the design needs: **no URL makes the main profile import or run
   code without a click in the main profile.** With guests on, such links open
   in a guest.
@@ -184,8 +188,8 @@ kept in a query parameter or in storage would be the guest's to edit.
   the gallery's `claude-sandbox` and `untrusted-repo` links carry `&guest`.
 - `/s/<id>` and `/<user>/<repo>` on the main origin open in a guest when the
   server has guests (a seed in a kept guest named after it, a repository in a
-  thrown-away one). `bootGuest` does this; it cannot be seen working until
-  the app starts at those paths again (above).
+  thrown-away one). `bootGuest` does this. A guest kept under another name
+  is asked first, like a main profile (`linkNeedsConsent`).
 
 **No network** can truthfully mean this, and no more:
 - Linux and WASM programs have no route out: the page gives the kernel no
@@ -266,6 +270,11 @@ the mode (`/guest/config.json`), so it says less when less is true:
 
 ## Turning it on
 
+State on 2026-10-12: step 1 is done (Build 1003, docs/RELEASES.md). `profiles/tabcomputer/server.env` sets `TABCOMPUTER_GUESTS=1`, and `https://guest--<name>--t.tabcomputer.com/guest/config.json` answers `"enforced": true`. `server.mjs` itself still defaults to no guests away from localhost: a server without that line in its environment has none. Step 3 (the browser check against the site's own hostnames) is not recorded as run in docs/RELEASES.md or on #113.
+
+What stands between this and guests as the default for untrusted work: the owner decisions below (the domain, the relay policy, which links go to a guest by themselves), and the list under "Still open after the slice". Shipped since the slice: `/s/<id>` and `/<user>/<repo>` go to a guest by themselves (`bootGuest`), the install prompt for an app offers "Open in a guest", and the gallery's `untrusted-repo` card opens in one.
+
+
 1. Decide the guest domain (below). For subdomains nothing is needed outside
    the repository: add `TABCOMPUTER_GUESTS=1` to
    `profiles/tabcomputer/server.env` and release.
@@ -286,8 +295,8 @@ the mode (`/guest/config.json`), so it says less when less is true:
 - Device-code phishing by a guest with network.
 - The Claude credential an agent needs lives in the guest.
 - `/oauth/callback` on the main origin takes parameters from any opener.
-- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` would
-  import and run in the main profile once the app starts at those paths.
+- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` land
+  in the main profile. They ask first there (#116, `src/inbound-link.ts`).
 - Relay use by a guest counts against the user's IP.
 
 ## Owner decisions

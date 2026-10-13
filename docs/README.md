@@ -14,7 +14,9 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
-| [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links |
+| [CLASSROOM.md](CLASSROOM.md) | The classroom workspace: lab links (`?run=lab:owner/repo`), `.tabcomputer/lab.json`, Run / Test / Submit in the Code app, "Not saved to GitHub yet", sign-out for a shared computer |
+| [SCHOOL_IT.md](SCHOOL_IT.md) | For a school's IT: what the tab connects to, the hosts to allow, that nothing is installed, private network mode, shared computers |
+| [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links, the apps the site ships and their dock entries, `app share` |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
 | [RELEASES.md](RELEASES.md) | Each build shipped to tabcomputer.com: its commit, date and what changed |
 
@@ -55,5 +57,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and the app layer it proposed, built since as [APPS.md](APPS.md) and re-measured (2026-10-12).
 - [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md): snapshots of started GUI apps (a process's image, its descriptors and its X client restored in a later page load): the design, what is built behind a setting, measurements, open problems (2026-10-12).
 - [research/JAVA_SPEED.md](research/JAVA_SPEED.md): Java: where `javac`'s minute went, why JVM flags crashed (#122), the routes measured (JVM options, a warm compiler, ECJ, the Zero VM), what shipped, and the WebAssembly routes assessed (2026-10-13).
+- [research/PYTHON_NATIVE_WHEELS.md](research/PYTHON_NATIVE_WHEELS.md): compiled Python packages on the built-in Python (#125): why it can't load extensions, what `pip` installs from sdists instead, why Pyodide's wheels don't fit, and the plan for numpy (not built; 2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

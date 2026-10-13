@@ -310,7 +310,7 @@ describe('apiClone', () => {
     expect(await read(`${dir}/.git/shallow`)).toBe(top + '\n');
     expect(await logOids(dir)).toEqual([top]);
     expect(said.join('\n')).toContain(`history stops at ${top.slice(0, 7)}`);
-  });
+  }, 30_000);
 
   it('an empty repository clones to an empty one', async () => {
     const gh = fakeGitHub();

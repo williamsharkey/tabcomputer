@@ -80,6 +80,16 @@ async function syncToNative(py: any, ctx: CommandContext, dir: string) {
 }
 
 /**
+ * Fetch the packages of the Pyodide distribution that `code` imports (numpy,
+ * pandas, matplotlib, ...: compiled for Pyodide, which the WASI python can't
+ * load), so `pyodide -c 'import numpy'` and scripts run without a separate
+ * install step. Nothing is fetched for modules already there.
+ */
+async function loadImports(py: any, code: string): Promise<void> {
+  try { await py.loadPackagesFromImports?.(code, { messageCallback: () => {}, errorCallback: () => {} }); } catch { /* the import reports it */ }
+}
+
+/**
  * Run `code` after `setup` with sys.stdout/stderr captured, appending what it
  * printed to the command's output (also when it raises) and restoring them.
  * Exit status 1 when it raises (the traceback goes to stderr), else 0:
@@ -135,6 +145,7 @@ export const pythonCmd: Command = {
     const cIdx = args.indexOf('-c');
     if (cIdx !== -1 && args[cIdx + 1]) {
       const code = args[cIdx + 1];
+      await loadImports(py, code);
       return runCaptured(py, ctx, `import sys; sys.argv = ['-c', *${JSON.stringify(args.slice(cIdx + 2))}]`, code);
     }
 
@@ -152,6 +163,7 @@ export const pythonCmd: Command = {
 
       // Sync CWD to Pyodide FS
       await syncToNative(py, ctx, ctx.cwd);
+      await loadImports(py, content);
 
       return runCaptured(py, ctx, `import sys, os
 sys.argv = ${JSON.stringify([scriptArg, ...args.slice(args.indexOf(scriptArg) + 1)])}

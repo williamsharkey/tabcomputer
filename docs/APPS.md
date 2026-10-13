@@ -22,8 +22,8 @@ Code: `src/apps/` (the core: manifest, registry, access checks, the host side of
 {
   "manifest": 1,
   "id": "converter",
-  "name": "Converter",
-  "description": "Convert old office files on this computer.",
+  "name": "Convert Old Files",
+  "description": "Drop old office files and get modern files back. The files stay on this computer.",
   "version": "0.2.0",
   "icon": "public/icon.svg",
   "window": { "width": 620, "height": 640, "minWidth": 320, "minHeight": 320, "resizable": true, "multiple": false },
@@ -82,6 +82,7 @@ app new NAME --from SCRIPT
 app dev [DIR] [--no-open]
 app install [DIR | ID | gh:OWNER/REPO[/PATH] | URL] [--guest[=NAME]] [--open]
 app open ID [--become] [--new]
+app share ID [--print]
 app list [-l]
 app stop ID
 app remove ID [--data]
@@ -95,6 +96,7 @@ Exit status 0 when it did what was asked, 1 when it could not (the reason on std
 - **`app dev [DIR]`** is the developer loop: the app opens in a window as an installed app would (same frame, same origin rules, same access checks), with its backend started. The Terminal shows the backend's output and what `tab.js` refused. Saving a file under the page's folder reloads the page; saving anything else restarts the backend and then reloads; saving `app.json` reads the manifest again (an invalid one is reported and the last valid one stays). It ends with Ctrl-C or when the window closes. `--no-open` runs the backend and the watcher without a window.
 - **`app install`** copies the app to `~/Apps/<id>/` (replacing an earlier install of that id; `~/.local/share/apps/<id>/`, its data, is kept), lists it in `/var/lib/tabcomputer/apps.json` and puts it in the dock. Then its `toolchains` are installed, with the desktop's launch feedback: the dock entry is marked as starting and a placeholder window shows the installer's output. A folder installs at once. An app from GitHub or an archive is shown first ("Installing" below).
 - **`app open ID`** opens its window (or focuses the one that is open; `--new` for another when the manifest allows several). `--become` makes the tab the app.
+- **`app share ID`** makes a link to it and shows the share screen ("Sharing" below). `--print` prints only the link.
 - **`app stop ID`** closes its windows and stops its backend. **`app remove ID`** uninstalls it and keeps its data unless `--data`.
 - **`app check [DIR]`** validates `app.json` and the files it names, and prints what the app asks for in the words the install prompt uses.
 
@@ -114,7 +116,7 @@ Each is a small working app in `apps/templates/<name>/` and runs as created: non
 Code: `src/apps/runtime.ts` (`AppInstance`), `src/apps/supervisor.ts`, `src/apps/window.ts`.
 
 - **One instance per app** while it is open. It owns the backend, answers the page's requests and serves its `tab.js` channel.
-- **Before the first start** the manifest's `toolchains` are installed (once: `~/.local/share/apps/<id>/.toolchains` records it) and its `files` are checked. A failure leaves the launch's placeholder showing the reason, with Retry.
+- **Before the first start** the manifest's `toolchains` are installed (once: `~/.local/share/apps/<id>/.toolchains` records it) and its `files` are checked. A failure leaves the launch's placeholder showing the reason, with Retry. While it installs, the placeholder shows a sentence for the person (`src/apps/progress.ts`: "NAME needs some programs. They are being downloaded. This happens once.", then one per step the installer reports); the installer's own lines are under "Show details". No fraction and no time left are shown: the installer measures neither. The installer is the `toolchain` builtin called with stream writers, so its lines arrive as it writes them.
 - **The backend belongs to the app, not to a terminal.** It starts when the app opens (with `backend.lazy`, on the page's first request that is not a file of the page), in the app's folder, with `PORT`, `APP_ID`, `APP_DIR` and `APP_DATA` set. "Running" means the port is open and, with `backend.health`, that the path answered 2xx.
 - **It is restarted when it dies.** A start that never becomes ready, or a backend that dies within 10 s of becoming ready, is a failure: the next start waits 0.5 s, then 1, 2, 4, 8 s. After 5 failures in a row the supervisor stops trying; the window covers the page with the error and the backend's last output, and Retry starts over. A backend that ran for 10 s is started again at once when it dies. While it is down the window says "Restarting NAME…".
 - **It stops when the last window closes**, unless `backend.keepAlive`; then `app stop ID` (or closing the tab) stops it.
@@ -147,7 +149,7 @@ It defines `tab`. Every call is a message to the tab over one `MessagePort`; the
 | `tab.files.import(source, opts)` | Dropped or picked files into the tab's filesystem. `source`: a `DataTransfer` (folders are walked; call it inside the drop event), a `FileList`, or an array of `File`s or `{ file, rel }`. `opts.dir`: a folder the app may write (default a new folder under its data folder). `opts.onProgress({ done, total, file })` as each file lands. Resolves to `{ dir, paths, files: [{ path, rel, size, ms }] }`. |
 | `tab.files.pick({ multiple, directory, accept })` | The browser's file picker, then `import`. |
 | `tab.download(path \| paths, { zip, name })` | Saves to the person's real disk. Several paths, a folder, or `zip: true` give a zip (a folder's contents at its top). Resolves to `{ name, size, zip }`. |
-| `tab.toolchain.ensure(sets?, onProgress)` | Installs the manifest's toolchain sets that are missing; `onProgress({ set, line })`. `tab.toolchain.status(sets?)` says which are installed. |
+| `tab.toolchain.ensure(sets?, onProgress)` | Installs the manifest's toolchain sets that are missing; `onProgress({ set, line, text })`: `line` is the installer's output, `text` the sentence for a person. `tab.toolchain.status(sets?)` says which are installed. |
 | `tab.window.setTitle(text)`, `.resize(width, height)`, `.close()` | The app's own window. |
 | `tab.reveal(path)` | Shows a folder or file in the Files app. |
 
@@ -199,12 +201,37 @@ So: an app that is only a page, with no commands or with commands that are safe 
 | `app install ID`, `?app=ID` | An app this site ships: `/apps/<id>/`, listed in `/apps/index.json` | No, when it is curated: the list is on the page's own origin and every file fetched has the sha256 the list gives (redirects refused; an HTML answer standing in for a missing file refused). |
 | `app install gh:OWNER/REPO[/PATH]`, `?app=gh:…` | A folder of a public GitHub repository | **Yes.** |
 | `app install https://…/x.zip` (`.tar.gz`, `.tgz`) | An archive with `app.json` at its top or in its one folder | **Yes.** Not as a link: an address never names an archive. |
+| `?app=link#app=…` | The app's own files, carried by the address (`app share`, "Sharing" below) | **Yes.** |
 
 The prompt shows the app's name, where it comes from (for GitHub, the commit), what it will run (`backend.start`), what it installs (`toolchains`), which commands and folders its page may use, whether it may reach other sites, and the manifest itself. It says which of that is enforced. Its rules are the run link prompt's: everything from the app goes in as text, Cancel has the focus, closing the window is Cancel, Install is off for the first moment, and a click made by script does nothing.
 
 What is shown is what is installed. A repository is read at one commit (its default branch's head when asked): the manifest in the prompt and every file come from that commit, and the manifest is written from the bytes that were shown, not fetched again. Links (mode 120000), submodules and `.git*` are left out; at most 400 files and 32 MB. An archive is downloaded and unpacked in a scratch folder first, and installed from those files. An app whose id belongs to a built-in app is refused.
 
-The apps this site ships are the folders of `apps/` with an `app.json` (not `templates/`): a build copies each to `dist/apps/<id>/` without what only measures or documents it (`measure/`, `README.md`) and writes `dist/apps/index.json` (`vite-plugin-apps.ts`, `scripts/apps/site-apps.mjs`). `apps/converter` is the first.
+## Shipped apps
+
+The apps this site ships are the folders of `apps/` with an `app.json` (not `templates/`): a build copies each to `dist/apps/<id>/` without what only measures or documents it (`measure/`, `README.md`) and writes `dist/apps/index.json` (`vite-plugin-apps.ts`, `scripts/apps/site-apps.mjs`). `apps/converter` ("Convert Old Files", #114) is the first.
+
+Each has an entry in the dock of every profile before it is installed (`src/apps/shipped.ts`, bundled from the manifests and `public/icon.svg`; its glyph for the icon sets other than Classic is in `GLYPHS` there). The first click installs the site's copy (curated, so without a prompt), installs what it needs with the launch placeholder showing each step in a sentence, and opens its window. After that the entry is the installed app's. `app remove ID` takes the entry out, and it stays out across reloads (localStorage `tabcomputer-apps-hidden`) until the app is installed again (`app install ID`, or its link). So a person reaches the converter three ways without a terminal: the dock entry, `https://tabcomputer.com/?app=converter` (a window on the desktop) and `https://tabcomputer.com/?app=converter&become` (the tab is the app).
+
+## Sharing
+
+`app share ID` makes a link to an installed app (`src/apps/share.ts`) and shows the share screen (`src/apps/share-ui.ts`; in a terminal without a desktop, the same sentences are printed):
+
+> Each person who opens this link gets their own copy of NAME. Each copy keeps its own data on that person's computer. Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.
+
+A link shares the app, never its data: `~/.local/share/apps/<id>/` is not read.
+
+| The app was installed from | The link | Asked first? |
+| --- | --- | --- |
+| this site (`site`) | `?app=<id>` | No: it is curated. |
+| GitHub (`gh:…@commit`) | `?app=gh:owner/repo[/path]`: each person gets the repository's head when they open it | Yes. |
+| a folder, an archive, or a shared link | `?app=link#app=<payload>`: the files of `~/Apps/<id>` themselves, as gzipped JSON in base64url (`{ v: 1, t: { path: text }, b: { path: base64 } }`) | Yes. |
+
+The last form needs no server. A browser never sends the part of an address after `#`, so the files are not uploaded and nothing stores them; `tests/browser/app-toolkit.mjs` checks that no request carries them. The address is cleaned of them before anything else happens (`cleanRunUrl`). The payload is at most 48,000 characters (`SHARE_PAYLOAD_MAX`: browsers take far more, mail and chat programs do not) and unpacks to at most 4 MB, 400 files, plain relative paths only. A larger app is refused with a sentence that says to put it in a public GitHub repository and share `?app=gh:OWNER/REPO`. A change made to the app later does not reach copies already installed from the link.
+
+Opening one is an app link like any other (below): the address is cleaned first, a framed page ignores it, `?safe=1` skips it. It is never curated, so the install prompt is shown, in a main profile and in a guest alike, with "Open in a guest" where the server has guests (the whole link goes there). Its `source` is `link:<hash of the payload>`: the same link opened again opens the copy it installed without asking; a link with other files asks again. `app install link` is refused: the files come only from the address.
+
+Not built: a share button in the app's window or the dock (sharing is the one command), a hosted store for apps too large for a link, and updates to copies already installed.
 
 ## Links
 
@@ -213,11 +240,12 @@ https://tabcomputer.com/?app=converter
 https://tabcomputer.com/?app=converter&become
 https://tabcomputer.com/?app=gh:someone/tool
 https://tabcomputer.com/?app=gh:someone/tools/apps/notes&guest
+https://tabcomputer.com/?app=link#app=H4sIA…          (what app share makes)
 ```
 
 `?app=` is handled by the run links' machinery (docs/RUN_LINKS.md, `src/run-url.ts`), with an app in place of a script: the address is cleaned before anything is fetched (`app`, `become` and every parameter that is not the page's own), a framed page takes no app link, `?safe=1` skips it, and `&guest` (`&guest=NAME`, `&nonet`) moves the whole link to a guest first. A refused link prints `app link: <why>` in the terminal and installs nothing.
 
-A curated app installs and opens. A `gh:` app shows the prompt; once installed, the same link opens it without asking for as long as the repository's head is the commit that was installed, and asks again when it has moved. `&become` makes the tab the app.
+A curated app installs and opens. An app carried by its link (`?app=link`) shows the prompt ("Sharing" above). A `gh:` app shows the prompt; once installed, the same link opens it without asking for as long as the repository's head is the commit that was installed, and asks again when it has moved. `&become` makes the tab the app.
 
 ## The shared core
 
@@ -227,6 +255,7 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 | --- | --- |
 | `src/apps/manifest.ts` | `parseManifest`, `validateManifest` (every problem, by key), `manifestText`, `describeManifest` (the prompt's sentences). A manifest editor validates as it is typed with these. |
 | `src/apps/templates.ts` | `TEMPLATES`, `scaffold(fs, dir, id, { template, name, script })`. |
+| `src/apps/share.ts` | `shareApp(fs, app, origin)` → the link and what kind it is; `shareStatement` (the share screen's sentences); `packApp` / `unpackApp`. A Share button would call these. |
 | `src/apps/registry.ts` | `loadManifest`, `installFromDir`, `installFromFiles`, `listInstalled`, `removeInstalled`. |
 | `src/apps/runtime.ts` | `instanceFor({ manifest, dir, source, dev })` → `AppInstance`: `prepare`, `startBackend`, `fetch`, `supervisor` (state, `restart`, `tail`), `on('state' \| 'log' \| 'views' \| 'reload')`, `setManifest`, `reload`, `attach(view)` / `detach(view)`. |
 | `src/apps/frame.ts` (DOM) | `createAppFrame(instance)` → `{ element, confined, reload, dispose }`: the app's page as an element for any container. A pane in the Code app mounts this and attaches a view of kind `'pane'`. |
@@ -241,5 +270,7 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 - `app-command.test.ts`: the command, the templates (each runs as created), installing, what a page is served, the backend's life with its views.
 - `app-links.test.ts`: `?app=` parsing, curated and GitHub apps and the attacks on each, the trust decision, the site's app list.
 - `app-origins.test.ts`: what an app host serves and who may frame it.
+- `app-share.test.ts`: a shared link (round trip, refused payloads and names, the size limits, that it always asks, Cancel, the same link again, a frame), `app share`, the sentences.
+- `app-shipped.test.ts`: the shipped apps' dock entries and their removal, the first start's sentences.
 - `run-links-gist.test.ts`: `?run=gist:`.
-- `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; 360 px. `tests/browser/app-converter.mjs`: the converter.
+- `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; `app share`, its screen, the link opened in another profile and in a guest; 360 px. `tests/browser/app-converter.mjs`: the converter, and its dock entry from a fresh profile: the first click, the first-run sentences, the window, removal.

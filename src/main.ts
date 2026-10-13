@@ -115,7 +115,7 @@ import { installNodeWorkerBoot } from './node-worker/boot';
 import { bootStarted, bootFinished, bootStep, safeMode } from './safe-mode';
 import { safeModeCmd } from './commands/safe-mode';
 import * as agentResume from './agent-resume';
-import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, parseGuestOrigin, RESERVED_PATHS } from './guest';
+import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, inboundCodeLink, parseGuestOrigin } from './guest';
 import { guestCmd } from './commands/guest';
 
 /**
@@ -139,6 +139,10 @@ async function main() {
   } catch { /* not a page */ }
   // A guest (src/guest.ts): this load may be on its way to one, or be one's discard.
   // Before anything opens storage, and before any link's seed, repository or recipe is looked at
+  // The shared-computer sign-out (src/sign-out.ts): this document deletes the profile and opens nothing
+  let signingOut = false;
+  try { signingOut = sessionStorage.getItem('tabcomputer-signout') === '1'; } catch { /* no storage */ }
+  if (signingOut && await (await import('./sign-out')).bootSignOut()) return;
   const guest = await bootGuest();
   if (guest === 'stop') return;
   logIsolationStatus();
@@ -171,6 +175,8 @@ async function main() {
   setActiveFileSystem(fs);
   // The banner (and Save) if the browser deletes the filesystem's IndexedDB under the page (tabcomputer#71)
   void import('./storage-lost').then(m => m.watchStorageLost(fs)).catch(e => console.warn('[fs]', e));
+  // A short list of what is installed, kept in localStorage: after such a loss the page offers it again
+  if (!guest?.ephemeral) void import('./install-inventory').then(m => m.trackInventory(fs)).catch(e => console.warn('[fs]', e));
   // Persistent storage (no eviction under storage pressure) once the machine
   // holds a lot: Firefox asks the user, so not for a page that stores little
   // (not for a thrown-away guest)
@@ -416,6 +422,10 @@ async function main() {
     () => import('./commands/finder').then(m => m.finderCmd)), 'src/commands/finder.ts');
   registerCommand(commands, lazyCommand('code', 'Rich code editor (CodeMirror)',
     () => import('./commands/code-editor').then(m => m.codeEditorCmd)), 'src/commands/code-editor.ts');
+  registerCommand(commands, lazyCommand('lab', 'Class repositories: open one, run it, test it, submit it',
+    () => import('./commands/lab').then(m => m.labCmd)), 'src/commands/lab.ts');
+  registerCommand(commands, lazyCommand('signout', 'Sign out of a shared computer: remove the sign-ins and every file from this browser',
+    () => import('./commands/signout').then(m => m.signoutCmd)), 'src/commands/signout.ts');
   registerCommand(commands, lazyCommand('monaco', 'VS Code editor (Monaco)',
     () => import('./commands/monaco-editor').then(m => m.monacoEditorCmd)), 'src/commands/monaco-editor.ts');
   registerCommand(commands, lazyCommand('mdview', 'Render markdown as formatted HTML',
@@ -746,8 +756,12 @@ async function main() {
   // Cleanup iframe servers on page unload (hot reload)
   window.addEventListener('beforeunload', (e) => {
     iframeServer.cleanup();
+    // The shared-computer sign-out (src/sign-out.ts) leaves on purpose: everything is about to be deleted
+    if ((globalThis as { __tabcomputerLeaving?: boolean }).__tabcomputerLeaving) return;
     // Leaving mid-write (e.g. during npm install) loses the unsaved files
-    if (fs.pendingWrites > 0) {
+    // Or with work in the Code app that GitHub does not have (src/lab.ts): on a shared computer the push is the only copy
+    const unsaved = (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork?.() === true;
+    if (fs.pendingWrites > 0 || unsaved) {
       e.preventDefault();
       e.returnValue = '';
     }
@@ -850,6 +864,18 @@ async function main() {
   // The prompt is up: the next load of this tab is a normal one
   bootFinished();
 
+  // After the browser deleted the filesystem (tabcomputer#71): what it had installed, and a button to install it again
+  if (!guest?.ephemeral && localStorage.getItem('tabcomputer-installed-lost')) {
+    void import('./storage-lost').then(m => m.offerReinstall(fs, {
+      skipPkg: profile.preinstall,
+      run: (commands) => {
+        const command = commands.join(' ; ');
+        if (desktop) { desktop.ctx.openTerminal({ cwd: shell.env['HOME'] || '/home/user', command, title: 'Reinstall' }); return; }
+        terminal.injectInput(command + '\r');
+      },
+    })).catch(e => console.warn('[fs]', e));
+  }
+
   // Check for become mode (app mode) — restore full-screen app if configured
   if (becomeConfig) {
     const pathname = location.pathname.replace(/\/$/, '');
@@ -900,77 +926,62 @@ async function main() {
     void startAppLink();
   }
 
-  // Check for shared seed URL: /s/:id
-  const seedMatch = safe ? null : location.pathname.match(/^\/s\/([a-z0-9]{4,16})$/);
-  if (seedMatch) {
-    const seedId = seedMatch[1];
-    terminal.term.writeln(`\r\nLoading shared seed ${seedId}...`);
-    try {
-      const res = await fetch(`/api/seed/${seedId}`);
-      if (res.ok) {
-        const compressed = new Uint8Array(await res.arrayBuffer());
-        const full = await pipeBytes(compressed, new DecompressionStream('gzip'));
-        const envelope = JSON.parse(new TextDecoder().decode(full));
-
-        // Where the server has guests, a /s/ link was sent to a guest of its own before
-        // this (bootGuest, src/guest.ts). On a server without them it lands here, in the
-        // profile itself: then a link must not replace the machine by itself. Its files
-        // (startup scripts among them) would run next to whatever the profile is signed in to.
-        const { importSeedState, parseSeedNdjson, sharedSeedQuestion } = await import('./seed-state');
-        if (!guest && !window.confirm(sharedSeedQuestion(seedId, envelope))) {
-          terminal.term.writeln('Not loaded. Nothing was changed.');
-          history.replaceState(null, '', '/');
-          throw Object.assign(new Error('declined'), { declined: true });
-        }
-
+  // A shared seed (/s/:id) or a repository (/:user/:repo) in the address (src/inbound-link.ts,
+  // tabcomputer#116). Where the server has guests the link was sent to a guest of its own
+  // before this (bootGuest); anywhere else it asks first, in the run links' window.
+  const inbound = safe ? null : inboundCodeLink(location.pathname);
+  if (inbound) {
+    const [{ handleInboundLink }, { showRunPrompt }] = await Promise.all([import('./inbound-link'), import('./run-prompt')]);
+    const say = (line: string) => terminal.term.writeln(`\r\n${line}`);
+    let framed = true;
+    try { framed = window.top !== window; } catch { /* cross-origin parent */ }
+    const outcome = handleInboundLink({
+      pathname: location.pathname, origin: location.origin, home: shell.env['HOME'] || '/home/user',
+      guest, framed, guestUnavailable: guestUnavailable(),
+      fetch: (url, init) => fetch(url, init),
+      gunzip: (bytes) => pipeBytes(bytes, new DecompressionStream('gzip')),
+      cleanUrl: () => { const u = new URL(location.href); u.pathname = '/'; history.replaceState(history.state, '', u.toString()); },
+      // The desktop appears once its saved windows are back (at most a few seconds)
+      ready: async () => {
+        for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
+      },
+      confirm: (info) => showRunPrompt(info, desktop?.wm ?? null),
+      seed: {
+        parse: async (ndjson) => (await import('./seed-state')).parseSeedNdjson(ndjson),
         // Hydrate the filesystem; this profile's own sign-ins stay (src/seed-state.ts)
-        const kept = await importSeedState(fs, await parseSeedNdjson(envelope.ndjson), envelope.storage);
-        if (kept.keptFiles.length || kept.skippedStorage.length) console.log(`[seed] kept this profile's sign-ins: ${[...kept.keptFiles, ...kept.skippedStorage].join(', ')}`);
-
-        terminal.term.writeln(`Loaded ${envelope.files} files. Reloading...`);
-        // Redirect to root so we don't re-import on reload
-        setTimeout(() => { location.href = '/'; }, 500);
-        return;
-      } else {
-        terminal.term.writeln(`Seed not found (${res.status})`);
-      }
-    } catch (e: any) {
-      if (!e?.declined) terminal.term.writeln(`Failed to load seed: ${e.message}`);
-    }
-  }
-
-  // Check for GitHub import URL: /:user/:repo
-  const ghMatch = safe ? null : location.pathname.match(/^\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/?$/);
-  if (ghMatch && !seedMatch) {
-    const [, user, repo] = ghMatch;
-    // Avoid collision with reserved paths
-    const reserved = RESERVED_PATHS;
-    if (!reserved.includes(user.toLowerCase())) {
-      const repoUrl = `https://github.com/${user}/${repo}`;
-      terminal.term.writeln(`\r\nCloning ${repoUrl}...`);
-      const cloneDir = `/home/user/${repo}`;
-      shell.execute(
-        `git clone ${repoUrl} ${cloneDir} && cd ${cloneDir}`,
-        (out: string) => terminal.term.write(out.replace(/\n/g, '\r\n')),
-        (err: string) => terminal.term.write(err.replace(/\n/g, '\r\n')),
-      ).then(async (code: number) => {
-        if (code === 0) {
-          shell.cwd = cloneDir;
-          terminal.term.writeln(`\r\nCloned to ${cloneDir}`);
+        load: async (nodes, storage) => {
+          const kept = await (await import('./seed-state')).importSeedState(fs, nodes as Parameters<typeof fs.importAll>[0], storage);
+          if (kept.keptFiles.length || kept.skippedStorage.length) console.log(`[seed] kept this profile's sign-ins: ${[...kept.keptFiles, ...kept.skippedStorage].join(', ')}`);
+          say(`Loaded ${nodes.length} files and directories. Reloading...`);
+        },
+      },
+      cloneAndRun: ({ user, repo, url, dir }) => {
+        say(`Cloning ${url}...`);
+        void shell.execute(
+          `git clone ${url} ${dir} && cd ${dir}`,
+          (out: string) => terminal.term.write(out.replace(/\n/g, '\r\n')),
+          (err: string) => terminal.term.write(err.replace(/\n/g, '\r\n')),
+        ).then(async (code: number) => {
+          if (code !== 0) return;
+          shell.cwd = dir;
+          say(`Cloned to ${dir}`);
           // Auto-detect and run the project
           try {
             const { detectAndRun } = await import('./github-player/index');
-            await detectAndRun({
-              fs, shell, terminal, dir: cloneDir, repoName: repo, user,
-              log: (msg) => terminal.term.writeln('\r\n' + msg),
-            });
+            await detectAndRun({ fs, shell, terminal, dir, repoName: repo, user, log: (msg) => say(msg) });
           } catch (err: any) {
-            terminal.term.writeln(`\r\n\x1b[33mAuto-run failed: ${err.message}\x1b[0m`);
+            say(`\x1b[33mAuto-run failed: ${err.message}\x1b[0m`);
           }
-        }
-        // Replace URL to root so refresh doesn't re-clone
-        history.replaceState({}, '', '/');
-      });
+        });
+      },
+      report: (message) => say(`\x1b[33mlink: ${message}\x1b[0m`),
+    }).then((o) => { if (o === 'cancelled') say('Cancelled. Nothing was changed.'); return o; });
+    // A seed replaces the machine: the rest of boot (preinstalls, the remote session) waits
+    // for the answer, and does not start under a machine that is about to be reloaded
+    if (inbound.kind === 'seed' && await outcome === 'loaded') {
+      // To the root, so a reload doesn't import again
+      setTimeout(() => { location.href = '/'; }, 500);
+      return;
     }
   }
 

@@ -145,7 +145,10 @@ ${bootSection(ctx, name)}
   coreutils, grep/sed/awk, \`rg\`, \`jq\`, \`git\`, \`gh\`, \`curl\`, \`vi\`, \`nano\`, \`tmux\`.
 - Home is \`/home/user\`. Files persist in this browser's storage for this site
   across reloads. They are not synced anywhere else: commit and push work you
-  want to keep. You run as uid 1000; \`sudo\` gives root inside ${name}.
+  want to keep. Unless that storage is persistent (\`doctor\` says;
+  \`doctor --persist\` asks the browser for it), the browser may delete all of
+  it when the disk runs low; after such a loss \`doctor\` lists the commands
+  that install again what was there. You run as uid 1000; \`sudo\` gives root inside ${name}.
 - x86-64 Linux programs run in the Blink emulator, compiled to WebAssembly:
   correct, but big programs take seconds to start. WASM programs run directly.
 - \`node\`, \`npm\` and \`npx\` are a Node.js-compatible runtime built into the page,
@@ -182,7 +185,10 @@ ${bootSection(ctx, name)}
   prebuilt one: \`sudo apt remove -y NAME && pkg install --reinstall NAME\`.
   \`tabcomputer-alternatives --list\` shows which programs are ${name}'s builtins
   and which are Debian's; \`--set NAME debian\` and \`--auto NAME\` switch one.
-- \`npm install\` works; \`pip install\` installs pure-Python wheels.
+- \`npm install\` works. \`pip install\` on the built-in Python installs pure-Python
+  packages, and ones whose compiled part is optional without it (Flask, PyYAML,
+  tornado). It can't load compiled extensions: numpy, pandas, check50 and Jupyter
+  need Debian's Python (\`toolchain install python\`, which has numpy).
 - \`python3\` is Pyodide until a \`pkg\` or Debian python3 is installed.
 - \`gui\` lists X11 desktop apps; \`gui NAME\` opens one in a window.
 

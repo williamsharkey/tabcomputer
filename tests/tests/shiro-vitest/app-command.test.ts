@@ -374,7 +374,7 @@ describe('app command', () => {
     expect(await fs.readFile(`${HOME}/Apps/remote/app.json`, 'utf8')).toBe(manifest);
     expect(await fs.exists(`${HOME}/Apps/remote/link`)).toBe(false);
     expect(await fs.exists(`${HOME}/Apps/remote/.github`)).toBe(false);
-    expect((await app('install gh:someone/missing')).output).toMatch(/github\.com\/someone\/missing does not exist, or it is private/);
+    expect((await app('install gh:someone/missing')).output).toMatch(/github\.com\/someone\/missing does not exist/); // (the stand-in knows no account 'someone': said at once, #147)
     expect((await app('install gh:../x')).output).toMatch(/a gh: app is gh:<owner>\/<repo>/);
     expect((await app('install http://example.com/app.zip')).output).toMatch(/an app is fetched over https/);
     expect((await app('install https://example.com/page')).output).toMatch(/must be a \.zip, \.tar\.gz or \.tgz archive/);

@@ -418,6 +418,8 @@ async function main() {
     () => import('./commands/finder').then(m => m.finderCmd)), 'src/commands/finder.ts');
   registerCommand(commands, lazyCommand('code', 'Rich code editor (CodeMirror)',
     () => import('./commands/code-editor').then(m => m.codeEditorCmd)), 'src/commands/code-editor.ts');
+  registerCommand(commands, lazyCommand('lab', 'Class repositories: open one, run it, test it, submit it',
+    () => import('./commands/lab').then(m => m.labCmd)), 'src/commands/lab.ts');
   registerCommand(commands, lazyCommand('monaco', 'VS Code editor (Monaco)',
     () => import('./commands/monaco-editor').then(m => m.monacoEditorCmd)), 'src/commands/monaco-editor.ts');
   registerCommand(commands, lazyCommand('mdview', 'Render markdown as formatted HTML',

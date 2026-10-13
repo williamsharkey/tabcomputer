@@ -7,6 +7,7 @@
  *   ?run=gh:<owner>/<repo>[/path]  a script in a GitHub repository (default .tabcomputer/run.sh)
  *   ?run=sh:<base64url>            a script carried in the link itself
  *   ?run=gist:<user>/<id>[/file]   a file of a gist (its first file unless one is named); gist:<id> looks the owner up
+ *   ?run=lab:<owner>/<repo>        a class repository: sign in if it is private, clone it, open the Code app (src/lab.ts)
  *
  * `?app=` (src/apps/links.ts, docs/APPS.md) is the same machinery for an app
  * instead of a script: the trust rule, the cleaned address, the framed-page
@@ -34,8 +35,8 @@ export const PAGE_PARAMS = new Set(['run', 'app', 'become', 'safe', 'ui', 'profi
 const LINK_PARAMS = new Set(['run', 'app', 'become']);
 
 const RECIPE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** `gh-…`, `sh-…` and `gist-…` are the directories of scripts that aren't curated */
-const RESERVED_NAME = /^(gh|sh|gist)(-|$)/;
+/** `gh-…`, `sh-…` and `gist-…` are the directories of scripts that aren't curated; `lab-…` names a lab link */
+const RESERVED_NAME = /^(gh|sh|gist|lab)(-|$)/;
 export const GH_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 export const GH_REPO = /^[A-Za-z0-9._-]{1,100}$/;
 export const GH_SEGMENT = /^[A-Za-z0-9._-]{1,100}$/;
@@ -56,7 +57,9 @@ export type RunTarget =
   | { kind: 'gh'; name: string; owner: string; repo: string; path: string }
   /** `user` is '' for gist:<id> (looked up); `file` is '' for the gist's first file */
   | { kind: 'gist'; name: string; user: string; id: string; file: string }
-  | { kind: 'sh'; name: string; bytes: Uint8Array };
+  | { kind: 'sh'; name: string; bytes: Uint8Array }
+  /** A class repository (a lab link): no script is fetched; `lab open` clones it and opens the Code app */
+  | { kind: 'lab'; name: string; owner: string; repo: string };
 
 export interface ParsedRun {
   target: RunTarget;
@@ -68,7 +71,7 @@ export interface ParsedRun {
 export class RunLinkError extends Error {}
 
 /** Characters that make text read differently from what runs: controls (but \n and \t), bidi and invisible marks */
-const DECEPTIVE = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2028\u2029\u2060-\u2069\u061c\ufeff]/;
+export const DECEPTIVE = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2028\u2029\u2060-\u2069\u061c\ufeff]/;
 
 /** Text from a link or a script, safe to show on a terminal or in a message: one line, no control characters */
 export function plain(s: string, max = 120): string {
@@ -116,6 +119,14 @@ export function parseRunUrl(search: string): ParsedRun | null {
     const path = segs.join('/');
     const name = ['gh', slug(owner), slug(repo), ...(path === GH_DEFAULT_PATH ? [] : [slug(path)])].filter(Boolean).join('-').slice(0, 96);
     target = { kind: 'gh', name, owner, repo, path };
+  } else if (run.startsWith('lab:')) {
+    // lab:<owner>/<repo>, nothing after it: the repository itself is what opens
+    const parts = run.slice(4).split('/');
+    const [owner, repo] = parts;
+    if (parts.length !== 2 || !GH_OWNER.test(owner ?? '') || !GH_REPO.test(repo ?? '') || repo.startsWith('.') || repo.endsWith('.git')) {
+      throw new RunLinkError('a lab: link is lab:<owner>/<repo>');
+    }
+    target = { kind: 'lab', name: ['lab', slug(owner), slug(repo)].filter(Boolean).join('-').slice(0, 96), owner, repo };
   } else if (run.startsWith('gist:')) {
     // gist:<id>, gist:<user>/<id>, gist:<user>/<id>/<file>: a file is one name, never a path
     const parts = run.slice(5).split('/');
@@ -282,6 +293,7 @@ async function gistOwner(id: string, fetchFn: Fetch): Promise<string> {
  * the sha256 of the bytes /recipes/<name>.sh returned.
  */
 export async function loadScript(target: RunTarget, origin: string, fetchFn: Fetch): Promise<LoadedScript> {
+  if (target.kind === 'lab') throw new RunLinkError('a lab: link has no script');
   if (target.kind === 'recipe') {
     // (parseRunUrl made the name; checked again here because the URL is built from it)
     if (!RECIPE_NAME.test(target.name) || RESERVED_NAME.test(target.name)) throw new RunLinkError('no such recipe');
@@ -402,6 +414,8 @@ export interface RunLinkDeps {
     mkdir(path: string, opts?: { recursive?: boolean }): Promise<unknown>;
     writeFile(path: string, data: string): Promise<unknown>;
     exists(path: string): Promise<boolean>;
+    /** Lab links read a clone's .git/config to see whose repository a folder holds */
+    readFile?(path: string, encoding: 'utf8'): Promise<unknown>;
   };
   /** Drop the run link from the address (history.replaceState) */
   cleanUrl(): void;
@@ -417,6 +431,72 @@ export interface RunLinkDeps {
 
 export type RunOutcome = 'none' | 'ran' | 'on-open' | 'cancelled' | 'refused';
 
+/** The `owner/repo` on github.com that a clone's .git/config names as origin, lower-cased; '' when it has none */
+export function originRepo(gitConfig: string): string {
+  let inOrigin = false;
+  for (const line of gitConfig.split('\n')) {
+    const section = /^\s*\[(.*)\]\s*$/.exec(line);
+    if (section) { inOrigin = /^remote\s+"origin"$/.test(section[1].trim()); continue; }
+    const url = inOrigin ? /^\s*url\s*=\s*(\S+)\s*$/.exec(line)?.[1] : undefined;
+    const m = url ? /^(?:https?:\/\/(?:[^@/\s]+@)?(?:www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(url) : null;
+    if (m) return `${m[1]}/${m[2]}`.toLowerCase();
+  }
+  return '';
+}
+
+/**
+ * Where a lab link's repository lives: `~/src/<repo>`, or `~/src/<owner>/<repo>`
+ * when that name already holds something else (the Git app's clones go to the
+ * same places). `cloned` when the folder is a clone of that repository.
+ */
+export async function labFolder(fs: RunLinkDeps['fs'], home: string, owner: string, repo: string): Promise<{ dir: string; cloned: boolean }> {
+  const want = `${owner}/${repo}`.toLowerCase();
+  const candidates = [`${home}/src/${repo}`, `${home}/src/${owner}/${repo}`];
+  let free = '';
+  for (const dir of candidates) {
+    if (!(await fs.exists(dir).catch(() => false))) { free ||= dir; continue; }
+    const config = await fs.readFile?.(`${dir}/.git/config`, 'utf8').catch(() => '');
+    if (typeof config === 'string' && originRepo(config) === want) return { dir, cloned: true };
+  }
+  if (!free) throw new RunLinkError(`${candidates[0].replace(home, '~')} and ${candidates[1].replace(home, '~')} both hold something else: move one away, then open the link again`);
+  return { dir: free, cloned: false };
+}
+
+/** The prompt for a lab link that has to clone: what opening does, as lines (none of the repository's own text is in it) */
+export function labPrompt(owner: string, repo: string, dir: string, home: string): RunPromptInfo {
+  const short = dir.startsWith(home + '/') ? '~' + dir.slice(home.length) : dir;
+  return {
+    name: `lab-${owner}-${repo}`, from: `github.com/${owner}/${repo}`, env: {}, ignored: [], dir,
+    script: [
+      'gh auth login          only if the repository is private and this tab is not signed in to GitHub',
+      `git clone https://github.com/${owner}/${repo} ${short}`,
+      'toolchain install …    the sets .tabcomputer/lab.json names, if it names any',
+      `code ${short}`,
+    ].join('\n') + '\n',
+    wording: {
+      window: 'Open a class repository',
+      title: `Open ${owner}/${repo}?`,
+      warn: 'The repository is copied into this tab and opened in the Code app. Nothing in it runs until you press Run or Test, or run it in the Terminal. Those commands run as you: they can read the files here and use the accounts this tab is signed in to. Open it only if it is your class repository.',
+      where: `The folder is ${short}. Submit in the Code app pushes it back to GitHub.`,
+      box: 'What opening it does',
+      action: 'Open',
+    },
+  };
+}
+
+/** A lab link (`?run=lab:owner/repo`): ask before the first clone, then `lab open` in a new Terminal */
+async function handleLabLink(target: Extract<RunTarget, { kind: 'lab' }>, params: Record<string, string>, deps: RunLinkDeps): Promise<RunOutcome> {
+  const { owner, repo } = target;
+  const { dir, cloned } = await labFolder(deps.fs, deps.home, owner, repo);
+  // A folder that is already a clone of it: nothing is fetched and nothing runs, so there is nothing to ask
+  if (!cloned && !(await deps.confirm(labPrompt(owner, repo, dir, deps.home)))) return 'cancelled';
+  const ignored = Object.keys(params);
+  if (ignored.length) deps.report(`ignored ${ignored.map((k) => plain(k, 32)).join(', ')} (a lab link takes no arguments)`);
+  // owner and repo are [A-Za-z0-9._-] (parseRunUrl), so this line needs no quoting
+  deps.openTerminal({ cwd: deps.home, command: `lab open ${owner}/${repo}`, env: {}, title: `${owner}/${repo}` });
+  return cloned ? 'on-open' : 'ran';
+}
+
 /** Handle the page's run link, if it has one. Never throws. */
 export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
   let parsed: ParsedRun | null;
@@ -425,6 +505,7 @@ export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
     await deps.ready?.();
     if (!parsed) return 'none';
     if (deps.framed) throw new RunLinkError('run links are ignored inside a frame; open the link in its own tab');
+    if (parsed.target.kind === 'lab') return await handleLabLink(parsed.target, parsed.params, deps);
     const script = await loadScript(parsed.target, deps.origin, deps.fetch);
     const { env, ignored } = runEnv(parsed.params, script.header);
     const dir = `${deps.home}/run/${script.name}`;

@@ -255,6 +255,84 @@ Each is a small working app in `apps/templates/<name>/` and runs as created: non
 | `page` (`--page`) | `app.json`, `icon.svg`, `public/index.html`, `app.js`, `style.css` | A page of its own that does a file job with `tab.files.import`, `tab.run([…], { stdout })` and `tab.download(dir, { zip })`. |
 | `script` (`--from`) | The same, with `run.sh` | A Run button, the script's output. |
 
+## Making an app: the Studio and the Code app
+
+Two tools make an app without the `app` command, on the same modules it uses
+(the table under "The shared core"). [research/APP_AUTHORING.md](research/APP_AUTHORING.md)
+compares them on the three examples.
+
+### Studio
+
+The Studio is in the dock (on a phone, on Home). It makes an app that is one
+`app.json`, for a person who does not write code.
+
+- **The start.** Three kinds, each with one sentence: Files, Form, Table. One
+  tap picks one. Below them, the site's apps that are one `app.json` (from
+  `/apps/index.json`) to start from, and "Your apps": installed apps that are
+  one `app.json`, to edit. File ▸ New App comes back here.
+- **The form.** Name and "What it does" for every kind. Files: the command
+  (one line under it says what `{in}` and `{out}` are), the file types, the
+  result's name. Form: the command, and the text the program reads. Table: the
+  columns, each a name and a kind (Text, Number, Date, Choice, Checkbox), Add a
+  column, and ↑ and × on each. A word in braces in the command is a field of a
+  form, or an option of a files app: its card appears as it is typed (a label,
+  a kind, what it starts as, a choice per line as "what is shown: what goes in
+  the command"), and what was said about a word typed away comes back with it.
+  "Programs to install first" is filled in from the command's program while
+  the person has typed none there (`KNOWN_PACKAGES`). Under More: all the
+  files at once, a shell line, how a form shows its result, CSV or SQLite.
+  Every key the form leaves alone keeps its default and is not written.
+- **The app runs beside the form**, below it on a narrow screen, and follows
+  it a third of a second after the last key. It is the page every one-file app
+  gets, in an app frame, as the app `studio-preview` with its own data folder;
+  before the draft is an app the place says what it lacks. A table's try-out
+  rows go when its columns change.
+- **Problems** are `validateManifest`'s, in `app check`'s words, each beside
+  the part of the form its key names (`problemField`). A part shows its
+  problems once it has been typed in; Share, Install and Try it show them all.
+- **Try it** runs the app on a sample: a picture drawn in the page, a PDF, or a
+  text file of the first file type it can make (files); the values the fields
+  start with (a form that is not live); three rows (a CSV table). What the app
+  needs is installed first, as at its first start. The sample reaches the page
+  through `tab.app.samples`, read once (`takeSamples` in `host.ts`).
+- **Share** gives the link `app share` would give (`shareFiles`: the readable
+  `#name=…` form when it fits), the share screen's sentences, a QR code when
+  the link fits one, and Copy. For a person signed in to GitHub, Save to a
+  gist makes a secret gist of the `app.json` and the link becomes
+  `?app=gist:ID`.
+- **Install** installs it in `~/Apps/<id>` (source `studio`) and says where it
+  is: "Expenses is in the dock now." with Open. An app already installed under
+  that id is replaced only when it is the one being edited; otherwise the name
+  gets a sentence to change it.
+- **Editing an installed app**: "Edit in Studio" in an app's App menu, or "Your
+  apps". An app with a page of its own is code: the Studio says so and opens its
+  folder in Code.
+
+Code: `src/apps/studio.ts` (the form and its rules, no DOM), `src/desktop/apps/studio.ts` (the window).
+
+### App mode in the Code app
+
+`code DIR`, or `code FILE` in a folder, where the folder has an `app.json`:
+
+- The app runs in a pane beside the editor (below it on a narrow screen), as
+  `app dev` would run it in a window of its own: the same frame, origin and
+  access checks, a view of kind `'pane'`. A folder whose `app.json` is not
+  valid yet starts the app at the first save that makes it valid.
+- Saving reloads it: a change to the page reloads the page, one outside the
+  page's folder restarts the backend first, `app.json` is read again
+  (`dev-watch.ts`, which `app dev` uses too).
+- `app.json` is checked as it is typed, a quarter of a second after the last
+  key: each problem is underlined at the key it names, with the problem as the
+  underline's tooltip, and listed under the pane (`locateProblems` in
+  `manifest-locate.ts`). A key that is missing is underlined at the nearest key
+  above it; text that is not JSON, where it stops being JSON.
+- Under the pane: the problems, the backend's output, and what `tab.js`
+  refused.
+- The bar the classroom workspace added shows the app's name, Run (save, then
+  restart and reload) and Share (the share screen, for the folder's files).
+
+Code: `src/apps/app-pane.ts`, `src/apps/manifest-locate.ts`, `buildEditorHtml` in `src/commands/code-editor.ts`.
+
 ## Lifecycle
 
 Code: `src/apps/runtime.ts` (`AppInstance`), `src/apps/supervisor.ts`, `src/apps/window.ts`.
@@ -264,7 +342,7 @@ Code: `src/apps/runtime.ts` (`AppInstance`), `src/apps/supervisor.ts`, `src/apps
 - **The backend belongs to the app, not to a terminal.** It starts when the app opens (with `backend.lazy`, on the page's first request that is not a file of the page), in the app's folder, with `PORT`, `APP_ID`, `APP_DIR` and `APP_DATA` set. "Running" means the port is open and, with `backend.health`, that the path answered 2xx.
 - **It is restarted when it dies.** A start that never becomes ready, or a backend that dies within 10 s of becoming ready, is a failure: the next start waits 0.5 s, then 1, 2, 4, 8 s. After 5 failures in a row the supervisor stops trying; the window covers the page with the error and the backend's last output, and Retry starts over. A backend that ran for 10 s is started again at once when it dies. While it is down the window says "Restarting NAME…".
 - **It stops when the last window closes**, unless `backend.keepAlive`; then `app stop ID` (or closing the tab) stops it.
-- **The window is the app's own:** its name and icon in the title bar and the dock, no toolbar, no `localhost:PORT`, the manifest's size and minimum size. One per app unless `window.multiple`. A click on its dock entry while it starts goes to its placeholder; nothing starts twice. The title bar of an installed app has one button, Share ("Sharing" below), and the menu bar has an App menu with "Share as a Link…" and "Export with Its Data". Under the page a slim line shows only when the app's data is in no file ("Export and import" below).
+- **The window is the app's own:** its name and icon in the title bar and the dock, no toolbar, no `localhost:PORT`, the manifest's size and minimum size. One per app unless `window.multiple`. A click on its dock entry while it starts goes to its placeholder; nothing starts twice. The title bar of an installed app has one button, Share ("Sharing" below), and the menu bar has an App menu with "Share as a Link…", "Export with Its Data" and "Edit in Studio". Under the page a slim line shows only when the app's data is in no file ("Export and import" below).
 - **A reload brings it back.** The window's restore command is `app open ID` (`app dev DIR` for a dev window), so the desktop's session restore reopens it where it was, and opening starts the backend again. On a phone the desktop restores nothing else of a session, but the apps that were open do come back. Measured on a local build (tests/browser/app-toolkit.mjs): an app with a node backend is interactive 0.24 s after a reload.
 - **App mode** (`app open ID --become`, `?app=ID&become`, and an app link opened on a phone in the terminal UI): the tab is the app, at `/<id>`, with the app's name as the tab's title. A reload comes back to it (0.08 s for the converter, 0.24 s for an app with a node backend, local build). `unbecome` in a shell, or `?unbecome` on the address, returns to the desktop. It reuses `become`'s state (`BecomeConfig.app`, src/commands/become.ts); the page and the backend come back through the toolkit instead of `serve`. The bar above an app opened by a link on a phone in the terminal UI ("‹ tabcomputer" on the left, Share on the right) follows the appearance the page has, and so does what covers the page while it starts (`surface.ts`). The tab's title is the app's window title: a files run puts its count there.
 
@@ -443,7 +521,7 @@ Every name in the file is checked before anything is written (a plain relative p
 
 **The mark.** An app's window says nothing about backups until there is something to say. When the app has data that is in no file it shows a slim line under its page: "Not backed up", and after a first export "Not backed up since Tuesday" (the day of the last export; a time for today, a date beyond a week), with Export beside it. Export, or an import, takes the line away until the data changes again. The times of exports are in `/var/lib/tabcomputer/app-backups.json`, outside the data folders. An app that was only opened has no data and no line.
 
-Not built: "Save to my GitHub" (the export kept as a private repository or gist of the signed-in person).
+Not built: "Save to my GitHub" (the export kept as a private repository or gist of the signed-in person). The Studio's Save to a gist keeps the app, not its data.
 
 ## Links
 
@@ -505,7 +583,7 @@ On a phone (the desktop's phone layout, docs/DESKTOP.md "Phone layout") every ap
 
 ## The shared core
 
-The Code app's app mode and a Studio would sit on the same modules the `app` command and the desktop use; none of them has DOM in it except where noted.
+The Code app's app mode and the Studio sit on the same modules the `app` command and the desktop use; none of them has DOM in it except where noted.
 
 | Module | What a tool gets from it |
 | --- | --- |
@@ -520,6 +598,10 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 | `src/apps/frame.ts` (DOM) | `createAppFrame(instance)` → `{ element, confined, reload, dispose }`: the app's page as an element for any container. A pane in the Code app mounts this and attaches a view of kind `'pane'`. |
 | `src/apps/window.ts` (DOM) | `openAppWindow`, `becomeApp`, the dock entries. |
 | `src/apps/host.ts` | `AppHost`: the `tab.js` operations, for a tool that wants to drive or record them. |
+| `src/apps/studio.ts` | The Studio's form as data: `StudioState`, `draftToRaw` / `rawToDraft`, `checkDraft` and `problemField` (a problem's place in the form), `previewManifest`, Try it's samples. |
+| `src/apps/manifest-locate.ts` | `jsonPlaces` (every key path of a JSON text, with its spans), `locateProblems` (each problem of an `app.json` at its key). |
+| `src/apps/dev-watch.ts` | `watchAppDir`: reload on save, for `app dev` and the Code app's pane. |
+| `src/apps/app-pane.ts` (DOM) | `appPane`: an app in a pane of any container, with its log, Run and Share. |
 
 ## Tests
 
@@ -534,6 +616,7 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 - `app-export.test.ts`: what an export holds and that it reads back, `app export` and `app import`, what an import asks and in which order, the words of the replace question, refused files, the mark, a dropped file. `tests/browser/app-export.mjs`: the same from the window at 1280 px and on a 390 x 844 touch screen: the mark, Export, the file's contents, an import on a computer without the app, the file dropped over other data.
 - `app-shipped.test.ts`: the shipped apps' dock entries and their removal, the first start's sentences.
 - `run-links-gist.test.ts`: `?run=gist:`.
+- `app-studio.test.ts`: the Studio's form to `app.json` and back (the three examples made from nothing, every example read back), its problems by part of the form, its state, Try it's samples, a draft's link; and `app.json` checked as it is typed (each problem at its key, a missing key, text that is not JSON). `tests/browser/app-studio.mjs`: both tools at 1280 x 800 and on a 393 x 852 touch screen, light and dark: the three examples to a link in each (counted), started from the site's copy, the app beside the form, problems, Try it, Share with its QR code, Save to a gist against a stand-in GitHub, Install, editing an installed app; in the Code app the pane, a reload on save, a misspelt key underlined, Share in the bar.
 - `link-fragment.test.ts`: links written after the `#`: an app from `key=value` pairs (each kind, the short forms, every mistake by its key), what tells an app from commands, `#gist:`, the readable link `app share` gives a one-file app, and that the `/link` page writes what the app reads. `tests/browser/link-is-computer.mjs` opens each form from a fresh profile at 1280 px and on a 390 x 844 touch screen.
 - `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; `app share`, its screen, the link opened in another profile and in a guest; 360 px. `tests/browser/app-converter.mjs`: the converter, and its dock entry from a fresh profile: the first click, the first-run sentences, the window, removal.
 - `tests/browser/app-declarative.mjs` (`--theme light|dark`): each kind at 1280 px and on a 390 x 844 touch screen: `app new`, install, open, the job (three files with two of one name and one the program refuses; Run, streamed output, Stop, live; add, edit, sort, filter, a reload, another program's change, SQLite), downloads, the keyboard alone, the appearance; under `polish`: nothing white in the dark appearance, a files run's Stop, last line and title, a result named for what it is, Markdown and HTML drawn while the program writes (a table, images, links), the Share button and menu, the placeholder's sentences with the installer as a stand-in, app mode's bar, a large table, an app in a repository without `entry`; under `progress`: a real program (gawk, from the server's own `/pkg`) whose result is its standard output, its lines shown while it runs; an app link on the phone; the Welcome card; the key row; a gist; share link lengths; 360 px. It prints the times.

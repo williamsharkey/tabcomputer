@@ -78,8 +78,9 @@ From a fresh tab to the first working program: `c` 8.9 s (`gcc hi.c && ./a.out`)
 `tex` 7.0 s (`pdflatex`), `classic` 10.5 s, `node` 24.3 s. The same python3 set through apt took
 17.8 minutes, and the `c` set through apt didn't finish in an hour (docs/BENCHMARKS.md
 "Toolchain layers", from the unix/toolchains branch; [docs/DEBIAN.md](docs/DEBIAN.md) "Toolchain
-layers"). `java` works but is slow: `javac Hello.java && java Hello` took about 2 minutes in a
-test shell (Node, under load), and each JVM start prints a harmless CDS warning. Settings →
+layers"). `java`: the first `javac` of a page load takes about half a minute; after that `javac
+Hello.java && java Hello` takes about 1.4 s, because `javac` is sent to a JVM that stays up
+([docs/research/JAVA_SPEED.md](docs/research/JAVA_SPEED.md)). Settings →
 Toolchains lists the same sets with Install buttons. Until the server has built a set's layer,
 `toolchain install` falls back to apt and says so.
 

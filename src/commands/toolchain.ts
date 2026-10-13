@@ -142,6 +142,14 @@ export const toolchainCmd: Command = {
         for (const l of overlay.overlayReport(await overlay.applyDefaults(ctx.fs), verbose)) out(l + '\n');
         await overlay.refreshShadows(ctx.fs);
         if (flags.has('--check') && t.check) status ||= await check(ctx, t, out, err);
+        // javac is a Java program: its JVM takes half a minute or more to start, so it starts now
+        // and stays up (src/commands/java.ts). TABCOMPUTER_JAVAC=jvm: the plain javac only.
+        if (id === 'java' && ctx.env.TABCOMPUTER_JAVAC !== 'jvm') {
+          const java = await import('./java');
+          if (await java.javaInstalled(ctx.fs) && java.ensureJavad(ctx.shell).started) {
+            out('Java: the compiler is starting in the background (up to a minute). After that, javac takes seconds.\n');
+          }
+        }
       }
       await ctx.fs.sync();
       return status;

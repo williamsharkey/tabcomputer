@@ -446,6 +446,8 @@ async function main() {
     () => import('./commands/debian').then(m => m.debianCmd)), 'src/commands/debian.ts');
   registerCommand(commands, lazyCommand('toolchain', 'Install prebuilt compilers and runtimes (C, Python, Node, Java, LaTeX, ...) in seconds',
     () => import('./commands/toolchain').then(m => m.toolchainCmd)), 'src/commands/toolchain.ts');
+  registerCommand(commands, lazyCommand('javac', 'The Java compiler (toolchain install java), kept warm between compiles',
+    () => import('./commands/java').then(m => m.javacCmd), { keepOverPackage: () => true }), 'src/commands/java.ts');
   registerCommand(commands, lazyCommand('tabcomputer-alternatives', "Choose tabcomputer's or Debian's implementation of a program",
     () => import('./commands/debian').then(m => m.shiroAlternativesCmd)), 'src/commands/debian.ts');
   registerCommand(commands, lazyCommand('shiro-alternatives', 'Old name of tabcomputer-alternatives',

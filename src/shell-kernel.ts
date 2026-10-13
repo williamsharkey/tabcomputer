@@ -18,6 +18,7 @@ import type { OpenFile } from './kernel/fd';
 import * as A from './kernel/abi';
 import { TIMEOUT_EXPIRED_EVENT } from './kernel/signals';
 import { packageOfPath, packageShadows, packageKernelProgram } from './pkg-manager';
+import { jdkLauncher, jvmDefaultArgs } from './java-defaults';
 import { debconfEnv } from './debian/apt-guard';
 import { nodeKernelProgram } from './node-worker/boot';
 import { elfInterpreter, missingInterpreterMessage } from './elf-interp';
@@ -105,7 +106,10 @@ export async function resolveKernelProgram(
     const { x86Runner } = await import('./x86/kernel-runner');
     // argv[0] is the name as typed (a symlink's, not its target's: busybox applets,
     // Debian's redis-server -> redis-check-rdb); the runner loads the resolved `path`
-    return { argv: [name, ...args], run: await chooseElfRunner(path, shell.env, () => x86Runner(bytes, name)) };
+    // (a JDK launcher starts with the JVM options that suit the emulator: java-defaults.ts)
+    const tool = jdkLauncher(path);
+    const argv = (tool && jvmDefaultArgs(tool, [name, ...args], shell.env)) || [name, ...args];
+    return { argv, run: await chooseElfRunner(path, shell.env, () => x86Runner(bytes, name)) };
   }
   if (bytes[0] !== 0x23 /* # */) return null;
   const firstLine = dec.decode(bytes.subarray(0, Math.min(bytes.length, 256))).split('\n')[0];

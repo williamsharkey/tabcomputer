@@ -26,7 +26,7 @@ export const FLAG_IS_ARGUMENT = new Set([
   'alias', 'unalias', 'declare', 'typeset', 'export', 'readonly', 'local', 'let', 'set', 'unset', 'read', 'getopts',
   'trap', 'type', 'ulimit', 'umask', 'shopt',
   // launchers of a real program, which answers (or says why it can't start)
-  'claude', 'claude-window', 'sc',
+  'claude', 'claude-window', 'sc', 'javac',
 ]);
 
 /** Commands that ignore the flag and act (or never end): answered without running them */

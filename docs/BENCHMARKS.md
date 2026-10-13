@@ -273,7 +273,12 @@ Layer rows are medians of 2 samples; apt rows are 1 sample.
   legacy vsyscall `getcpu` page; Blink had no getcpu). With Blink patch 0067
   it runs: in the Node test shell, `java -version` took 15.6 s and `javac
   Hello.java && java Hello` 118 s (with the vitest suite running alongside).
-  Not yet measured in Chromium.
+  In Chromium (2026-10-13, unix/java-fast, Apple M3, load 3–7): `javac
+  Hello.java` 33 s and `java Hello` 1.7 s on Build 1008; with the JVM
+  options now set by default 23 s and 1.1 s; and with `javac` sent to a JVM
+  that stays up, 0.35 s for every compile after the first of a page load
+  (27–35 s). [research/JAVA_SPEED.md](research/JAVA_SPEED.md) has the
+  profile, the routes compared and the method.
 
 ## Hotspots (ranked by expected payoff)
 

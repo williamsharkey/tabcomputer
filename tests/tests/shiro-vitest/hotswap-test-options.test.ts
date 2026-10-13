@@ -53,3 +53,32 @@ it('runs', { skip: false }, () => {});
     expect(r.lines).toEqual(['skip off > never runs', 'skip skipped', 'todo later', 'pass known bad', 'pass runs']);
   });
 });
+
+describe('hotswap test: a stub a suite leaves on URL (#106)', () => {
+  it('URL.createObjectURL and revokeObjectURL are the page\'s again after the run, and the run says so', async () => {
+    const create = URL.createObjectURL, revoke = URL.revokeObjectURL;
+    const sum = await runTestBundle(API + `
+it('stubs and forgets', () => {
+  URL.createObjectURL = () => 'blob:left-behind';
+  URL.revokeObjectURL = () => {};
+  expect(URL.createObjectURL(null)).toBe('blob:left-behind');
+});
+`);
+    expect(sum.passed).toBe(1);
+    expect(URL.createObjectURL).toBe(create);
+    expect(URL.revokeObjectURL).toBe(revoke);
+    expect(sum.restored).toEqual(['URL.createObjectURL replaced', 'URL.revokeObjectURL replaced']);
+  });
+
+  it('a suite that puts its stub back is not reported', async () => {
+    const sum = await runTestBundle(API + `
+it('stubs and restores', () => {
+  const was = URL.createObjectURL;
+  URL.createObjectURL = () => 'blob:x';
+  URL.createObjectURL = was;
+});
+`);
+    expect(sum.passed).toBe(1);
+    expect(sum.restored).toEqual([]);
+  });
+});

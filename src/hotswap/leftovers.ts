@@ -11,6 +11,11 @@
  * blob-evaluated copy of host.ts ("Invalid URL"). The runner snapshots these
  * before a run and restores them after; `hotswap status` reports what it had
  * to restore, and kernel hooks that weren't there when the page booted.
+ *
+ * A suite also shares the page's built-in constructors. One that stubs
+ * `URL.createObjectURL` and doesn't put it back (the seed suite did, #106)
+ * leaves every later `import()` of a bundle, download and Worker in the page
+ * with its stub, so those are put back too.
  */
 
 /** Page globals a run may replace, add or delete: every `__tabcomputer*` but the log (shared on purpose) */
@@ -18,12 +23,17 @@ const isPageGlobal = (k: string) => k.startsWith('__tabcomputer') && k !== '__ta
 /** Live maps a run may add entries to (live.ts, vite-plugin-hotswap.ts) */
 const LIVE_MAPS = ['__tabcomputerLive', '__tabcomputerLiveLoaders', '__tabcomputerLiveUrls', '__tabcomputerLiveState'];
 
+/** Functions on the page's built-ins that suites stub: [where it is on globalThis, its name] */
+const PAGE_STATICS: [string, string][] = [['URL', 'createObjectURL'], ['URL', 'revokeObjectURL']];
+
 interface KernelHooks { loaders: unknown[]; execDirect: unknown[] }
+interface StaticSlot { owner: any; key: string; label: string; desc: PropertyDescriptor | undefined }
 
 export interface PageSnapshot {
   globals: Map<string, unknown>;
   maps: Map<string, Map<unknown, unknown>>;
   kernel: { k: object; hooks: KernelHooks } | null;
+  statics: StaticSlot[];
 }
 
 /** A kernel's program hooks (Kernel's `loaders` is private; execDirect is public) */
@@ -38,7 +48,12 @@ export function snapshotPage(g: any = globalThis): PageSnapshot {
   for (const name of LIVE_MAPS) if (g[name] instanceof Map) maps.set(name, new Map(g[name]));
   const k = g.__tabcomputerKernel;
   const hooks = hooksOf(k);
-  return { globals, maps, kernel: hooks ? { k, hooks: { loaders: [...hooks.loaders], execDirect: [...hooks.execDirect] } } : null };
+  const statics: StaticSlot[] = [];
+  for (const [on, key] of PAGE_STATICS) {
+    const owner = g[on];
+    if (owner) statics.push({ owner, key, label: `${on}.${key}`, desc: Object.getOwnPropertyDescriptor(owner, key) });
+  }
+  return { globals, maps, kernel: hooks ? { k, hooks: { loaders: [...hooks.loaders], execDirect: [...hooks.execDirect] } } : null, statics };
 }
 
 /** Put the page back as `snap` had it; returns what had changed (for `hotswap status`) */
@@ -63,6 +78,12 @@ export function restorePage(snap: PageSnapshot, g: any = globalThis): string[] {
     for (const [key, v] of before) {
       if (now.get(key) !== v) { now.set(key, v); changed.push(`${name} ${String(key)} replaced`); }
     }
+  }
+  for (const { owner, key, label, desc } of snap.statics) {
+    const now = Object.getOwnPropertyDescriptor(owner, key);
+    if (now?.value === desc?.value && now?.get === desc?.get) continue;
+    changed.push(`${label} ${desc ? 'replaced' : 'added'}`);
+    if (desc) Object.defineProperty(owner, key, desc); else delete owner[key];
   }
   if (snap.kernel) {
     const hooks = hooksOf(snap.kernel.k)!;

@@ -10,6 +10,10 @@
  *     signed in;
  *   - without a terminal (Claude's Bash tool, a script) nothing waits: the
  *     question opens beside the failure, and the message says to run it again.
+ * `fetchSignedIn(action, run)` is the same for a fetch outside a command (a
+ * `?run=gh:` or `?app=gh:` link, `app install gh:`): `run(null)` as a visitor;
+ * when that fails for want of a sign-in, the tab's token (asked for if there
+ * is none) and `run(token)`.
  * The question is the desktop's sheet (src/desktop/network.ts registers it); the
  * terminal UI goes straight to the one-time code (`deviceFlowAsker`).
  */
@@ -101,6 +105,35 @@ function hasToken(ctx: CommandContext): boolean {
 function interactive(ctx: CommandContext): boolean {
   if (!ctx.terminal || ctx.stdinIsTTY === false || ctx.stderrIsTTY === false) return false;
   return !ctx.env['GH_PROMPT_DISABLED'] && !ctx.env['CI'] && ctx.env['GIT_TERMINAL_PROMPT'] !== '0';
+}
+
+/**
+ * A fetch of GitHub that is not a command's: as a visitor first, and with the
+ * tab's sign-in when GitHub refused the visitor (a private repository, the
+ * rate limit). `wait: false` (nobody is at a terminal): the question opens
+ * beside the failure and the failure stands.
+ */
+export async function fetchSignedIn<T>(action: string, run: (token: string | null) => Promise<T>, opts: { wait?: boolean } = {}): Promise<T> {
+  try { return await run(null); } catch (e) {
+    const kind = githubSignInWanted(String((e as Error)?.message ?? e));
+    if (!kind) throw e;
+    const saved = networkCredential();
+    if (!saved && opts.wait === false) {
+      if (asker && Date.now() >= declinedUntil && !pending) {
+        void askGitHubSignIn({ action, kind, afterFailure: true });
+        if (e instanceof Error) e.message += `\n(A window opened to sign in to GitHub. Sign in there, then run ${action} again.)`;
+      }
+      throw e;
+    }
+    const token = saved ?? await askGitHubSignIn({ action, kind });
+    if (!token) throw e;
+    return run(token);
+  }
+}
+
+/** A person is at this command (`fetchSignedIn`'s `wait`) */
+export function atTerminal(ctx: CommandContext): boolean {
+  return interactive(ctx) && ctx.env['TABCOMPUTER_GITHUB_PROMPT'] !== '0';
 }
 
 /**

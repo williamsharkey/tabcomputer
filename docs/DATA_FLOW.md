@@ -43,6 +43,8 @@ The rows that say "everything" are that way by design today: each proxy exists b
 
 **Browse origins** (`{key}.web.<domain>`, the Browser app): the server serves four fixed scripts and a bootstrap page there, nothing else. Page content comes from the app in your tab, fetched over `/tcp` with TLS in the tab, so the server sees hosts and sizes, not pages. A server-side fetch that would see plaintext exists for measurement only and is off unless `TABCOMPUTER_BROWSE_SERVER_FETCH=1` (`server.mjs`).
 
+Run links and app links that name a GitHub repository (`?run=gh:`, `?app=gh:`, `app install gh:`) fetch from `raw.githubusercontent.com` and `api.github.com` straight from the browser, in both modes, without the token. Only after GitHub refused the visitor (a private repository, the rate limit) is the fetch made again with the GitHub token, to `api.github.com` alone (`githubTokenFetch` in `src/run-url.ts`); the server sees neither.
+
 **Private mode** (Settings → Network → Privacy, or `netmode private`; `src/net-mode.ts`, docs/NETWORKING.md "Private mode") takes the "everything" rows away from the server. `gh`, the Git app and git on github.com call `api.github.com` straight from the browser. GitHub sign-in, git on other hosts, repositories too large for the API, and the Claude and Gemini routes are encrypted in the tab and go by `/tcp`, so the server sees a host name and byte counts. `/api/ws-proxy` has no private route: Claude's voice input is off in that mode. The mode is off by default.
 
 ## Straight from the browser, not through the server

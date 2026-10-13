@@ -25,6 +25,9 @@
  * set on the shell's environment, never written into shell text. A recipe
  * may fetch what an argument names; it must not run it (docs/RUN_LINKS.md).
  *
+ * A `gh:` script is fetched as a visitor; `deps.github` (src/github-needed.ts)
+ * fetches it again with the tab's GitHub sign-in when a visitor is refused.
+ *
  * This module has no DOM and no imports: main.ts loads it only when the
  * address has `run`, and the tests drive it with stand-ins.
  */
@@ -264,6 +267,45 @@ export async function fetchSiteFile(url: string, fetchFn: Fetch, max: number, wh
   return bytes;
 }
 
+/** What a link says when GitHub's answer to a visitor was its rate limit (read by `githubSignInWanted`, src/github-needed.ts) */
+export const GITHUB_RATE_LIMITED = 'GitHub\'s rate limit for visitors (60 requests an hour) is used up. Signed in to GitHub the limit is 5,000.';
+
+/** GitHub's API refused the request for the rate limit, not for what was asked */
+export function githubRateLimited(res: { status: number; headers: { get(name: string): string | null } }): boolean {
+  return (res.status === 403 || res.status === 429) && res.headers.get('x-ratelimit-remaining') === '0';
+}
+
+/** What a 404 for a repository's file means, to a visitor and to a signed-in account */
+export function githubMissing(where: string, signedIn: boolean): string {
+  return signedIn ? `${where} does not exist (or this GitHub account cannot read it)`
+    : `${where} does not exist, or it is private: a private repository needs a GitHub sign-in`;
+}
+
+const RAW_FILE = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/;
+
+/**
+ * A fetch that carries the GitHub token, to GitHub only. api.github.com gets
+ * it in a header. raw.githubusercontent.com takes no Authorization header
+ * from a page (its preflight is refused), so a file there is read through
+ * the API's contents route instead; the answer is handed back as the file's.
+ */
+export function githubTokenFetch(fetchFn: Fetch, token: string): Fetch {
+  return async (url, init = {}) => {
+    const raw = RAW_FILE.exec(url);
+    if (!raw && !url.startsWith('https://api.github.com/')) return fetchFn(url, init);
+    const headers = { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` };
+    if (!raw) return fetchFn(url, { ...init, headers });
+    const [, owner, repo, ref, path] = raw;
+    const api = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${ref}`;
+    const res = await fetchFn(api, { ...init, headers: { ...headers, accept: 'application/vnd.github.raw+json' } });
+    // (a redirect stays visible to the caller, which refuses it; else the bytes under the address that was asked for)
+    if (res.redirected || (res.url && res.url !== api)) return res;
+    const h = new Headers(res.headers);
+    if (res.ok) h.set('content-type', 'application/octet-stream');
+    return new Response(res.body, { status: res.status, headers: h });
+  };
+}
+
 /**
  * A file from a raw-content host (raw.githubusercontent.com, gist.githubusercontent.com),
  * exactly the one asked for: no cookies, no referrer, no redirect followed, and
@@ -272,6 +314,7 @@ export async function fetchSiteFile(url: string, fetchFn: Fetch, max: number, wh
 export async function fetchRaw(url: string, fetchFn: Fetch, max: number, what: string, missing: string): Promise<Uint8Array> {
   let res: Response;
   try { res = await fetchFn(url, { redirect: 'error', credentials: 'omit', cache: 'no-cache', referrerPolicy: 'no-referrer' }); } catch { throw new RunLinkError(`could not fetch ${what}`); }
+  if (githubRateLimited(res)) throw new RunLinkError(GITHUB_RATE_LIMITED);
   if (!res.ok) throw new RunLinkError(res.status === 404 ? missing : `could not fetch ${what} (HTTP ${res.status})`);
   if (res.redirected || (res.url && res.url !== url)) throw new RunLinkError(`${what} was redirected`);
   if (/html/i.test(res.headers.get('content-type') ?? '')) throw new RunLinkError(`${what} is a web page, not a file`);
@@ -294,7 +337,7 @@ async function gistOwner(id: string, fetchFn: Fetch): Promise<string> {
  * is curated only when this origin's /recipes/index.json lists its name with
  * the sha256 of the bytes /recipes/<name>.sh returned.
  */
-export async function loadScript(target: RunTarget, origin: string, fetchFn: Fetch): Promise<LoadedScript> {
+export async function loadScript(target: RunTarget, origin: string, fetchFn: Fetch, githubToken?: string | null): Promise<LoadedScript> {
   if (target.kind === 'lab') throw new RunLinkError('a lab: link has no script');
   if (target.kind === 'recipe') {
     // (parseRunUrl made the name; checked again here because the URL is built from it)
@@ -318,11 +361,8 @@ export async function loadScript(target: RunTarget, origin: string, fetchFn: Fet
     // HEAD: the repository's default branch
     const url = `https://raw.githubusercontent.com/${target.owner}/${target.repo}/HEAD/${target.path}`;
     from = `github.com/${target.owner}/${target.repo}, ${target.path}`;
-    let res: Response;
-    try { res = await fetchFn(url, { redirect: 'error', credentials: 'omit', cache: 'no-cache', referrerPolicy: 'no-referrer' }); } catch { throw new RunLinkError(`could not fetch ${from}`); }
-    if (!res.ok) throw new RunLinkError(res.status === 404 ? `${from} does not exist (or the repository is private)` : `could not fetch ${from} (HTTP ${res.status})`);
-    bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length > SCRIPT_MAX) throw new RunLinkError('the script is too long');
+    // (a private repository: with the tab's GitHub sign-in, once the person gave it; handleRunLink)
+    bytes = await fetchRaw(url, githubToken ? githubTokenFetch(fetchFn, githubToken) : fetchFn, SCRIPT_MAX, from, githubMissing(from, !!githubToken));
   } else if (target.kind === 'gist') {
     // (parseRunUrl made these; checked again because the URLs are built from them)
     if (!GIST_ID.test(target.id) || (target.user && !GH_OWNER.test(target.user)) || (target.file && (!GH_SEGMENT.test(target.file) || target.file === '.' || target.file === '..'))) throw new RunLinkError('no such gist');
@@ -427,6 +467,8 @@ export interface RunLinkDeps {
   confirm(info: RunPromptInfo): Promise<boolean>;
   /** A new Terminal in `cwd` with `env` set, typing `command` */
   openTerminal(opts: { cwd: string; command: string; env: Record<string, string>; title: string }): void;
+  /** Fetch as a visitor, then signed in to GitHub when that is what was missing (`fetchSignedIn`); absent: as a visitor only */
+  github?<T>(action: string, run: (token: string | null) => Promise<T>): Promise<T>;
   /** Tell the person why a link didn't run */
   report(message: string): void;
 }
@@ -508,7 +550,10 @@ export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
     if (!parsed) return 'none';
     if (deps.framed) throw new RunLinkError('run links are ignored inside a frame; open the link in its own tab');
     if (parsed.target.kind === 'lab') return await handleLabLink(parsed.target, parsed.params, deps);
-    const script = await loadScript(parsed.target, deps.origin, deps.fetch);
+    const target = parsed.target;
+    const script = target.kind === 'gh' && deps.github
+      ? await deps.github(`gh:${target.owner}/${target.repo}`, (token) => loadScript(target, deps.origin, deps.fetch, token))
+      : await loadScript(target, deps.origin, deps.fetch);
     const { env, ignored } = runEnv(parsed.params, script.header);
     const dir = `${deps.home}/run/${script.name}`;
     const done = await deps.fs.exists(`${dir}/${doneMarker(script.sha256)}`);

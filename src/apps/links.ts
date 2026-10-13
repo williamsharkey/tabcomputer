@@ -20,7 +20,7 @@
 import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest } from './manifest';
 import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX } from './registry';
 import { LINK_APP, unpackApp } from './share';
-import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, sha256Hex, plain, type Fetch } from '../run-url';
+import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
 
 export type AppTarget =
   | { kind: 'site'; id: string }
@@ -163,11 +163,13 @@ const COMMIT = /^[0-9a-f]{40}$/;
  * head when the link was opened. The manifest shown in the prompt and every
  * file installed come from that commit, so what is shown is what is installed.
  */
-export async function fetchGhApp(t: { owner: string; repo: string; path: string }, fetchFn: Fetch): Promise<FetchedApp> {
+export async function fetchGhApp(t: { owner: string; repo: string; path: string }, visitorFetch: Fetch, githubToken?: string | null): Promise<FetchedApp> {
+  // (a private repository, or the visitors' rate limit: with the tab's GitHub sign-in, once the person gave it; `fetchSignedIn`)
+  const fetchFn = githubToken ? githubTokenFetch(visitorFetch, githubToken) : visitorFetch;
   if (!GH_OWNER.test(t.owner) || !GH_REPO.test(t.repo) || t.repo === '.' || t.repo === '..' || (t.path && t.path.split('/').some((s) => !GH_SEGMENT.test(s) || s === '.' || s === '..'))) throw new AppLinkError('no such app');
   const where = `github.com/${t.owner}/${t.repo}${t.path ? `, ${t.path}` : ''}`;
   const api = `https://api.github.com/repos/${t.owner}/${t.repo}`;
-  const headBytes = await fetchRaw(`${api}/commits/HEAD`, (url, init) => fetchFn(url, { ...init, headers: { accept: 'application/vnd.github.sha' } }), 200, where, `${where} does not exist (or the repository is private)`);
+  const headBytes = await fetchRaw(`${api}/commits/HEAD`, (url, init) => fetchFn(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), accept: 'application/vnd.github.sha' } }), 200, where, githubMissing(where, !!githubToken));
   const commit = new TextDecoder().decode(headBytes).trim();
   if (!COMMIT.test(commit)) throw new AppLinkError(`could not read the head commit of ${where}`);
   const raw = (rel: string) => `https://raw.githubusercontent.com/${t.owner}/${t.repo}/${commit}/${[...(t.path ? t.path.split('/') : []), ...rel.split('/')].map(encodeURIComponent).join('/')}`;
@@ -295,6 +297,8 @@ export interface AppLinkDeps {
   /** The same link in a guest (false: this server has none) */
   openInGuest(query: string): Promise<boolean>;
   report(message: string): void;
+  /** Fetch as a visitor, then signed in to GitHub when that is what was missing (`fetchSignedIn`); absent: as a visitor only */
+  github?<T>(action: string, run: (token: string | null) => Promise<T>): Promise<T>;
 }
 
 export type AppLinkOutcome = 'none' | 'opened' | 'installed' | 'guest' | 'cancelled' | 'refused';
@@ -310,7 +314,8 @@ export async function handleAppLink(deps: AppLinkDeps): Promise<AppLinkOutcome> 
     const t = parsed.target;
     const app = t.kind === 'site' ? await fetchSiteApp(t.id, deps.origin, deps.fetch)
       : t.kind === 'link' ? await linkApp(t.payload)
-      : await fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch);
+      : await (deps.github ?? ((_action, run) => run(null)))(`gh:${(t as { owner: string }).owner}/${(t as { repo: string }).repo}`,
+        (token) => fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch, token));
     const had = await deps.installedSource(app.manifest.id);
     // Already here from this very place (the same commit, for a repository): opening it is all that is left
     if (had !== app.source) {

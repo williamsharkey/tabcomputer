@@ -777,6 +777,7 @@ async function main() {
     await handleRunLink({
       search: location.search, origin: location.origin, home: shell.env['HOME'] || '/home/user', framed,
       fetch: (url, init) => fetch(url, init),
+      github: async (action, run) => (await import('./github-needed')).fetchSignedIn(action, run),
       fs,
       cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
       // The desktop appears once its saved windows are back (at most a few seconds)

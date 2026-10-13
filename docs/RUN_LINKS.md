@@ -17,7 +17,7 @@ An app link, `?app=<id>` or `?app=gh:owner/repo[/path]`, is the same machinery w
 | Form | Meaning |
 | --- | --- |
 | `?run=<name>` | A curated recipe, served by the site at `/recipes/<name>.sh`. The name has only `a-z`, `0-9` and `-`. |
-| `?run=gh:<owner>/<repo>[/<path>]` | A script in a GitHub repository, `.tabcomputer/run.sh` unless a path is given, fetched from `raw.githubusercontent.com` at the default branch. Public repositories only. |
+| `?run=gh:<owner>/<repo>[/<path>]` | A script in a GitHub repository, `.tabcomputer/run.sh` unless a path is given, fetched from `raw.githubusercontent.com` at the default branch, as a visitor. When GitHub does not give the file to a visitor (a private repository), the sign-in sheet opens; signed in, the file is fetched again through `api.github.com` with the tab's GitHub token, and shown with Run and Cancel as always. |
 | `?run=gist:<user>/<id>[/<file>]` | A file of a public gist, its first file unless one is named, fetched from `gist.githubusercontent.com/<user>/<id>/raw[/<file>]`. `<file>` is one name, never a path. |
 | `?run=gist:<id>` | The same without the user: the owner is looked up with GitHub's API (`api.github.com/gists/<id>`), and only a plain account name is taken from the answer; the raw address is built here. |
 | `?run=sh:<base64url>` | A script carried in the link itself (UTF-8, base64url, at most 64 KB). |

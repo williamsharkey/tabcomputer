@@ -47,9 +47,9 @@ export async function confirmInstall(app: FetchedApp): Promise<InstallChoice> {
 }
 
 /** The app a target names, fetched (its manifest read; its other files on demand) */
-export async function fetchApp(target: AppTarget, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<FetchedApp> {
+export async function fetchApp(target: AppTarget, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i), githubToken?: string | null): Promise<FetchedApp> {
   if (target.kind === 'site') return fetchSiteApp(target.id, location.origin, fetchFn);
-  if (target.kind === 'gh') return fetchGhApp(target, fetchFn);
+  if (target.kind === 'gh') return fetchGhApp(target, fetchFn, githubToken);
   if (target.kind === 'link') return linkApp(target.payload);
   return archiveApp(await unpack(await fetchArchive(target.url, fetchFn), target.url), target.url);
 }
@@ -169,6 +169,7 @@ export async function startAppLink(o: {
     fetch: (url, init) => fetch(url, init),
     cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
     ready: o.ready,
+    github: async (action, run) => (await import('../github-needed')).fetchSignedIn(action, run),
     installedSource: async (id) => (await findInstalled(appsDeps().fs, id))?.source ?? null,
     confirm: confirmInstall,
     install: async (app, files) => {

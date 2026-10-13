@@ -162,7 +162,8 @@ export const hotswapCmd: Command = {
     if (sub === 'test') return runTests(ctx, args);
     if (sub === 'checkout') return checkout(ctx, args);
     if (sub === 'diff') return diff(ctx, args);
-    if (sub === 'push') return push(ctx, args);
+    // (not signed in: the sign-in sheet, then the push again)
+    if (sub === 'push') return (await import('../github-needed')).retrySignedIn(ctx, 'hotswap push', () => push(ctx, [...args]));
 
     if (sub !== 'apply' && sub !== 'build') { ctx.stderr += `hotswap: unknown subcommand '${sub}'\n${USAGE}`; return 2; }
 

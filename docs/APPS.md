@@ -199,7 +199,7 @@ So: an app that is only a page, with no commands or with commands that are safe 
 | --- | --- | --- |
 | `app install DIR` | A folder of this tab | No: they are your files and you typed it. |
 | `app install ID`, `?app=ID` | An app this site ships: `/apps/<id>/`, listed in `/apps/index.json` | No, when it is curated: the list is on the page's own origin and every file fetched has the sha256 the list gives (redirects refused; an HTML answer standing in for a missing file refused). |
-| `app install gh:OWNER/REPO[/PATH]`, `?app=gh:…` | A folder of a public GitHub repository | **Yes.** |
+| `app install gh:OWNER/REPO[/PATH]`, `?app=gh:…` | A folder of a GitHub repository, fetched as a visitor. A private repository, or GitHub's limit of 60 requests an hour for visitors, opens the sign-in sheet; signed in, it is fetched again from `api.github.com` with the tab's GitHub token (`fetchSignedIn`) | **Yes.** |
 | `app install https://…/x.zip` (`.tar.gz`, `.tgz`) | An archive with `app.json` at its top or in its one folder | **Yes.** Not as a link: an address never names an archive. |
 | `?app=link#app=…` | The app's own files, carried by the address (`app share`, "Sharing" below) | **Yes.** |
 

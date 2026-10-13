@@ -167,7 +167,7 @@ describe('app links: which apps are curated', () => {
   });
 
   const ghCases: [string, Record<string, string | (() => Response)>, unknown[] | undefined, RegExp][] = [
-    ['a repository that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /does not exist \(or the repository is private\)/],
+    ['a repository that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /does not exist, or it is private: a private repository needs a GitHub sign-in/],
     ['a head that is not a commit', { 'https://api.github.com/repos/someone/tool/commits/HEAD': 'main; rm -rf ~' }, undefined, /could not read the head commit/],
     ['a head that is a branch name', { 'https://api.github.com/repos/someone/tool/commits/HEAD': '../../other/repo/main' }, undefined, /could not read the head commit/],
     ['a folder without app.json', { [`https://raw.githubusercontent.com/someone/tool/${COMMIT}/app.json`]: () => new Response('404', { status: 404 }) }, undefined, /has no app\.json: it is not an app/],

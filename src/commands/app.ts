@@ -156,7 +156,11 @@ export const appCmd: Command = {
               return 0;
             }
             live(`Fetching ${plain(spec)}…`);
-            const app = await install.fetchApp(target);
+            // A private repository, or GitHub's limit for visitors: ask for the sign-in and fetch again
+            const needed = await import('../github-needed');
+            const app = target.kind === 'gh'
+              ? await needed.fetchSignedIn(`app install gh:${target.owner}/${target.repo}`, (token) => install.fetchApp(target, undefined, token), { wait: needed.atTerminal(ctx) })
+              : await install.fetchApp(target);
             if (!app.curated) {
               live(`${app.manifest.name} (${app.manifest.id}) from ${app.from}. tabcomputer has not reviewed it: a window shows what it asks for.`);
               const choice = await install.confirmInstall(app);

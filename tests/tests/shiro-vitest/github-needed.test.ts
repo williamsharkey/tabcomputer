@@ -3,7 +3,10 @@
  * sign-in and runs again (src/github-needed.ts).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { githubSignInWanted, retrySignedIn, setGitHubNeedHandler, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
+import { githubSignInWanted, retrySignedIn, fetchSignedIn, setGitHubNeedHandler, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
+import { GITHUB_RATE_LIMITED, githubMissing, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
+import { fetchGhApp, handleAppLink } from '@shiro/apps/links';
+import { hotswapCmd } from '@shiro/commands/hotswap';
 import { createTestShell } from './helpers';
 import { ghCmd } from '@shiro/commands/gh';
 
@@ -40,6 +43,19 @@ describe('github-needed: what a failure says', () => {
     expect(githubSignInWanted('a/b: not found. A private repository needs a GitHub sign-in: gh auth login')).toBe('private');
     expect(githubSignInWanted('fatal: Pushing needs a GitHub sign-in. Run: gh auth login')).toBe('account');
     expect(githubSignInWanted('GitHub API rate limit reached. Signed in to GitHub the limit is 5,000 requests an hour instead of 60: gh auth login')).toBe('rate-limit');
+    // what a link or `app install gh:` says (src/run-url.ts)
+    expect(githubSignInWanted(GITHUB_RATE_LIMITED)).toBe('rate-limit');
+    expect(githubSignInWanted(githubMissing('github.com/a/b, setup.sh', false))).toBe('private');
+    expect(githubSignInWanted(githubMissing('github.com/a/b, setup.sh', true))).toBeNull();
+    expect(githubSignInWanted('hotswap push: not signed in to GitHub: run gh auth login')).toBe('account');
+  });
+  it('tells GitHub\'s rate limit from another refusal', () => {
+    const res = (status: number, remaining?: string) => new Response('{}', { status, headers: remaining === undefined ? {} : { 'x-ratelimit-remaining': remaining } });
+    expect(githubRateLimited(res(403, '0'))).toBe(true);
+    expect(githubRateLimited(res(429, '0'))).toBe(true);
+    expect(githubRateLimited(res(403, '12'))).toBe(false); // refused for another reason
+    expect(githubRateLimited(res(403))).toBe(false);
+    expect(githubRateLimited(res(404, '0'))).toBe(false);
   });
   it('leaves other failures alone', () => {
     expect(githubSignInWanted('fatal: not a git repository')).toBeNull();
@@ -158,5 +174,142 @@ describe('github-needed: gh and git', () => {
     const code = await shell.execute('cd /tmp/r && git push origin HEAD', w, w);
     expect(code).not.toBe(0);
     expect(asked.map((n) => n.action)).toEqual(['git push']);
+  });
+
+  it('hotswap push, not signed in, opens the question', async () => {
+    const { shell } = await createTestShell();
+    shell.commands.register(hotswapCmd);
+    let out = '';
+    const w = (s: string) => { out += s; };
+    const code = await shell.execute('mkdir -p /tmp/co && hotswap push try-it -m msg --root /tmp/co', w, w);
+    expect(code).toBe(1);
+    expect(out).toContain('not signed in to GitHub');
+    expect(asked.map((n) => n.action)).toEqual(['hotswap push']);
+  });
+});
+
+describe('github-needed: links and installs from GitHub', () => {
+  const COMMIT = 'c0ffee'.padEnd(40, '0');
+  const MANIFEST = JSON.stringify({ manifest: 1, id: 'demo', name: 'Demo', entry: 'public' });
+  const SCRIPT = '#!/bin/sh\necho hello\n';
+  let asked: GitHubNeed[] = [];
+  let answer: string | null = 'gho_test';
+  let off = () => {};
+  beforeEach(() => {
+    asked = []; answer = 'gho_test';
+    localStorage.removeItem(KEY);
+    resetGitHubNeedDecline();
+    off = setGitHubNeedHandler(async (need) => { asked.push(need); if (answer) localStorage.setItem(KEY, answer); return answer; });
+  });
+  afterEach(() => { off(); });
+
+  /** A stand-in GitHub: `limited` answers visitors with the rate limit, `isPrivate` with 404; a token gets the files */
+  function github(opts: { limited?: boolean; isPrivate?: boolean }) {
+    const calls: { url: string; auth: string | undefined }[] = [];
+    const files: Record<string, string> = {
+      'https://api.github.com/repos/a/b/commits/HEAD': COMMIT,
+      [`https://api.github.com/repos/a/b/contents/app.json?ref=${COMMIT}`]: MANIFEST,
+      [`https://raw.githubusercontent.com/a/b/${COMMIT}/app.json`]: MANIFEST,
+      'https://api.github.com/repos/a/b/contents/.tabcomputer/run.sh?ref=HEAD': SCRIPT,
+      'https://raw.githubusercontent.com/a/b/HEAD/.tabcomputer/run.sh': SCRIPT,
+    };
+    const fetchFn = async (url: string, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
+      calls.push({ url, auth });
+      const api = url.startsWith('https://api.github.com/');
+      if (!auth && opts.limited && api) return new Response('{"message":"API rate limit exceeded"}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
+      if (!auth && opts.isPrivate) return new Response('Not Found', { status: 404 });
+      if (auth && !api) return new Response('preflight refused', { status: 403 }); // the raw host takes no token from a page
+      return files[url] === undefined ? new Response('Not Found', { status: 404 }) : new Response(files[url], { status: 200, headers: { 'content-type': api ? 'application/vnd.github.raw+json' : 'text/plain' } });
+    };
+    return { calls, fetchFn };
+  }
+
+  it('the rate limit for visitors: asks, then fetches again signed in', async () => {
+    const { calls, fetchFn } = github({ limited: true });
+    await expect(fetchGhApp({ owner: 'a', repo: 'b', path: '' }, fetchFn)).rejects.toThrow(GITHUB_RATE_LIMITED);
+    calls.length = 0;
+    const app = await fetchSignedIn('app install gh:a/b', (token) => fetchGhApp({ owner: 'a', repo: 'b', path: '' }, fetchFn, token));
+    expect(app.manifest.id).toBe('demo');
+    expect(asked).toEqual([{ action: 'app install gh:a/b', kind: 'rate-limit' }]);
+    // the visitor's one request, then every request with the token, files through the API
+    expect(calls.map((c) => [c.url, c.auth])).toEqual([
+      ['https://api.github.com/repos/a/b/commits/HEAD', undefined],
+      ['https://api.github.com/repos/a/b/commits/HEAD', 'Bearer gho_test'],
+      [`https://api.github.com/repos/a/b/contents/app.json?ref=${COMMIT}`, 'Bearer gho_test'],
+    ]);
+  });
+
+  it('a private repository: a run link and an app link ask, then go on', async () => {
+    const run = github({ isPrivate: true });
+    const target = parseRunUrl('?run=gh:a/b')!.target;
+    await expect(loadScript(target, 'https://tab.example', run.fetchFn)).rejects.toThrow(/a private repository needs a GitHub sign-in/);
+    const reports: string[] = [];
+    const opened: string[] = [];
+    const outcome = await handleRunLink({
+      search: '?run=gh:a/b', origin: 'https://tab.example', home: '/home/user', framed: false, fetch: run.fetchFn,
+      github: fetchSignedIn,
+      fs: { mkdir: async () => {}, writeFile: async () => {}, exists: async () => false },
+      cleanUrl: () => {}, confirm: async (info) => { expect(info.script).toBe(SCRIPT); return true; },
+      openTerminal: (o) => { opened.push(o.command); }, report: (m) => { reports.push(m); },
+    });
+    expect(reports).toEqual([]);
+    expect(outcome).toBe('ran');
+    expect(opened).toHaveLength(1);
+    expect(asked).toEqual([{ action: 'gh:a/b', kind: 'private' }]);
+    expect(run.calls.at(-1)).toEqual({ url: 'https://api.github.com/repos/a/b/contents/.tabcomputer/run.sh?ref=HEAD', auth: 'Bearer gho_test' });
+
+    // signed in now: the app link uses the token after the visitor's try, without asking again
+    asked = [];
+    const app = github({ isPrivate: true });
+    const shown: string[] = [];
+    expect(await handleAppLink({
+      search: '?app=gh:a/b', origin: 'https://tab.example', framed: false, fetch: app.fetchFn, github: fetchSignedIn,
+      cleanUrl: () => {}, installedSource: async () => `gh:a/b@${COMMIT}`, confirm: async () => 'install',
+      install: async () => {}, open: async (id) => { shown.push(id); }, openInGuest: async () => false, report: (m) => { reports.push(m); },
+    })).toBe('opened');
+    expect(reports).toEqual([]);
+    expect(shown).toEqual(['demo']);
+    expect(asked).toEqual([]);
+  });
+
+  it('"Not now", or no one to ask: the visitor\'s failure stands', async () => {
+    answer = null;
+    const { fetchFn } = github({ isPrivate: true });
+    const reports: string[] = [];
+    expect(await handleAppLink({
+      search: '?app=gh:a/b', origin: 'https://tab.example', framed: false, fetch: fetchFn, github: fetchSignedIn,
+      cleanUrl: () => {}, installedSource: async () => null, confirm: async () => 'install',
+      install: async () => {}, open: async () => {}, openInGuest: async () => false, report: (m) => { reports.push(m); },
+    })).toBe('refused');
+    expect(reports).toEqual(['github.com/a/b does not exist, or it is private: a private repository needs a GitHub sign-in']);
+    // a command with no terminal does not wait: the question opens beside the failure
+    asked = []; resetGitHubNeedDecline();
+    let release!: (t: string | null) => void;
+    off(); off = setGitHubNeedHandler((need) => { asked.push(need); return new Promise((r) => { release = r; }); });
+    await expect(fetchSignedIn('app install gh:a/b', (token) => fetchGhApp({ owner: 'a', repo: 'b', path: '' }, fetchFn, token), { wait: false }))
+      .rejects.toThrow(/needs a GitHub sign-in\n\(A window opened to sign in to GitHub\. Sign in there, then run app install gh:a\/b again\.\)/);
+    expect(asked).toEqual([{ action: 'app install gh:a/b', kind: 'private', afterFailure: true }]);
+    release(null);
+    await new Promise((r) => setTimeout(r, 0));
+    // a repository that is not there for the signed-in account either: GitHub's answer, once
+    localStorage.setItem(KEY, 'gho_saved');
+    const none = github({});
+    await expect(fetchSignedIn('gh:a/zzz', (token) => fetchGhApp({ owner: 'a', repo: 'zzz', path: '' }, none.fetchFn, token)))
+      .rejects.toThrow('github.com/a/zzz does not exist (or this GitHub account cannot read it)');
+    expect(none.calls).toHaveLength(2);
+  });
+
+  it('the token goes to GitHub only, and a redirected answer stays a redirect', async () => {
+    const seen: (string | undefined)[] = [];
+    const f = githubTokenFetch(async (url, init) => {
+      seen.push((init?.headers as Record<string, string> | undefined)?.authorization);
+      return url.includes('moved') ? Object.defineProperty(new Response('x'), 'redirected', { value: true }) : new Response('x');
+    }, 'gho_t');
+    await f('https://example.com/app.tar.gz');
+    await f('https://gist.githubusercontent.com/u/abc/raw');
+    await f('https://api.github.com/gists/abc');
+    expect(seen).toEqual([undefined, undefined, 'Bearer gho_t']);
+    expect((await f('https://raw.githubusercontent.com/a/b/HEAD/moved.sh')).redirected).toBe(true);
   });
 });

@@ -79,12 +79,13 @@ describe('data flow: what each flow says', () => {
     expect(m.places.map((p) => p.id)).toEqual(['tab', 'server', 'internet']);
     const tab = m.places[0].lines.join('\n');
     expect(tab).toContain('Main profile');
-    expect(tab).toContain('GitHub token: present');
-    expect(tab).toContain('Claude credentials: none');
-    expect(tab).toContain('API keys: none');
-    expect(tab).toContain('Storage: not persistent');
-    expect(tab).toContain("Relay: this site's (tabcomputer.test/tcp)");
-    expect(m.places[0].detail).toContain('Every program you run here can read');
+    expect(tab).toContain('GitHub: signed in');
+    expect(tab).toContain('Claude: not signed in');
+    expect(tab).not.toContain('API keys');
+    expect(tab).toContain('Files: saved in this browser (it may delete them)');
+    expect(tab).toContain('Mode: proxy');
+    expect(tab).not.toContain('Relay:');
+    expect(m.places[0].detail).toContain('Any program you run in this tab can read your files and your saved sign-ins');
     expect(m.places[1].title).toBe('tabcomputer.test server');
   });
 
@@ -94,8 +95,8 @@ describe('data flow: what each flow says', () => {
       local: 'nothing', site: 'requests', mirror: 'requests', tcp: 'endpoints',
       api: 'contents', github: 'contents', direct: 'nothing', shared: 'contents',
     });
-    expect(flow({}, 'tcp').readsText).toContain('Not the contents when the program encrypts');
-    expect(flow({}, 'api').readsText).toContain('Authorization header');
+    expect(flow({}, 'tcp').detail).toContain('cannot read https or ssh');
+    expect(flow({}, 'api').detail).toContain('can read your prompts, the replies and your Claude sign-in');
     expect(flow({}, 'direct').via).toBeNull();
     expect(flow({}, 'local').to).toBeNull();
   });
@@ -106,7 +107,7 @@ describe('data flow: what each flow says', () => {
     expect(flow({ github: true }, 'github').carries).toEqual(['GitHub token']);
     // the GitHub token goes to this site's relay only when it asked for a sign-in (#117)
     expect(flow({ github: true }, 'tcp').carries).toEqual([]);
-    expect(flow({ github: true }, 'tcp').detail).toContain('only if it asks for a sign-in; this one does not');
+    expect(flow({ github: true }, 'tcp').detail).toContain('Your GitHub token is not sent to the relay');
     expect(flow({ github: true, siteRelaySignin: true }, 'tcp').carries).toEqual(['GitHub token']);
     expect(flow({ github: false, siteRelaySignin: true }, 'tcp').carries).toEqual([]);
     // and to a relay of the user's own only when they allowed it
@@ -156,9 +157,9 @@ describe('data flow: what each flow says', () => {
     const m = dataFlowModel(state(over));
     expect(m.flows.every((f) => f.status === 'on')).toBe(true);
     expect(m.headline).toContain('Guest, kept as "lab"');
-    expect(m.places[0].detail).toContain('cannot read your main tabcomputer');
-    expect(m.places[0].detail).toContain('can be read by everything that runs here');
-    expect(flow(over, 'github').detail).toContain('refuses GitHub sign-in to a guest');
+    expect(m.places[0].detail).toContain('cannot see your main files or sign-ins');
+    expect(m.places[0].detail).toContain('Every program in this guest window can read anything you put in this guest window');
+    expect(flow(over, 'github').detail).toContain('A guest cannot sign in to GitHub');
   });
 
   it('no relay on this server', () => {
@@ -171,15 +172,15 @@ describe('data flow: what each flow says', () => {
 describe('data flow: actions', () => {
   const ids = (over: Partial<DataFlowInputs>) => dataFlowActions(state(over)).actions.map((a) => a.id);
   it('offers a guest only when the server has them', () => {
-    expect(ids({})).toEqual(['guest', 'guest-nonet', 'network']);
+    expect(ids({})).toEqual(['private', 'guest', 'guest-nonet', 'network']);
     const none = dataFlowActions(state({ guestsOffered: false }));
-    expect(none.actions.map((a) => a.id)).toEqual(['network']);
+    expect(none.actions.map((a) => a.id)).toEqual(['private', 'network']);
     expect(none.unavailable.join(' ')).toContain('no guest profiles');
     // not known: neither offered nor denied
     expect(dataFlowActions(state({ guestsOffered: null }))).toMatchObject({ unavailable: [] });
   });
   it('in a guest, points at the guest\'s own statement', () => {
-    expect(ids({ guest: { name: 'a', ephemeral: true, noNetwork: false }, guestsOffered: null })).toEqual(['about-guest', 'network']);
+    expect(ids({ guest: { name: 'a', ephemeral: true, noNetwork: false }, guestsOffered: null })).toEqual(['private', 'about-guest', 'network']);
     // a no-network guest has no relay to set
     expect(ids({ guest: { name: 'a', ephemeral: true, noNetwork: true }, guestsOffered: null })).toEqual(['about-guest']);
   });
@@ -191,7 +192,7 @@ describe('data flow: actions', () => {
     expect(ids({ persisted: null })).not.toContain('storage');
   });
   it('says where a relay is set from the terminal UI, which uses it too', () => {
-    expect(dataFlowActions(state({ ui: 'terminal' })).actions.find((a) => a.id === 'network')!.why).toContain('the terminal UI then uses it too');
+    expect(dataFlowActions(state({ ui: 'terminal' })).actions.find((a) => a.id === 'network')!.why).toContain('The terminal UI then uses it too');
   });
 });
 
@@ -199,11 +200,20 @@ describe('data flow: the text version', () => {
   it('has every place and flow, and the live state', () => {
     const text = dataFlowText(state({ github: true, guestsOffered: false }), 80);
     expect(text).toContain('How your data flows');
-    for (const part of ['THIS TAB', 'TABCOMPUTER.TEST SERVER', 'THE INTERNET', 'FLOWS', 'WHAT YOU CAN CHANGE']) expect(text, part).toContain(part);
+    for (const part of ['WHAT', 'GOES TO', 'OUR SERVER', 'THIS TAB', 'WHAT YOU CAN CHANGE']) expect(text, part).toContain(part);
     for (const f of dataFlowModel(state()).flows) expect(text, f.id).toContain(f.title);
-    expect(text).toContain('GitHub token: present');
-    expect(text).toContain('Claude credentials: none');
-    expect(text).toContain('From this tab now: GitHub token.');
+    // one line per flow: what, where it goes, what the server can read
+    expect(text).toMatch(/GitHub +our server → GitHub +Can read it/);
+    expect(text).toMatch(/Files and programs +stays in this tab +Can't see it/);
+    expect(text).toMatch(/npm and pip +browser → npm, PyPI +Can't see it/);
+    expect(text).toContain('GitHub: signed in');
+    expect(text).toContain('Claude: not signed in');
+    expect(text).toContain('netmode private');
+    // the paragraph and the route for each row only when asked
+    expect(text).not.toContain('Route:');
+    const long = dataFlowText(state({ github: true, guestsOffered: false }), 80, true);
+    expect(long).toContain('Route: this tab → /git-proxy, /api/github, /api/github-login');
+    expect(long).toContain('Carries your GitHub token.');
     expect(text).toContain('gh auth logout');
     expect(text).toContain('no guest profiles');
     expect(text).toContain('docs/DATA_FLOW.md');
@@ -218,8 +228,8 @@ describe('data flow: the text version', () => {
   it('marks what is off in a no-network guest', () => {
     const text = dataFlowText(state({ guest: { name: 'a', ephemeral: true, noNetwork: true }, guestEnforced: true, guestsOffered: null }));
     expect(text).toContain('Guest, thrown away, no network');
-    expect(text).toContain('Connections programs open [off here]');
-    expect(text).toContain('Relay: none (no-network guest)');
+    expect(text).toContain('Other connections [off here]');
+    expect(text).toContain('Relay: none');
   });
 });
 
@@ -278,8 +288,8 @@ describe('data flow: a secret\'s value is never in the output', () => {
       dataFlowText(dataFlowState({ ...inputs, ui: 'terminal' })),
     ].join('\n');
     for (const secret of SECRETS) expect(everything.includes(secret), secret).toBe(false);
-    expect(everything).toContain('GitHub token: present');
-    expect(everything).toContain('Claude credentials: present');
+    expect(everything).toContain('GitHub: signed in');
+    expect(everything).toContain('Claude: signed in');
     expect(everything).toContain('API keys: Anthropic');
   });
 
@@ -287,8 +297,8 @@ describe('data flow: a secret\'s value is never in the output', () => {
     const inputs = await collectDataFlowInputs(emptyFs, { ui: 'desktop', fetch: relayOn });
     expect(inputs).toMatchObject({ github: false, claude: false, apiKeys: [], remoteCode: false, ownRelayUrl: null, siteRelay: 'on' });
     const text = dataFlowText(dataFlowState(inputs));
-    expect(text).toContain('GitHub token: none');
-    expect(text).toContain('Claude credentials: none');
+    expect(text).toContain('GitHub: not signed in');
+    expect(text).toContain('Claude: not signed in');
   });
 
   it('a credentials file without a token is not a sign-in', async () => {
@@ -330,7 +340,7 @@ describe('data flow: a secret\'s value is never in the output', () => {
     const text = await run([]);
     expect(text.code).toBe(0);
     expect(text.out).toContain('How your data flows');
-    expect(text.out).toContain('GitHub token: present');
+    expect(text.out).toContain('GitHub: signed in');
     const json = await run(['--json']);
     expect(JSON.parse(json.out).secrets).toMatchObject({ github: true, claude: true });
     for (const secret of SECRETS) expect((text.out + json.out).includes(secret), secret).toBe(false);

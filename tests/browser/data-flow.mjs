@@ -113,17 +113,17 @@ await main.waitForTimeout(300);
 
 // ── main: no sign-ins ──
 let s = await read(main);
-check(s.profile === 'main' && s.headline.startsWith('Main profile, no sign-ins saved'), 'main: says main profile, no sign-ins', s.headline);
+check(s.profile === 'main' && s.headline.startsWith('Your files stay in this browser'), 'main: says main profile, no sign-ins', s.headline);
 check(s.places.length === 3 && s.places[0] === 'This tab' && /server$/.test(s.places[1]) && s.places[2] === 'The internet', 'main: three places: this tab, the server, the internet', s.places.join(' | '));
-check(s.tab.includes('GitHub token: none') && s.tab.includes('Claude credentials: none') && s.tab.includes('API keys: none'), 'main: no token, no Claude credentials, no API keys', s.tab.join(' | '));
-check(s.tab.some((l) => /^Storage: (persistent|not persistent|persistence unknown)$/.test(l)), 'main: says whether storage is persistent', s.tab.join(' | '));
+check(s.tab.includes('GitHub: not signed in') && s.tab.includes('Claude: not signed in') && !s.tab.some((l) => l.startsWith('API keys')), 'main: no token, no Claude credentials, no API keys', s.tab.join(' | '));
+check(s.tab.some((l) => /^Files: saved in this browser( \(it may delete them\))?$/.test(l)), 'main: says where the files are, and when the browser may delete them', s.tab.join(' | '));
 // (this server runs without TABCOMPUTER_TCP_RELAY: the window must say so rather than assume one)
 const relayLine = s.tab.find((l) => l.startsWith('Relay:')) ?? '';
 const relayOn = await main.evaluate(async () => { try { const r = await fetch('/tcp/token', { method: 'POST', credentials: 'omit' }); return typeof (await r.json()).token === 'string'; } catch { return false; } });
-check(relayOn ? relayLine.includes("this site's") : relayLine === 'Relay: none (off on this server)', `main: the relay line matches this server (relay ${relayOn ? 'on' : 'off'})`, relayLine);
+check(relayOn ? relayLine === '' : relayLine === 'Relay: none', `main: the relay line matches this server (relay ${relayOn ? 'on' : 'off'})`, relayLine);
 check(lane(s, 'tcp').status === (relayOn ? 'on' : 'off'), 'main: the connections lane is on only when there is a relay');
 check(s.lanes.length === 8 && s.lanes.map((l) => l.reads).join() === 'nothing,requests,requests,endpoints,contents,contents,nothing,contents', 'main: eight lanes, each with what the server can read', s.lanes.map((l) => `${l.id}:${l.reads}`).join(' '));
-check(lane(s, 'api').text.includes('Server can read the contents') && lane(s, 'tcp').text.includes('Server sees where, not what'), 'main: "can read" on the API lane, "where, not what" on the relay lane');
+check(lane(s, 'api').text.includes('Can read it') && lane(s, 'tcp').text.includes('Sees the address only'), 'main: "Can read it" on the API lane, "Sees the address only" on the relay lane');
 check(s.lanes.every((l) => l.carries.length === 0), 'main: no lane carries a sign-in');
 check(s.images === 0, 'main: no images: the diagram is DOM text');
 check(s.actions.includes('guest') && s.actions.includes('guest-nonet') && s.actions.includes('network') && !s.actions.includes('accounts'), 'main: offers a guest (localhost has them) and network settings; no sign-out with nothing signed in', s.actions.join());
@@ -143,13 +143,13 @@ await shot(main, 'main-dark');
 
 // hover, tap, keyboard
 await main.locator('.sd-df-lane[data-flow=api]').hover();
-check((await read(main)).detail.includes('ends the HTTPS connection'), 'hover: pointing at a lane explains it');
+check((await read(main)).detail.includes('can read your prompts'), 'hover: pointing at a lane explains it');
 await main.locator('.sd-df-place[data-place=tab]').hover();
-check((await read(main)).detail.includes('Every program you run here can read'), 'hover: pointing at a place explains it');
+check((await read(main)).detail.includes('Any program you run in this tab can read'), 'hover: pointing at a place explains it');
 await main.locator('.sd-df-lane[data-flow=tcp]').click();
 await main.locator('.sd-df h2').hover();
 s = await read(main);
-check(s.detail.includes('TLS and SSH are done in the tab') && await main.locator('.sd-df-lane[data-flow=tcp]').getAttribute('aria-pressed') === 'true', 'click: a chosen lane stays explained');
+check(s.detail.includes('cannot read https or ssh') && await main.locator('.sd-df-lane[data-flow=tcp]').getAttribute('aria-pressed') === 'true', 'click: a chosen lane stays explained');
 await shot(main, 'main-dark-lane-chosen');
 await main.locator('.sd-df-place[data-place=tab]').focus();
 for (let i = 0; i < 3; i++) await main.keyboard.press('Tab');
@@ -158,7 +158,7 @@ check(focused === 'flow:local', 'keyboard: Tab goes from the places to the lanes
 await main.keyboard.press('Tab');
 await main.keyboard.press('Enter');
 s = await read(main);
-check(s.detail.includes('Downloads only') && await main.locator('.sd-df-lane[data-flow=site]').getAttribute('aria-pressed') === 'true', 'keyboard: Enter on a lane explains it', s.detail);
+check(s.detail.includes('Our server sees which files are downloaded') && await main.locator('.sd-df-lane[data-flow=site]').getAttribute('aria-pressed') === 'true', 'keyboard: Enter on a lane explains it', s.detail);
 
 // light
 await main.evaluate(() => window.__tabcomputer.desktop.setTheme('light'));
@@ -178,21 +178,21 @@ await main.evaluate(async ([TOKEN, CLAUDE, APIKEY, RELAY_SECRET]) => {
   localStorage.setItem('tabcomputer_relay', JSON.stringify({ url: `wss://someone:${RELAY_SECRET}@relay.example.com/tcp?t=${RELAY_SECRET}` }));
   window.dispatchEvent(new StorageEvent('storage', { key: 'tabcomputer_github_token' }));
 }, [TOKEN, CLAUDE, APIKEY, RELAY_SECRET]);
-await main.waitForFunction(() => [...document.querySelectorAll('.sd-df-place[data-place=tab] li')].some((li) => li.textContent === 'GitHub token: present'), null, { timeout: 15_000 });
-await main.waitForFunction(() => [...document.querySelectorAll('.sd-df-place[data-place=tab] li')].some((li) => li.textContent === 'Claude credentials: present'), null, { timeout: 15_000 });
+await main.waitForFunction(() => [...document.querySelectorAll('.sd-df-place[data-place=tab] li')].some((li) => li.textContent === 'GitHub: signed in'), null, { timeout: 15_000 });
+await main.waitForFunction(() => [...document.querySelectorAll('.sd-df-place[data-place=tab] li')].some((li) => li.textContent === 'Claude: signed in'), null, { timeout: 15_000 });
 s = await read(main);
-check(s.tab.includes('GitHub token: present') && s.tab.includes('Claude credentials: present') && s.tab.includes('API keys: Anthropic'), 'planted: the token, the Claude credential and the API key show as present', s.tab.join(' | '));
-check(s.headline.startsWith('Main profile, with sign-ins saved'), 'planted: the headline says sign-ins are saved', s.headline);
+check(s.tab.includes('GitHub: signed in') && s.tab.includes('Claude: signed in') && s.tab.includes('API keys: Anthropic'), 'planted: the token, the Claude credential and the API key show as present', s.tab.join(' | '));
+check(s.headline.includes('passes through our server, which can read it'), 'planted: the headline says what the server can read', s.headline);
 check(s.tab.includes('Relay: your own (relay.example.com)'), 'planted: the relay shows as the user\'s own, by host only', s.tab.join(' | '));
-check(lane(s, 'tcp').text.includes('your relay (relay.example.com)') && lane(s, 'tcp').reads === 'nothing', 'planted: programs\' connections go to that relay, not through this server');
-check(lane(s, 'github').carries.join() === 'Carries your GitHub token' && lane(s, 'api').carries.join() === 'Carries your Claude credentials,Carries your Anthropic API key', 'planted: the lanes say which sign-ins travel on them', JSON.stringify([lane(s, 'github').carries, lane(s, 'api').carries]));
+check(lane(s, 'tcp').text.includes('your relay') && lane(s, 'tcp').reads === 'nothing', 'planted: programs\' connections go to that relay, not through this server');
+check(lane(s, 'github').carries.join() === 'Sends your GitHub token' && lane(s, 'api').carries.join() === 'Sends your Claude credentials,Sends your Anthropic API key', 'planted: the lanes say which sign-ins travel on them', JSON.stringify([lane(s, 'github').carries, lane(s, 'api').carries]));
 check(s.actions.includes('accounts'), 'planted: sign-out is offered');
 for (const key of ['flow:api', 'flow:github', 'flow:shared', 'flow:tcp', 'place:tab']) await main.locator(`.sd-df [data-key="${key}"]`).hover();
 let found = await domHas(main, SECRETS);
 check(found.length === 0, 'planted: no secret value anywhere in the DOM (text, attributes, inputs)', found.join(', '));
 await shot(main, 'main-signed-in');
 const cmdOut = await sh(main, 'dataflow') + await sh(main, 'dataflow --json');
-check(cmdOut.includes('GitHub token: present') && cmdOut.includes('Claude credentials: present') && cmdOut.includes('"github": true'), '`dataflow`: the text version says present');
+check(cmdOut.includes('GitHub: signed in') && cmdOut.includes('Claude: signed in') && cmdOut.includes('"github": true'), '`dataflow`: the text version says present');
 check(!SECRETS.some((x) => cmdOut.includes(x)), '`dataflow`: no secret value in its output');
 const logs = await main.evaluate(() => { try { return localStorage.getItem('tabcomputer-console-log') ?? ''; } catch { return ''; } });
 check(!SECRETS.some((x) => logs.includes(x)), 'planted: no secret value in the saved console log');
@@ -231,11 +231,11 @@ const guest = await load(ctx, guestOrigin);
 await openFlow(guest);
 s = await read(guest);
 check(s.profile === 'guest' && s.headline.startsWith('Guest, kept as "flowlab"'), 'guest: says guest, kept under its name', s.headline);
-check(s.tab.includes('GitHub token: none') && s.tab.includes('Claude credentials: none') && s.tab.includes('API keys: none'), 'guest: the main profile\'s sign-ins are not here', s.tab.join(' | '));
+check(s.tab.includes('GitHub: not signed in') && s.tab.includes('Claude: not signed in') && !s.tab.some((l) => l.startsWith('API keys')), 'guest: the main profile\'s sign-ins are not here', s.tab.join(' | '));
 check(s.lanes.every((l) => l.carries.length === 0), 'guest: no lane carries a sign-in');
 check(s.actions.includes('about-guest') && s.actions.includes('network') && !s.actions.includes('guest') && !s.actions.includes('accounts'), 'guest: offers its own statement, not another guest, and no sign-out', s.actions.join());
 await guest.locator('.sd-df-place[data-place=tab]').hover();
-check((await read(guest)).detail.includes('cannot read your main tabcomputer'), 'guest: the tab\'s explanation says what it cannot read');
+check((await read(guest)).detail.includes('cannot see your main files or sign-ins'), 'guest: the tab\'s explanation says what it cannot read');
 found = await domHas(guest, SECRETS);
 check(found.length === 0, 'guest: the main profile\'s fake values are nowhere in its DOM', found.join(', '));
 await shot(guest, 'guest-network');
@@ -249,7 +249,7 @@ const sealed = await load(ctx, sealedOrigin);
 await openFlow(sealed);
 s = await read(sealed);
 check(s.profile === 'guest' && /^Guest, thrown away, no network/.test(s.headline), 'no network: says thrown away, no network', s.headline);
-check(s.tab.includes('Relay: none (no-network guest)'), 'no network: no relay', s.tab.join(' | '));
+check(s.tab.includes('Relay: none'), 'no network: no relay', s.tab.join(' | '));
 const off = s.lanes.filter((l) => l.status === 'off').map((l) => l.id).join();
 check(off === 'tcp,api,github,direct,shared', 'no network: connections, APIs, GitHub, direct requests and sharing are off; this site\'s files are not', off);
 check(!s.actions.includes('network'), 'no network: no relay to set, so no Network Settings action', s.actions.join());
@@ -293,7 +293,7 @@ for (const scheme of ['dark', 'light']) {
   check(geo.small === 0, `360 px ${scheme}: no text under 10 px`, String(geo.small));
   check(st.lanes.length === 8 && st.profile === 'main', `360 px ${scheme}: the same eight lanes`);
   await p.locator('.sd-df-lane[data-flow=api]').tap();
-  check((await read(p)).detail.includes('ends the HTTPS connection'), `360 px ${scheme}: a tap explains a lane`);
+  check((await read(p)).detail.includes('can read your prompts'), `360 px ${scheme}: a tap explains a lane`);
   await shot(p, `phone-${scheme}`);
   await p.locator('.sd-df-lane[data-flow=api]').scrollIntoViewIfNeeded();
   await shot(p, `phone-${scheme}-lane`);
@@ -309,7 +309,7 @@ await term.waitForFunction(() => window.__tabcomputer?.terminal && window.__tabc
 check(await term.locator('.sd-welcome, .sd-desktop .sd-dock').count() === 0, 'terminal UI: no desktop, no welcome card');
 const out = await sh(term, 'dataflow');
 check(out.includes('How your data flows') && out.includes('THIS TAB') && out.includes('Main profile') && out.includes('[exit 0]'), 'terminal UI: `dataflow` prints the text version', out.slice(0, 200));
-check(/GitHub token: (present|none)/.test(out) && out.includes('8. Only when you run them'), 'terminal UI: with the live state and all eight flows');
+check(/GitHub: (signed in|not signed in)/.test(out) && out.includes('Sharing') && out.includes('Files and programs'), 'terminal UI: with the live state and all eight flows');
 check((await sh(term, 'help')).includes('dataflow'), 'terminal UI: `help` lists it');
 if (shots) {
   await term.evaluate(() => { const t = window.__tabcomputer.terminal; t.injectInput('dataflow | head -40\r'); });

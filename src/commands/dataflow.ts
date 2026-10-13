@@ -8,6 +8,7 @@ import type { Command } from './index';
 import { currentDataFlowState, dataFlowText } from '../data-flow';
 
 const USAGE = `Usage: dataflow           where this tab's files, sign-ins and traffic go
+       dataflow -v        the same, with a paragraph and the route for each row
        dataflow --json    the state it is drawn from (presence of sign-ins only, never a value)
 `;
 
@@ -17,11 +18,12 @@ export const dataflowCmd: Command = {
   async exec(ctx) {
     const arg = ctx.args[0];
     if (arg === '-h' || arg === '--help' || arg === 'help') { ctx.stdout = USAGE; return 0; }
-    if (arg && arg !== '--json') { ctx.stderr = USAGE; return 2; }
+    const verbose = arg === '-v' || arg === '--verbose';
+    if (arg && arg !== '--json' && !verbose) { ctx.stderr = USAGE; return 2; }
     const state = await currentDataFlowState(ctx.fs);
     if (arg === '--json') { ctx.stdout = JSON.stringify(state, null, 2) + '\n'; return 0; }
     const cols = Number(ctx.env.COLUMNS) || (ctx.stdoutIsTTY !== false ? ctx.terminal?.getSize?.().cols : 0) || 80;
-    ctx.stdout = dataFlowText(state, cols);
+    ctx.stdout = dataFlowText(state, cols, verbose);
     return 0;
   },
 };

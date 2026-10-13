@@ -11,6 +11,12 @@
  * wrapped, the port's place in it marked, and from then on what either end
  * posts goes over the same thread link under that id (a `PortLink`: a Worker
  * and its thread's parentPort are the two ends of one).
+ *
+ * An open port that is ref'd is an open handle, as in node (tabcomputer#132):
+ * a port starts unref'd, its first 'message' listener (or onmessage) refs it
+ * and the removal of its last one unrefs it, and ref() / unref() say so
+ * outright. emnapi holds node open that way while an async napi task is
+ * pending: ref() on a port nothing listens to.
  */
 
 /** The key of a wrapped message; nothing a program posts has it */
@@ -39,8 +45,13 @@ export interface WorkerPorts {
   receive(link: PortLink, wire: unknown): { value: unknown } | null;
   /** The other side is gone: its ports here close */
   unlink(link: PortLink): void;
-  /** A port listened to whose other end is in another thread: what keeps a thread running */
+  /** An open port that is ref'd: what keeps a script (or a thread) running */
   alive(): boolean;
+  /**
+   * These ports are (or are no longer) a Worker's that runs on this thread. They hold
+   * nothing open themselves: the Worker does while it is ref'd, as a thread's ports do in node
+   */
+  adopt(ports: unknown[] | undefined, inWorker: boolean): void;
 }
 
 const isPlain = (v: any) => { const p = Object.getPrototypeOf(v); return p === Object.prototype || p === null; };
@@ -48,8 +59,8 @@ const isPlain = (v: any) => { const p = Object.getPrototypeOf(v); return p === O
 export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) => void): WorkerPorts {
   let nextId = 0;
   const prefix = Math.random().toString(36).slice(2, 10);
-  /** Open ports with an end in another thread */
-  const remote = new Set<any>();
+  /** Open ports that are ref'd */
+  const held = new Set<any>();
 
   class MessagePort {
     _peer: MessagePort | null = null;
@@ -57,20 +68,38 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
     _queue: unknown[] = [];
     _started = false;
     _closed = false;
-    _refd = true;
+    _refd = false;
+    _inWorker = false;
     _flushing = false;
     _onmessage: ((ev: { data: unknown }) => void) | null = null;
     constructor() {
       makeEmitter(this);
-      // listening for 'message' starts the port, as in node
+      // listening for 'message' starts the port and refs it, as in node; its last listener gone unrefs it
       const self = this as any;
       for (const k of ['on', 'addListener', 'once']) {
         const orig = self[k];
-        self[k] = (ev: string, fn: Function) => { const r = orig(ev, fn); if (ev === 'message') this.start(); return r; };
+        self[k] = (ev: string, fn: Function) => { const had = this._listening(); const r = orig(ev, fn); if (ev === 'message') { this._listened(had); this.start(); } return r; };
+      }
+      // (not removeAllListeners: node leaves the port ref'd after it)
+      for (const k of ['off', 'removeListener']) {
+        const orig = self[k];
+        self[k] = (...a: unknown[]) => { const had = this._listening(); const r = orig(...a); this._listened(had); return r; };
       }
     }
+    _listening() { return (this as any).listenerCount('message') > 0 || !!this._onmessage; }
+    /** After a change of listeners: the first one refs the port, the last one gone unrefs it */
+    _listened(had: boolean) { const has = this._listening(); if (has !== had) this._hold(has); }
+    _hold(on: boolean) {
+      this._refd = on;
+      if (on && !this._closed && !this._inWorker) held.add(this); else held.delete(this);
+    }
     get onmessage() { return this._onmessage; }
-    set onmessage(fn: ((ev: { data: unknown }) => void) | null) { this._onmessage = typeof fn === 'function' ? fn : null; if (this._onmessage) this.start(); }
+    set onmessage(fn: ((ev: { data: unknown }) => void) | null) {
+      const had = this._listening();
+      this._onmessage = typeof fn === 'function' ? fn : null;
+      this._listened(had);
+      if (this._onmessage) this.start();
+    }
     addEventListener(ev: string, fn: (e: { data: unknown }) => void) {
       const wrapped = (data: unknown) => fn({ data });
       (fn as any).__tcPortListener = wrapped;
@@ -119,11 +148,11 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
       this._closed = true;
       this._peer = null;
       if (this._route) { this._route.link.ports.delete(this._route.id); this._route = null; }
-      remote.delete(this);
+      held.delete(this);
       defer(() => { (this as any).emit('close'); });
     }
-    ref() { this._refd = true; return this; }
-    unref() { this._refd = false; return this; }
+    ref() { this._hold(true); return this; }
+    unref() { this._hold(false); return this; }
     hasRef() { return this._refd; }
   }
 
@@ -186,7 +215,8 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
     if (port._route) {
       // a port that came from another thread, passed on: this thread stays between the two
       const relay = new MessageChannel();
-      const pass = (from: MessagePort, to: MessagePort) => { from.unref(); (from as any).on('message', (v: unknown) => to.postMessage(v, findPorts(v))); (from as any).on('close', () => to.close()); };
+      // (unref'd after it listens: the relay is not what keeps this thread running)
+      const pass = (from: MessagePort, to: MessagePort) => { (from as any).on('message', (v: unknown) => to.postMessage(v, findPorts(v))); (from as any).on('close', () => to.close()); from.unref(); };
       pass(port, relay.port1);
       pass(relay.port1, port);
       port = relay.port2;
@@ -195,11 +225,11 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
     const waiting = port._queue.splice(0);
     port._peer = null;
     port._closed = true; // (handed over: this object is done, as node's is)
+    held.delete(port);
     if (stays) {
       stays._peer = null;
       stays._route = { link, id };
       link.ports.set(id, stays);
-      remote.add(stays);
     }
     // what it had not delivered yet goes with it
     if (waiting.length) after.push(() => { for (const v of waiting) { const m = encode(link, v, findPorts(v)); link.send({ [WIRE]: 'into', id, m: m.wire }); m.after(); } });
@@ -237,7 +267,6 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
       const port = new MessagePort();
       port._route = { link, id: mark.id };
       link.ports.set(mark.id, port);
-      remote.add(port);
       return port;
     });
   }
@@ -266,9 +295,9 @@ export function createWorkerPorts(makeEmitter: Emitter, defer: (fn: () => void) 
     encode,
     receive,
     unlink(link) { for (const p of [...link.ports.values()]) p._shut(); link.ports.clear(); },
-    alive() {
-      for (const p of remote) if (!p._closed && p._refd && p._started && ((p as any).listenerCount('message') > 0 || p._onmessage)) return true;
-      return false;
+    alive: () => held.size > 0,
+    adopt(list, inWorker) {
+      for (const p of portsOf(list)) { p._inWorker = inWorker; p._hold(p._refd); }
     },
   };
 }

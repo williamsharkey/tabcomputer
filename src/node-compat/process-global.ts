@@ -72,7 +72,8 @@ export function createProcessGlobal(own: Record<string, unknown>, hide: readonly
   const bound = new WeakMap<Function, Function>();
   let self: any;
 
-  for (const [k, v] of Object.entries(own)) target[k] = v;
+  // (with their accessors: a global made when first read stays one)
+  Object.defineProperties(target, Object.getOwnPropertyDescriptors(own));
   /** Not one of the page's own globals (nor the process's): written through, as scripts' globals always were */
   const isNew = (k: PropertyKey) => !Object.prototype.hasOwnProperty.call(target, k) && !PROCESS_LOCAL.has(k) && (!pageOwn().has(k) || (inWorker && WORKER_THROUGH.has(k)));
   const through = new Set<PropertyKey>();

@@ -1,0 +1,151 @@
+From 80f48ea78fc0fae9764b9841438b5992a1258ef6 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Tue, 13 Oct 2026 07:49:33 -0400
+Subject: [PATCH] Shiro: x87 fsubp writes st(i), fdiv and fdivr into st(i) are
+ the right way round, fucompp exists
+
+Three faults in the x87 register forms, all in upstream Blink (tabcomputer#150):
+
+- DE E8+i (fsubp: st(i) = st(i) - st0, pop) wrote its result to st(1)
+  whatever i was. With i = 1 that is right, which is what compilers emit
+  most; gcc and clang use other registers once three or more long double
+  values are live.
+- DC F0+i (fdivr: st(i) = st0 / st(i)) and DC F8+i (fdiv: st(i) = st(i) /
+  st0) were each other's.
+- DA E9 (fucompp) was not decoded: SIGILL.
+
+And two smaller ones the same test found (fixtures/x86/x87ops.c, which
+checks each form against the manual's definition and passes on Rosetta):
+
+- fist, fistp and fisttp of a NaN or a value that doesn't fit stored what a
+  C cast gives in wasm (saturated: 1e10 as INT_MAX, and as -1 in 16 bits).
+  They store the integer indefinite, the most negative value.
+- fxam called a subnormal double a denormal. In an x87 register it is a
+  normal number.
+
+Debian's tesseract met the first. Its text line finder fits a quadratic to
+each row's baseline in long double (QLSQ::fit), and the last line of the
+fit, c = (sigy - a * sigxx - b * sigx) / n, compiles to an fsubp into
+st(2). The constant term came out near 1 where it is the row's y, the
+baseline lay a hundred pixels off, the blobs' heights over it fell outside
+the row, and the row was dropped or merged with its neighbour: the first
+lines of a page read as nonsense while the others were right. The JIT has
+no x87 code of its own (it calls these handlers), so BLINK_WJIT=0 gave the
+same text.
+---
+ blink/fpu.c | 51 ++++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 38 insertions(+), 13 deletions(-)
+
+diff --git a/blink/fpu.c b/blink/fpu.c
+index 0000000..0000000 100644
+--- a/blink/fpu.c
++++ b/blink/fpu.c
+@@ -336,10 +336,8 @@ static void OpFxam(struct Machine *m) {
+       case FP_ZERO:
+         m->fpu.sw |= kFpuSwC3;
+         break;
+-      case FP_SUBNORMAL:
+-        m->fpu.sw |= kFpuSwC2 | kFpuSwC3;
+-        break;
+-      case FP_NORMAL:
++      case FP_SUBNORMAL:  // (normal in a register: an 80-bit value this
++      case FP_NORMAL:     // small still has an exponent to spare)
+         m->fpu.sw |= kFpuSwC2;
+         break;
+       default:
+@@ -525,7 +523,9 @@ static void OpFsubp(struct Machine *m, u64 rde) {
+ }
+ 
+ static void OpFsubrp(struct Machine *m, u64 rde) {
+-  FpuSetStPop(m, 1, FpuSub(m, StRm(m, rde), St0(m)));
++  // DE E8+i: st(i) = st(i) - st0, pop. (The result went to st(1) whatever
++  // i was: tabcomputer#150, tesseract's long double least squares.)
++  FpuSetStRmPop(m, rde, FpuSub(m, StRm(m, rde), St0(m)));
+ }
+ 
+ static void OpFdivp(struct Machine *m, u64 rde) {
+@@ -812,28 +812,43 @@ static void OpFildll(struct Machine *m) {
+   FpuPush(m, FpuGetMemoryLong(m));
+ }
+ 
++// What fist/fistp/fisttp store: the integer, or the "integer indefinite"
++// (the most negative value) for a NaN or a value that doesn't fit. (A C
++// cast saturated: 1e10 was stored as INT_MAX, and as -1 in 16 bits.)
++static i16 FpuInt16(double x) {
++  return x > -32769.0 && x < 32768.0 ? (i16)x : INT16_MIN;
++}
++
++static i32 FpuInt32(double x) {
++  return x > -2147483649.0 && x < 2147483648.0 ? (i32)x : INT32_MIN;
++}
++
++static i64 FpuInt64(double x) {
++  return x >= -9223372036854775808.0 && x < 9223372036854775808.0 ? (i64)x : INT64_MIN;
++}
++
+ static void OpFisttpl(struct Machine *m) {
+-  FpuSetMemoryInt(m, FpuPop(m));
++  FpuSetMemoryInt(m, FpuInt32(FpuPop(m)));
+ }
+ 
+ static void OpFisttpll(struct Machine *m) {
+-  FpuSetMemoryLong(m, FpuPop(m));
++  FpuSetMemoryLong(m, FpuInt64(FpuPop(m)));
+ }
+ 
+ static void OpFisttps(struct Machine *m) {
+-  FpuSetMemoryShort(m, FpuPop(m));
++  FpuSetMemoryShort(m, FpuInt16(FpuPop(m)));
+ }
+ 
+ static void OpFists(struct Machine *m) {
+-  FpuSetMemoryShort(m, FpuRound(m, St0(m)));
++  FpuSetMemoryShort(m, FpuInt16(FpuRound(m, St0(m))));
+ }
+ 
+ static void OpFistl(struct Machine *m) {
+-  FpuSetMemoryInt(m, FpuRound(m, St0(m)));
++  FpuSetMemoryInt(m, FpuInt32(FpuRound(m, St0(m))));
+ }
+ 
+ static void OpFistll(struct Machine *m) {
+-  FpuSetMemoryLong(m, FpuRound(m, St0(m)));
++  FpuSetMemoryLong(m, FpuInt64(FpuRound(m, St0(m))));
+ }
+ 
+ static void OpFistpl(struct Machine *m) {
+@@ -876,6 +891,13 @@ static void OpFucomp(struct Machine *m, u64 rde) {
+   FpuPop(m);
+ }
+ 
++static void OpFucompp(struct Machine *m, u64 rde) {
++  if (ModrmRm(rde) != 1) OpUdImpl(m);  // (DA E9 is the only form)
++  FpuCompare(m, *FpuSt(m, 1));
++  FpuPop(m);
++  FpuPop(m);
++}
++
+ static void OpFcomip(struct Machine *m, u64 rde) {
+   OpFcomi(m, rde);
+   FpuPop(m);
+@@ -1067,6 +1089,7 @@ void OpFpu(P) {
+     CASE(DISP(0xDA, FPUREG, 1), OpFcmove(m, rde));
+     CASE(DISP(0xDA, FPUREG, 2), OpFcmovbe(m, rde));
+     CASE(DISP(0xDA, FPUREG, 3), OpFcmovu(m, rde));
++    CASE(DISP(0xDA, FPUREG, 5), OpFucompp(m, rde));
+     CASE(DISP(0xDA, MEMORY, 0), OpFiaddl(m));
+     CASE(DISP(0xDA, MEMORY, 1), OpFimull(m));
+     CASE(DISP(0xDA, MEMORY, 2), OpFicoml(m));
+@@ -1093,8 +1116,10 @@ void OpFpu(P) {
+     CASE(DISP(0xDC, FPUREG, 3), OpFcomp(m, rde));
+     CASE(DISP(0xDC, FPUREG, 4), OpFsubEstSt(m, rde));
+     CASE(DISP(0xDC, FPUREG, 5), OpFsubrEstSt(m, rde));
+-    CASE(DISP(0xDC, FPUREG, 6), OpFdivEstSt(m, rde));
+-    CASE(DISP(0xDC, FPUREG, 7), OpFdivrEstSt(m, rde));
++    // DC F0+i is st(i) = st0 / st(i) and DC F8+i is st(i) = st(i) / st0
++    // (they were each other's)
++    CASE(DISP(0xDC, FPUREG, 6), OpFdivrEstSt(m, rde));
++    CASE(DISP(0xDC, FPUREG, 7), OpFdivEstSt(m, rde));
+     CASE(DISP(0xDC, MEMORY, 0), OpFaddl(m));
+     CASE(DISP(0xDC, MEMORY, 1), OpFmull(m));
+     CASE(DISP(0xDC, MEMORY, 2), OpFcoml(m));

@@ -1,0 +1,146 @@
+From aa6a04cf5b0b54100adf830188d12a58f1d088a3 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Tue, 13 Oct 2026 08:06:02 -0400
+Subject: [PATCH] Shiro: x87 add, sub, mul, div and sqrt are IEEE's with
+ infinities and NaNs (inf - 1 was -inf)
+
+FpuAdd, FpuSub, FpuMul and FpuDiv were written out by cases, and FpuSub's
+two cases for one infinite operand were each other's: inf - 1 gave -inf,
+and 1 - inf gave inf. A division by -0 gave an infinity with the dividend's
+sign alone. An invalid add or subtract gave a NaN with the first operand's
+sign, a NaN operand gave a positive NaN whatever it was, and fsqrt of a
+negative number gave the host's NaN.
+
+Each is now the C operation, which is IEEE's; an invalid one sets IE and
+gives the x87's "real indefinite" (a negative NaN) on every host, and a
+NaN operand is passed on. fixtures/x86/x87ops.c runs the six operations
+over infinities, zeros and a NaN.
+---
+ blink/fpu.c | 96 ++++++++++++++++-------------------------------------
+ 1 file changed, 28 insertions(+), 68 deletions(-)
+
+diff --git a/blink/fpu.c b/blink/fpu.c
+index 0000000..0000000 100644
+--- a/blink/fpu.c
++++ b/blink/fpu.c
+@@ -213,83 +213,42 @@ static double fprem1(double dividend, double modulus, u32 *sw) {
+   return x87remainder(dividend, modulus, sw, remainder, rint);
+ }
+ 
++// The four operations are IEEE's. An invalid one (inf - inf, 0 * inf, 0/0,
++// inf/inf) sets IE and gives the "real indefinite", which is a negative
++// NaN; a NaN operand is passed on. (They were written out by cases, and the
++// cases for an infinite operand of fsub were each other's: inf - 1 was
++// -inf and 1 - inf was inf. An invalid add or subtract gave a NaN with the
++// first operand's sign, and a NaN operand gave a positive one.)
++static double FpuInvalid(struct Machine *m) {
++  union DoublePun u;
++  m->fpu.sw |= kFpuSwIe;
++  u.i = 0xfff8000000000000;  // (as bits: the compiler may take one NaN for another)
++  return u.f;
++}
++
+ static double FpuAdd(struct Machine *m, double x, double y) {
+-  if (!isunordered(x, y)) {
+-    switch (isinf(y) << 1 | isinf(x)) {
+-      case 0:
+-        return x + y;
+-      case 1:
+-        return x;
+-      case 2:
+-        return y;
+-      case 3:
+-        if (signbit(x) == signbit(y)) {
+-          return x;
+-        } else {
+-          m->fpu.sw |= kFpuSwIe;
+-          return copysign(NAN, x);
+-        }
+-      default:
+-        __builtin_unreachable();
+-    }
+-  } else {
+-    return NAN;
+-  }
++  double r = x + y;
++  if (r != r && x == x && y == y) return FpuInvalid(m);
++  return r;
+ }
+ 
+ static double FpuSub(struct Machine *m, double x, double y) {
+-  if (!isunordered(x, y)) {
+-    switch (isinf(y) << 1 | isinf(x)) {
+-      case 0:
+-        return x - y;
+-      case 1:
+-        return -x;
+-      case 2:
+-        return y;
+-      case 3:
+-        if (signbit(x) == signbit(y)) {
+-          m->fpu.sw |= kFpuSwIe;
+-          return copysign(NAN, x);
+-        } else {
+-          return y;
+-        }
+-      default:
+-        __builtin_unreachable();
+-    }
+-  } else {
+-    return NAN;
+-  }
++  double r = x - y;
++  if (r != r && x == x && y == y) return FpuInvalid(m);
++  return r;
+ }
+ 
+ static double FpuMul(struct Machine *m, double x, double y) {
+-  if (!isunordered(x, y)) {
+-    if (!((isinf(x) && !y) || (isinf(y) && !x))) {
+-      return x * y;
+-    } else {
+-      m->fpu.sw |= kFpuSwIe;
+-      return -NAN;
+-    }
+-  } else {
+-    return NAN;
+-  }
++  double r = x * y;
++  if (r != r && x == x && y == y) return FpuInvalid(m);
++  return r;
+ }
+ 
+ static double FpuDiv(struct Machine *m, double x, double y) {
+-  if (!isunordered(x, y)) {
+-    if (x || y) {
+-      if (y) {
+-        return x / y;
+-      } else {
+-        m->fpu.sw |= kFpuSwZe;
+-        return copysign(INFINITY, x);
+-      }
+-    } else {
+-      m->fpu.sw |= kFpuSwIe;
+-      return copysign(NAN, x);
+-    }
+-  } else {
+-    return NAN;
+-  }
++  double r = x / y;
++  if (r != r && x == x && y == y) return FpuInvalid(m);
++  if (y == 0 && x == x && !isinf(x)) m->fpu.sw |= kFpuSwZe;
++  return r;
+ }
+ 
+ static double FpuRound(struct Machine *m, double x) {
+@@ -669,8 +628,9 @@ static void OpFidivrs(struct Machine *m) {
+ }
+ 
+ static void OpFsqrt(struct Machine *m) {
++  double x = St0(m);
+   FpuClearRoundup(m);
+-  FpuSetSt0(m, sqrt(St0(m)));
++  FpuSetSt0(m, x < 0 ? FpuInvalid(m) : sqrt(x));  // (the root of a negative number)
+ }
+ 
+ static void OpFrndint(struct Machine *m) {

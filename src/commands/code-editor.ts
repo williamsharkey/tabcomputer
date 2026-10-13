@@ -137,6 +137,7 @@ export function buildEditorHtml(files: { path: string; content: string; language
   body.phone .tree-item { min-height: 44px; display: flex; align-items: center; }
   body.phone #toggle-sidebar { min-width: 44px; min-height: 44px; }
   body.phone #hint button { min-height: 44px; padding: 1px 14px; }
+  body.phone #lab button { min-height: 44px; padding: 2px 16px; font-size: 14px; }
 </style>
 </head>
 <body${phone ? ' class="phone"' : ''}>
@@ -682,7 +683,7 @@ export const codeEditorCmd: Command = {
       });
       if (appDir) {
         const body = (dwin as { body?: HTMLElement }).body;
-        if (body) void import('../apps/app-pane').then(({ appPane }) => appPane({ fs: ctx.fs, shell: ctx.shell, dir: appDir, container: body })).then((p) => {
+        if (body) void import('../apps/app-pane').then(({ appPane }) => appPane({ fs: ctx.fs, shell: ctx.shell, dir: appDir, container: body, onReload: sayApp })).then((p) => {
           if (closed) { p.dispose(); return; }
           pane = p;
           sayApp();

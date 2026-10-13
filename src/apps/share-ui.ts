@@ -32,7 +32,7 @@ const CSS = `
 .tc-app-share-actions button[data-act=copy] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 @media (pointer: coarse) { .tc-app-share-actions button { min-height: 44px; } }
 .tc-app-share-qr { flex: none; display: flex; justify-content: center; }
-.tc-app-share-qr svg { max-width: 100%; height: auto; border-radius: 6px; }
+.tc-app-share-qr svg { width: min(200px, 100%); height: auto; border-radius: 6px; }
 `;
 
 /** The screen's style, for a caller that shows the screen in a place of its own (the Studio) */

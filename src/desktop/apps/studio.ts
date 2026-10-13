@@ -558,7 +558,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   /** What decides which parts the form has: when it changes, the form is drawn again */
   const shapeOf = (): string => {
     const d = state.draft;
-    return JSON.stringify([d.kind, d.inputs.map((i) => [i.name, i.type, i.type === 'choice' ? choiceLines(i.choices).length > 1 : 0]), d.columns.map((c) => c.type), d.output, d.out ? 1 : 0]);
+    return JSON.stringify([d.kind, d.inputs.map((i) => [i.name, i.type, i.type === 'choice' ? choiceLines(i.choices).map((x) => x.label) : 0]), d.columns.map((c) => c.type), d.output, d.out ? 1 : 0]);
   };
 
   /** Each problem beside its part of the form; one whose part is not shown goes at the top */
@@ -580,7 +580,13 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
 
   /** After each change: the form's parts, its problems, and (a moment after the last key) the app beside it */
   function changed(): void {
-    if (shapeOf() !== shape) draw(); else problems();
+    if (shapeOf() !== shape) draw();
+    else {
+      // (the packages follow the command until they are typed: shown in their box when it is not being typed in)
+      const needs = form.querySelector<HTMLInputElement>('[data-k=needs]');
+      if (needs && needs !== document.activeElement && needs.value !== state.draft.needs) needs.value = state.draft.needs;
+      problems();
+    }
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = null; void preview?.show(state.preview()).then(waiting); }, 350);
     gistLink = '';
@@ -590,6 +596,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   async function tryOut(): Promise<void> {
     const m = state.preview();
     if (!m || !preview) { state.tried = true; problems(); say('Try it runs the app once the problems above are fixed.'); return; }
+    // (one column: the app is below the form, out of sight)
+    if (root.classList.contains('st-narrow')) runBox.scrollIntoView({ block: 'start', behavior: 'smooth' });
     await preview.show(m);
     const inst = preview.inst;
     if (!inst) return;

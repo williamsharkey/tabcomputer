@@ -46,7 +46,7 @@ export interface AppPane {
   dispose(): void;
 }
 
-export async function appPane(o: { fs: FileSystem; shell: Shell; dir: string; container: HTMLElement }): Promise<AppPane> {
+export async function appPane(o: { fs: FileSystem; shell: Shell; dir: string; container: HTMLElement; onReload?: () => void }): Promise<AppPane> {
   if (!document.getElementById(STYLE_ID)) {
     const style = document.createElement('style');
     style.id = STYLE_ID;
@@ -109,6 +109,7 @@ export async function appPane(o: { fs: FileSystem; shell: Shell; dir: string; co
     try { inst = runtime.instanceFor({ manifest, dir, source: `dev:${dir}`, dev: true }); } catch (e) { cover$((e as Error).message); return; }
     inst.attach(view);
     offLog = inst.on((ev, text) => {
+      if (ev === 'reload') o.onReload?.();
       if (ev === 'log' && text) line(text);
       if (ev === 'state' && inst?.supervisor) line(`[app] backend ${inst.supervisor.state}${inst.supervisor.state === 'failed' ? `: ${inst.supervisor.error}` : ''}`, inst.supervisor.state === 'failed' ? 'bad' : 'dim');
     });

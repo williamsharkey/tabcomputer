@@ -328,7 +328,6 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     // Studio (docs/APPS.md "Studio"): make a one-file app with a form, the app running beside it
     {
       id: 'studio', name: 'Studio', icon: STUDIO_ICON, glyph: STUDIO_GLYPH, order: 6, launch: lazy(() => import('./apps/studio')),
-      menus: () => [{ title: 'File', items: [{ label: 'New App', action: () => { void import('./apps/studio').then((s) => s.newApp()); } }] }],
     },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
@@ -747,6 +746,10 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     const codeItems: MenuSpec['items'] = w?.appId === 'code' ? [
       { label: 'Open…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'file', codeDir)) },
       { label: 'Open Folder…', action: () => void import('./codesheet').then(m => m.openCodeSheet(ctx, 'folder', codeDir)) },
+      'separator',
+    ] : w?.appId === 'studio' ? [
+      // Studio (apps/studio.ts): back to its start, to pick a kind or an app to start from
+      { label: 'New App', action: () => void import('./apps/studio').then(m => m.newApp()) },
       'separator',
     ] : [];
     const file: MenuSpec = { title: 'File', items: [

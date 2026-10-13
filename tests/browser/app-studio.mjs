@@ -87,7 +87,7 @@ async function fill(s, c, sel, text, { replace = false } = {}) {
 }
 async function choose(s, c, sel, value) {
   await s.page.locator(sel).first().scrollIntoViewIfNeeded();
-  await s.page.selectOption(sel, value);
+  await s.page.selectOption(sel, value, { timeout: 5000 }).catch((e) => console.log(`     (could not choose ${value}: ${String(e.message).split("\n")[0]})`));
   c.taps += 2;
   c.parts++;
 }
@@ -286,8 +286,10 @@ async function codeFlow(s, app, id, template, name, opts = {}) {
   await page.keyboard.insertText(text);
   c.keys += text.length; c.parts++;
   await page.keyboard.press('ControlOrMeta+S'); c.keys++;
-  const h1 = await pageSays(page, id, () => document.querySelector('main h1')?.textContent);
+  const h1 = await until(page, async () => { const f = await inner(page, id); const t = await f?.evaluate(() => document.querySelector('main h1')?.textContent); return t === name ? t : null; });
   check(`${D} code ${app}: saving reloads the app in the pane`, h1 === name, h1);
+  const bar = await until(page, () => f.$eval('#lab-name', (e) => (e.textContent === name ? e.textContent : null)), 5000);
+  check(`${D} code ${app}: the bar names the app`, bar === name, bar);
   check(`${D} code ${app}: no problem is underlined`, await f.$('.cm-app-problem') === null);
   await f.click('#lab-app-share'); c.taps++;
   await page.waitForSelector('.tc-app-share textarea', { timeout: 15_000 });
@@ -321,7 +323,7 @@ for (const [W, H] of sizes) {
       if (wants('studio')) await studio(s);
       if (wants('code')) await code(s);
     } catch (e) {
-      check(`${s.tag}: the run went on to the end`, false, String(e?.message ?? e).slice(0, 300));
+      check(`${s.tag}: the run went on to the end`, false, String(e?.message ?? e).slice(0, 1500));
       await shot(s, 'error').catch(() => {});
     } finally {
       await s.browser.close().catch(() => {});

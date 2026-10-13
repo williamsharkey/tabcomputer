@@ -207,6 +207,17 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
   if (gist) return { ...base, kind: 'gist', url: `${origin}/?app=gist:${gist[1]}`, repo: `gist.github.com/${gist[1]}`, asks: true };
   const files = await collectAppFiles(fs, app.dir);
   if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE} in ${app.dir}`);
+  return shareFiles(files, app, origin);
+}
+
+/**
+ * The link for an app's files that no repository or site holds (an app made
+ * here, or a draft in the Studio): the readable `#name=…` form for one
+ * app.json that fits, else the packed `?app=link#app=…`.
+ */
+export async function shareFiles(files: Map<string, Uint8Array>, app: { id: string; name: string }, origin: string): Promise<AppShare> {
+  const base = { id: app.id, name: app.name };
+  if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE}`);
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
   const readable = files.size === 1 ? readableAppUrl(files.get(MANIFEST_FILE)!, app.id, origin) : null;

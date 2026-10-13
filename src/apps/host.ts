@@ -94,6 +94,12 @@ export interface HostApp {
   confined: boolean;
   /** This site ships the app: its supplied page may say what the site checked */
   reviewed?: boolean;
+  /**
+   * The Studio's "Try it" (src/apps/studio.ts): the next page that says hello runs with these,
+   * as if they were given to it. Files in the app's data folder for a files app; true for a
+   * form (it runs once with the values it starts with). Read once.
+   */
+  takeSamples?(): { path: string; rel: string }[] | true | null;
 }
 
 /** What a MessagePort is to the host (tests pass a pair of these) */
@@ -186,6 +192,7 @@ export class AppHost {
             v: PROTOCOL_VERSION, id: manifest.id, name: manifest.name, version: manifest.version, manifest,
             dir: this.app.dir, dataDir: this.app.dataDir, home: this.deps.home, confined: this.app.confined, reviewed: !!this.app.reviewed,
             theme: this.deps.theme?.get() ?? null,
+            ...((s) => (s ? { samples: s } : {}))(this.app.takeSamples?.()),
           },
         };
       case 'theme.watch': {

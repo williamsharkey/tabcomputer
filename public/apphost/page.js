@@ -285,6 +285,8 @@ tfoot td.num { text-align: right; }
       pump();
     }
     state.take = take;
+    // The Studio's "Try it": sample files, worked on as if they had been given here
+    if (Array.isArray(app.samples) && app.samples.length) take({ files: app.samples });
     if (!touch) {
       for (const t of ['dragenter', 'dragover']) drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); });
       for (const t of ['dragleave', 'drop']) drop.addEventListener(t, () => drop.classList.remove('over'));
@@ -479,7 +481,7 @@ tfoot td.num { text-align: right; }
       let timer = 0;
       form.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(start, 250); });
       start();
-    }
+    } else if (app.samples === true) start(); // the Studio's "Try it": a run with the values the fields start with
   }
 
   // ── table: a CSV or SQLite file ──

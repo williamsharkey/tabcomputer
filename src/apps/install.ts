@@ -16,7 +16,7 @@ import { appsDeps, browserDownload, homeDir, instanceFor, instanceOf, runLine } 
 import { EXPORT_SUFFIX, exportApp, noteExported, readExport, replacePlan, restoreData, sameApp, type AppExport } from './export';
 import type { ReplaceInfo } from './prompt';
 import { becomeApp, idTaken, installedRef, monogramIcon, openInstalled, registerInstalledApp, stopApp } from './window';
-import type { AppManifest } from './manifest';
+import { parseManifest, type AppManifest } from './manifest';
 import { cleanRunUrl } from '../run-url';
 import { setShippedHidden } from './shipped';
 import { phoneScreen } from './surface';
@@ -188,6 +188,17 @@ export async function installFetched(app: FetchedApp, files?: Map<string, Uint8A
   if (idTaken(app.manifest.id)) throw new AppError(`the id ${app.manifest.id} belongs to an app that is built in`);
   stopApp(app.manifest.id);
   const r = await installFromFiles(fs, files ?? await app.files(), { home: homeDir(), source: app.source, id: app.manifest.id });
+  afterInstall(r.app);
+  return r;
+}
+
+/** Install an app made in this tab from its files (the Studio): listed, in the dock. A running copy is stopped first. */
+export async function installMade(files: Map<string, Uint8Array>, source: string): Promise<{ app: InstalledApp; manifest: AppManifest; files: number; replaced: boolean }> {
+  const { fs } = appsDeps();
+  const m = parseManifest(files.get('app.json') ?? '');
+  if (idTaken(m.id)) throw new AppError(`the id ${m.id} belongs to an app that is built in`);
+  stopApp(m.id);
+  const r = await installFromFiles(fs, files, { home: homeDir(), source, id: m.id });
   afterInstall(r.app);
   return r;
 }

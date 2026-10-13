@@ -268,6 +268,8 @@ export class AppInstance {
   private offs: (() => void)[] = [];
   /** The window its tab.js calls act on */
   window: HostDeps['window'] = null;
+  /** The Studio's "Try it": what the next page that loads runs with (host.ts `takeSamples`) */
+  samples: { path: string; rel: string }[] | true | null = null;
 
   constructor(ref: AppRef) {
     this.manifest = ref.manifest;
@@ -283,7 +285,9 @@ export class AppInstance {
   private makeHost(): AppHost {
     const d = appsDeps();
     const self = this;
-    return new AppHost({ manifest: this.manifest, dir: this.dir, dataDir: this.dataDir, reviewed: this.source === 'site', get confined() { return self.confined; } }, {
+    return new AppHost({ manifest: this.manifest, dir: this.dir, dataDir: this.dataDir, reviewed: this.source === 'site', get confined() { return self.confined; },
+      takeSamples: () => { const s = self.samples; self.samples = null; return s; },
+    }, {
       fs: d.fs as unknown as HostDeps['fs'],
       home: homeDir(),
       run: runLine,

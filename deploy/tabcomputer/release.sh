@@ -35,6 +35,22 @@ cp profiles/tabcomputer/server.env "$rel/server.env"
 echo "$sha" > "$rel/DEPLOYED_SHA"
 echo "$sha" > "$rel/public/deployed.txt"
 ln -sfn "$rel" "$root/current.new" && mv -T "$root/current.new" "$root/current"
+# Package layers (docs/DEBIAN.md "Package layers"): the tools server.mjs builds
+# a requested set with (TABCOMPUTER_LAYER_BUILDER in server.env), as a copy of
+# their own so a toolchain build in flight never keeps them from a release.
+# Swapped in whole; a failure here leaves the old tools and never stops the deploy.
+install_set_tools() {
+  local tools=$root/set-build/tools
+  # (each step checked by hand: `set -e` does not act inside `f || ...`)
+  rm -rf "$tools.new" "$tools.old"
+  mkdir -p "$tools.new" || return 1
+  cp scripts/debian/build-set.sh scripts/debian/pack-layer.mjs scripts/debian/unpack-rootfs.mjs \
+    scripts/debian/set-key.mjs scripts/debian/set-limits.mjs scripts/debian/set-evict.mjs src/debian/package-sets.json "$tools.new/" || return 1
+  if [ -d "$tools" ]; then mv -T "$tools" "$tools.old" || return 1; fi
+  mv -T "$tools.new" "$tools" || return 1
+  rm -rf "$tools.old"
+}
+install_set_tools || echo "package set tools not installed"
 systemctl restart tabcomputer
 bash deploy/tabcomputer/tls-install.sh "$src" || true
 # Toolchain layers (docs/DEBIAN.md "Toolchain layers") build in the
@@ -51,11 +67,18 @@ start_layer_build() {
   fi
   local tools=$root/layer-build/tools
   rm -rf "$tools"; mkdir -p "$tools"
-  cp scripts/debian/build-layers.sh scripts/debian/pack-layer.mjs scripts/debian/unpack-rootfs.mjs src/debian/toolchains.json "$tools/"
+  cp scripts/debian/build-layers.sh scripts/debian/build-deploy.sh scripts/debian/build-set.sh scripts/debian/pack-layer.mjs scripts/debian/unpack-rootfs.mjs \
+    scripts/debian/set-key.mjs scripts/debian/set-limits.mjs scripts/debian/set-evict.mjs src/debian/toolchains.json src/debian/package-sets.json "$tools/"
   systemctl reset-failed tabcomputer-layers 2>/dev/null || true
+  # build-deploy.sh: the toolchain layers as before (build-layers.sh), then the
+  # package sets of package-sets.json into $root/layers/sets (build-set.sh;
+  # docs/DEBIAN.md "Package layers"). Sets a tab asks for are built by
+  # server.mjs with the same build-set.sh, in $root/set-build
+  # (TABCOMPUTER_LAYER_BUILDER in server.env).
   systemd-run --unit=tabcomputer-layers --no-block -p PrivateMounts=yes -p Nice=19 -p IOSchedulingClass=idle -p CPUQuota=50% \
     -E BASE="$rel/public/debian" -E OUT="$root/layers" -E WORK="$root/layer-build" -E SPEC="$tools/toolchains.json" -E PRUNE=1 \
-    bash "$tools/build-layers.sh"
+    -E SETS_WORK="$root/set-build" \
+    bash "$tools/build-deploy.sh"
 }
 start_layer_build || echo "layer build not started"
 ls -1dt "$root"/releases/* | tail -n +4 | xargs -r rm -rf

@@ -64,8 +64,9 @@ would read them.
   (`KNOWN_PACKAGES`).
 - A field's label starts as its word in braces: `{json}` gives "Json". It reads
   oddly until it is changed.
-- A one-letter name has no id, and the problem says "add an id", which the
-  form has no box for. (Not fixed.)
+- A one-letter name, or a name tabcomputer uses itself ("Files"), makes no
+  id, and `app check` says "add an id", which the form has no box for. The
+  Studio now gives such a name an id of its own (`a-app`, `files-app`).
 - On a phone the app is below the form. Try it scrolls to it; a change typed
   in the form is not seen until the person scrolls down.
 

@@ -114,6 +114,17 @@ describe('form to app.json and back', () => {
     expect(s.load({ name: 'Paged', entry: 'public' })).toBe(false);
   });
 
+  it('gives an id to a name that makes none, since the form has no box for one', () => {
+    const d = blankDraft('files');
+    d.run = 'cat {in}';
+    d.name = 'A';
+    expect(checkDraft(d)).toMatchObject({ problems: [], raw: { id: 'a-app', name: 'A' } });
+    d.name = 'Files';
+    expect(checkDraft(d)).toMatchObject({ problems: [], raw: { id: 'files-app' } });
+    d.name = 'Copy';
+    expect(draftToRaw(d).id).toBeUndefined();
+  });
+
   it('reads file types and choices as a person types them', () => {
     expect(acceptList('jpg, .PNG  .jpg tiff')).toEqual(['.jpg', '.png', '.tiff']);
     expect(choiceLines('Small: /ebook\n\n Print : /printer\nPlain\nPlain')).toEqual([

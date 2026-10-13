@@ -163,6 +163,8 @@ function inputToRaw(i: DraftInput, kind: StudioKind): unknown {
 export function draftToRaw(d: Draft): Record<string, unknown> {
   const raw: Record<string, unknown> = {};
   if (d.id) raw.id = d.id;
+  // A name that makes no id (one letter, or a name tabcomputer uses itself: "Files") gets one: the form has no box for it
+  else if (d.name.trim() && !idFromName(d.name) && idFromName(`${d.name} app`)) raw.id = idFromName(`${d.name} app`);
   if (d.name.trim()) raw.name = d.name.trim();
   if (d.about.trim()) raw.about = d.about.trim();
   if (d.kind === 'table') {

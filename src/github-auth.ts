@@ -111,6 +111,13 @@ export function saveGitHubToken(token: string): void {
   try { localStorage.setItem(GITHUB_TOKEN_KEY, token); } catch {}
 }
 
+/** The scopes a token has: GitHub names them in the X-OAuth-Scopes header of any answer of its API */
+export async function tokenScopes(token: string, fetchImpl: FetchLike = fetch): Promise<string[]> {
+  const res = await fetchImpl(`${githubApiBase(getShiroOrigin())}/user`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } });
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  return (res.headers.get('x-oauth-scopes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 /**
  * Fill in ~/.gitconfig user.name / user.email from the GitHub account when they
  * aren't set yet, so commits are attributed without extra setup, and add gh's

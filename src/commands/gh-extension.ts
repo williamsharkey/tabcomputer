@@ -304,7 +304,10 @@ export async function runExtension(ctx: CommandContext, e: Extension, args: stri
   child.env = { ...child.env, ...(token && !ctx.env.GH_TOKEN ? { GH_TOKEN: token } : {}) };
   const out = (s: string) => { if (toTerm) ctx.terminal!.writeOutput(s); else ctx.stdout += s.replace(/\r\n/g, '\n'); };
   const err = (s: string) => { if (ctx.terminal && ctx.stderrIsTTY !== false) ctx.terminal.writeOutput(s); else ctx.stderr += s.replace(/\r\n/g, '\n'); };
-  return child.executeWithStdinOf(ctx, quoteArgsForShell([e.exe, ...args]), ctx.streamStdout ?? out, ctx.streamStderr ?? err);
+  // What it says on stderr is also kept (its end): a failure that names scopes its token lacks is acted on (github-needed.ts)
+  ctx.stderrSeen = '';
+  const seen = (write: (s: string) => void) => (s: string) => { ctx.stderrSeen = ((ctx.stderrSeen ?? '') + s.replace(/\r\n/g, '\n')).slice(-4000); write(s); };
+  return child.executeWithStdinOf(ctx, quoteArgsForShell([e.exe, ...args]), ctx.streamStdout ?? out, seen(ctx.streamStderr ?? err));
 }
 
 const USAGE = `Work with gh extensions: repositories named gh-NAME that add \`gh NAME\`.

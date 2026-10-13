@@ -3,7 +3,7 @@
  * sign-in and runs again (src/github-needed.ts).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { githubSignInWanted, retrySignedIn, fetchSignedIn, setGitHubNeedHandler, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
+import { githubSignInWanted, missingScopes, retrySignedIn, fetchSignedIn, scopesSentence, setGitHubNeedHandler, setTokenScopesReader, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
 import { GITHUB_RATE_LIMITED, githubMissing, githubNotThere, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
 import { fetchGhApp, handleAppLink } from '@shiro/apps/links';
 import { hotswapCmd } from '@shiro/commands/hotswap';
@@ -144,6 +144,85 @@ describe('github-needed: ask, then run again', () => {
     localStorage.setItem(KEY, 'gho_saved');
     expect(await askGitHubSignIn({ action: 'gh repo list', kind: 'account' })).toBe('gho_saved');
     expect(asked).toEqual([]);
+  });
+});
+
+describe('github-needed: a token that lacks scopes (tabcomputer#153)', () => {
+  const STUDENT = 'gh-student: your github.com token (source: GH_TOKEN) is missing scopes gh student needs (admin:org, read:org, repo, workflow); it wasn\'t set by `gh auth login`, so re-running won\'t fix it. Re-issue the token with those scopes, or unset it and run `gh student login`\n';
+  let asked: GitHubNeed[] = [];
+  let answer: string | null = 'gho_more';
+  let off = () => {};
+  beforeEach(() => {
+    asked = []; answer = 'gho_more';
+    localStorage.setItem(KEY, 'gho_saved');
+    resetGitHubNeedDecline();
+    setTokenScopesReader(async () => ['gist', 'read:org', 'repo', 'user:email', 'workflow']);
+    off = setGitHubNeedHandler(async (need) => { asked.push(need); if (answer) localStorage.setItem(KEY, answer); return answer; });
+  });
+  afterEach(() => { off(); setTokenScopesReader(null); });
+
+  it('reads the scopes a failure names, in the forms gh and its extensions use', () => {
+    expect(missingScopes(STUDENT)).toEqual(['admin:org', 'read:org', 'repo', 'workflow']);
+    expect(missingScopes('error: your authentication token is missing required scopes [read:project]\nTo request it, run:  gh auth refresh -s read:project\n')).toEqual(['read:project']);
+    expect(missingScopes('This API operation needs the "codespace" scope. To request it, run:  gh auth refresh -h github.com -s codespace\n')).toEqual(['codespace']);
+    expect(missingScopes('your token is missing the required scopes (delete_repo)')).toEqual(['delete_repo']);
+    // not a list of scopes: other failures, markup, a made-up name
+    for (const text of ['', 'fatal: repository not found', 'HTTP 403: Resource not accessible by integration', 'missing scopes (<script>alert(1)</script>)', 'error: missing scope']) expect(missingScopes(text), text).toBeNull();
+    expect(scopesSentence(['admin:org'])).toBe('This adds permission to manage your organizations, their teams and their members (admin:org).');
+    expect(scopesSentence(['project', 'delete_repo', 'made_up'])).toBe('This adds 3 permissions: to read and change projects (project); to delete repositories (delete_repo); and to do what GitHub calls made_up.');
+  });
+
+  it('at a terminal: asks for exactly the scopes the sign-in lacks, then runs the command again', async () => {
+    const { ctx, written } = fakeCtx({ args: ['student', 'whoami'] });
+    let runs = 0;
+    const run = async () => {
+      runs++;
+      // (a gh extension writes to the terminal itself: gh keeps the end of it in stderrSeen)
+      if (localStorage.getItem(KEY) !== 'gho_more') { ctx.stderrSeen = STUDENT; return 1; }
+      ctx.stdout += 'you are octocat\n';
+      return 0;
+    };
+    expect(await retrySignedIn(ctx, 'gh student whoami', run)).toBe(0);
+    expect(runs).toBe(2);
+    // admin:org is the one it lacks; the request keeps what the sign-in has
+    expect(asked).toEqual([{ action: 'gh student whoami', kind: 'scopes', add: ['admin:org'], scopes: ['repo', 'read:org', 'gist', 'workflow', 'user:email', 'admin:org'] }]);
+    expect(ctx.stdout).toBe('you are octocat\n');
+    expect(written.join('')).toContain('gh student whoami needs a permission the GitHub sign-in here does not have (admin:org). A window opened to add it.');
+    expect(written.join('')).toContain('GitHub added it. Running gh student whoami again.');
+  });
+
+  it('"Not now" leaves the failure; a scope the token holds inside another is not asked for', async () => {
+    answer = null;
+    const { ctx } = fakeCtx();
+    expect(await retrySignedIn(ctx, 'gh student whoami', async () => { ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toHaveLength(1);
+    expect(ctx.stderr).toBe(STUDENT);
+    // read:org and public_repo are inside admin:org and repo: nothing is lacking, so the failure is about something else
+    asked = []; resetGitHubNeedDecline();
+    setTokenScopesReader(async () => ['admin:org', 'repo', 'workflow']);
+    const held = fakeCtx();
+    expect(await retrySignedIn(held.ctx, 'gh x', async () => { held.ctx.stderr = 'missing scopes (read:org, public_repo, workflow)\n'; return 1; })).toBe(1);
+    expect(asked).toEqual([]);
+  });
+
+  it('a token the person exported themselves is theirs to re-issue; without a terminal the question opens beside the failure', async () => {
+    const own = fakeCtx({ env: { GH_TOKEN: 'ghp_their_own' } });
+    expect(await retrySignedIn(own.ctx, 'gh student whoami', async () => { own.ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toEqual([]);
+    // the tab's own token in the environment (gh auth login puts it there) is the tab's
+    const tabs = fakeCtx({ env: { GITHUB_TOKEN: 'gho_saved' } });
+    let n = 0;
+    expect(await retrySignedIn(tabs.ctx, 'gh student whoami', async () => { if (n++) return 0; tabs.ctx.stderr = STUDENT; return 1; })).toBe(0);
+    expect(tabs.ctx.env.GITHUB_TOKEN).toBe('gho_more');
+    asked = []; resetGitHubNeedDecline();
+    localStorage.setItem(KEY, 'gho_saved');
+    const quiet = fakeCtx({ terminal: undefined });
+    let release!: (t: string | null) => void;
+    off(); off = setGitHubNeedHandler((need) => { asked.push(need); return new Promise((r) => { release = r; }); });
+    expect(await retrySignedIn(quiet.ctx, 'gh student whoami', async () => { quiet.ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toMatchObject([{ kind: 'scopes', add: ['admin:org'], afterFailure: true }]);
+    expect(quiet.ctx.stderr).toContain('(A window opened to give the GitHub sign-in here that permission. Approve there, then run gh student whoami again.)');
+    release(null);
   });
 });
 

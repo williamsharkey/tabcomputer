@@ -1,22 +1,41 @@
 name: CI
 
+# The gate, off the development machine: every push to a work branch and every
+# pull request to main. What the droplet's release.sh runs (npm ci, tsc, the
+# build) and both vitest configs. Each step runs even when an earlier one
+# failed, so one run shows everything that is wrong.
 on:
+  push:
+    branches: ['unix/**', 'coord/**']
   pull_request:
     branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       # the suite's own dependencies (linkedom, …) live in tests/package.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
         working-directory: tests
-      - run: npm test
-      - run: npx tsc --noEmit
-      - run: npm run build
+      - name: tsc
+        run: npx tsc --noEmit
+      - name: vitest (page)
+        if: always()
+        run: npm test
+      - name: vitest (worker)
+        if: always()
+        run: npm run test:worker
+      - name: build, as the droplet builds it
+        if: always()
+        run: npm run build

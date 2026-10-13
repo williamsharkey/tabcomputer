@@ -151,7 +151,8 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   } catch { /* missing */ }
   if (!elf) {
     ctx.stderr += `claude --vm: native Claude Code is not installed (no binary at ${path}).\n`
-      + 'Run `claude install` first: --vm runs that build\'s JavaScript without the x86-64 emulator.\n';
+      + 'Run `claude install` first: --vm runs that build\'s JavaScript without the x86-64 emulator.\n'
+      + 'Or `claude --npm` for the pinned npm build, which needs no download.\n';
     return 1;
   }
   const home = ctx.env.HOME || '/home/user';

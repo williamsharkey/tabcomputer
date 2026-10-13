@@ -2115,13 +2115,14 @@ async function handleBrowseHost(req, res, cfg) {
 // browse zone: app--<id>--<16 hex>.<zone> (src/apps/frame.ts makes the label).
 // Its `--` runs can't be a browse key's, so the two never meet. Such a host
 // serves only /__tabcomputer/: the frame that holds the port to the tab, the
-// origin's service worker, and tab.js. The app's own files and its backend
+// origin's service worker, tab.js, and page.js (the page of an app that has
+// none of its own). The app's own files and its backend
 // are answered by the tab, through that worker. Never the app shell, /api,
 // /tcp or anything else: script on an app origin must find nothing here.
 // Where there are no browse origins there are no app origins, and the tab
 // shows an app's page on its own origin instead (and says so).
 const APP_LABEL = /^app--[a-z0-9]{1,24}--[a-f0-9]{16}$/;
-const APP_HOST_SCRIPTS = new Set(['frame.js', 'sw.js', 'tab.js']);
+const APP_HOST_SCRIPTS = new Set(['frame.js', 'sw.js', 'tab.js', 'page.js']);
 
 /** The app label when `hostHeader` is an app host of `cfg` (browseConfigFor), else null. */
 export function appLabelOf(hostHeader, cfg) {

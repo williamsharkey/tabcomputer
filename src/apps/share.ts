@@ -4,6 +4,7 @@
  *
  *   an app this site ships       ?app=<id>
  *   an app from GitHub           ?app=gh:<owner>/<repo>[/<path>]
+ *   an app from a gist           ?app=gist:<id>
  *   any other app (a folder, an archive, a link)
  *                                ?app=link#app=<the app's files>
  *
@@ -131,7 +132,7 @@ export async function collectAppFiles(fs: RegistryFs, dir: string): Promise<Map<
   return out;
 }
 
-export type ShareKind = 'site' | 'gh' | 'files';
+export type ShareKind = 'site' | 'gh' | 'gist' | 'files';
 
 export interface AppShare {
   id: string;
@@ -141,7 +142,7 @@ export interface AppShare {
   /** For 'files': how many the link carries and their size before packing */
   files?: number;
   bytes?: number;
-  /** For 'gh': github.com/<owner>/<repo>[, <path>] */
+  /** For 'gh': github.com/<owner>/<repo>[, <path>]; for 'gist': gist.github.com/<id> */
   repo?: string;
   /** Does tabcomputer ask the person who opens the link before it installs? (No only for an app the site ships.) */
   asks: boolean;
@@ -156,6 +157,8 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
     const [owner, repo, ...path] = gh[1].split('/');
     return { ...base, kind: 'gh', url: `${origin}/?app=gh:${gh[1]}`, repo: `github.com/${owner}/${repo}${path.length ? `, ${path.join('/')}` : ''}`, asks: true };
   }
+  const gist = /^gist:([0-9a-f]{5,40})@[0-9a-f]{40}$/.exec(app.source);
+  if (gist) return { ...base, kind: 'gist', url: `${origin}/?app=gist:${gist[1]}`, repo: `gist.github.com/${gist[1]}`, asks: true };
   const files = await collectAppFiles(fs, app.dir);
   if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE} in ${app.dir}`);
   let bytes = 0;
@@ -184,8 +187,8 @@ export function shareStatement(s: AppShare): { promise: string[]; details: strin
   if (s.kind === 'files') {
     details.push(`The link holds the app's files (${s.files} ${s.files === 1 ? 'file' : 'files'}, ${size(s.bytes ?? 0)}). The files are in the link itself and are not stored on a server.`);
     details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
-  } else if (s.kind === 'gh') {
-    details.push(`The link names ${s.repo}. Each person gets the files that repository holds when they open the link.`);
+  } else if (s.kind === 'gh' || s.kind === 'gist') {
+    details.push(`The link names ${s.repo}. Each person gets the files that ${s.kind === 'gist' ? 'gist' : 'repository'} holds when they open the link.`);
   } else details.push(`This site ships ${s.name}. Each person gets the site's copy.`);
   details.push(`The link does not hold the data you stored in ${s.name}.`);
   details.push(s.asks

@@ -2,24 +2,27 @@
  * app: make, try, install and run apps (docs/APPS.md). An app is a folder
  * with an app.json; installed, it has a dock entry and a window of its own.
  *
- *   app new NAME [--template T | --from SCRIPT]   scaffold a folder
+ *   app new NAME [--template T | --page | --from SCRIPT]   one file, app.json (or a folder with a page)
  *   app dev [DIR]                                 the developer loop: a window, the log, restart on save
- *   app install [DIR | ID | gh:OWNER/REPO[/PATH] | URL]
+ *   app install [DIR | ID | gh:OWNER/REPO[/PATH] | gist:ID | URL]
  *   app open ID [--become]
  *   app share ID                                  a link that gives each person their own copy
  *   app list | stop ID | remove ID | check [DIR] | templates
  */
 import type { Command, CommandContext } from './index';
-import { describeManifest, ManifestError, MANIFEST_FILE } from '../apps/manifest';
+import { describeManifest, manifestSentences, ManifestError, MANIFEST_FILE } from '../apps/manifest';
 import { AppError, appDataDir, findInstalled, listInstalled, loadManifest, removeInstalled } from '../apps/registry';
 import { RunLinkError, parseRecipeHeader, plain } from '../run-url';
 
-const USAGE = `Usage: app new NAME [--template T] [--name "Shown name"] [--dir DIR]   start an app from a template (app templates)
+const USAGE = `Usage: app new NAME [--template files|form|table] [--name "Shown name"] [--dir DIR]
+                                         a new app as one file, app.json (app templates)
+       app new NAME --page               a new app with a page of its own (five files)
        app new NAME --from SCRIPT        wrap a script as an app with a Run button
        app dev [DIR] [--no-open]         open the app in DIR, show its log, restart on save (Ctrl-C stops)
        app install [DIR]                 install the app in a folder (default: here)
        app install ID                    install an app this site ships
        app install gh:OWNER/REPO[/PATH]  install an app from GitHub (asks first)
+       app install gist:ID               install an app from a gist (asks first)
        app install URL                   install an app from a .zip or .tar.gz (asks first)
                  [--guest[=NAME]]        open it in a guest instead of installing it here
        app open ID [--become] [--new]    open an installed app; --become: the tab is the app
@@ -28,7 +31,7 @@ const USAGE = `Usage: app new NAME [--template T] [--name "Shown name"] [--dir D
        app list [-l]                     installed apps and whether they run
        app stop ID                       close its windows and stop its backend
        app remove ID [--data]            uninstall it; --data deletes what it stored too
-       app check [DIR]                   validate app.json and say what it asks for
+       app check [DIR]                   validate app.json and say what the app does and asks for
        app templates                     the templates app new takes
 `;
 
@@ -85,18 +88,18 @@ export const appCmd: Command = {
 
         case 'templates': {
           const { TEMPLATES, DEFAULT_TEMPLATE } = await import('../apps/templates');
-          for (const t of TEMPLATES) out(`${t.name.padEnd(10)} ${t.title}: ${t.description}${t.name === DEFAULT_TEMPLATE ? ' (the default)' : ''}`);
+          for (const t of TEMPLATES) out(`${t.name.padEnd(7)} ${t.title}${t.name === DEFAULT_TEMPLATE ? ' (the default)' : ''}: ${t.description}`);
           return 0;
         }
 
         case 'new': {
-          if (!known('--template', '--from', '--name', '--dir')) return 2;
+          if (!known('--template', '--page', '--from', '--name', '--dir')) return 2;
           if (rest.length !== 1) { err('new needs one name'); ctx.stderr += USAGE; return 2; }
-          const { scaffold, idFromName, titleFromId, TEMPLATES } = await import('../apps/templates');
+          const { scaffold, idFromName, titleFromId, TEMPLATES, DEFAULT_TEMPLATE } = await import('../apps/templates');
           const id = idFromName(rest[0]);
           if (!id) { err(`${JSON.stringify(rest[0])} does not make an id (2 to 32 of a-z, 0-9 and -, starting with a letter, and not a name tabcomputer uses)`); return 1; }
-          if (flags.has('--template') && flags.has('--from')) { err('give --template or --from, not both'); return 2; }
-          const template = flags.get('--template');
+          if (['--template', '--page', '--from'].filter((f) => flags.has(f)).length > 1) { err('give one of --template, --page and --from'); return 2; }
+          const template = flags.has('--page') ? 'page' : flags.get('--template');
           if (template !== undefined && !TEMPLATES.some((t) => t.name === template)) { err(`no template named ${template} (app templates)`); return 1; }
           let script: string | undefined;
           let name = flags.get('--name') ?? (rest[0] !== id ? rest[0] : titleFromId(id));
@@ -107,8 +110,9 @@ export const appCmd: Command = {
           }
           const dir = ctx.fs.resolvePath(flags.get('--dir') ?? id, ctx.cwd);
           const files = await scaffold(ctx.fs, dir, id, { template, name, script });
-          out(`Created ${id} in ${tilde(dir)}${script !== undefined ? ` (from ${flags.get('--from')})` : ` (template ${template ?? 'file-tool'})`}:`);
+          out(`Created ${id} in ${tilde(dir)}${script !== undefined ? ` (from ${flags.get('--from')})` : ` (template ${template ?? DEFAULT_TEMPLATE})`}:`);
           for (const f of files) out(`  ${f}`);
+          if (files.length === 1) out(`That one file is the whole app. Say what it does: app check ${tilde(dir)}`);
           out(`Try it:     app dev ${tilde(dir)}`);
           out(`Install it: app install ${tilde(dir)}`);
           return 0;
@@ -119,7 +123,9 @@ export const appCmd: Command = {
           const dir = ctx.fs.resolvePath(rest[0] ?? '.', ctx.cwd);
           const m = await loadManifest(ctx.fs, dir);
           out(`${m.id}: ${m.name}${m.version ? ` ${m.version}` : ''} (${MANIFEST_FILE} is valid)`);
-          for (const l of describeManifest(m)) out(`  ${l.label.padEnd(9)} ${l.text}`);
+          // An app that is its manifest reads as the sentences the install prompt shows
+          if (m.kind !== 'page') for (const s of manifestSentences(m)) out(`  ${s}`);
+          else for (const l of describeManifest(m)) out(`  ${l.label.padEnd(9)} ${l.text}`);
           return 0;
         }
 
@@ -132,7 +138,8 @@ export const appCmd: Command = {
           const install = await import('../apps/install');
           const spec = rest[0] ?? '.';
           const asDir = ctx.fs.resolvePath(spec, ctx.cwd);
-          const isDir = !/^(gh:|https?:)/i.test(spec) && await ctx.fs.stat(asDir).then((s) => s.isDirectory(), () => false);
+          const remote = /^(gh:|gist:|https?:)/i.test(spec);
+          const isDir = !remote && await ctx.fs.stat(asDir).then((s) => s.isDirectory(), () => false);
           let id: string;
           if (isDir) {
             if (flags.has('--guest')) { err('a folder of this tab cannot be installed into a guest (a guest has its own files): put it in a repository and use gh:OWNER/REPO'); return 1; }
@@ -141,7 +148,7 @@ export const appCmd: Command = {
             live(`${r.replaced ? 'Updated' : 'Installed'} ${r.app.name} (${id}) in ${tilde(r.app.dir)}${r.files ? `: ${r.files} files` : ''}.`);
           } else {
             const { parseAppSpec, appLinkQuery } = await import('../apps/links');
-            if (!/^(gh:|https?:)/i.test(spec) && spec.includes('/')) { err(`${spec}: no such folder`); return 1; }
+            if (!remote && spec.includes('/') && !/^examples\/[a-z0-9-]+$/.test(spec)) { err(`${spec}: no such folder`); return 1; }
             const target = parseAppSpec(spec);
             const guest = flags.get('--guest');
             if (guest !== undefined) {
@@ -158,8 +165,8 @@ export const appCmd: Command = {
             live(`Fetching ${plain(spec)}…`);
             // A private repository, or GitHub's limit for visitors: ask for the sign-in and fetch again
             const needed = await import('../github-needed');
-            const app = target.kind === 'gh'
-              ? await needed.fetchSignedIn(`app install gh:${target.owner}/${target.repo}`, (token) => install.fetchApp(target, undefined, token), { wait: needed.atTerminal(ctx) })
+            const app = target.kind === 'gh' || target.kind === 'gist'
+              ? await needed.fetchSignedIn(`app install ${target.kind === 'gh' ? `gh:${target.owner}/${target.repo}` : `gist:${target.id}`}`, (token) => install.fetchApp(target, undefined, token), { wait: needed.atTerminal(ctx) })
               : await install.fetchApp(target);
             if (!app.curated) {
               live(`${app.manifest.name} (${app.manifest.id}) from ${app.from}. tabcomputer has not reviewed it: a window shows what it asks for.`);
@@ -207,7 +214,7 @@ export const appCmd: Command = {
             try {
               const m = await loadManifest(ctx.fs, a.dir);
               if (m.description) out(`  ${m.description}`);
-              for (const l of describeManifest(m)) out(`  ${l.label.padEnd(9)} ${l.text}`);
+              for (const l of describeManifest(m)) out(l.label ? `  ${l.label.padEnd(9)} ${l.text}` : `  ${l.text}`);
             } catch (e) { out(`  (its ${MANIFEST_FILE} can't be read: ${(e as Error).message.split('\n')[0]})`); }
           }
           return 0;

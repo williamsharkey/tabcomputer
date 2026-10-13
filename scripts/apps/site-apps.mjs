@@ -1,5 +1,7 @@
 // The apps this site ships (docs/APPS.md "Links"): every folder of apps/ with an
-// app.json, except templates/. A build copies each to dist/apps/<id>/ and lists
+// app.json, except templates/, and the examples in apps/examples/ (installable
+// by id, but with no dock entry: src/apps/shipped.ts reads only apps/*/app.json).
+// A build copies each to dist/apps/<id>/ and lists
 // its files with their sha256 in dist/apps/index.json (vite-plugin-apps.ts); the
 // page installs `?app=<id>` and `app install <id>` only when every file it
 // fetched matches that list (src/apps/links.ts).
@@ -29,16 +31,19 @@ export function siteApps(root = ROOT) {
   const appsDir = join(root, 'apps');
   if (!existsSync(appsDir)) return [];
   const out = [];
-  for (const id of readdirSync(appsDir).sort()) {
-    const dir = join(appsDir, id);
+  const examples = join(appsDir, 'examples');
+  const folders = [...readdirSync(appsDir).map((id) => [id, join(appsDir, id)]), ...(existsSync(examples) ? readdirSync(examples).map((id) => [id, join(examples, id)]) : [])];
+  for (const [id, dir] of folders.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (id === 'templates' || !existsSync(join(dir, 'app.json'))) continue;
     const m = JSON.parse(readFileSync(join(dir, 'app.json'), 'utf8'));
-    if (m.id !== id) throw new Error(`apps/${id}/app.json has the id ${JSON.stringify(m.id)}: the folder's name must be the id`);
+    // (an app.json without an id takes its folder's name)
+    if ((m.id ?? id) !== id) throw new Error(`${dir}/app.json has the id ${JSON.stringify(m.id)}: the folder's name must be the id`);
+    if (out.some((a) => a.id === id)) throw new Error(`two apps are named ${id}`);
     const files = walk(dir).map((path) => {
       const bytes = readFileSync(join(dir, path));
       return { path, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length };
     });
-    out.push({ id, name: m.name, description: m.description ?? '', version: m.version ?? '', dir, files });
+    out.push({ id, name: m.name, description: m.about ?? m.description ?? '', version: m.version ?? '', dir, files });
   }
   return out;
 }

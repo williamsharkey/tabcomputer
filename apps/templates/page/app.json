@@ -1,7 +1,7 @@
 {
   "manifest": 1,
-  "id": "file-tool",
-  "name": "File tool",
+  "id": "page",
+  "name": "Page",
   "description": "Drop files, run a program on each, download the results.",
   "version": "0.1.0",
   "icon": "icon.svg",

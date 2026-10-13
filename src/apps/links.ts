@@ -5,6 +5,8 @@
  *
  *   <id>                       an app this site ships: /apps/<id>/, listed in /apps/index.json
  *   gh:<owner>/<repo>[/<path>] a folder of a public GitHub repository, at its default branch
+ *   gist:[<user>/]<id>         a gist: its files, flat (one app.json is a whole app), at its newest revision
+ *   examples/<id>              an example this site keeps (apps/examples/), installed like its own apps
  *   https://…/x.zip | .tar.gz  an archive holding the app
  *   link  (+ #app=<files>)     the app's own files, carried by the address (share.ts, `app share`)
  *
@@ -17,14 +19,16 @@
  *
  * No DOM and no filesystem here: the callers pass `fetch`, and get files back.
  */
-import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest } from './manifest';
-import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX } from './registry';
+import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest, type ManifestHint } from './manifest';
+import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX, pageBeside } from './registry';
 import { LINK_APP, unpackApp } from './share';
 import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
 
 export type AppTarget =
   | { kind: 'site'; id: string }
   | { kind: 'gh'; owner: string; repo: string; path: string }
+  /** `user` is '' for gist:<id> */
+  | { kind: 'gist'; user: string; id: string }
   | { kind: 'url'; url: string }
   /** `?app=link#app=<payload>`: the files are in the address itself (share.ts) */
   | { kind: 'link'; payload: string };
@@ -32,8 +36,20 @@ export type AppTarget =
 /** A refused app link or install, and why (a sentence; no text from the link) */
 export class AppLinkError extends RunLinkError {}
 
+/** A gist's id: hex (older gists: digits) */
+const GIST_ID = /^[0-9a-f]{5,40}$/;
+/** `examples/<id>`: where the repository keeps the examples; on the site each is an app like its own */
+const EXAMPLES = 'examples/';
+
 /** What `app install` was given, or a `?app=` value. Throws AppLinkError for anything else. */
 export function parseAppSpec(spec: string): AppTarget {
+  if (spec.startsWith('gist:')) {
+    const parts = spec.slice(5).split('/');
+    const [user, id] = parts.length === 1 ? ['', parts[0]] : parts;
+    if (parts.length > 2 || !GIST_ID.test(id ?? '') || (parts.length === 2 && !GH_OWNER.test(user))) throw new AppLinkError('a gist: app is gist:<id> or gist:<user>/<id>');
+    return { kind: 'gist', user, id };
+  }
+  if (spec.startsWith(EXAMPLES)) spec = spec.slice(EXAMPLES.length);
   if (spec.startsWith('gh:')) {
     const [owner, repo, ...rest] = spec.slice(3).split('/');
     if (!GH_OWNER.test(owner ?? '') || !GH_REPO.test(repo ?? '') || repo === '.' || repo === '..') throw new AppLinkError('a gh: app is gh:<owner>/<repo>[/<path>]');
@@ -50,7 +66,7 @@ export function parseAppSpec(spec: string): AppTarget {
   }
   if (spec === LINK_APP) throw new AppLinkError('an app that a link carries is opened from the whole link, in the address bar');
   if (APP_ID.test(spec) && !RESERVED_IDS.has(spec)) return { kind: 'site', id: spec };
-  throw new AppLinkError('no such app (an app is an id, gh:<owner>/<repo>[/<path>], or the address of an archive)');
+  throw new AppLinkError('no such app (an app is an id, gh:<owner>/<repo>[/<path>], gist:<id>, or the address of an archive)');
 }
 
 export interface ParsedAppLink {
@@ -73,13 +89,14 @@ export function parseAppUrl(search: string, hash = ''): ParsedAppLink | null {
     return { target: { kind: 'link', payload: m[1] }, become: q.has('become') && q.get('become') !== '0' };
   }
   const target = parseAppSpec(q.get('app') ?? '');
-  if (target.kind === 'url') throw new AppLinkError('an app link names an app of this site or gh:<owner>/<repo>[/<path>]');
+  if (target.kind === 'url') throw new AppLinkError('an app link names an app of this site, gh:<owner>/<repo>[/<path>] or gist:<id>');
   return { target, become: q.has('become') && q.get('become') !== '0' };
 }
 
 /** `?app=…` for a target, with the parameters that go along (guest, become) */
 export function appLinkQuery(target: AppTarget, extra: Record<string, string> = {}): string {
-  const spec = target.kind === 'site' ? target.id : target.kind === 'gh' ? `gh:${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}` : target.kind === 'link' ? LINK_APP : target.url;
+  const spec = target.kind === 'site' ? target.id : target.kind === 'gh' ? `gh:${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`
+    : target.kind === 'gist' ? `gist:${target.user ? target.user + '/' : ''}${target.id}` : target.kind === 'link' ? LINK_APP : target.url;
   const q = new URLSearchParams({ app: spec });
   for (const [k, v] of Object.entries(extra)) if (PAGE_PARAMS.has(k)) q.set(k, v);
   return '?' + q.toString().replace(/%3A/g, ':').replace(/%2F/g, '/') + (target.kind === 'link' ? `#app=${target.payload}` : '');
@@ -102,10 +119,10 @@ export interface FetchedApp {
 const SAFE_REL = /^[A-Za-z0-9._@+ -]+(\/[A-Za-z0-9._@+ -]+)*$/;
 const relOk = (rel: string) => SAFE_REL.test(rel) && rel.length <= 300 && !rel.split('/').some((s) => s === '.' || s === '..' || s.startsWith(' ') || s.endsWith(' '));
 
-function manifestFrom(bytes: Uint8Array): { manifest: AppManifest; text: string } {
+function manifestFrom(bytes: Uint8Array, hint: ManifestHint = {}): { manifest: AppManifest; text: string } {
   if (bytes.length > MANIFEST_MAX) throw new AppLinkError('the app\'s app.json is too large');
   let manifest: AppManifest;
-  try { manifest = parseManifest(bytes); } catch (e) {
+  try { manifest = parseManifest(bytes, hint); } catch (e) {
     if (e instanceof ManifestError) throw new AppLinkError(`the app's manifest is not valid:\n${e.message}`);
     throw e;
   }
@@ -138,7 +155,7 @@ export async function fetchSiteApp(id: string, origin: string, fetchFn: Fetch): 
   };
   const mf = entry.files.find((f) => f?.path === MANIFEST_FILE);
   if (!mf) throw new AppLinkError('no such app');
-  const { manifest, text } = manifestFrom(await get(mf));
+  const { manifest, text } = manifestFrom(await get(mf), { id, page: pageBeside((rel) => entry.files.some((f) => f.path === rel)) });
   if (manifest.id !== id) throw new AppLinkError('the app\'s manifest names another id');
   return {
     manifest, manifestText: text, source: 'site', curated: true, from: `${origin.replace(/^https?:\/\//, '')}/apps/${id}/`,
@@ -173,7 +190,8 @@ export async function fetchGhApp(t: { owner: string; repo: string; path: string 
   const commit = new TextDecoder().decode(headBytes).trim();
   if (!COMMIT.test(commit)) throw new AppLinkError(`could not read the head commit of ${where}`);
   const raw = (rel: string) => `https://raw.githubusercontent.com/${t.owner}/${t.repo}/${commit}/${[...(t.path ? t.path.split('/') : []), ...rel.split('/')].map(encodeURIComponent).join('/')}`;
-  const { manifest, text } = manifestFrom(await fetchRaw(raw(MANIFEST_FILE), fetchFn, MANIFEST_MAX, `${where}, ${MANIFEST_FILE}`, `${where} has no ${MANIFEST_FILE}: it is not an app`));
+  // (an app.json without an id takes the folder's name, else the repository's)
+  const { manifest, text } = manifestFrom(await fetchRaw(raw(MANIFEST_FILE), fetchFn, MANIFEST_MAX, `${where}, ${MANIFEST_FILE}`, `${where} has no ${MANIFEST_FILE}: it is not an app`), { id: t.path.split('/').pop() || t.repo });
   const spec = `${t.owner}/${t.repo}${t.path ? '/' + t.path : ''}`;
   return {
     manifest, manifestText: text, curated: false, source: `gh:${spec}@${commit}`, from: `${where} at commit ${commit.slice(0, 10)}`,
@@ -215,6 +233,53 @@ export async function fetchGhApp(t: { owner: string; repo: string; path: string 
   };
 }
 
+/**
+ * An app in a gist, read at one revision: the newest when the link was
+ * opened. A gist holds no folders, so its files are the app's, flat: an
+ * `app.json` alone when tabcomputer supplies the page, or with `index.html`
+ * and what it loads. One request to GitHub's API gives the revision and the
+ * files together, so what is shown is what is installed.
+ */
+export async function fetchGistApp(t: { user: string; id: string }, visitorFetch: Fetch, githubToken?: string | null): Promise<FetchedApp> {
+  const fetchFn = githubToken ? githubTokenFetch(visitorFetch, githubToken) : visitorFetch;
+  if (!GIST_ID.test(t.id) || (t.user && !GH_OWNER.test(t.user))) throw new AppLinkError('no such app');
+  const where = `gist.github.com/${t.user ? t.user + '/' : ''}${t.id}`;
+  const bytes = await fetchRaw(`https://api.github.com/gists/${t.id}`, fetchFn, 16 << 20, where, `${where} does not exist`);
+  let gist: { owner?: { login?: unknown }; history?: { version?: unknown }[]; truncated?: unknown; files?: Record<string, { content?: unknown; truncated?: unknown } | null> };
+  try { gist = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new AppLinkError(`could not read ${where}`); }
+  const rev = gist?.history?.[0]?.version;
+  if (typeof rev !== 'string' || !COMMIT.test(rev)) throw new AppLinkError(`could not read the revision of ${where}`);
+  const login = typeof gist.owner?.login === 'string' && GH_OWNER.test(gist.owner.login) ? gist.owner.login : '';
+  if (t.user && login.toLowerCase() !== t.user.toLowerCase()) throw new AppLinkError(`${where} is not a gist of that account`);
+  const listed = gist.files && typeof gist.files === 'object' && !Array.isArray(gist.files) ? Object.entries(gist.files) : [];
+  if (gist.truncated || listed.length > FETCHED_FILES_MAX) throw new AppLinkError(`${where} has too many files`);
+  for (const [name] of listed) if (!relOk(name) || name.includes('/')) throw new AppLinkError(`the gist has a file whose name is not a plain name (${plain(name, 60)})`);
+  const get = async (name: string): Promise<Uint8Array> => {
+    const f = gist.files![name];
+    if (typeof f?.content === 'string' && !f.truncated) return new TextEncoder().encode(f.content);
+    // A large file is not in the answer: fetched by itself, at the same revision
+    if (!login) throw new AppLinkError(`${where} has no owner to fetch ${plain(name, 60)} from`);
+    return fetchRaw(`https://gist.githubusercontent.com/${login}/${t.id}/raw/${rev}/${encodeURIComponent(name)}`, visitorFetch, FETCHED_BYTES_MAX, `${where}, ${plain(name, 60)}`, `${where}, ${plain(name, 60)} is missing`);
+  };
+  const names = listed.map(([name]) => name);
+  if (!names.includes(MANIFEST_FILE)) throw new AppLinkError(`${where} has no ${MANIFEST_FILE}: it is not an app`);
+  const { manifest, text } = manifestFrom(await get(MANIFEST_FILE), { page: pageBeside((rel) => names.includes(rel)) });
+  return {
+    manifest, manifestText: text, curated: false, source: `gist:${t.id}@${rev}`, from: `${where} at revision ${rev.slice(0, 10)}`,
+    async files() {
+      const out = new Map<string, Uint8Array>();
+      let total = 0;
+      for (const name of names) {
+        const b = name === MANIFEST_FILE ? new TextEncoder().encode(text) : await get(name);
+        total += b.length;
+        if (total > FETCHED_BYTES_MAX) throw new AppLinkError('the app is too large');
+        out.set(name, b);
+      }
+      return out;
+    },
+  };
+}
+
 /** An archive's files as an app: `app.json` at the top, or inside its one top-level folder */
 export function archiveApp(files: Map<string, Uint8Array>, url: string): FetchedApp {
   let entries = [...files];
@@ -230,7 +295,7 @@ export function archiveApp(files: Map<string, Uint8Array>, url: string): Fetched
     if (!relOk(p)) throw new AppLinkError(`the archive has a file whose name is not a plain path (${plain(p, 60)})`);
     map.set(p, b);
   }
-  const { manifest, text } = manifestFrom(map.get(MANIFEST_FILE)!);
+  const { manifest, text } = manifestFrom(map.get(MANIFEST_FILE)!, { page: pageBeside((rel) => map.has(rel)) });
   let host = url;
   try { const u = new URL(url); host = u.host + u.pathname; } catch { /* shown as given */ }
   return { manifest, manifestText: text, curated: false, source: `url:${url}`, from: plain(host, 100), files: async () => map };
@@ -246,7 +311,7 @@ export async function linkApp(payload: string): Promise<FetchedApp> {
   try { files = await unpackApp(payload); } catch (e) {
     throw new AppLinkError(e instanceof AppError ? e.message : 'the link does not hold an app');
   }
-  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!);
+  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!, { page: pageBeside((rel) => files.has(rel)) });
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
   const id = (await sha256Hex(new TextEncoder().encode(payload))).slice(0, 16);
@@ -314,6 +379,7 @@ export async function handleAppLink(deps: AppLinkDeps): Promise<AppLinkOutcome> 
     const t = parsed.target;
     const app = t.kind === 'site' ? await fetchSiteApp(t.id, deps.origin, deps.fetch)
       : t.kind === 'link' ? await linkApp(t.payload)
+      : t.kind === 'gist' ? await (deps.github ?? ((_action, run) => run(null)))(`gist:${t.id}`, (token) => fetchGistApp(t, deps.fetch, token))
       : await (deps.github ?? ((_action, run) => run(null)))(`gh:${(t as { owner: string }).owner}/${(t as { repo: string }).repo}`,
         (token) => fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch, token));
     const had = await deps.installedSource(app.manifest.id);

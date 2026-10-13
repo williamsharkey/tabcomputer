@@ -1,0 +1,8 @@
+{
+  "name": "Make a scanned PDF searchable",
+  "about": "Adds a text layer to scanned pages, so the text can be searched and copied.",
+  "accept": [".pdf", ".png", ".jpg"],
+  "run": "ocrmypdf {in} {out}",
+  "out": "{name}.pdf",
+  "needs": ["ocrmypdf"]
+}

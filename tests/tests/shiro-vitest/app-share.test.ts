@@ -235,12 +235,17 @@ describe('app share', () => {
     const gh = await shareApp(fs, { ...base, source: `gh:someone/tools/apps/tool@${'a'.repeat(40)}` }, ORIGIN);
     expect(gh).toMatchObject({ kind: 'gh', url: `${ORIGIN}/?app=gh:someone/tools/apps/tool`, repo: 'github.com/someone/tools, apps/tool', asks: true });
     expect(parseAppUrl(new URL(gh.url).search)!.target).toEqual({ kind: 'gh', owner: 'someone', repo: 'tools', path: 'apps/tool' });
+    // an app from a gist: the gist's link, as short as the gist's id
+    const gist = await shareApp(fs, { ...base, source: `gist:${'ab12'.repeat(8)}@${'a'.repeat(40)}` }, ORIGIN);
+    expect(gist).toMatchObject({ kind: 'gist', url: `${ORIGIN}/?app=gist:${'ab12'.repeat(8)}`, repo: `gist.github.com/${'ab12'.repeat(8)}`, asks: true });
+    expect(parseAppUrl(new URL(gist.url).search)!.target).toEqual({ kind: 'gist', user: '', id: 'ab12'.repeat(8) });
+    expect(shareStatement(gist).details.join(' ')).toMatch(/Each person gets the files that gist holds when they open the link\./);
     const site = await shareApp(fs, { ...base, id: 'converter', source: 'site' }, ORIGIN);
     expect(site).toMatchObject({ kind: 'site', url: `${ORIGIN}/?app=converter`, asks: false });
   });
 
   it('an app too large for a link says so and names the other way', async () => {
-    expect((await app('new big-one')).exitCode).toBe(0);
+    expect((await app('new big-one --page')).exitCode).toBe(0);
     const noise = new Uint8Array(randomBytes(60_000));
     await fs.writeFile(`${HOME}/big-one/public/noise.bin`, noise);
     expect((await app('install big-one')).exitCode).toBe(0);

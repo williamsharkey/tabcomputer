@@ -51,9 +51,10 @@ describe('app manifest', () => {
   });
 
   it('names what is missing', () => {
-    expect(problems({})).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^manifest is missing/), expect.stringMatching(/^id must be/), expect.stringMatching(/^name must be/), expect.stringMatching(/^entry is missing/),
-    ]));
+    // (the format version and the id have defaults: the current one, and the folder's or the name's)
+    expect(problems({})).toEqual([expect.stringMatching(/^name is missing/), expect.stringMatching(/^entry is missing/)]);
+    expect(problems({ name: 'Demo', id: 'Bad Id' })).toEqual(expect.arrayContaining([expect.stringMatching(/^id must be/)]));
+    expect(problems({ name: '???' })).toEqual(expect.arrayContaining([expect.stringMatching(/^id is missing, and neither the folder nor the name/)]));
     expect(problems([])).toEqual(['it must be a JSON object']);
     expect(problems(null)).toEqual(['it must be a JSON object']);
   });
@@ -188,14 +189,16 @@ describe('app manifest', () => {
   });
 
   it('every app.json shipped in the repository is valid', () => {
-    const dirs = [join(ROOT, 'apps'), join(ROOT, 'apps/templates')].filter(existsSync);
+    const dirs = [join(ROOT, 'apps'), join(ROOT, 'apps/templates'), join(ROOT, 'apps/examples')].filter(existsSync);
     const found: AppManifest[] = [];
     for (const dir of dirs) for (const name of readdirSync(dir)) {
       const file = join(dir, name, 'app.json');
       if (!existsSync(file)) continue;
-      const m = parseManifest(readFileSync(file));
+      const m = parseManifest(readFileSync(file), { id: `x-${name}` });
       found.push(m);
       if (dir.endsWith('/apps')) expect(m.id, file).toBe(name);
+      // an example is the single app.json, and takes its folder's name
+      if (dir.endsWith('/examples')) { expect(readdirSync(join(dir, name)), file).toEqual(['app.json']); expect(m.kind, file).not.toBe('page'); }
     }
     expect(found.map((m) => m.id)).toContain('converter');
   });

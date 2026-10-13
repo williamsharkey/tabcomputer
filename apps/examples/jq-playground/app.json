@@ -1,0 +1,15 @@
+{
+  "name": "jq playground",
+  "about": "Try a jq filter on some JSON. The result changes as you type.",
+  "fields": {
+    "filter": { "label": "Filter", "value": ".people[] | select(.age > 30) | .name" },
+    "json": {
+      "label": "JSON",
+      "type": "long text",
+      "value": "{\"people\": [{\"name\": \"Ada\", \"age\": 36}, {\"name\": \"Linus\", \"age\": 21}, {\"name\": \"Grace\", \"age\": 45}]}"
+    }
+  },
+  "run": "jq {filter}",
+  "stdin": "{json}",
+  "live": true
+}

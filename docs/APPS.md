@@ -27,12 +27,12 @@ An `app.json` with `run`, `fields` or `table`, and no `entry`, is a complete app
 
 ```json
 {
-  "name": "Make a scanned PDF searchable",
-  "about": "Adds a text layer to scanned pages, so the text can be searched and copied.",
-  "accept": [".pdf", ".png", ".jpg"],
-  "run": "ocrmypdf {in} {out}",
+  "name": "Make scans searchable",
+  "about": "Turns photos or scans of pages into PDFs whose text can be searched and copied.",
+  "accept": [".png", ".jpg", ".jpeg", ".tif", ".tiff"],
+  "run": "tesseract {in} stdout pdf",
   "out": "{name}.pdf",
-  "needs": ["ocrmypdf"]
+  "needs": ["tesseract-ocr"]
 }
 ```
 
@@ -219,12 +219,12 @@ Exit status 0 when it did what was asked, 1 when it could not (the reason on std
 - **`app check [DIR]`** validates `app.json` and the files it names, and prints what the app asks for in the words the install prompt uses. An app that is its manifest is printed as sentences:
 
 ```
-searchable-pdf: Make a scanned PDF searchable (app.json is valid)
-  Adds a text layer to scanned pages, so the text can be searched and copied.
-  Make a scanned PDF searchable runs this command once for each file you give it: ocrmypdf {in} {out}
+searchable-pdf: Make scans searchable (app.json is valid)
+  Turns photos or scans of pages into PDFs whose text can be searched and copied.
+  Make scans searchable runs this command once for each file you give it: tesseract {in} stdout pdf
   Each result is named {name}.pdf.
-  ocrmypdf is an ordinary program in this tab: it can read and change every file here.
-  Before its first start it installs the Debian package ocrmypdf.
+  tesseract is an ordinary program in this tab: it can read and change every file here.
+  Before its first start it installs the Debian package tesseract-ocr.
   Its page may use only its own data folder, and is kept from other sites.
 ```
 

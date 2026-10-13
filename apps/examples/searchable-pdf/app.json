@@ -1,8 +1,8 @@
 {
-  "name": "Make a scanned PDF searchable",
-  "about": "Adds a text layer to scanned pages, so the text can be searched and copied.",
-  "accept": [".pdf", ".png", ".jpg"],
-  "run": "ocrmypdf {in} {out}",
+  "name": "Make scans searchable",
+  "about": "Turns photos or scans of pages into PDFs whose text can be searched and copied.",
+  "accept": [".png", ".jpg", ".jpeg", ".tif", ".tiff"],
+  "run": "tesseract {in} stdout pdf",
   "out": "{name}.pdf",
-  "needs": ["ocrmypdf"]
+  "needs": ["tesseract-ocr"]
 }

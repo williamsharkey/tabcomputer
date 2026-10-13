@@ -34,12 +34,12 @@ describe('an app that is its manifest: the three kinds', () => {
   it('files: the issue\'s example, with every default filled in', () => {
     const m = parseManifest(example('searchable-pdf'), { id: 'searchable-pdf' });
     expect(m).toMatchObject({
-      manifest: MANIFEST_VERSION, id: 'searchable-pdf', name: 'Make a scanned PDF searchable', kind: 'files', icon: '', entry: '', backend: null,
-      description: 'Adds a text layer to scanned pages, so the text can be searched and copied.',
-      accept: ['.pdf', '.png', '.jpg'], run: 'ocrmypdf {in} {out}', out: '{name}.pdf', needs: ['ocrmypdf'], each: true, shell: false, options: [],
+      manifest: MANIFEST_VERSION, id: 'searchable-pdf', name: 'Make scans searchable', kind: 'files', icon: '', entry: '', backend: null,
+      description: 'Turns photos or scans of pages into PDFs whose text can be searched and copied.',
+      accept: ['.png', '.jpg', '.jpeg', '.tif', '.tiff'], run: 'tesseract {in} stdout pdf', out: '{name}.pdf', needs: ['tesseract-ocr'], each: true, shell: false, options: [],
       window: { width: 560, height: 580, resizable: true },
       // what it may do is read from `run`: its program, its own data folder, no other site
-      access: { fs: [], network: false, commands: ['ocrmypdf'], shell: false },
+      access: { fs: [], network: false, commands: ['tesseract'], shell: false },
     });
   });
 
@@ -242,11 +242,11 @@ describe('what a person reads before installing', () => {
   it('says what it does, the exact command, what it installs', () => {
     const m = parseManifest(example('searchable-pdf'), { id: 'searchable-pdf' });
     expect(manifestSentences(m)).toEqual([
-      'Adds a text layer to scanned pages, so the text can be searched and copied.',
-      'Make a scanned PDF searchable runs this command once for each file you give it: ocrmypdf {in} {out}',
+      'Turns photos or scans of pages into PDFs whose text can be searched and copied.',
+      'Make scans searchable runs this command once for each file you give it: tesseract {in} stdout pdf',
       'Each result is named {name}.pdf.',
-      'ocrmypdf is an ordinary program in this tab: it can read and change every file here.',
-      'Before its first start it installs the Debian package ocrmypdf.',
+      'tesseract is an ordinary program in this tab: it can read and change every file here.',
+      'Before its first start it installs the Debian package tesseract-ocr.',
       'Its page may use only its own data folder, and is kept from other sites.',
     ]);
     expect(manifestSentences(parseManifest(example('jq-playground')))[1]).toBe('jq playground runs this command as you type: jq {filter}');

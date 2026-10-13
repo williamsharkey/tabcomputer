@@ -467,7 +467,7 @@ if (wants('share')) {
         await fs.mkdir('/home/user/Apps/searchable-pdf', { recursive: true });
         await fs.writeFile('/home/user/Apps/searchable-pdf/app.json', await fs.readFile(`${dir}/app.json`));
         const reg = JSON.parse(await fs.readFile('/var/lib/tabcomputer/apps.json', 'utf8').catch(() => '{"v":1,"apps":{}}'));
-        reg.apps['searchable-pdf'] = { id: 'searchable-pdf', name: 'Make a scanned PDF searchable', version: '', dir: '/home/user/Apps/searchable-pdf', source: `dir:${dir}`, installedAt: Date.now(), icon: '' };
+        reg.apps['searchable-pdf'] = { id: 'searchable-pdf', name: 'Make scans searchable', version: '', dir: '/home/user/Apps/searchable-pdf', source: `dir:${dir}`, installedAt: Date.now(), icon: '' };
         await fs.mkdir('/var/lib/tabcomputer', { recursive: true });
         await fs.writeFile('/var/lib/tabcomputer/apps.json', JSON.stringify(reg));
         return { code: 0 };
@@ -487,7 +487,7 @@ if (wants('share')) {
   console.log('share link lengths, in characters (origin ' + new URL(url).origin + '):');
   for (const [k, v] of Object.entries(lengths)) console.log(`  ${String(v).padStart(5)}  ${k}`);
   const said = await side(page, 'app check /home/user/mine/searchable-pdf');
-  check('app check prints the example as sentences', said.code === 0 && /runs this command once for each file you give it: ocrmypdf \{in\} \{out\}/.test(said.o) && /installs the Debian package ocrmypdf/.test(said.o), said.o.trim().split('\n')[2]);
+  check('app check prints the example as sentences', said.code === 0 && /runs this command once for each file you give it: tesseract \{in\} stdout pdf/.test(said.o) && /installs the Debian package tesseract-ocr/.test(said.o), said.o.trim().split('\n')[2]);
   await page.context().close();
 }
 

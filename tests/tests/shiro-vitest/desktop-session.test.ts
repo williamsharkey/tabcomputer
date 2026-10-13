@@ -65,6 +65,48 @@ describe('session restore: the pieces', () => {
     expect([kept.length, kept[0], kept.at(-1)]).toEqual([2000, 'line 500', 'line 2499']);
   });
 
+  it('a terminal reloaded again keeps one restore note, not one per reload (#128)', async () => {
+    const { screenText } = await import('@shiro/desktop/terminal-app');
+    const { RESTORED_NOTE } = await import('@shiro/desktop/session');
+    const note = `# ${RESTORED_NOTE}`;
+    // at the prompt under the note: the note goes, the next restore prints it again
+    expect(screenText(`$ ls\na.txt\n${note}\nuser@tab:~$ `, true)).toBe('$ ls\na.txt');
+    // notes stacked by earlier builds, and a note of two lines
+    expect(screenText(`$ ls\na.txt\n${note}\n${note}\n${note}\n# resuming Claude Code\nuser@tab:~$ `, true)).toBe('$ ls\na.txt');
+    // something ran since: that note marks where the reload was, and stays
+    expect(screenText(`$ ls\n${note}\nuser@tab:~$ pwd\n/home/user\nuser@tab:~$ `, true)).toBe(`$ ls\n${note}\nuser@tab:~$ pwd\n/home/user`);
+    // a comment the user's own output ends with is not a note
+    expect(screenText('$ cat a.sh\n# the end\nuser@tab:~$ ', true)).toBe('$ cat a.sh\n# the end');
+    // across reloads on a real terminal: one note, one prompt
+    const { createTestOS } = await import('./helpers');
+    const { bufferToString } = await import('@shiro/utils/copy-utils');
+    const { terminal } = await createTestOS();
+    const t: any = terminal;
+    let saved = 'user@tab:~$ ls\na.txt  b.txt';
+    for (let i = 0; i < 4; i++) {
+      t.restoreScreen(saved, RESTORED_NOTE);
+      await new Promise<void>((r) => t.term.write('', r));
+      saved = screenText(bufferToString(t.term), true);
+    }
+    expect(saved).toBe('user@tab:~$ ls\na.txt  b.txt');
+    const lines = bufferToString(t.term).split('\n').filter((l: string) => l.trim());
+    expect(lines.filter((l: string) => l.includes(RESTORED_NOTE))).toHaveLength(1);
+  });
+
+  it('start() adds no second prompt to a terminal whose screen was restored meanwhile (#128)', async () => {
+    const { createTestOS } = await import('./helpers');
+    const { bufferToString } = await import('@shiro/utils/copy-utils');
+    const { RESTORED_NOTE } = await import('@shiro/desktop/session');
+    const { terminal } = await createTestOS();
+    const t: any = terminal;
+    const starting = t.start();
+    t.restoreScreen('old output', RESTORED_NOTE);
+    await starting;
+    await new Promise<void>((r) => t.term.write('', r));
+    const last = bufferToString(t.term).split('\n').filter((l: string) => l.trim()).at(-1)!;
+    expect(last.match(/\$/g)).toHaveLength(1);
+  });
+
   it('a running line is offered, not run; servers start again; an agent resumes', async () => {
     const { followUp, RESTORED_NOTE } = await import('@shiro/desktop/session');
     expect(followUp({ cwd: '/' }, null)).toEqual({ note: RESTORED_NOTE });

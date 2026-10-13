@@ -65,6 +65,32 @@ describe('Text Editors, Developer Tools and AI agents stacks', () => {
   });
 });
 
+describe('desktop open code DIR (#128)', () => {
+  it('a windowed tool opens the folder it was given, else its own default', async () => {
+    const { windowCommand } = await import('@shiro/desktop/devtools');
+    const code = DEV_TOOLS.find((t) => t.id === 'code')!;
+    expect(windowCommand(code)).toBe('code ~');
+    expect(windowCommand(code, {})).toBe('code ~');
+    expect(windowCommand(code, { path: '/home/user/lab2' })).toBe("code '/home/user/lab2'");
+    expect(windowCommand(code, { path: "/home/user/it's here" })).toBe("code '/home/user/it'\\''s here'");
+  });
+
+  it('desktop open code DIR hands the resolved folder to the app', async () => {
+    const { desktopCmd } = await import('@shiro/commands/desktop');
+    const opened: [string, unknown][] = [];
+    const g = globalThis as any;
+    const before = g.__shiroDesktop;
+    g.__shiroDesktop = { apps: () => [{ id: 'code' }, { id: 'files' }], openApp: async (id: string, args: unknown) => { opened.push([id, args]); return null; } };
+    try {
+      const ctx: any = { args: ['open', 'code', 'lab2'], cwd: '/home/user', stdout: '', stderr: '', fs: { resolvePath: (p: string, cwd: string) => (p.startsWith('/') ? p : `${cwd}/${p}`) } };
+      expect(await desktopCmd.exec(ctx)).toBe(0);
+      ctx.args = ['open', 'code'];
+      await desktopCmd.exec(ctx);
+    } finally { g.__shiroDesktop = before; }
+    expect(opened).toEqual([['code', { path: '/home/user/lab2' }], ['code', {}]]);
+  });
+});
+
 describe('Clone and branch folders', () => {
   it('reads owner/repo, GitHub URLs and SSH remotes', () => {
     const want = { owner: 'octocat', repo: 'Hello-World', url: 'https://github.com/octocat/Hello-World' };

@@ -352,6 +352,18 @@ Shell and platform fixes these needed (all with tests in the same file):
   (`tests/browser/node-wasi.mjs`). In the page there is no blocking channel:
   `new WASI()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. `stdin`/`stdout`/
   `stderr` other than 0, 1 and 2 aren't supported.
+- `worker_threads` `MessageChannel`: the two ports are joined, and a port
+  goes to a Worker (or back, or through another port) in a postMessage
+  transfer list, as tinypool hands each thread its port
+  (`src/node-compat/modules/worker-ports.ts`; `node-worker-ports.test.ts`,
+  both node modes). Not checked against vitest's threads pool itself.
+- `execFile`, `spawn`, `spawnSync` and `execFileSync` of a program that isn't
+  installed give node's `ENOENT` (an 'error', then 'close' with -2), not the
+  shell's status 127 (`node-spawn-enoent.test.ts`). jest 30 tells a missing
+  `watchman` from a broken one by that code; with it, and its resolver
+  (unrs-resolver's napi-rs WebAssembly binding on node:wasi), `npx jest`
+  runs as a kernel guest (`TABCOMPUTER_NPM_NET=1` `node-jest30.test.ts`;
+  not yet checked in a browser).
 - SvelteKit 2 (Svelte 5, Vite 7, adapter-static; `APP=sveltekit` in
   tests/browser/vite-react.mjs, a minimal site written there): `npm i` 2.6 s,
   `vite dev` ready 3.8 s, the preview 3.1 s, an edit to `+page.svelte` by HMR

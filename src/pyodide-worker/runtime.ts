@@ -46,6 +46,11 @@ import os
 import sys
 
 
+def show_figure(path, title):
+    import tabcomputer_js
+    tabcomputer_js.show(path, title)
+
+
 def _trim(tb):
     # (the frames of this file and of runpy are not the program's)
     while tb is not None:
@@ -123,17 +128,61 @@ def main(kind, target, argv, sitedirs, env):
     return rc
 `;
 
+/**
+ * The matplotlib backend (MPLBACKEND=module://tabcomputer_mpl): Agg, whose
+ * show() saves each open figure as a PNG in the tab's files and asks the page
+ * to open it in a window. It returns at once and closes the figures, as a
+ * window's show() does once the windows are closed.
+ */
+export const MPL_BACKEND_PY = `"""matplotlib backend for tabcomputer: Agg; show() opens each figure in a desktop window."""
+import os
+
+from matplotlib._pylab_helpers import Gcf
+from matplotlib.backend_bases import FigureManagerBase
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+_shown = 0
+
+
+class FigureManagerTab(FigureManagerBase):
+    @classmethod
+    def pyplot_show(cls, *, block=None):
+        global _shown
+        import tabcomputer_run
+
+        managers = Gcf.get_all_fig_managers()
+        if not managers:
+            return
+        d = os.environ.get("TABCOMPUTER_PLOT_DIR") or "/tmp/tabcomputer-plots"
+        os.makedirs(d, exist_ok=True)
+        for manager in managers:
+            _shown += 1
+            path = "%s/figure-%s-%d.png" % (d, os.environ.get("TABCOMPUTER_PID", "0"), _shown)
+            manager.canvas.figure.savefig(path)
+            tabcomputer_run.show_figure(path, "Figure %s" % manager.num)
+        Gcf.destroy_all()
+
+
+class FigureCanvasTab(FigureCanvasAgg):
+    manager_class = FigureManagerTab
+
+
+FigureCanvas = FigureCanvasTab
+FigureManager = FigureManagerTab
+`;
+
 /** Where Pyodide keeps the modules it loads (its own site-packages, in memory) */
 function ownSite(py: any): string {
   const v = String(py.runPython('import sys; "%d.%d" % sys.version_info[:2]'));
   return `/lib/python${v}/site-packages`;
 }
 
-/** The module above, written once a Pyodide is loaded (before any program) */
+/** The two modules above, written once a Pyodide is loaded (before any program) */
 export function installSupport(py: any): void {
   const site = ownSite(py);
   py.FS.mkdirTree(site);
   py.FS.writeFile(`${site}/tabcomputer_run.py`, RUNNER_PY);
+  py.FS.writeFile(`${site}/tabcomputer_mpl.py`, MPL_BACKEND_PY);
 }
 
 /** A wait longer than this gets a line saying what it is for */
@@ -144,6 +193,8 @@ export interface RunIo {
   read(buf: Uint8Array): number;
   write(fd: 1 | 2, data: Uint8Array): void;
   isatty(fd: number): boolean;
+  /** plt.show(): a figure saved at `path` */
+  show(path: string, title: string): void;
 }
 
 /** Run `run` in `py` with the tab mounted; resolves with the exit status. */
@@ -161,6 +212,7 @@ export async function runProgram(py: any, run: PyRun, cwd: string, env: Record<s
   });
   py.setStdout({ write(buf: Uint8Array) { io.write(1, buf); return buf.length; }, isatty: io.isatty(1) });
   py.setStderr({ write(buf: Uint8Array) { io.write(2, buf); return buf.length; }, isatty: io.isatty(2) });
+  py.registerJsModule('tabcomputer_js', { show: (path: string, title: string) => io.show(String(path), String(title)) });
   try {
     py.FS.chdir(cwd);
   } catch {
@@ -196,7 +248,7 @@ export async function runProgram(py: any, run: PyRun, cwd: string, env: Record<s
     }
   }
   const runner = py.pyimport('tabcomputer_run');
-  const args = [py.toPy(run.argv), py.toPy(run.sitePaths), py.toPy(env)];
+  const args = [py.toPy(run.argv), py.toPy(run.sitePaths), py.toPy({ MPLBACKEND: 'module://tabcomputer_mpl', ...env })];
   try {
     // Where the engine can switch stacks (JSPI), the program may wait for a promise: asyncio.run
     // works. Elsewhere (or with TABCOMPUTER_PYODIDE_JSPI=0) it is an ordinary call, and

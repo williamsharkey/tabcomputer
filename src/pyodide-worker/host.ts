@@ -3,8 +3,8 @@
  * compiled packages (numpy, pandas, matplotlib) runs as a kernel process
  * whose program is a Worker with Pyodide in it (guest.ts). The page's main
  * thread only answers its syscalls, so a long loop doesn't freeze the
- * desktop; its files are the tab's, its stdin the terminal's, and ^C is
- * KeyboardInterrupt.
+ * desktop; its files are the tab's, its stdin the terminal's, ^C is
+ * KeyboardInterrupt, and plt.show() opens a window.
  *
  * Needs a blocking channel (a cross-origin isolated page). python.ts keeps
  * the old in-page Pyodide for a page without one.
@@ -12,7 +12,8 @@
 import type { CommandContext } from '../commands/index';
 import * as A from '../kernel/abi';
 import { BufferFile, type OpenFile } from '../kernel/fd';
-import type { Runner } from '../kernel/kernel';
+import type { Kernel, Runner } from '../kernel/kernel';
+import type { Process } from '../kernel/process';
 import { pyodideWorkerFactory, pyodideWorkerMode } from './boot';
 import { webWorker, workerRunner, type GuestWorker } from '../kernel/worker-host';
 import { pyodideIndexURL } from '../python/pyodide-dist';
@@ -77,6 +78,40 @@ export function warmPyodide(files: string[] = []): void {
   prepareSpare();
 }
 
+/** plt.show(): the figure saved at `path`, in a desktop window; where there is no desktop, a line saying where it is */
+async function showFigure(kernel: Kernel, proc: Process, path: string, title: string): Promise<void> {
+  const fs = kernel.fs;
+  const wm = (globalThis as any).__tabcomputer?.desktop;
+  const say = (s: string) => { void kernel.writeAll(proc, 2, new TextEncoder().encode(s)).catch(() => {}); };
+  if (!fs || !wm?.createWindow || typeof document === 'undefined') {
+    say(`${title}: saved to ${path} (no desktop to show it in)\n`);
+    return;
+  }
+  try {
+    const data = await fs.readFile(path) as Uint8Array;
+    const url = URL.createObjectURL(new Blob([data.slice()], { type: 'image/png' }));
+    const box = document.createElement('div');
+    box.className = 'sd-app';
+    box.dataset.figure = path;
+    box.style.cssText = 'align-items:center;justify-content:center;background:#fff';
+    const img = document.createElement('img');
+    img.alt = title;
+    img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain';
+    box.appendChild(img);
+    // (the window takes the figure's shape once the picture is decoded)
+    await new Promise<void>((resolve) => { img.onload = img.onerror = () => resolve(); img.src = url; });
+    const scale = Math.min(1, 720 / (img.naturalWidth || 640));
+    const w = wm.createWindow({
+      // (on top, but the keyboard stays where the program was started)
+      appId: 'python-figure', title, focus: false, content: { kind: 'dom', element: box },
+      width: Math.round((img.naturalWidth || 640) * scale), height: Math.round((img.naturalHeight || 480) * scale),
+    });
+    w.on?.('close', () => URL.revokeObjectURL(url));
+  } catch (e: any) {
+    say(`${title}: saved to ${path} (could not open a window: ${e?.message ?? e})\n`);
+  }
+}
+
 /** The kernel Runner: the process's program is a Pyodide guest worker running `run` */
 export function pyodideRunner(run: PyRun): Runner {
   return (proc, kernel) => {
@@ -94,7 +129,13 @@ export function pyodideRunner(run: PyRun): Runner {
       Atomics.store(flag, 0, 2);
     });
     proc.onTerminate(off);
-    return workerRunner(() => takeWorker(), { dataSize: 1 << 20, startData: { pyodide: run, interrupt } })(proc, kernel);
+    return workerRunner((p) => {
+      const w = takeWorker();
+      w.onMessage((m: any) => {
+        if (m?.type === 'pyodide-show' && typeof m.path === 'string') void showFigure(kernel, p, m.path, String(m.title ?? 'Figure'));
+      });
+      return w;
+    }, { dataSize: 1 << 20, startData: { pyodide: run, interrupt } })(proc, kernel);
   };
 }
 

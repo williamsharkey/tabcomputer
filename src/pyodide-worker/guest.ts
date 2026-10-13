@@ -97,6 +97,7 @@ async function runGuest(py: any, start: PyodideStart, post: (m: unknown) => void
       read: (buf) => sys.read(0, buf),
       write: (fd, data) => { sys.write(fd, data); },
       isatty: (fd) => isatty(sys, fd),
+      show: (path, title) => post({ type: 'pyodide-show', path, title }),
     });
     sys.exit(rc);
   } catch (e) {

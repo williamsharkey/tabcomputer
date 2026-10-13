@@ -1,5 +1,7 @@
 // Snapshots of started GUI apps (docs/research/GUI_SNAPSHOTS.md; src/gui/snapshot.ts).
-// Per app, in a fresh browser profile with the setting on:
+// Per app, in a fresh browser profile with the setting as it is by default (on for the apps
+// of SNAPSHOT_TESTED, src/gui/snapshot-setting.ts; --all turns it on for every app, which is
+// how an app is tried before it joins that list):
 //   1. the first launch starts the program and, once it is up and quiet, keeps its snapshot;
 //   2. after a reload of the page, the next launch is restored from it: timed click → window;
 //   3. the restored app is used (the pointer for xeyes, typing for the editors) and must react;
@@ -7,7 +9,7 @@
 //   5. another launch in the same page is restored again.
 //
 //   npx vite build && PORT=5391 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/gui-snapshot.mjs [URL] [--json FILE] [APP...]     (default: xeyes)
+//   node tests/browser/gui-snapshot.mjs [URL] [--json FILE] [--all] [APP...]     (default: xeyes)
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
 // Exits 1 when an app that was snapshotted doesn't come back working.
@@ -24,6 +26,7 @@ if (!pw) { console.error('playwright not found (set PLAYWRIGHT)'); process.exit(
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const jsonOut = opt('--json');
+const all = (() => { const i = args.indexOf('--all'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 const apps = args.length ? args : ['xeyes'];
 const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
@@ -155,12 +158,29 @@ async function useGeany(page, a) {
   await page.keyboard.press('Control+s');
   const saved = () => page.evaluate(() => window.__tabcomputer.fs.readFile('/home/user/snap-test.txt', 'utf8').catch(() => ''));
   await until('the file was not saved', async () => /typed after the restore first line/.test(await saved()), 15_000).catch(async (e) => { throw new Error(`${e.message}; it holds ${JSON.stringify(await saved())}`); });
+  // A second file, the same way: the dialog again, now with the first file open
+  await page.evaluate(() => window.__tabcomputer.fs.writeFile('/home/user/snap-second.txt', 'the second file\n'));
+  await page.waitForTimeout(800);
+  await page.keyboard.press('Control+o');
+  await until('no Open File dialog for the second file', async () => (await title()).some((t) => /Open File/.test(t)));
+  for (let tries = 0; ; tries++) {
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('Control+l');
+    await page.waitForTimeout(600);
+    await page.keyboard.press('Control+a');
+    await page.keyboard.type('/home/user/snap-second.txt', { delay: 30 });
+    await page.keyboard.press('Enter');
+    const opened = async () => (await title()).some((t) => /snap-second\.txt/.test(t));
+    if (await until('the second file did not open', opened, 15_000).catch(() => false)) break;
+    if (tries === 2 || !(await title()).some((t) => /Open File/.test(t))) { await until('the second file did not open', opened); break; }
+  }
+  await page.waitForTimeout(1000);
   const pid = await page.evaluate(() => window.__guiLast.pid);
   await page.keyboard.press('Control+q');
   await until('Ctrl+Q did not end it', () => page.evaluate((pid) => !window.__tabcomputer.kernel.procs.has(pid), pid));
   const status = await page.evaluate(() => window.__guiLast.exited);
   if (status !== 0) throw new Error(`geany: exit status ${status} after Ctrl+Q`);
-  return { ok: true, kind: 'geany: opened a file, typed, saved, Ctrl+Q', quit: true };
+  return { ok: true, kind: 'geany: opened a file, typed, saved, opened a second file, Ctrl+Q', quit: true };
 }
 
 /** GIMP after a restore: a new image through its dialog (new windows, the canvas, babl and GEGL at work), then Ctrl+Q */
@@ -211,7 +231,7 @@ for (const app of apps) {
   const r = results[app] = {};
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
-  await page.addInitScript(() => localStorage.setItem('tabcomputer-gui-snapshots', '1'));
+  if (all) await page.addInitScript(() => localStorage.setItem('tabcomputer-gui-snapshots', '1'));
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   try {
@@ -261,10 +281,17 @@ for (const app of apps) {
       r.useAgain = await use(page, app);
       if (!r.useAgain.ok) throw new Error(`the app restored a second time did not react (${r.useAgain.kind})`);
     }
+    // Geany relaunched after that session: it comes up with the files that were open (its settings name
+    // them, so this is a usual start, or a restore of a snapshot taken from one), and the saved text is in the file
+    if (app === 'geany') {
+      await page.waitForFunction(() => window.__tabcomputer.desktop.windows().some((w) => w.appId === 'geany' && w.surface && /snap-(test|second)\.txt/.test(w.title)), null, { timeout: 60_000, polling: 200 })
+        .catch(() => { throw new Error('geany relaunched without the files of its last session'); });
+      r.relaunch = 'came up with its session\'s files';
+    }
     await quit(page, app);
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     const mb = (b) => (b / 1e6).toFixed(1);
-    console.log(`ok   ${app.padEnd(11)} first launch ${r.first.windowMs} ms; snapshot ${mb(taken.bytes.image)} MB (${mb(taken.bytes.stored)} MB stored, ${mb(taken.bytes.x)} MB of X requests) in ${taken.ms} ms; restored: window ${r.restored.windowMs} ms, drawn ${r.restored.drawnMs} ms, process running ${r.restored.runningMs} ms (X ${r.restoreLog.x} ms, image ${r.restoreLog.image} ms)${r.use.firstKeyMs ? `, first key shown after ${r.use.firstKeyMs} ms` : ''}; again ${r.again.windowMs} ms${r.againLog.restored ? '' : ' (not restored: ' + r.againLog.why + ')'}; used: ${r.use.kind}; quit ${r.quit.ms} ms${r.retaken.length ? `; retaken ${r.retaken.length}x (${r.retaken.join('; ')})` : ''}`);
+    console.log(`ok   ${app.padEnd(11)} first launch ${r.first.windowMs} ms; snapshot ${mb(taken.bytes.image)} MB (${mb(taken.bytes.stored)} MB stored, ${mb(taken.bytes.x)} MB of X requests) in ${taken.ms} ms; restored: window ${r.restored.windowMs} ms, drawn ${r.restored.drawnMs} ms, process running ${r.restored.runningMs} ms (X ${r.restoreLog.x} ms, image ${r.restoreLog.image} ms)${r.use.firstKeyMs ? `, first key shown after ${r.use.firstKeyMs} ms` : ''}; again ${r.again.windowMs} ms${r.againLog.restored ? '' : ' (not restored: ' + r.againLog.why + ')'}; used: ${r.use.kind}; quit ${r.quit.ms} ms${r.retaken.length ? `; retaken ${r.retaken.length}x (${r.retaken.join('; ')})` : ''}${r.relaunch ? `; relaunched: ${r.relaunch}` : ''}`);
   } catch (e) {
     failed++;
     r.error = String(e.message);

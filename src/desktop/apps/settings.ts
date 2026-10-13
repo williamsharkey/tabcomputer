@@ -18,6 +18,7 @@ import { openSignIn, probeRelay, signedInAccount, signOut, statusText, testOwnRe
 import { BRAND } from '../../brand';
 import buildNumber from '../../../build-number.txt?raw';
 import { formatBytes, reloadAfterFlush, storageInfo } from '../../storage';
+import { setSnapshotsEnabled, snapshotMode, snapshotSwitchShown } from '../../gui/snapshot-setting';
 
 /** A pane's sidebar icon: a white glyph (24-unit, iconsets.ts) on a colored rounded square */
 const paneIcon = (d: string, color: string) =>
@@ -395,7 +396,12 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
         <div class="sd-row"><span class="sd-grow">Status</span><span data-k="state">…</span></div>
       </div>
       <div class="sd-row" style="margin-top:14px;gap:8px"><button class="sd-btn" data-act="persist" hidden>Keep my files (persistent storage)</button></div>
-      <p class="sd-small sd-muted">To free space: <code>sudo apt clean</code> drops downloaded packages; <code>du -sh /*</code> shows what is large.</p>`;
+      <p class="sd-small sd-muted">To free space: <code>sudo apt clean</code> drops downloaded packages; <code>du -sh /*</code> shows what is large.</p>
+      ${snapshotSwitchShown() ? `<h3>Apps</h3>
+      <div class="sd-card"><div class="sd-row"><span class="sd-grow">Open apps faster<div class="sd-small sd-muted">A started app is kept as a snapshot, so it opens in about a second next time. The snapshots stay in this browser. <span data-k="snapshots"></span></div></span>
+        <div class="sd-seg" role="radiogroup" aria-label="Open apps faster">
+          <button data-snap="1" role="radio">On</button><button data-snap="0" role="radio">Off</button>
+        </div></div></div>` : ''}`;
     const set = (k: string, v: string) => { const n = panel.querySelector(`[data-k=${k}]`); if (n) n.textContent = v; };
     const btn = panel.querySelector<HTMLButtonElement>('[data-act=persist]')!;
     const refresh = () => void storageInfo().then((s) => {
@@ -406,6 +412,29 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       btn.hidden = s.persisted !== false;
     });
     btn.addEventListener('click', () => void navigator.storage?.persist?.().catch(() => false).then(refresh));
+    // Snapshots of started GUI apps (src/gui/snapshot.ts): the switch, and what they take
+    const snapUsage = () => void import('../../gui/snapshot').then((S) => S.snapshotUsage()).then((u) => {
+      set('snapshots', u.apps.length ? `Now: ${formatBytes(u.total)} for ${u.apps.map((a) => a.app).join(', ')} (at most ${formatBytes(u.cap)}).` : '');
+    }).catch(() => {});
+    const snapButtons = () => {
+      const on = snapshotMode() !== 'off';
+      for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-snap]')) {
+        const mine = (b.dataset.snap === '1') === on;
+        b.classList.toggle('sd-active', mine);
+        b.setAttribute('aria-checked', String(mine));
+      }
+    };
+    for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-snap]')) {
+      b.addEventListener('click', () => {
+        const on = b.dataset.snap === '1';
+        setSnapshotsEnabled(on);
+        // Off: what was kept goes too
+        if (!on) void import('../../gui/snapshot').then((S) => S.dropAllSnapshots()).then(snapUsage);
+        snapButtons();
+      });
+    }
+    snapButtons();
+    snapUsage();
     const off = ctx.fs.onStorageFull(refresh);
     const timer = setInterval(refresh, 5000);
     cleanup = () => { off(); clearInterval(timer); };

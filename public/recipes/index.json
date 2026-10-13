@@ -31,10 +31,10 @@
   },
   {
    "name": "python-class",
-   "sha256": "c1c5fc7447fe840cc75b8371e48a7a297e31cefd7680b3154065c4a4012bf08d",
+   "sha256": "15dfed2adb2eafbe370d74c78d56c18cef39b774989a06d42f39f6b6faccf1c6",
    "title": "Python class",
    "for": "students on machines where Python can't be installed",
-   "needs": "debian toolchain:python net",
+   "needs": "net",
    "args": "repo (optional https URL of the course's repository), pip (optional package names, space-separated)",
    "on-open": "cd ~/run/python-class/work"
   },

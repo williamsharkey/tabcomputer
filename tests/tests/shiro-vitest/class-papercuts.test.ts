@@ -73,11 +73,12 @@ describe('Python for a beginner (#124)', () => {
     expect(`${py.command} ${py.detail}`).not.toMatch(/toolchain|apt|debian/i);
   });
 
-  it('toolchain list says what the python set costs', async () => {
+  it('toolchain list says what the python set changes: python3 stays the built-in one, and what runs on Debian\'s is slower', async () => {
     const { shell } = await createTestShell();
     const lines = (await run(shell, 'toolchain list')).output.replace(/\r/g, '').split('\n');
     const i = lines.findIndex((l) => /^python\s/.test(l));
-    expect(lines[i + 1]).toMatch(/note: .*slower than the built-in python3/);
+    expect(lines[i + 1]).toMatch(/note: python3 stays the built-in Python\..*tkinter, turtle.*several times slower/);
+    expect(lines[i + 1]).not.toMatch(/becomes Debian/);
   });
 
   it('the built-in Python gets a tkinter that says what to do, and leaves a real one alone', async () => {

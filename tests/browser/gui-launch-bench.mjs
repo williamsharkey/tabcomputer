@@ -15,7 +15,15 @@
 //
 //   npx vite build && PORT=5391 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/gui-launch-bench.mjs [URL] [--json FILE] [--md FILE] [--passes cold,warm,reload]
-//        [--engine-profile DIR] [--env K=V,...] [--set localStorageKey=value,...] [--label TEXT] [APP...]
+//        [--engine-profile DIR] [--env K=V,...] [--set localStorageKey=value,...] [--label TEXT] [--snapshots] [APP...]
+//
+// Snapshots of started apps (docs/research/GUI_SNAPSHOTS.md) are on by default
+// for the tested apps, but a pass here quits the app 0.4 s after its window, before a
+// snapshot is taken: these are the times of a usual start. --snapshots lets
+// each start keep its snapshot, and waits after each quit for the background
+// retake (10 s of quiet, then a hidden start when the quit outdated the
+// snapshot), so warm and reload are what the next click gets: "restored" in
+// the table. `--set tabcomputer-gui-snapshots=0` is the setting off.
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
 // Exits 1 when an app fails to show a usable window.
@@ -37,6 +45,7 @@ const mdOut = opt('--md');
 const profDir = opt('--engine-profile');
 const render = opt('--render'); // print the table of an earlier run's JSON, and stop
 const label = opt('--label') ?? '';
+const snapshots = (() => { const i = args.indexOf('--snapshots'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const passes = (opt('--passes') ?? 'cold,warm,reload').split(',');
 const kv = (s) => Object.fromEntries((s ?? '').split(',').filter(Boolean).map((p) => { const i = p.indexOf('='); return [p.slice(0, i), p.slice(i + 1)]; }));
 const extraEnv = kv(opt('--env'));
@@ -241,15 +250,15 @@ const mbs = (b) => (b / 1e6).toFixed(b < 9.95e6 ? 1 : 0);
 
 function markdown(results) {
   const out = [];
-  const head = '| App | Toolkit | Pass | Install | Process | Linked (libs) | X connection | First window | Usable | Quit → gone | Syscalls | File bytes read | Procs / threads |';
+  const head = '| App | Toolkit | Pass | Install | Process | Linked (libs) | X connection | First window | Usable | Quit → gone | Syscalls | File bytes read | Procs / threads | Snapshot |';
   out.push(head, head.replace(/[^|]+/g, (c) => (c.trim() === 'App' || c.trim() === 'Toolkit' || c.trim() === 'Pass' ? '---' : '---:')));
   for (const [app, r] of Object.entries(results.apps)) {
     for (const p of r.passes ?? []) {
       const q = p.quit;
       const gone = !q ? '—' : q.allGone === null ? `not gone (${q.left.filter((x) => x.state !== 'zombie').map((x) => x.comm.split('/').pop()).join(', ')})` : sec(q.allGone) + (q.zombies ? ` (${q.zombies} zombie${q.zombies > 1 ? 's' : ''})` : '');
-      out.push(`| ${app} | ${r.toolkit} | ${p.pass} | ${p.install ? `${sec(p.install.ms)} (${mbs(p.install.bytes || p.net.debBytes)} MB)` : '—'} | ${sec(p.t.spawn)} | ${sec(p.t.linked)} (${p.ld.libs}) | ${sec(p.t.xConnect)} | ${sec(p.t.firstWindow)} | **${sec(p.t.usable)}** | ${gone} | ${p.kernel.calls} | ${mbs(p.kernel.fileReadBytes)} MB | ${p.processes} / ${p.threads} |`);
+      out.push(`| ${app} | ${r.toolkit} | ${p.pass} | ${p.install ? `${sec(p.install.ms)} (${mbs(p.install.bytes || p.net.debBytes)} MB)` : '—'} | ${sec(p.t.spawn)} | ${sec(p.t.linked)} (${p.ld.libs}) | ${sec(p.t.xConnect)} | ${sec(p.t.firstWindow)} | **${sec(p.t.usable)}** | ${gone} | ${p.kernel.calls} | ${mbs(p.kernel.fileReadBytes)} MB | ${p.processes} / ${p.threads} | ${p.snapshot ?? ''} |`);
     }
-    if (r.error) out.push(`| ${app} | ${r.toolkit} | failed: ${r.error.split('\n')[0].slice(0, 120)} | | | | | | | | | | |`);
+    if (r.error) out.push(`| ${app} | ${r.toolkit} | failed: ${r.error.split('\n')[0].slice(0, 120)} | | | | | | | | | | | |`);
   }
   return out.join('\n') + '\n';
 }
@@ -290,6 +299,7 @@ for (const app of apps) {
   };
   const one = async (pass, env) => {
     net = { requests: 0, bytes: 0, debs: 0, debBytes: 0, chunks: 0, chunkBytes: 0 };
+    await page.evaluate(() => { window.__guiSnapshots = []; });
     await page.evaluate(pageStart, [app, { LD_DEBUG: 'statistics', ...extraEnv, ...env }, READY[app] ?? '']);
     await page.waitForFunction(() => window.__glb.st.t.usable !== undefined || window.__glb.st.error
       || (window.__glb.st.pid && !window.__tabcomputer.kernel.procs.has(window.__glb.st.pid) && window.__glb.st.t.firstWindow === undefined), null, { timeout: LIMIT, polling: 100 });
@@ -297,7 +307,24 @@ for (const app of apps) {
     const raw = await page.evaluate(() => window.__glb.stop());
     const s = summarize(pass, raw, { ...net });
     if (s.t.usable === undefined) throw new Error(`${pass}: no usable window (${raw.st.error || 'the process ended'}): ${(raw.st.output ?? '').trim().split('\n').slice(-3).join(' | ').slice(0, 300)}`);
+    // Was this start a restore? And with --snapshots: let a usual start keep its snapshot before it is quit
+    const snapLog = () => page.evaluate((app) => (window.__guiSnapshots ?? []).filter((e) => e.app === app), app);
+    const restored = (await snapLog()).find((e) => e.restored !== undefined);
+    s.snapshot = restored ? (restored.restored ? `restored${restored.hidden ? ' (taken in the background)' : ''}` : `usual start: ${restored.why}`) : '';
+    if (snapshots && !restored?.restored) {
+      const taken = await page.waitForFunction((app) => (window.__guiSnapshots ?? []).find((e) => e.app === app && e.taken !== undefined), app, { timeout: 120_000, polling: 100 }).then((h) => h.jsonValue()).catch(() => null);
+      s.snapshot += taken?.taken ? `${s.snapshot ? '; ' : ''}taken (${mbs(taken.bytes.stored)} MB stored, ${sec(taken.ms)} s)` : `${s.snapshot ? '; ' : ''}none taken${taken ? `: ${taken.why}` : ''}`;
+    }
     s.quit = await page.evaluate(pageQuit, [app, raw.st.pid, raw.st.pids, 20_000]);
+    if (snapshots) {
+      // The quit may have outdated the snapshot (the app saved its settings): the retake starts once the
+      // tab has been quiet, and the next pass waits for it, as someone who opens the app a minute later does
+      const t0 = Date.now();
+      await page.waitForTimeout(1500);
+      await page.waitForFunction(() => { const q = window.__guiRetakes; return !q || (!q.current && !q.waiting.length); }, null, { timeout: 300_000, polling: 250 }).catch(() => {});
+      const re = (await snapLog()).find((e) => e.retaken !== undefined);
+      if (re) { s.retake = { ok: !!re.retaken, ms: re.ms, why: re.why, waitedMs: Date.now() - t0 }; s.snapshot += `; then ${re.retaken ? `retaken in the background (${sec(re.ms)} s)` : `no retake: ${re.why}`}`; }
+    }
     r.passes.push(s);
     const q = s.quit;
     console.log(`ok   ${app.padEnd(11)} ${pass.padEnd(6)} usable ${sec(s.t.usable)} s  (install ${s.install ? sec(s.install.ms) : '—'}, process ${sec(s.t.spawn)}, ld.so ${sec(s.t.ldStart)}, linked ${sec(s.t.linked)} [${s.ld.libs} libs], X ${sec(s.t.xConnect)}, window ${sec(s.t.firstWindow)})  ${s.kernel.calls} calls, ${mbs(s.kernel.fileReadBytes)} MB read, ${s.processes} procs/${s.threads} threads; quit ${q.allGone === null ? 'NOT GONE: ' + JSON.stringify(q.left) : sec(q.allGone) + ' s' + (q.zombies ? `, ${q.zombies} zombie(s)` : '')}`);

@@ -16,5 +16,8 @@ export async function runPythonFrontend(ctx: CommandContext, args: string[], inv
   }
   // a venv's python installs into that venv, like real pip
   const venv = await venvOf(ctx.fs, invokedPath);
-  return pipMain(ctx, rest, venv ? venvTarget(venv) : systemTarget());
+  if (venv) return pipMain(ctx, rest, venvTarget(venv));
+  // (the system's: one command with `pip`, which hands what only Debian's Python can have to Debian's pip)
+  if (ctx.shell) return (await import('./python-default')).pipCommand(ctx, 'pip', rest, systemTarget());
+  return pipMain(ctx, rest, systemTarget());
 }

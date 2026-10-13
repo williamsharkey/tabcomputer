@@ -64,10 +64,8 @@ async function create(display: number): Promise<XSession> {
     document.addEventListener('cut', dirty);
     window.addEventListener('focus', dirty);
   }
-  // (snapshots of started apps, when the setting is on: the atom table is the profile's)
-  let snapshots = false;
-  try { snapshots = (globalThis as { localStorage?: Storage }).localStorage?.getItem('tabcomputer-gui-snapshots') === '1'; } catch { /* no storage */ }
-  if (snapshots) await (await import('../gui/snapshot')).keepAtoms(server).catch(() => {});
+  // (snapshots of started apps, while they are on: the atom table is the profile's)
+  if ((await import('../gui/snapshot-setting')).snapshotsOn()) await (await import('../gui/snapshot')).keepAtoms(server).catch(() => {});
   if (typeof window !== 'undefined') (window as unknown as { __shiroX?: unknown }).__shiroX = { server, rootless };
   return { display, server, rootless, started: Date.now() };
 }

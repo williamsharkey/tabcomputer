@@ -708,7 +708,7 @@ const STREAM_REDIRECT_CMDS = new Set(['node', 'nodejs', 'npm', 'npx']);
  * file for as long as it has one.
  */
 // (apt and toolchain: an install that waits for the server's build says how far it is, src/debian/package-sets.ts)
-const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo', 'nohup', 'apt', 'apt-get', 'toolchain']);
+const PASS_THROUGH_CMDS = new Set(['sh', 'bash', 'timeout', 'env', 'sudo', 'nohup', 'apt', 'apt-get', 'toolchain', 'pip', 'pip3']);
 
 /** Is fd 2 still the terminal after these redirects? (`stdoutTty`: fd 1 is, before them) */
 function stderrIsTty(redirects: Redirect[], stdoutTty: boolean): boolean {
@@ -5143,7 +5143,11 @@ export class Shell {
               // (the shell's writers end lines with \r\n for the terminal)
               const toCtxOut = (t: string) => { ctx.stdout += t.replace(/\r\n/g, '\n'); };
               const toCtxErr = (t: string) => { ctx.stderr += t.replace(/\r\n/g, '\n'); };
-              exitCode = await this.executeScript(executable, cmdArgs, ctx,
+              // (a bare python3 that was not run as a kernel job, with Debian's Python installed too:
+              // the same choice as there, src/python/choose.ts)
+              const py = effectiveCmdName === 'python3' || effectiveCmdName === 'python' ? await this.chosenPython(effectiveCmdName, cmdArgs, executable) : null;
+              if (py && 'message' in py) { ctx.stderr += py.message; exitCode = 1; }
+              else exitCode = await this.executeScript(py?.path ?? executable, py?.args ?? cmdArgs, ctx,
                 outRedirected || i !== pipeline.length - 1 ? toCtxOut : writeStdout,
                 mergeErr ? toCtxOut : outRedirected ? toCtxErr : stderrWriter, effectiveCmdName);
             } catch (e: any) {
@@ -9668,6 +9672,23 @@ export class Shell {
   }
 
   /**
+   * The interpreter file for a bare `python3 ARGS` where Debian's Python is
+   * installed too (src/python/choose.ts): tabcomputer's own unless the program
+   * needs Debian's. null: nothing to choose (as before), or the built-in one
+   * is not installed yet (the command installs it).
+   */
+  private async chosenPython(name: string, args: string[], found: string): Promise<{ path: string; args: string[] } | { message: string } | null> {
+    try {
+      const py = await import('./python/choose');
+      const pick = await py.shellPython(this.fs, args, found.startsWith('/') ? found : this.fs.resolvePath(found, this.cwd), { cwd: this.cwd, env: this.env });
+      if (!pick) return null;
+      if (pick.engine === 'missing') return { message: `${name}: ${py.DEBIAN_MISSING}\n` };
+      if (pick.engine === 'debian') return { path: pick.path, args: pick.args };
+      return (await this.fs.exists(py.BUILTIN_PYTHON)) ? { path: py.BUILTIN_PYTHON, args: pick.args } : null;
+    } catch { return null; }
+  }
+
+  /**
    * Run a shebang interpreter: an existing absolute path runs as itself
    * (packages, WASM, ELF, nested scripts); otherwise its name is looked up
    * like a command, so `#!/usr/bin/python3` and `#!/usr/bin/env python3`
@@ -9694,6 +9715,12 @@ export class Shell {
       if (named) { ctx.args = argv.slice(1); return this.runCommand(named, ctx); }
     }
     const base = interp.slice(interp.lastIndexOf('/') + 1);
+    // `#!/usr/bin/env python3` with Debian's Python installed too: as `python3 FILE` at the prompt
+    if (viaEnv && (base === 'python3' || base === 'python')) {
+      const py = await this.chosenPython(base, argv, `/usr/bin/${base}`);
+      if (py && 'message' in py) { writeStderr(py.message.replace(/\n/g, '\r\n')); return 1; }
+      if (py) return this.executeScript(py.path, py.args, ctx, writeStdout, writeStderr, base);
+    }
     const cmd = this.commands.get(base);
     if (cmd && !packageShadows(this.fs).has(base)) {
       ctx.args = argv;

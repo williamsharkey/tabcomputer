@@ -228,7 +228,7 @@ Put the setup script at `.tabcomputer/run.sh` in the repository, then:
 | Recipe | For | Status |
 | --- | --- | --- |
 | `c-class` | a C class on machines where nothing can be installed | untested (needs Debian) |
-| `python-class` | the same, Python | untested (needs Debian) |
+| `python-class` | the same, Python (the built-in one: nothing to install) | untested in a browser |
 | `latex-paper` | a LaTeX project with no compile time limit and no upload | untested (needs Debian) |
 | `wordperfect-rescue` | old WordPerfect / Works / ClarisWorks / Visio / CorelDraw files, converted in the tab | untested (needs Debian) |
 | `claude-sandbox` | Claude Code on a repository in a throwaway machine | runs (`tests/browser/run-links.mjs`, without `repo`) |

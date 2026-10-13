@@ -110,19 +110,30 @@ export interface XRecording {
   /** Connections the process made: more than one can't be played back as one client */
   connections: number;
   client: Client | null;
+  /** Its windows are never shown (Client.hidden) */
+  hidden?: boolean;
 }
 
 const recordings = new Map<number, XRecording>();
 
 /** Record the X connection process `pid` is about to make, as client number `index`. */
-export function recordXClient(pid: number, index: number, limit = 64 << 20): XRecording {
-  const rec: XRecording = { pid, index, chunks: [], bytes: 0, limit, over: false, connections: 0, client: null };
+export function recordXClient(pid: number, index: number, limit = 64 << 20, hidden = false): XRecording {
+  const rec: XRecording = { pid, index, chunks: [], bytes: 0, limit, over: false, connections: 0, client: null, hidden };
   recordings.set(pid, rec);
   return rec;
 }
 
-/** Stop recording `pid`'s connection (the bytes so far stay in its record). */
-export function stopXRecording(pid: number): void { recordings.delete(pid); }
+/** Processes started hidden: their X clients, and their children's, show no window (until `showXClientsOf`) */
+const hiddenPids = new Set<number>();
+
+/** Stop recording `pid`'s connection (the bytes so far stay in its record). A hidden one stays hidden. */
+export function stopXRecording(pid: number): void {
+  if (recordings.get(pid)?.hidden) hiddenPids.add(pid);
+  recordings.delete(pid);
+}
+
+/** `pid` is gone: its number may be another process's next */
+export function forgetHidden(pid: number): void { hiddenPids.delete(pid); }
 
 async function serveClient(sock: KSocket, display: number, kernel: Kernel): Promise<void> {
   const { getXSession } = await import('./session');
@@ -132,12 +143,16 @@ async function serveClient(sock: KSocket, display: number, kernel: Kernel): Prom
   let chain: Promise<unknown> = Promise.resolve();
   let closed = false;
   let rec = recordings.get(sock.peerPid) ?? null;
+  // (a hidden start's every connection is hidden, recorded or not, its children's too)
+  let hidden = false;
+  for (let pid = sock.peerPid, n = 0; pid > 1 && n < 32; pid = kernel.procs.get(pid)?.ppid ?? 0, n++) if (recordings.get(pid)?.hidden || hiddenPids.has(pid)) { hidden = true; break; }
   // (a second connection, or its number taken by another instance of the app: not recorded)
   if (rec && (++rec.connections > 1 || server.clients.has(rec.index))) { rec.over = true; rec.chunks = []; rec = null; }
   const client = server.connect({
     write: (d) => { chain = chain.then(() => (closed ? 0 : sock.send(d))); },
     close: () => { closed = true; void chain.then(() => sock.close()); },
   }, rec?.index);
+  client.hidden = hidden;
   if (rec) rec.client = client;
   await pump(sock, client, rec);
   server.disconnect(client);
@@ -168,7 +183,7 @@ async function pump(sock: KSocket, client: Client, rec: XRecording | null): Prom
  */
 export async function adoptXClient(kernel: Kernel, display: number, index: number, requests: Uint8Array[]): Promise<{ sock: KSocket; client: Client; done: Promise<void> }> {
   const { getXSession } = await import('./session');
-  const { server } = await getXSession(display);
+  const { server, rootless } = await getXSession(display);
   if (server.clients.has(index)) throw new Error(`X client number ${index} is in use`);
   if (!netStackOf(kernel)) installNet(kernel);
   const pair = netStackOf(kernel)!.socketpair();
@@ -183,7 +198,12 @@ export async function adoptXClient(kernel: Kernel, display: number, index: numbe
   for (const chunk of requests) client.receive(chunk);
   client.flush();
   muted = false;
-  for (const w of server.topsOf(client)) if (w.mapped) server.announce(w);
+  for (const w of server.topsOf(client)) {
+    if (!w.mapped) continue;
+    server.announce(w);
+    // ... and whether they have the keyboard
+    if (rootless) rootless.refocus(w); else server.tellFocus(w, server.focusWindow() === w);
+  }
   const done = pump(ours, client, null).then(() => {
     server.disconnect(client);
     closed = true;

@@ -51,6 +51,17 @@ def show_figure(path, title):
     tabcomputer_js.show(path, title)
 
 
+def _sleep(seconds):
+    # time.sleep that ^C ends (tabcomputer#148). Pyodide's own switches stacks where the engine
+    # can, and the interrupt is then raised in whatever Python runs first when it comes back: a
+    # weak reference's callback, which ignores it, so a loop around sleep never stopped.
+    import tabcomputer_js
+    if seconds < 0:
+        raise ValueError("sleep length must be non-negative")
+    if tabcomputer_js.sleep(float(seconds)):
+        raise KeyboardInterrupt
+
+
 def _trim(tb):
     # (the frames of this file and of runpy are not the program's)
     while tb is not None:
@@ -78,6 +89,8 @@ def main(kind, target, argv, sitedirs, env):
     for d in sitedirs:
         if os.path.isdir(d):
             site.addsitedir(d)
+    import time
+    time.sleep = _sleep
     sys.argv[:] = argv
     import __main__
 
@@ -195,6 +208,9 @@ export interface RunIo {
   isatty(fd: number): boolean;
   /** plt.show(): a figure saved at `path` */
   show(path: string, title: string): void;
+  /** Whether ^C was pressed and Python has not taken it yet; and drop one that was (time.sleep raises it itself) */
+  interrupted?(): boolean;
+  clearInterrupt?(): void;
 }
 
 /** Run `run` in `py` with the tab mounted; resolves with the exit status. */
@@ -212,7 +228,20 @@ export async function runProgram(py: any, run: PyRun, cwd: string, env: Record<s
   });
   py.setStdout({ write(buf: Uint8Array) { io.write(1, buf); return buf.length; }, isatty: io.isatty(1) });
   py.setStderr({ write(buf: Uint8Array) { io.write(2, buf); return buf.length; }, isatty: io.isatty(2) });
-  py.registerJsModule('tabcomputer_js', { show: (path: string, title: string) => io.show(String(path), String(title)) });
+  const napWord = typeof SharedArrayBuffer === 'function' ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  py.registerJsModule('tabcomputer_js', {
+    show: (path: string, title: string) => io.show(String(path), String(title)),
+    /** time.sleep(): wait here, in slices, and return true as soon as ^C is pressed (RUNNER_PY `_sleep`) */
+    sleep: (seconds: number) => {
+      const end = performance.now() + Math.max(0, Number(seconds) || 0) * 1000;
+      for (;;) {
+        if (io.interrupted?.()) { io.clearInterrupt?.(); return true; }
+        const left = end - performance.now();
+        if (left <= 0) return false;
+        if (napWord) Atomics.wait(napWord, 0, 0, Math.min(left, 40));
+      }
+    },
+  });
   try {
     py.FS.chdir(cwd);
   } catch {

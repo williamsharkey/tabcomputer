@@ -674,6 +674,85 @@ describe('X11: a client restored from its recorded requests (docs/research/GUI_S
     second.timeAtLeast(1_000_000);
     expect(second.time()).toBeGreaterThan(1_000_000);
   });
+
+  it('a hidden client gets no window and no pointer; played into a client that is shown, its window comes up and is told it has the keyboard', async () => {
+    const { Rootless } = await import('@shiro/x11/rootless');
+    const { FIRST_RESERVED_CLIENT } = await import('@shiro/x11/server');
+    (globalThis as { ImageData?: unknown }).ImageData ??= class { data: Uint8ClampedArray; constructor(readonly width: number, readonly height: number) { this.data = new Uint8ClampedArray(width * height * 4); } };
+    const index = FIRST_RESERVED_CLIENT + 2;
+    const host = (made: { title: string }[], focused: () => void) => ({
+      name: 'test', desktopSize: () => ({ width: 1024, height: 768 }),
+      createCanvasWindow: (o: { title: string }) => {
+        made.push(o);
+        const on: Record<string, (() => void)[]> = {};
+        return {
+          setTitle() {}, setGeometry() {}, position: () => ({ x: 200, y: 100 }), present() {}, show() {}, hide() {}, setCursor() {}, onInput() {}, destroy() {},
+          on: (ev: string, cb: () => void) => { (on[ev] ??= []).push(cb); },
+          // (the desktop gives a new window the keyboard)
+          activate: () => { focused(); for (const cb of on.focus ?? []) cb(); },
+        };
+      },
+    });
+    // The hidden start: the server serves the client, the display shows nothing of it
+    const first = new XServer({ width: 1024, height: 768 });
+    installRender(first);
+    const made1: { title: string }[] = [];
+    new Rootless(first, host(made1, () => {}) as never);
+    const { c, sent } = await recorded(first, index);
+    const hidden = [...first.clients.values()].find((x) => x.index === index)!;
+    hidden.hidden = true;
+    const wid = c.id(1), gc = c.id(2);
+    createWindow(c, wid, 0, 0, 300, 200, (1 << 15) | (1 << 17) | (1 << 21) | (1 << 4) | (1 << 6));   // Exposure, StructureNotify, FocusChange, Enter, PointerMotion
+    c.send(8, 0, (w) => w.u32(wid));                                           // MapWindow
+    c.send(55, 0, (w) => w.u32(gc).u32(wid).u32(0x4).u32(0x0000ff));           // CreateGC, blue
+    c.send(70, 0, (w) => w.u32(wid).u32(gc).i16(10).i16(10).u16(20).u16(20)); // PolyFillRectangle
+    c.send(43, 0);
+    await c.reply();
+    expect(made1).toEqual([]);                                                 // no window on the desktop
+    const top = first.topsOf(hidden)[0];
+    expect(top.mapped).toBe(true);                                             // the app thinks it is up, and has drawn
+    expect(pixelAt(top, 15, 15)).toBe(0x0000ff);
+    // the pointer moving over where it would be is over nothing of it
+    first.movePointer(50, 50);
+    expect(first.windowAt(50, 50)).toBe(first.root);
+    expect((await c.events()).filter((e) => [6, 7, 9].includes(e[0] & 0x7f))).toEqual([]);   // no Motion, Enter or FocusIn
+    expect(first.focusWindow()).not.toBe(top);
+
+    // The restore, in another page: the same bytes into a client that is shown
+    const second = new XServer({ width: 1024, height: 768 });
+    installRender(second);
+    expect(second.adoptAtoms(first.atomNames())).toBe(true);
+    const made2: { title: string }[] = [];
+    let activated = 0;
+    const rootless = new Rootless(second, host(made2, () => { activated++; }) as never);
+    const out: Uint8Array[] = [];
+    let muted = true;
+    const again = second.connect({ write: (d) => { if (!muted) out.push(d); }, close: () => {} }, index);
+    for (const chunk of sent) again.receive(chunk);
+    again.flush();
+    muted = false;
+    expect(made2.length).toBe(1);                                              // its window is on the desktop now
+    expect(activated).toBe(1);
+    const top2 = second.topsOf(again)[0];
+    expect(pixelAt(top2, 15, 15)).toBe(0x0000ff);
+    expect(second.focusWindow()).toBe(top2);
+    // what the display said while the requests were played was dropped: it is said again
+    for (const w of second.topsOf(again)) { second.announce(w); rootless.refocus(w); }
+    again.flush();
+    const codes = out.flatMap((d) => { const r: number[] = []; for (let i = 0; i + 32 <= d.length; i += 32) r.push(d[i] & 0x7f); return r; });
+    expect(codes).toContain(22);                                               // ConfigureNotify: where it is
+    expect(codes).toContain(9);                                                // FocusIn: it has the keyboard
+    expect(codes.lastIndexOf(9)).toBeGreaterThan(codes.lastIndexOf(10));       // (after any FocusOut)
+    expect(second.focusWindow()).toBe(top2);
+    // one that is not the focused window is told so
+    out.length = 0;
+    second.setFocus(1, 1);
+    again.flush();
+    out.length = 0;
+    rootless.refocus(top2);
+    again.flush();
+    expect(out.flatMap((d) => [d[0] & 0x7f])).toEqual([10]);                   // FocusOut
+  });
 });
 
 describe.skipIf(!haveClient)('X11 over the kernel: x86-64 client in Blink', () => {

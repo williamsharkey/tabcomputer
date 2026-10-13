@@ -69,6 +69,15 @@ Debian's apt and dpkg run unmodified. What tabcomputer provides around them:
   kernel uid/gid 0 (`SpawnOptions.uid`, `Shell.uid`), which Blink forwards
   for getuid/geteuid/getgid. There is no password: the browser tab is the
   security boundary.
+- **`apt` at the prompt** (#133): `apt`/`apt-get` `install`, `remove`,
+  `update`, `upgrade` and the other commands apt keeps for root run as root
+  without `sudo` when typed at tabcomputer's shell (`aptWantsRoot`,
+  `shiroAptCmd`), as `apt` does before Debian mode. An install with no
+  package lists runs `apt-get update` first, and one that ends in "Unable to
+  locate package" fetches the lists and runs once more, unless this page
+  fetched them in the last ten minutes (`src/debian/apt-guard.ts`). apt
+  started by another program (Debian's sh, make) is not changed: there it
+  needs `sudo`.
 - **`#!` scripts** run as Linux runs them when the interpreter is a real
   program (the kernel's `shebangLoader`): dpkg's maintainer scripts run under
   Debian's dash (`/bin/sh`), perl scripts under Debian's perl.

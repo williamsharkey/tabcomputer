@@ -282,8 +282,8 @@ site's storage, in this browser.
 
 Install software
   debian install         stream in Debian 13 (real Debian, x86-64 in an emulator)
-  sudo apt update        then: sudo apt install -y NAME   (Debian's apt; about a
-                         minute per small package, python3 about 4 minutes)
+  apt install -y NAME    then, Debian's apt (the first one fetches the package
+                         lists; about a minute per small package)
   toolchain install c    a whole Debian toolchain in seconds (also python, tex,
                          tex-full, classic, node, java, rescue for old file
                          formats); toolchain list shows them

@@ -1103,7 +1103,8 @@ export class Shell {
       LOGNAME: 'user',
       LANG: 'C.UTF-8',
       SHELL: '/bin/sh',
-      PATH: '/usr/local/bin:/usr/bin:/bin',
+      // (/usr/games: where Debian puts cowsay, fortune, sl)
+      PATH: '/usr/local/bin:/usr/bin:/bin:/usr/games',
       PWD: '/home/user',
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',

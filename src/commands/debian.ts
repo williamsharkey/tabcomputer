@@ -49,7 +49,7 @@ export const debianCmd: Command = {
       out(`Installed ${r.entries} paths in ${r.ms} ms; file contents are fetched on first use.`);
       for (const l of overlayReport(changed, rest.includes('-v') || rest.includes('--verbose'))) out(l);
       if (r.moved.length) out(`  moved into Debian's directories: ${r.moved.join(', ')}`);
-      out(`Try: sudo apt update && sudo apt install <package>`);
+      out(`Try: apt install <package>`);
       return 0;
     }
     if (sub === 'status' || !sub) {
@@ -183,16 +183,33 @@ export const shiroAptCmd: Command = {
   async exec(ctx) {
     const [script = '/usr/bin/apt-get', ...args] = ctx.args;
     const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
-    const out = (t: string) => { if (ctx.streamStdout) ctx.streamStdout(t); else ctx.stdout += t; };
-    const err = (t: string) => { if (ctx.streamStderr) ctx.streamStderr(t); else ctx.stderr += t; };
-    const { aptGuard } = await import('../debian/apt-guard');
+    let printed = '';
+    const out = (t: string) => { printed += t; if (ctx.streamStdout) ctx.streamStdout(t); else ctx.stdout += t; };
+    const err = (t: string) => { printed += t; if (ctx.streamStderr) ctx.streamStderr(t); else ctx.stderr += t; };
+    const { aptGuard, aptWantsRoot } = await import('../debian/apt-guard');
+    // One person uses this machine: install, remove, update and upgrade run as
+    // root without `sudo`, as `apt` does before Debian mode (#133)
+    const asRoot = (ctx.shell.uid ?? 1000) !== 0 && aptWantsRoot(args);
+    const sh = () => {
+      const child = ctx.shell.fork();
+      if (asRoot) {
+        child.uid = 0;
+        // (as sudo: dpkg looks for ldconfig and start-stop-daemon on PATH)
+        Object.assign(child.env, {
+          USER: 'root', LOGNAME: 'root', HOME: '/root',
+          PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' + (child.env.PATH ? ':' + child.env.PATH : ''),
+        });
+      }
+      return child;
+    };
     return aptGuard({
-      script, args, uid: ctx.shell.uid ?? 1000, fs: ctx.fs as any,
+      script, args, uid: asRoot ? 0 : ctx.shell.uid ?? 1000, fs: ctx.fs as any,
       // argv[0] can't be set from the shell; apt and apt-get don't look at it
       // the caller's stdin goes to apt itself, not to the recovery runs
-      run: (path, argv) => ctx.shell.fork().executeWithStdin([path, ...argv.slice(1)].map(q).join(' '),
+      run: (path, argv) => sh().executeWithStdin([path, ...argv.slice(1)].map(q).join(' '),
         path === script + '.debian' ? ctx.stdin : '', out, err),
       say: err,
+      output: () => printed,
       // Ctrl-C or a timeout's abort: the shell stopped waiting on this builtin
       stopped: () => !!(ctx.shell.abortController ?? ctx.shell.inheritedAbort)?.signal.aborted,
     });

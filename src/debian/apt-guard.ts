@@ -13,7 +13,16 @@
  *   The archives of the failed run are still in /var/cache/apt/archives, so
  *   the retry doesn't download them again.
  *
- * Everything else (update, search, show, policy, non-root runs) goes straight
+ * - an install with no package lists yet (a fresh Debian, or one that came
+ *   with a toolchain layer) runs `apt-get update` first, and one that fails
+ *   with "Unable to locate package" fetches the lists and runs once more,
+ *   unless they were fetched in the last ten minutes.
+ *
+ * At the prompt the commands that change packages or the lists run as root
+ * without `sudo` (`aptWantsRoot`; shiroAptCmd in src/commands/debian.ts):
+ * one person uses this machine, as with `apt` before Debian mode.
+ *
+ * Everything else (search, show, policy, non-root runs) goes straight
  * to Debian's apt. Messages are prefixed with the product name so they read
  * as the system's, not apt's.
  */
@@ -25,6 +34,27 @@ const DEBIAN_SUFFIX = '.debian';
 const UPDATES = '/var/lib/dpkg/updates';
 const TORN = '/var/lib/dpkg/updates.torn';
 const CHANGES = new Set(['install', 'reinstall', 'remove', 'purge', 'upgrade', 'full-upgrade', 'dist-upgrade', 'autoremove', 'autopurge', 'build-dep', 'satisfy']);
+/** Commands that resolve package names against the lists. */
+const NEEDS_LISTS = new Set(['install', 'reinstall', 'upgrade', 'full-upgrade', 'dist-upgrade', 'build-dep', 'satisfy']);
+/** Commands apt refuses to a user who is not root. */
+const ROOT_ONLY = new Set([...CHANGES, 'update', 'clean', 'autoclean']);
+const LISTS = '/var/lib/apt/lists';
+const NOT_FOUND = /Unable to locate package|has no installation candidate/;
+/** When this page last fetched the lists: a name apt still can't find after that is a wrong name. */
+let listsFetchedAt = 0;
+const LISTS_FRESH_MS = 10 * 60_000;
+
+/** Forget that the lists were fetched (tests). */
+export function resetAptListsFetched(): void {
+  listsFetchedAt = 0;
+}
+
+/** apt and apt-get commands that need root: the prompt runs them as root without `sudo`. */
+export function aptWantsRoot(args: string[]): boolean {
+  const sub = aptSubcommand(args);
+  return !!sub && ROOT_ONLY.has(sub);
+}
+
 /** dpkg statuses that mean an operation stopped part-way (dpkg --audit lists these). */
 const BROKEN = /^(half-installed|unpacked|half-configured)$/;
 
@@ -78,6 +108,8 @@ export interface AptGuardIO {
   /** Run a program to completion: its exit status. */
   run(path: string, argv: string[]): Promise<number>;
   say(line: string): Promise<void> | void;
+  /** What the runs have printed so far, when the caller sees it (the shell does; a kernel process's children write to its fds). */
+  output?(): string;
   /** The caller is gone (Ctrl-C, a timeout, a kill): start nothing more. */
   stopped?(): boolean;
 }
@@ -94,9 +126,19 @@ export async function aptGuard(io: AptGuardIO, product = 'tabcomputer'): Promise
   const real = () => run(script + DEBIAN_SUFFIX, [script, ...args]);
   const sub = aptSubcommand(args);
   const dry = args.some((a) => /^(-s|--simulate|--just-print|--dry-run|--recon|--no-act|--print-uris|-d|--download-only)$/.test(a));
+  if (sub === 'update' && !dry) {
+    const code = await real();
+    if (code === 0) listsFetchedAt = Date.now();
+    return code;
+  }
   if (!fs || io.uid !== 0 || !sub || !CHANGES.has(sub) || dry) return real();
 
   const say = async (s: string) => { await io.say(`${product}: ${s}\n`); };
+  const needsLists = NEEDS_LISTS.has(sub);
+  const noLists = async () => !(await fs.readdir(LISTS).catch(() => [] as string[])).some((f) => /_Packages(\.\w+)?$/.test(f));
+  const fetchLists = async (): Promise<void> => {
+    if (await run('/usr/bin/apt-get' + DEBIAN_SUFFIX, ['apt-get', 'update']) === 0) listsFetchedAt = Date.now();
+  };
   const interrupted = async () => (await fs.readdir(UPDATES).catch(() => [] as string[])).some((f) => /^\d+$/.test(f));
   const broken = async () => brokenPackages(String(await fs.readFile('/var/lib/dpkg/status', 'utf8').catch(() => '')));
   // dpkg's journal entries are status stanzas; one torn by a crash makes every
@@ -127,7 +169,20 @@ export async function aptGuard(io: AptGuardIO, product = 'tabcomputer'): Promise
 
   await recover();
   if (stopped()) return 130;
-  const code = await real();
+  if (needsLists && await noLists()) {
+    await say("no package lists yet; running 'apt-get update' first");
+    await fetchLists();
+    if (stopped()) return 130;
+  }
+  const seen = io.output?.().length ?? 0;
+  let code = await real();
+  if (code !== 0 && !KILLED.has(code) && !stopped() && needsLists && Date.now() - listsFetchedAt > LISTS_FRESH_MS
+    && NOT_FOUND.test(io.output?.().slice(seen) ?? '')) {
+    await say("fetching the package lists ('apt-get update') and trying once more");
+    await fetchLists();
+    if (stopped()) return 130;
+    code = await real();
+  }
   if (code === 0 || KILLED.has(code) || stopped() || !['install', 'reinstall', 'upgrade', 'full-upgrade', 'dist-upgrade'].includes(sub)) return code;
   // A failed run that left dpkg part-way: recover and try once more
   if (!(await interrupted()) && !(await broken()).length) return code;

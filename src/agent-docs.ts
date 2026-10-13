@@ -168,8 +168,9 @@ ${bootSection(ctx, name)}
 
 ## Installing software
 
-- Real Debian: \`debian install\` streams in Debian 13, then \`sudo apt update\` (about
-  45 s) and \`sudo apt install -y NAME\` (Debian's own apt and dpkg, x86-64 in the
+- Real Debian: \`debian install\` streams in Debian 13, then \`apt install -y NAME\`
+  (no \`sudo\` needed; the first one fetches the package lists, about 45 s, as
+  \`apt update\` does; Debian's own apt and dpkg, x86-64 in the
   emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
   popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,

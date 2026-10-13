@@ -56,7 +56,7 @@
   ready.catch(function () {});
 
   // ── tab.app ──
-  var app = { id: '', name: '', version: '', manifest: null, dir: '', dataDir: '', home: '', confined: false };
+  var app = { id: '', name: '', version: '', manifest: null, dir: '', dataDir: '', home: '', confined: false, theme: null };
 
   // ── tab.run ──
   /**
@@ -78,6 +78,29 @@
     p.kill = c.cancel;
     return p;
   }
+
+  // ── tab.job ──
+  // The manifest's own `run`, for an app without a page of its own (docs/APPS.md "The manifest
+  // alone"): the page says which files and what the fields hold; the tab builds the command.
+  var session = Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+  /**
+   * tab.job({ files: [{ path, rel }], values: { name: value } }, { onStdout, onStderr }).
+   * Resolves to { code, out, name, size, said, stdout, stderr }: `out` is the result file, or null.
+   * The returned promise has kill().
+   */
+  function job(a, opts) {
+    opts = opts || {};
+    var out = '', err = '';
+    var c = call('job', { session: session, files: a && a.files, values: a && a.values }, function (e, d) {
+      if (e === 'out') { out += d; if (opts.onStdout) opts.onStdout(d); }
+      else if (e === 'err') { err += d; if (opts.onStderr) opts.onStderr(d); }
+    });
+    var p = c.then(function (v) { v.stdout = out; v.stderr = err; return v; });
+    p.kill = c.cancel;
+    return p;
+  }
+  /** Once, when the page loads: { in, out }, the folders this page's inputs and results go to */
+  job.start = function () { return call('job.start', { session: session }); };
 
   // ── tab.fs ──
   var fs = {
@@ -237,6 +260,13 @@
     reveal: function (path) { return call('reveal', { path: path }); },
     toolchain: toolchain,
     window: win,
+    job: job,
+    /** cb('light' | 'dark') when the desktop's appearance changes; tab.app.theme is what it is now. Returns { close() }. */
+    onTheme: function (cb) {
+      var c = call('theme.watch', {}, function (e, d) { if (e === 'theme') { app.theme = d; cb(d); } });
+      c.catch(function () {});
+      return { close: c.cancel };
+    },
   };
   globalThis.tab.ready.catch(function () {});
 })();

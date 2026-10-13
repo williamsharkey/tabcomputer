@@ -12,20 +12,56 @@
  */
 import type { FileSystem } from '../filesystem';
 import { normalizeName, parseRequirement } from '../utils/pep440';
+import { getShiroOrigin } from '../utils/shiro-origin';
 
 /** Pyodide 0.29 is CPython 3.13.2: the built-in Python's minor version, so pure-Python packages serve both */
 export const PYODIDE_VERSION = '0.29.5';
 export const PYODIDE_PYTHON = '3.13.2';
 export const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+/** This site's copy (server.mjs "Pyodide distribution"): the same files, fetched from jsdelivr once by the server and kept on its disk */
+export const PYODIDE_SITE_PATH = `/pyodide/v${PYODIDE_VERSION}/full/`;
+const PROBE_MS = 4000;
+
+const withSlash = (url: string) => url.replace(/\/?$/, '/');
+type Fetch = typeof fetch;
+const pageFetch: Fetch = (...a) => fetch(...a);
 
 /**
- * Where Pyodide is fetched from: jsdelivr, or the URL in localStorage
- * `tabcomputer-pyodide-url` (a mirror of the distribution's `full/` directory).
+ * Does this site serve the distribution? One HEAD for its package list: a
+ * server with the route answers 200 with JSON (the first one ever makes it
+ * fetch the list), one without it (TABCOMPUTER_PYODIDE=0, another product,
+ * an older build) a 404 or the app shell, and one that can't reach its
+ * upstream a 502.
  */
-export function pyodideIndexURL(): string {
+async function siteHasPyodide(fetchFn: Fetch, base: string): Promise<boolean> {
+  try {
+    const r = await fetchFn(`${base}pyodide-lock.json`, { method: 'HEAD', signal: AbortSignal.timeout(PROBE_MS) });
+    return r.ok && /\bjson\b/.test(r.headers?.get?.('content-type') ?? '');
+  } catch { return false; }
+}
+
+let siteChoice: Promise<string> | null = null;
+
+/**
+ * Where Pyodide is fetched from: the URL in localStorage
+ * `tabcomputer-pyodide-url` (a mirror of the distribution's `full/`
+ * directory), else this site when it serves the distribution, else jsdelivr.
+ * The site is asked once per page, by the first thing that needs Pyodide
+ * (`pip install` of a compiled package, a program routed there): never by a
+ * `python3` that runs on the built-in Python.
+ */
+export function pyodideIndexURL(fetchFn?: Fetch): Promise<string> {
   let url = '';
   try { url = globalThis.localStorage?.getItem('tabcomputer-pyodide-url') ?? ''; } catch { /* no storage */ }
-  return (url || PYODIDE_CDN).replace(/\/?$/, '/');
+  if (url) return Promise.resolve(withSlash(url));
+  const choose = async (f: Fetch) => {
+    let site = '';
+    try { site = new URL(PYODIDE_SITE_PATH, getShiroOrigin()).href; } catch { /* no page */ }
+    return /^https?:/.test(site) && await siteHasPyodide(f, site) ? site : PYODIDE_CDN;
+  };
+  // (a caller's own fetch is a test's: its answer is not the page's)
+  if (fetchFn) return choose(fetchFn);
+  return siteChoice ??= choose(pageFetch);
 }
 
 export interface LockPackage {
@@ -37,18 +73,21 @@ export interface PyodideLock { info: { python: string; version?: string }; packa
 
 const locks = new Map<string, Promise<PyodideLock>>();
 /** (tests) */
-export function clearLockCache(): void { locks.clear(); }
+export function clearLockCache(): void { locks.clear(); siteChoice = null; }
 
 /** The distribution's package list (pyodide-lock.json), fetched once per page */
-export function fetchLock(fetchFn: typeof fetch = (...a) => fetch(...a), base = pyodideIndexURL()): Promise<PyodideLock> {
-  let p = locks.get(base);
+export function fetchLock(fetchFn?: Fetch, base?: string): Promise<PyodideLock> {
+  const key = base ?? '';
+  let p = locks.get(key);
   if (!p) {
-    p = fetchFn(`${base}pyodide-lock.json`).then((r) => {
-      if (!r.ok) throw new Error(`${base}pyodide-lock.json: HTTP ${r.status}`);
+    p = (async () => {
+      const from = base ?? await pyodideIndexURL(fetchFn);
+      const r = await (fetchFn ?? pageFetch)(`${from}pyodide-lock.json`);
+      if (!r.ok) throw new Error(`${from}pyodide-lock.json: HTTP ${r.status}`);
       return r.json() as Promise<PyodideLock>;
-    });
-    locks.set(base, p);
-    p.catch(() => { locks.delete(base); });
+    })();
+    locks.set(key, p);
+    p.catch(() => { locks.delete(key); });
   }
   return p;
 }

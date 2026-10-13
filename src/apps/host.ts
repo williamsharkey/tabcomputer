@@ -24,6 +24,7 @@ import type { AppManifest } from './manifest';
 import { firstInstallText, plainInstallLine } from './progress';
 import { expandHome } from './manifest';
 import { AccessError, pagePath, resolveAllowed, safeRelPath, type AccessRoot } from './access';
+import { argvFor, fill, inputValue, outputName, placeholders, rulesOf, shellLineFor, splitRun, type RunValues } from './declare';
 
 export const PROTOCOL_VERSION = 1;
 /** Largest single file a page may send or ask for in one message */
@@ -63,6 +64,8 @@ export interface HostDeps {
   /** Hand bytes to the person's real disk (the browser's download) */
   download(name: string, bytes: Uint8Array, type: string): void;
   toolchains: {
+    /** Which of `names` are toolchain sets (a manifest's `needs` may name one) */
+    known?(names: string[]): Promise<string[]>;
     /** Which of `sets` are installed */
     installed(sets: string[]): Promise<Record<string, boolean>>;
     /** Install one set; resolves to the exit status */
@@ -74,6 +77,8 @@ export interface HostDeps {
   reveal?(path: string): void;
   /** One line for the app's log (`app dev` shows it) */
   log?(line: string): void;
+  /** The desktop's appearance, and a call when it changes (the supplied pages follow it) */
+  theme?: { get(): 'light' | 'dark'; on(cb: () => void): () => void };
 }
 
 export interface HostApp {
@@ -115,6 +120,8 @@ export class AppHost {
   private roots: AccessRoot[];
   private ports = new Set<PortLike>();
   private batch = 0;
+  /** Result names given so far, by session of a supplied page (declare.ts `outputName`) */
+  private taken = new Map<string, Set<string>>();
 
   constructor(readonly app: HostApp, private deps: HostDeps) {
     this.roots = accessRoots(app, deps.home);
@@ -173,8 +180,23 @@ export class AppHost {
           value: {
             v: PROTOCOL_VERSION, id: manifest.id, name: manifest.name, version: manifest.version, manifest,
             dir: this.app.dir, dataDir: this.app.dataDir, home: this.deps.home, confined: this.app.confined,
+            theme: this.deps.theme?.get() ?? null,
           },
         };
+      case 'theme.watch': {
+        const off = this.deps.theme?.on(() => send('theme', this.deps.theme!.get())) ?? (() => {});
+        await new Promise<void>((resolve) => onCancel(() => { off(); resolve(); }));
+        return { value: null };
+      }
+
+      // ── a declared app's command (docs/APPS.md "The manifest alone") ──
+      case 'job.start': {
+        // A page that just loaded: what earlier sessions left (inputs, results) goes, unless another window shows the app
+        const dirs = { in: `${this.app.dataDir}/in/${this.session(a.session)}`, out: `${this.app.dataDir}/out/${this.session(a.session)}` };
+        if (this.ports.size <= 1) for (const d of ['in', 'out']) await fs.rm(`${this.app.dataDir}/${d}`, { recursive: true }).catch(() => {});
+        return { value: dirs };
+      }
+      case 'job': return { value: await this.job(a, send, onCancel) };
 
       // ── commands ──
       case 'run': return { value: await this.run(a, send, onCancel) };
@@ -319,6 +341,72 @@ export class AppHost {
   private batchName(batch: unknown): string {
     if (typeof batch === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(batch)) return batch;
     return `b${Date.now().toString(36)}${(this.batch++).toString(36)}`;
+  }
+
+  private session(s: unknown): string {
+    if (typeof s !== 'string' || !/^[a-z0-9]{1,24}$/.test(s)) throw new AccessError('EINVAL', 'a session name is needed');
+    return s;
+  }
+
+  /**
+   * Run the manifest's `run` once: for one input file (or all of them, with
+   * `"each": false`), or with a form's values. The page says which files and
+   * what the fields hold; the command is the manifest's, and every value
+   * becomes one argument here (declare.ts). Resolves to the exit status and
+   * the result file, if one was made.
+   */
+  private async job(a: Record<string, unknown>, send: Send, onCancel: (fn: () => void) => void): Promise<{ code: number; out: string | null; name: string; size: number; said: string }> {
+    const m = this.app.manifest;
+    const { fs } = this.deps;
+    if (m.kind !== 'files' && m.kind !== 'form') throw new AccessError('ENOSYS', 'this app has no command of its own');
+    const session = this.session(a.session);
+    const given = (a.values && typeof a.values === 'object' ? a.values : {}) as Record<string, unknown>;
+    const values: RunValues = {};
+    for (const input of [...m.options, ...m.fields]) {
+      let v: string;
+      try { v = inputValue(input, given[input.name]); } catch (e) { throw new AccessError('EINVAL', (e as Error).message); }
+      values[input.name] = input.type === 'file' && v ? (await this.path(v, 'read')).real : v;
+    }
+    const outDir = `${this.app.dataDir}/out/${session}`;
+    let rel = '';
+    if (m.kind === 'files') {
+      const files = Array.isArray(a.files) ? a.files as { path?: unknown; rel?: unknown }[] : [];
+      if (!files.length || files.length > 10_000 || (m.each && files.length !== 1)) throw new AccessError('EINVAL', m.each ? 'one file at a time' : 'at least one file is needed');
+      const paths: string[] = [];
+      for (const f of files) paths.push((await this.path(f?.path, 'read')).real);
+      let taken = this.taken.get(session);
+      if (!taken) this.taken.set(session, taken = new Set());
+      const o = outputName(m.out, m.each ? safeRelPath(files[0].rel) : m.out, taken);
+      rel = o.rel;
+      Object.assign(values, m.each ? { in: paths[0], name: o.name, ext: o.ext } : { in: paths });
+    } else if (m.output === 'file') rel = m.out;
+    const out = rel ? `${outDir}/${rel}` : '';
+    if (out) {
+      values.out = out;
+      values.dir = out.slice(0, out.lastIndexOf('/'));
+      await fs.mkdir(values.dir, { recursive: true });
+    }
+    const rules = rulesOf(m);
+    let line = m.shell ? shellLineFor(m.run, values, rules) : argvFor(splitRun(m.run), values, rules).map(shq).join(' ');
+    // A command that does not name {out} writes its result to standard output
+    const piped = !!out && !placeholders(m.run).includes('out');
+    if (piped) line = m.shell ? `{ ${line}\n} > ${shq(out)}` : `${line} > ${shq(out)}`;
+    const h = this.deps.run({
+      line, cwd: this.app.dataDir, env: { APP_ID: m.id, APP_DIR: this.app.dir, APP_DATA: this.app.dataDir },
+      ...(m.stdin ? { stdin: fill(m.stdin, values) } : {}),
+      onStdout: (s) => send('out', s), onStderr: (s) => send('err', s),
+    });
+    onCancel(() => h.kill());
+    const code = await h.done;
+    let made = out ? await fs.stat(out).catch(() => null) : null;
+    let said = '';
+    if (out && made && code !== 0) {
+      // (some programs print why they failed on standard output, which is the result file here)
+      if (piped && made.size < 4000) said = String(await fs.readFile(out, 'utf8').catch(() => '')).trim().split('\n').pop() ?? '';
+      await fs.unlink(out).catch(() => {});
+      made = null;
+    }
+    return { code, out: made ? out : null, name: rel, size: made?.size ?? 0, said: said.slice(0, 300) };
   }
 
   private async run(a: Record<string, unknown>, send: Send, onCancel: (fn: () => void) => void): Promise<{ code: number }> {

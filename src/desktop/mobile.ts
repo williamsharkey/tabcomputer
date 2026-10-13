@@ -11,6 +11,8 @@
  * apply to the next letter typed on the system keyboard. Mode (localStorage
  * `tabcomputer-keybar`): 'auto' (shown, hides while the keyboard is open), 'pinned'
  * (also above the keyboard), 'off'. The menu bar's keyboard button toggles it.
+ * In every mode it shows only while a terminal has the focus: its keys go to
+ * a terminal, and under an app's window they are noise (tabcomputer#139).
  *
  * Loaded only on touch devices; the classic terminal UI keeps
  * src/mobile-input.ts.
@@ -144,6 +146,8 @@ export function initMobile(ctx: AppContext, layout: DesktopLayout): void {
   probe.remove();
   let kbOpen = false;
   let mode = keybarMode();
+  // A window that holds a terminal: Terminal's tabs, or anything else drawn with xterm
+  const terminalFocused = () => !!ctx.wm.focused()?.element.querySelector('.sd-term, .xterm');
   const measure = () => {
     const h = vv ? vv.height : window.innerHeight;
     const top = vv ? vv.offsetTop : 0;
@@ -156,7 +160,7 @@ export function initMobile(ctx: AppContext, layout: DesktopLayout): void {
     root.style.top = `${m.top}px`;
     root.style.height = `${m.h}px`;
     root.style.bottom = 'auto';
-    const showBar = mode === 'pinned' || (mode === 'auto' && !kbOpen);
+    const showBar = terminalFocused() && (mode === 'pinned' || (mode === 'auto' && !kbOpen));
     bar.hidden = !showBar;
     root.classList.toggle('sd-kb-open', kbOpen);
     layout.keybarH = showBar ? bar.offsetHeight : 0;
@@ -184,5 +188,11 @@ export function initMobile(ctx: AppContext, layout: DesktopLayout): void {
   vv?.addEventListener('scroll', onViewport);
   window.addEventListener('orientationchange', () => setTimeout(apply, 300));
   onKeybarMode((m) => { mode = m; transition(apply); });
+  let barFor = terminalFocused();
+  const onFocus = () => {
+    if (terminalFocused() !== barFor) { barFor = !barFor; apply(); }
+  };
+  ctx.wm.on('focus-changed', onFocus);
+  ctx.wm.on('window-closed', onFocus);
   apply();
 }

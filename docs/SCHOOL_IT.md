@@ -15,14 +15,14 @@ All connections are HTTPS or secure WebSocket on port 443, made by the browser.
 
 | Host | Needed for | Without it |
 | --- | --- | --- |
-| `tabcomputer.com` (HTTPS and `wss://`) | The page, the Linux packages and toolchains, GitHub traffic (below), and the relay that carries programs' own connections (`wss://tabcomputer.com/tcp`) | Nothing works |
+| `tabcomputer.com` (HTTPS and `wss://`) | The page, the Linux packages and toolchains, numpy, pandas and matplotlib for Python, GitHub traffic (below), and the relay that carries programs' own connections (`wss://tabcomputer.com/tcp`) | Nothing works |
 | `github.com` | The sign-in page a student opens to enter the device code | No sign-in: private class repositories cannot be opened or submitted |
 | `esm.sh` | The Code app's editor component | The Code app does not load. `vi` in the terminal still works |
 | `*.tabcomputer.com` | Guest profiles (`guest--NAME.tabcomputer.com`) and pages shown by the Browser app and by installed apps (`*.web.tabcomputer.com`) | Guests, the Browser app and installed apps do not open. A class that only edits, runs and submits does not need them |
 | `api.github.com`, `raw.githubusercontent.com` | Private network mode (below), and run links to scripts in GitHub repositories | Private mode cannot reach GitHub |
 | `registry.npmjs.org` | `npm install` | No npm packages |
-| `pypi.org`, `files.pythonhosted.org` | `pip install` | No pip packages |
-| `cdn.jsdelivr.net`, `unpkg.com` | Code some commands load on first use | Those commands fail and say so |
+| `pypi.org`, `files.pythonhosted.org` | `pip install` | No pip packages. `import numpy` still works once numpy is installed: its files come from `tabcomputer.com` |
+| `cdn.jsdelivr.net`, `unpkg.com` | Code some commands load on first use. Not Python's numpy, pandas or matplotlib: `tabcomputer.com` serves those | Those commands fail and say so |
 | `cloudflare-dns.com` | Name lookups for programs, when the relay's own lookup is not used | Programs' lookups fail in that case |
 
 A class that uses the standard library of its language needs the first three rows.

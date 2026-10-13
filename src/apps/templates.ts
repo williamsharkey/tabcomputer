@@ -2,24 +2,27 @@
  * `app new` (docs/APPS.md "Templates"): the starting points an app is
  * scaffolded from. Each is a small working app in `apps/templates/<name>/`
  * of the repository, bundled here as text; a new app is that folder with its
- * id and name filled in. They need no toolchain: each runs as created.
+ * name filled in. `files`, `form` and `table` are one file, `app.json`:
+ * tabcomputer supplies their page (declare.ts). `page` is an app with a page
+ * of its own. They need no toolchain: each runs as created.
  *
  * The Code app's "New app" and a Studio would list `TEMPLATES` and call
  * `scaffold` the same way.
  */
-import { APP_ID, RESERVED_IDS, parseManifest } from './manifest';
+import { APP_ID, RESERVED_IDS, idFromName, parseManifest } from './manifest';
 import { AppError, type RegistryFs } from './registry';
 
 export interface Template { name: string; title: string; description: string }
 
-/** The templates `app new --template` takes (`script` is what `--from` uses) */
+/** The templates `app new --template` takes (`page` is what `--page` uses, `script` what `--from` uses) */
 export const TEMPLATES: Template[] = [
-  { name: 'file-tool', title: 'File in, file out', description: 'drop files, run a program on each, download the results' },
-  { name: 'form', title: 'A form over a command', description: 'fields become a command\'s arguments; its output streams to the page' },
-  { name: 'table', title: 'A table over a file', description: 'a CSV file shown as an editable table, saved on every edit' },
+  { name: 'files', title: 'A command on each file', description: 'one file, app.json: give it files, a command runs on each, download the results' },
+  { name: 'form', title: 'A form over a command', description: 'one file, app.json: labelled fields fill a command; its output shows as it is written' },
+  { name: 'table', title: 'A table in a file', description: 'one file, app.json: a CSV or SQLite file as a table to add to, edit, sort and filter' },
+  { name: 'page', title: 'An app with its own page', description: 'five files: app.json, an icon, and a page (HTML, CSS, JavaScript) that uses tab.js' },
   { name: 'script', title: 'A script with a Run button', description: 'what `app new NAME --from script.sh` makes' },
 ];
-export const DEFAULT_TEMPLATE = 'file-tool';
+export const DEFAULT_TEMPLATE = 'files';
 
 const RAW = import.meta.glob('../../apps/templates/**/*', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
@@ -37,11 +40,7 @@ export const titleFromId = (id: string): string => {
   return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
-/** A name someone typed, as an app id: "My Notes!" → "my-notes"; '' when nothing usable is left */
-export function idFromName(name: string): string {
-  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
-  return APP_ID.test(id) && !RESERVED_IDS.has(id) ? id : '';
-}
+export { idFromName };
 
 export interface ScaffoldOptions {
   template?: string;
@@ -70,11 +69,17 @@ export async function scaffold(fs: RegistryFs, dir: string, id: string, o: Scaff
   for (const [rel, text] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
     let out = text;
     if (rel === 'app.json') {
-      const j = JSON.parse(text) as Record<string, unknown>;
-      j.id = id;
-      j.name = name;
-      out = JSON.stringify(j, null, 2) + '\n';
-      parseManifest(out);
+      const folder = dir.slice(dir.lastIndexOf('/') + 1);
+      if (files.size === 1) {
+        // One file, kept as it was written by hand: only the name changes, and the folder's name is the id
+        out = text.replace(/"name": "[^"]*"/, () => `${folder === id ? '' : `"id": ${JSON.stringify(id)},\n  `}"name": ${JSON.stringify(name)}`);
+      } else {
+        const j = JSON.parse(text) as Record<string, unknown>;
+        j.id = id;
+        j.name = name;
+        out = JSON.stringify(j, null, 2) + '\n';
+      }
+      parseManifest(out, { id: folder });
     } else if (rel.endsWith('.html')) {
       out = text.replace(/\{\{name\}\}/g, name.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`));
     } else if (rel === 'run.sh' && o.script !== undefined) out = o.script.endsWith('\n') ? o.script : o.script + '\n';

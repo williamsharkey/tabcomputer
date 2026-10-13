@@ -901,7 +901,7 @@ async function main() {
       // An installed app (docs/APPS.md): the toolkit brings back its backend and its page
       await appsCore();
       const { restoreBecomeApp } = await import('./apps/window');
-      if (!await restoreBecomeApp(becomeConfig.app).catch(() => false)) {
+      if (!await restoreBecomeApp(becomeConfig.app, !!becomeConfig.back).catch(() => false)) {
         localStorage.removeItem('tabcomputer-become');
         document.body.classList.remove('become-active');
         history.replaceState({}, '', '/');

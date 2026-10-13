@@ -4,15 +4,18 @@
 // Pyodide's, and `python3 FILE.py` runs a program that imports them in Pyodide
 // (a kernel process in a Worker) on the tab's own files, with a terminal's
 // stdin, ^C, exit statuses, and plt.show() in a window. A program that needs
-// none of them stays on the built-in Python. Needs pypi.org and the Pyodide
-// CDN (cdn.jsdelivr.net).
+// none of them stays on the built-in Python. Needs pypi.org. Pyodide comes
+// from the server under test (/pyodide/, server.mjs: it needs cdn.jsdelivr.net
+// the first time, then its disk), and the script fails if the page asks
+// jsdelivr for any of it; against a server without the route
+// (TABCOMPUTER_PYODIDE=0) the page uses jsdelivr and the script says so.
 //
 //   npx vite build && PORT=6011 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/pyodide-numpy.mjs [http://localhost:6011/] [--shots DIR]
 //
 // Prints one line per step with its time, then the measured times; exits 1
 // if a step fails. PLAYWRIGHT= and CHROMIUM= pick the tools.
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const { chromium } = loadPlaywright();
 
@@ -129,6 +132,18 @@ const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbo
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } }); // a fresh profile
 await context.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-tour', '1'); localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
 const page = await context.newPage();
+// Where Pyodide's files are asked for (the page and its Workers): host → file names
+const SITE = new URL(base).host;
+const pyodideFrom = new Map();
+context.on('request', (req) => {
+  const u = new URL(req.url());
+  const m = /\/pyodide\/v[\d.]+\/full\/([^/?]+)$/.exec(u.pathname);
+  if (!m) return;
+  if (!pyodideFrom.has(u.host)) pyodideFrom.set(u.host, new Set());
+  pyodideFrom.get(u.host).add(`${req.method() === 'HEAD' ? 'HEAD ' : ''}${m[1]}`);
+});
+const VERSION = /PYODIDE_VERSION = '([\d.]+)'/.exec(readFileSync(new URL('../../src/python/pyodide-dist.ts', import.meta.url), 'utf8'))[1];
+const siteHasPyodide = await fetch(new URL(`pyodide/v${VERSION}/full/pyodide-lock.json`, base), { method: 'HEAD' }).then((r) => r.ok && /json/.test(r.headers.get('content-type') ?? ''), () => false);
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 let failed = 0;
@@ -266,6 +281,19 @@ try {
 
   // ── uninstall: back to how it was ──
   await step(page, 'pip uninstall -y numpy > /dev/null; python3 np.py 2>&1 | tail -1', /ModuleNotFoundError: No module named 'numpy'/);
+
+  // ── where it all came from ──
+  for (const [host, files] of pyodideFrom) console.log(`  from ${host}: ${[...files].sort().join(', ')}`);
+  const other = [...pyodideFrom.keys()].filter((h) => h !== SITE);
+  if (siteHasPyodide) {
+    if (other.length) throw new Error(`this server has Pyodide, and the page still asked ${other.join(', ')}`);
+    const got = pyodideFrom.get(SITE) ?? new Set();
+    for (const f of ['pyodide.mjs', 'pyodide.asm.wasm', 'python_stdlib.zip', 'pyodide-lock.json']) if (!got.has(f)) throw new Error(`${f} was not fetched from ${SITE}`);
+    if (![...got].some((f) => /^numpy-.*\.whl$/.test(f))) throw new Error(`no numpy wheel was fetched from ${SITE}`);
+    console.log(`  ok           every Pyodide file came from ${SITE} (${got.size} names)`);
+  } else {
+    console.log(`  note         ${SITE} does not serve Pyodide: it came from ${other.join(', ') || 'nowhere'}`);
+  }
 
   if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
   console.log('ok');

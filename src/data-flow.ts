@@ -226,12 +226,12 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   flows.push({
     id: 'mirror',
     title: 'Package downloads',
-    from: 'apt, GUI apps, claude install',
-    via: '/debian/mirror, /claude-releases',
-    to: 'deb.debian.org, security.debian.org, downloads.claude.ai',
+    from: 'apt, GUI apps, claude install, numpy',
+    via: '/debian/mirror, /claude-releases, /pyodide',
+    to: 'deb.debian.org, security.debian.org, downloads.claude.ai, cdn.jsdelivr.net',
     dest: 'Debian',
     reads: 'requests',
-    detail: 'Our server fetches each package and keeps a copy. Our server sees which package you asked for. Debian and Anthropic see our server\'s address, not your address.',
+    detail: 'Our server fetches each package and keeps a copy. Our server sees which package you asked for. Debian, Anthropic and jsdelivr see our server\'s address, not your address.',
     status: 'on',
     carries: [],
   });

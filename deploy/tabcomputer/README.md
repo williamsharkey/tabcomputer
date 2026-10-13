@@ -29,6 +29,16 @@ droplet are not involved.
   plus at most 2 downloads in flight (`TABCOMPUTER_CLAUDE_DOWNLOADS`), about
   250 MB each, so 1.25 GB at most. `TABCOMPUTER_CLAUDE_RELEASES=0` turns the
   route off; clients then download through the TCP relay.
+  `/pyodide/` (server.mjs, numpy and the other compiled Python packages)
+  keeps the files of the pinned Pyodide version that browsers ask for in
+  `/opt/tabcomputer/pyodide` (`TABCOMPUTER_PYODIDE_CACHE` in
+  `profiles/tabcomputer/server.env`; the server makes the directory): each
+  fetched from cdn.jsdelivr.net once and sha256-checked, about 30 MB after
+  numpy, pandas and matplotlib, never more than
+  `TABCOMPUTER_PYODIDE_CACHE_MAX_MB` (1024). Deleting the directory is safe:
+  files are fetched again. `TABCOMPUTER_PYODIDE=0` turns the route off; pages
+  then use jsdelivr. A new Pyodide version leaves the old version's directory
+  behind; remove it by hand.
 - **TLS:** `tabcomputer-cert` waits until tabcomputer.com and www resolve to
   the droplet, then runs `certbot --nginx --redirect` once. certbot's own
   timer renews it.

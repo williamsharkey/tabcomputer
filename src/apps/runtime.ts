@@ -28,6 +28,19 @@ export interface AppsDeps {
   toolchains?: HostDeps['toolchains'];
   download?: HostDeps['download'];
   reveal?: HostDeps['reveal'];
+  packages?: Packages;
+}
+
+/**
+ * Installing the Debian packages a manifest's `needs` names. The one place
+ * that knows how: a faster way (a prebuilt layer per package) replaces
+ * `realPackages` and nothing else changes.
+ */
+export interface Packages {
+  /** Which of `names` are installed */
+  installed(names: string[]): Promise<Record<string, boolean>>;
+  /** Install them; `onLine` gets the installer's output. Resolves to the exit status. */
+  install(names: string[], onLine: (line: string) => void): Promise<number>;
 }
 
 let deps: AppsDeps | null = null;
@@ -64,6 +77,11 @@ function browserDownload(name: string, bytes: Uint8Array, type: string): void {
 }
 
 const realToolchains: HostDeps['toolchains'] = {
+  async known(names) {
+    const { listToolchains } = await import('../commands/toolchain');
+    const all = await listToolchains(appsDeps().fs);
+    return names.filter((n) => all.some((t) => t.id === n));
+  },
   async installed(sets) {
     const { listToolchains } = await import('../commands/toolchain');
     const all = await listToolchains(appsDeps().fs);
@@ -96,6 +114,67 @@ const realToolchains: HostDeps['toolchains'] = {
   },
 };
 
+/** Lines of a stream, one call each */
+function lines(onLine: (line: string) => void): { write(s: string): void; end(): void } {
+  let buf = '';
+  return {
+    write(s) {
+      const parts = (buf + s.replace(/\r\n?/g, '\n')).split('\n');
+      buf = parts.pop() ?? '';
+      for (const l of parts) if (l.trim()) onLine(l);
+    },
+    end() { if (buf.trim()) onLine(buf); buf = ''; },
+  };
+}
+
+const realPackages: Packages = {
+  async installed(names) {
+    // dpkg's own record: a package is here when its stanza says so
+    const status = String(await appsDeps().fs.readFile('/var/lib/dpkg/status', 'utf8').catch(() => ''));
+    const have = new Set<string>();
+    for (const stanza of status.split('\n\n')) {
+      const name = /^Package: (\S+)$/m.exec(stanza)?.[1];
+      if (name && /^Status: .* installed$/m.test(stanza)) have.add(name);
+    }
+    return Object.fromEntries(names.map((n) => [n, have.has(n)]));
+  },
+  async install(names, onLine) {
+    const { fs } = appsDeps();
+    const out = lines(onLine);
+    // (the names are the manifest's, checked to be package names: no blank, no quote)
+    const sh = (line: string) => runLine({ line, cwd: homeDir(), env: {}, onStdout: out.write, onStderr: out.write }).done.then((code) => { out.end(); return code; });
+    const { installedRootfs } = await import('../debian/rootfs');
+    if (!await installedRootfs(fs)) {
+      onLine('Installing Debian first (debian install)...');
+      const code = await sh('debian install');
+      if (code) return code;
+    }
+    const lists = await fs.readdir('/var/lib/apt/lists').catch(() => [] as string[]);
+    if (!lists.some((f) => f.endsWith('_Packages'))) {
+      const code = await sh('sudo apt-get update');
+      if (code) return code;
+    }
+    return sh(`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${names.join(' ')}`);
+  },
+};
+
+/** The desktop's appearance where there is a desktop, else the browser's */
+const theme: NonNullable<HostDeps['theme']> = {
+  get() {
+    const wm = (globalThis as { __shiroDesktop?: { theme(): 'light' | 'dark' } }).__shiroDesktop;
+    if (wm) return wm.theme();
+    return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  },
+  on(cb) {
+    const wm = (globalThis as { __shiroDesktop?: { on(ev: 'theme-changed', cb: () => void): () => void } }).__shiroDesktop;
+    if (wm) return wm.on('theme-changed', cb);
+    if (typeof matchMedia !== 'function') return () => {};
+    const q = matchMedia('(prefers-color-scheme: light)');
+    q.addEventListener('change', cb);
+    return () => q.removeEventListener('change', cb);
+  },
+};
+
 const MIME: Record<string, string> = {
   html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
   json: 'application/json', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', ico: 'image/x-icon',
@@ -117,16 +196,40 @@ export const NO_NETWORK_CSP = [
 
 /** The fixed path an app's page loads the client library from */
 export const TAB_JS_PATH = '/__tabcomputer/tab.js';
-let tabJs: Promise<string> | null = null;
-/** tab.js, for pages that are not on an app origin (where the server itself serves it) */
-export function tabJsSource(): Promise<string> {
-  return tabJs ??= fetch('/apphost/tab.js', { cache: 'no-cache' }).then((r) => {
-    if (!r.ok || /html/i.test(r.headers.get('content-type') ?? '')) throw new Error(`HTTP ${r.status}`);
-    return r.text();
-  }).catch((e) => { tabJs = null; throw e; });
+/** The page tabcomputer supplies for an app that has none of its own (declare.ts): one script for every such app */
+export const PAGE_JS_PATH = '/__tabcomputer/page.js';
+const hostScripts = new Map<string, Promise<string>>();
+/** A script of public/apphost/, for pages that are not on an app origin (where the server itself serves it) */
+function hostScript(name: string): Promise<string> {
+  let p = hostScripts.get(name);
+  if (!p) {
+    p = fetch(`/apphost/${name}`, { cache: 'no-cache' }).then((r) => {
+      if (!r.ok || /html/i.test(r.headers.get('content-type') ?? '')) throw new Error(`HTTP ${r.status}`);
+      return r.text();
+    }).catch((e) => { hostScripts.delete(name); throw e; });
+    hostScripts.set(name, p);
+  }
+  return p;
 }
+export const tabJsSource = (): Promise<string> => hostScript('tab.js');
 /** Tests: the library's text without a server */
-export function setTabJsSource(text: string | null): void { tabJs = text === null ? null : Promise.resolve(text); }
+export function setTabJsSource(text: string | null, name = 'tab.js'): void { if (text === null) hostScripts.delete(name); else hostScripts.set(name, Promise.resolve(text)); }
+
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** The document of a declared app: its name, tab.js, and the supplied page */
+export const suppliedPage = (m: AppManifest): string => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(m.name)}</title>
+</head>
+<body>
+<script src="${TAB_JS_PATH}"></script>
+<script src="${PAGE_JS_PATH}"></script>
+</body>
+</html>
+`;
 
 export interface AppRequest { method: string; path: string; headers?: Record<string, string>; body?: Uint8Array | null }
 export type InstanceEvent = 'state' | 'log' | 'views' | 'reload';
@@ -184,6 +287,7 @@ export class AppInstance {
       toolchains: d.toolchains ?? realToolchains,
       get window() { return self.window; },
       reveal: d.reveal,
+      theme,
       log: (line) => this.say(`[tab.js] ${line}\n`),
     });
   }
@@ -249,13 +353,31 @@ export class AppInstance {
     const d = appsDeps();
     const home = homeDir();
     await d.fs.mkdir(this.dataDir, { recursive: true });
-    const sets = this.manifest.toolchains;
+    const tc = d.toolchains ?? realToolchains;
+    // A name in `needs` that is a toolchain set is installed as that set (a prebuilt layer); the rest are packages
+    const asSets = this.manifest.needs.length ? await tc.known?.(this.manifest.needs) ?? [] : [];
+    const sets = [...new Set([...this.manifest.toolchains, ...asSets])];
+    const packages = this.manifest.needs.filter((n) => !asSets.includes(n));
+    const marker = `${this.dataDir}/.toolchains`;
+    const done = new Set(((sets.length || packages.length ? await d.fs.readFile(marker, 'utf8').catch(() => '') : '') as string).split('\n').filter(Boolean));
+    const wanted = packages.filter((p) => !done.has(`package:${p}`));
+    if (wanted.length) {
+      const pk = d.packages ?? realPackages;
+      const have = await pk.installed(wanted);
+      const missing = wanted.filter((p) => !have[p]);
+      if (missing.length) {
+        let stage = firstInstallText(this.manifest.name);
+        report(stage);
+        this.say(`[app] ${this.id}: apt-get install ${missing.join(' ')}\n`);
+        const code = await pk.install(missing, (line) => { stage = plainInstallLine(line) ?? stage; report(stage, line); this.say(line + '\n'); });
+        if (code !== 0) throw new AppError(`${missing.join(', ')} could not be installed (exit ${code}); ${this.manifest.name} needs ${missing.length > 1 ? 'them' : 'it'}`);
+      }
+      for (const p of wanted) done.add(`package:${p}`);
+      await d.fs.writeFile(marker, [...done].join('\n') + '\n');
+    }
     if (sets.length) {
-      const marker = `${this.dataDir}/.toolchains`;
-      const done = new Set(((await d.fs.readFile(marker, 'utf8').catch(() => '')) as string).split('\n').filter(Boolean));
       const todo = sets.filter((s) => !done.has(s));
       if (todo.length) {
-        const tc = d.toolchains ?? realToolchains;
         const have = await tc.installed(todo);
         for (const set of todo) {
           if (!have[set]) {
@@ -326,10 +448,15 @@ export class AppInstance {
     let pathname = req.path.split('#')[0].split('?')[0] || '/';
     try { pathname = decodeURIComponent(pathname); } catch { /* served as written */ }
     let res: VirtualResponse | null = null;
-    if (pathname === TAB_JS_PATH) {
-      try { res = { status: 200, headers: { 'content-type': MIME.js, 'cache-control': 'no-cache' }, body: await tabJsSource() }; }
-      catch { res = { status: 502, headers: { 'content-type': 'text/plain' }, body: 'tab.js could not be loaded from this site' }; }
+    if (pathname === TAB_JS_PATH || pathname === PAGE_JS_PATH) {
+      const name = pathname.slice(pathname.lastIndexOf('/') + 1);
+      try { res = { status: 200, headers: { 'content-type': MIME.js, 'cache-control': 'no-cache' }, body: await hostScript(name) }; }
+      catch { res = { status: 502, headers: { 'content-type': 'text/plain' }, body: `${name} could not be loaded from this site` }; }
       return res;
+    }
+    // An app without a page of its own: tabcomputer's, the same for every such app
+    if (this.manifest.kind !== 'page' && (method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html')) {
+      return withCsp({ status: 200, headers: { 'content-type': MIME.html, 'cache-control': 'no-cache' }, body: suppliedPage(this.manifest) });
     }
     if (method === 'GET' || method === 'HEAD') res = await this.staticFile(pathname);
     if (!res && this.supervisor) {

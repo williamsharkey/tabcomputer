@@ -42,6 +42,11 @@ const CSS = `
 .tc-app-titleicon { width: 16px; height: 16px; flex: none; z-index: 1; pointer-events: none; object-fit: contain; border-radius: 3px; }
 .tc-app-note { flex: none; padding: 3px 10px; font: 11px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text-2, #a4a8b8); background: var(--sd-window, #1b1d29); border-top: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
 #become-container .tc-app-cover { position: fixed; background: #14151d; color: #e6e6f0; }
+#become-container.tc-app-backed { display: flex; flex-direction: column; }
+#become-container.tc-app-backed iframe { flex: 1; min-height: 0; height: auto !important; }
+.tc-app-back { flex: none; display: flex; align-items: center; min-height: 36px; padding: 0 6px; background: #14151d; border-bottom: 1px solid rgba(255, 255, 255, .12); }
+.tc-app-back a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; font: 13px/1 system-ui, sans-serif; color: #c9cbd8; text-decoration: none; border-radius: 6px; }
+.tc-app-back a:focus-visible { outline: 2px solid #8fa8ff; outline-offset: -2px; }
 `;
 
 function ensureStyle(): void {
@@ -337,8 +342,11 @@ export async function openInstalled(id: string, opts: OpenOptions = {}): Promise
 
 const BECOME_KEY = 'tabcomputer-become';
 
-/** The tab becomes the app, at /<id>: a reload comes back to it */
-export async function becomeApp(ref: AppRef): Promise<void> {
+/**
+ * The tab becomes the app, at /<id>: a reload comes back to it. `back`: a
+ * slim bar above the app with one link, to the desktop.
+ */
+export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Promise<void> {
   ensureStyle();
   const inst = instanceFor(ref);
   const m = inst.manifest;
@@ -352,6 +360,18 @@ export async function becomeApp(ref: AppRef): Promise<void> {
   (container as { _navCleanup?: () => void })._navCleanup?.();
   container.textContent = '';
   const cover = makeCover();
+  container.classList.toggle('tc-app-backed', !!opts.back);
+  if (opts.back) {
+    const bar = document.createElement('nav');
+    bar.className = 'tc-app-back';
+    bar.setAttribute('aria-label', 'tabcomputer');
+    const a = document.createElement('a');
+    a.href = '/?unbecome';
+    a.textContent = '\u2039 tabcomputer';
+    a.title = 'Leave the app and open the tabcomputer desktop';
+    bar.append(a);
+    container.append(bar);
+  }
   container.append(cover.el);
   const leave = () => { location.href = '/?unbecome'; };
   cover.show(`Starting ${m.name}…`);
@@ -365,7 +385,7 @@ export async function becomeApp(ref: AppRef): Promise<void> {
   (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); frame?.dispose(); inst.detach(view); };
   try {
     // (the slug is the id; `app` says the toolkit brings it back, not `serve`)
-    localStorage.setItem(BECOME_KEY, JSON.stringify({ directory: inst.dir, port: 0, slug: m.id, title: m.name, app: m.id }));
+    localStorage.setItem(BECOME_KEY, JSON.stringify({ directory: inst.dir, port: 0, slug: m.id, title: m.name, app: m.id, ...(opts.back ? { back: true } : {}) }));
   } catch { /* no storage: it works until the reload */ }
   if (location.pathname !== '/' + m.id) history.pushState({}, '', '/' + m.id);
   document.title = m.name;
@@ -373,7 +393,7 @@ export async function becomeApp(ref: AppRef): Promise<void> {
   try {
     await inst.prepare((stage) => cover.show(`Starting ${m.name}…`, stage));
     if (!await inst.startBackend()) {
-      cover.show(`${m.name} did not start`, inst.supervisor?.error ?? '', inst.supervisor?.tail() ?? [], [['Retry', () => { void becomeApp(ref); }], ['Back to the desktop', leave]]);
+      cover.show(`${m.name} did not start`, inst.supervisor?.error ?? '', inst.supervisor?.tail() ?? [], [['Retry', () => { void becomeApp(ref, opts); }], ['Back to the desktop', leave]]);
       return;
     }
     frame = await createAppFrame(inst, { onError: (msg) => cover.show(`${m.name} could not be shown`, msg, [], [['Back to the desktop', leave]]) });
@@ -387,10 +407,10 @@ export async function becomeApp(ref: AppRef): Promise<void> {
 }
 
 /** Boot (main.ts): the tab was an app before the reload. False: it is not installed any more. */
-export async function restoreBecomeApp(id: string): Promise<boolean> {
+export async function restoreBecomeApp(id: string, back = false): Promise<boolean> {
   let found: { ref: AppRef };
   try { found = await installedRef(id); } catch { return false; }
-  await becomeApp(found.ref);
+  await becomeApp(found.ref, { back });
   return true;
 }
 

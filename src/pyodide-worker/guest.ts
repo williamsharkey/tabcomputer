@@ -128,6 +128,11 @@ async function runGuest(py: any, start: PyodideStart, post: (m: unknown) => void
 /** The Worker's main: `listen` subscribes to the page's messages, `post` sends to it. */
 export function pyodideGuestMain(listen: (h: (m: unknown) => void) => void, post: (m: unknown) => void): void {
   let boot: Promise<any> | null = null;
+  // The page sends the place once it knows it (host.ts createWorker), which can be
+  // after the program: a program waits for it
+  let placed!: (p: Promise<any>) => void;
+  const located = new Promise<any>((r) => { placed = r; });
+  located.catch(() => { /* reported when a program asks for it */ });
   listen((m: any) => {
     if (m?.type === 'pyodide-boot' && !boot) {
       const base = String(m.indexURL).replace(/\/?$/, '/');
@@ -135,6 +140,7 @@ export function pyodideGuestMain(listen: (h: (m: unknown) => void) => void, post
         .then((mod) => mod.loadPyodide({ indexURL: base }))
         .then((py) => { installSupport(py); post({ type: 'pyodide-ready' }); return py; });
       boot.catch(() => { /* reported when a program asks for it */ });
+      placed(boot);
       return;
     }
     if (isStartMessage(m)) {
@@ -143,7 +149,7 @@ export function pyodideGuestMain(listen: (h: (m: unknown) => void) => void, post
       const note = setTimeout(() => {
         try { const s = connectGuest(start, post); if (isatty(s, 2)) s.write(2, 'python3: loading Pyodide...\n'); } catch { /* closed */ }
       }, SLOW_MS);
-      void (boot ?? Promise.reject(new Error('no Pyodide location was given'))).finally(() => clearTimeout(note)).then(
+      void located.finally(() => clearTimeout(note)).then(
         (py) => runGuest(py, start, post),
         (e) => {
           const sys = connectGuest(start, post);

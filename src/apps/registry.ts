@@ -7,7 +7,7 @@
  * No DOM here: the `app` command, the desktop's dock (src/apps/window.ts)
  * and tests use it with any filesystem object.
  */
-import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, expandHome, type AppManifest } from './manifest';
+import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, expandHome, type AppManifest, type ManifestHint } from './manifest';
 
 export const REGISTRY_FILE = '/var/lib/tabcomputer/apps.json';
 export const ICON_MAX = 256 << 10;
@@ -83,8 +83,15 @@ export async function findInstalled(fs: RegistryFs, id: string): Promise<Install
   return (await readRegistry(fs)).apps[id] ?? null;
 }
 
-/** The manifest of the app in `dir`, with the files it names checked. Throws ManifestError or AppError. */
-export async function loadManifest(fs: RegistryFs, dir: string): Promise<AppManifest> {
+/** The page an app has beside an app.json that names none: index.html at the top, or public/index.html */
+export const pageBeside = (has: (rel: string) => boolean): string | undefined => (has('index.html') ? '.' : has('public/index.html') ? 'public' : undefined);
+
+/**
+ * The manifest of the app in `dir`, with the files it names checked. An
+ * app.json without an id takes the folder's name (`hint.id` when the folder
+ * is a scratch one). Throws ManifestError or AppError.
+ */
+export async function loadManifest(fs: RegistryFs, dir: string, hint: ManifestHint = {}): Promise<AppManifest> {
   const file = `${dir}/${MANIFEST_FILE}`;
   let bytes: Uint8Array | string;
   try {
@@ -95,7 +102,9 @@ export async function loadManifest(fs: RegistryFs, dir: string): Promise<AppMani
     if (e instanceof ManifestError) throw e;
     throw new AppError(`${dir} has no ${MANIFEST_FILE}: it is not an app (app new NAME makes one)`);
   }
-  const m = parseManifest(bytes);
+  const beside = new Set<string>();
+  for (const rel of ['index.html', 'public/index.html']) if (await fs.exists(`${dir}/${rel}`)) beside.add(rel);
+  const m = parseManifest(bytes, { id: hint.id ?? dir.slice(dir.lastIndexOf('/') + 1), page: pageBeside((rel) => beside.has(rel)) });
   const problems: string[] = [];
   if (m.entry) {
     const p = m.entry === '.' ? dir : `${dir}/${m.entry}`;
@@ -154,6 +163,8 @@ async function copyTree(fs: RegistryFs, from: string, to: string): Promise<numbe
 export interface InstallOptions {
   home: string;
   source: string;
+  /** The name an app.json without an id takes its id from (the repository's, the site's entry) */
+  id?: string;
   /** Is this id something else's (a built-in app's)? */
   taken?(id: string): boolean;
   now?: number;
@@ -207,7 +218,7 @@ async function renameDir(fs: RegistryFs, from: string, to: string): Promise<void
 export async function installFromFiles(fs: RegistryFs, files: Map<string, Uint8Array>, o: InstallOptions): Promise<{ app: InstalledApp; manifest: AppManifest; files: number; replaced: boolean }> {
   const text = files.get(MANIFEST_FILE);
   if (!text) throw new AppError(`there is no ${MANIFEST_FILE} among the app's files`);
-  const m = parseManifest(text);
+  const m = parseManifest(text, { id: o.id, page: pageBeside((rel) => files.has(rel)) });
   if (o.taken?.(m.id)) throw new AppError(`the id ${m.id} belongs to an app that is built in`);
   let total = 0;
   for (const b of files.values()) total += b.length;
@@ -222,7 +233,7 @@ export async function installFromFiles(fs: RegistryFs, files: Map<string, Uint8A
     await fs.mkdir(p.slice(0, p.lastIndexOf('/')), { recursive: true });
     await fs.writeFile(p, bytes);
   }
-  try { await loadManifest(fs, staging); } catch (e) { await fs.rm(staging, { recursive: true }).catch(() => {}); throw e; }
+  try { await loadManifest(fs, staging, { id: m.id }); } catch (e) { await fs.rm(staging, { recursive: true }).catch(() => {}); throw e; }
   const replaced = await fs.exists(dir);
   if (replaced) await fs.rm(dir, { recursive: true });
   await renameDir(fs, staging, dir);

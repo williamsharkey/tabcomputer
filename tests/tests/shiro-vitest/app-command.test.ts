@@ -13,7 +13,7 @@ import { getActiveServers } from '@shiro/commands/serve';
 import { iframeServer } from '@shiro/iframe-server';
 import { parseManifest } from '@shiro/apps/manifest';
 import { REGISTRY_FILE, listInstalled, loadManifest, readRegistry } from '@shiro/apps/registry';
-import { configureApps, instanceFor, instanceOf, resetApps, setTabJsSource, NO_NETWORK_CSP, TAB_JS_PATH, type AppView } from '@shiro/apps/runtime';
+import { configureApps, instanceFor, instanceOf, resetApps, setTabJsSource, NO_NETWORK_CSP, PAGE_JS_PATH, TAB_JS_PATH, type AppView } from '@shiro/apps/runtime';
 import { TEMPLATES, idFromName, templateFiles, titleFromId } from '@shiro/apps/templates';
 import { setInstallConfirm } from '@shiro/apps/install';
 import { stopApp } from '@shiro/apps/window';
@@ -36,7 +36,7 @@ describe('app command', () => {
     shell.commands.register(appCmd);
     // (the test filesystem is one database for the whole file: start each test without apps)
     for (const p of ['/var/lib/tabcomputer/apps.json', `${HOME}/Apps`, `${HOME}/src`, `${HOME}/.local/share/apps`, `${HOME}/work`]) await fs.rm(p, { recursive: true }).catch(() => {});
-    for (const n of await fs.readdir(HOME).catch(() => [] as string[])) if (/^(photo-tool|my-notes-lists|twice|backup|try-.*|okay|other|ToolsOut|NeedsOut|outside\.txt|backup\.sh)$/.test(n)) await fs.rm(`${HOME}/${n}`, { recursive: true }).catch(() => {});
+    for (const n of await fs.readdir(HOME).catch(() => [] as string[])) if (/^(photo-tool|own-page|page-two|my-notes-lists|twice|backup|try-.*|okay|other|ToolsOut|NeedsOut|outside\.txt|backup\.sh)$/.test(n)) await fs.rm(`${HOME}/${n}`, { recursive: true }).catch(() => {});
     installed = [];
     configureApps({
       fs, shell,
@@ -47,6 +47,7 @@ describe('app command', () => {
       download: () => {},
     });
     setTabJsSource('// tab.js stand-in');
+    setTabJsSource('// page.js stand-in', 'page.js');
     shell.cwd = HOME;
   });
 
@@ -55,6 +56,7 @@ describe('app command', () => {
     configureApps(null);
     setInstallConfirm(null);
     setTabJsSource(null);
+    setTabJsSource(null, 'page.js');
     iframeServer.cleanup();
     getActiveServers().clear();
     globalThis.fetch = realFetch;
@@ -89,39 +91,56 @@ describe('app command', () => {
     expect((await app('new x --template')).output).toMatch(/--template needs a value/);
   });
 
-  it('templates: the three starting points and the script wrapper', async () => {
+  it('templates: three that are one file, one with a page of its own, and the script wrapper', async () => {
     const r = await app('templates');
     expect(r.exitCode).toBe(0);
-    for (const t of ['file-tool', 'form', 'table', 'script']) expect(r.output).toContain(t);
-    expect(TEMPLATES.map((t) => t.name)).toEqual(['file-tool', 'form', 'table', 'script']);
+    for (const t of ['files', 'form', 'table', 'page', 'script']) expect(r.output).toContain(t);
+    expect(r.output).toMatch(/^files +A command on each file \(the default\)/);
+    expect(TEMPLATES.map((t) => t.name)).toEqual(['files', 'form', 'table', 'page', 'script']);
     for (const t of TEMPLATES) {
       const files = templateFiles(t.name);
-      expect([...files.keys()], t.name).toEqual(expect.arrayContaining(['app.json', 'icon.svg', 'public/index.html', 'public/app.js']));
-      const m = parseManifest(files.get('app.json')!);
+      const one = ['files', 'form', 'table'].includes(t.name);
+      // the three kinds are their app.json and nothing else
+      if (one) expect([...files.keys()], t.name).toEqual(['app.json']);
+      else expect([...files.keys()], t.name).toEqual(expect.arrayContaining(['app.json', 'icon.svg', 'public/index.html', 'public/app.js']));
+      const m = parseManifest(files.get('app.json')!, { id: `try-${t.name}` });
+      expect(m.kind, t.name).toBe(one ? t.name : 'page');
       // each needs nothing installed first, and asks for no folder outside its own data
       expect(m.toolchains, t.name).toEqual([]);
+      expect(m.needs, t.name).toEqual([]);
       expect(m.access.fs, t.name).toEqual([]);
       expect(m.access.network, t.name).toBe(false);
       expect(m.access.shell, t.name).toBe(false);
-      expect(files.get('public/index.html'), t.name).toContain('<script src="/__tabcomputer/tab.js"></script>');
+      if (!one) expect(files.get('public/index.html'), t.name).toContain('<script src="/__tabcomputer/tab.js"></script>');
     }
   });
 
   it('new: a folder with a valid manifest under the given name', async () => {
+    // asked nothing, it writes one file: the whole app
     const r = await app('new photo-tool');
     expect(r.exitCode).toBe(0);
-    expect(r.output).toMatch(/Created photo-tool in ~\/photo-tool \(template file-tool\):/);
+    expect(r.output).toMatch(/Created photo-tool in ~\/photo-tool \(template files\):\n  app\.json\nThat one file is the whole app\./);
     expect(r.output).toMatch(/Try it: +app dev ~\/photo-tool/);
+    expect(await fs.readdir(`${HOME}/photo-tool`)).toEqual(['app.json']);
+    const written = (await fs.readFile(`${HOME}/photo-tool/app.json`, 'utf8')) as string;
+    // what the author reads: a name, what it does, the command; no id, no version, no access list
+    expect(Object.keys(JSON.parse(written))).toEqual(['name', 'about', 'accept', 'run', 'out']);
     const m = await loadManifest(fs, `${HOME}/photo-tool`);
-    expect(m).toMatchObject({ id: 'photo-tool', name: 'Photo tool', entry: 'public' });
-    expect(await fs.readFile(`${HOME}/photo-tool/public/index.html`, 'utf8')).toContain('<title>Photo tool</title>');
+    expect(m).toMatchObject({ id: 'photo-tool', name: 'Photo tool', kind: 'files', entry: '', run: 'jq . {in}', access: { commands: ['jq'], shell: false, network: false, fs: [] } });
+    // --page: a page of its own, as before
+    expect((await app('new own-page --page')).exitCode).toBe(0);
+    expect(await loadManifest(fs, `${HOME}/own-page`)).toMatchObject({ id: 'own-page', name: 'Own page', kind: 'page', entry: 'public' });
+    expect(await fs.readFile(`${HOME}/own-page/public/index.html`, 'utf8')).toContain('<title>Own page</title>');
     // a name with capitals and spaces: an id is made, the name is kept
     expect((await app('new "My Notes & <Lists>!" --template table')).exitCode).toBe(0);
     const n = await loadManifest(fs, `${HOME}/my-notes-lists`);
-    expect(n).toMatchObject({ id: 'my-notes-lists', name: 'My Notes & Lists!' });
-    expect(await fs.readFile(`${HOME}/my-notes-lists/public/index.html`, 'utf8')).toContain('<h1>My Notes &#38; Lists!</h1>');
+    expect(n).toMatchObject({ id: 'my-notes-lists', name: 'My Notes & Lists!', kind: 'table' });
+    expect((await app('new "Page Two" --page')).exitCode).toBe(0);
+    expect(await fs.readFile(`${HOME}/page-two/public/index.html`, 'utf8')).toContain('<h1>Page Two</h1>');
+    // a folder under another name: the id is written down, since the folder no longer says it
     expect((await app('new forms --template form --name "Order form" --dir work/order')).exitCode).toBe(0);
-    expect(await loadManifest(fs, `${HOME}/work/order`)).toMatchObject({ id: 'forms', name: 'Order form' });
+    expect(JSON.parse((await fs.readFile(`${HOME}/work/order/app.json`, 'utf8')) as string)).toMatchObject({ id: 'forms', name: 'Order form' });
+    expect(await loadManifest(fs, `${HOME}/work/order`)).toMatchObject({ id: 'forms', name: 'Order form', kind: 'form' });
   });
 
   it('new refuses names it cannot use, an unknown template, a folder that is not empty', async () => {
@@ -132,6 +151,7 @@ describe('app command', () => {
     }
     expect((await app('new okay --template nope')).output).toMatch(/no template named nope \(app templates\)/);
     expect((await app('new okay --template form --from x.sh')).exitCode).toBe(2);
+    expect((await app('new okay --template form --page')).exitCode).toBe(2);
     await app('new twice');
     const again = await app('new twice');
     expect(again.exitCode).toBe(1);
@@ -164,20 +184,28 @@ describe('app command', () => {
 
   it('every template runs as created: its page is served and its call to the tab works', async () => {
     const work: Record<string, (inst: ReturnType<typeof instanceFor>) => Promise<void>> = {
-      'file-tool': async (inst) => {
+      files: async (inst) => {
+        const put = await inst.host.call('files.put', { dir: `${inst.dataDir}/in/s1/1`, rel: 'a.json', data: '{"a":[1,2]}' }, () => {}, () => {}) as { value: { path: string } };
+        const r = await inst.host.call('job', { session: 's1', files: [{ path: put.value.path, rel: 'a.json' }] }, () => {}, () => {}) as { value: { code: number; out: string; name: string } };
+        expect(r.value).toMatchObject({ code: 0, name: 'a.json', out: `${inst.dataDir}/out/s1/a.json` });
+        expect(JSON.parse((await fs.readFile(r.value.out, 'utf8')) as string)).toEqual({ a: [1, 2] });
+        expect((await fs.readFile(r.value.out, 'utf8')) as string).toContain('\n');
+      },
+      form: async (inst) => {
+        let out = '';
+        const r = await inst.host.call('job', { session: 's1', values: { first: '2', step: '2', last: '8' } }, (e, d) => { if (e === 'out') out += d; }, () => {});
+        expect(r).toMatchObject({ value: { code: 0, out: null } });
+        expect(out).toBe('2\n4\n6\n8\n');
+      },
+      table: async (inst) => {
+        await inst.host.call('fs.write', { path: `${inst.dataDir}/people.csv`, data: 'Name\nAda\n' }, () => {}, () => {});
+        expect(await inst.host.call('fs.read', { path: 'people.csv', as: 'text' }, () => {}, () => {})).toEqual({ value: 'Name\nAda\n' });
+      },
+      page: async (inst) => {
         const put = await inst.host.call('files.put', { batch: 't', rel: 'hello.txt', data: 'hello\n' }, () => {}, () => {}) as { value: { path: string } };
         const r = await inst.host.call('run', { cmd: ['base64', put.value.path], stdout: `${inst.dataDir}/out/hello.txt.b64` }, () => {}, () => {});
         expect(r).toEqual({ value: { code: 0 } });
         expect(((await fs.readFile(`${inst.dataDir}/out/hello.txt.b64`, 'utf8')) as string).trim()).toBe('aGVsbG8K');
-      },
-      form: async (inst) => {
-        let out = '';
-        expect(await inst.host.call('run', { cmd: ['seq', '2', '2', '8'] }, (e, d) => { if (e === 'out') out += d; }, () => {})).toEqual({ value: { code: 0 } });
-        expect(out).toBe('2\n4\n6\n8\n');
-      },
-      table: async (inst) => {
-        await inst.host.call('fs.write', { path: `${inst.dataDir}/table.csv`, data: 'Name\nAda\n' }, () => {}, () => {});
-        expect(await inst.host.call('fs.read', { path: 'table.csv', as: 'text' }, () => {}, () => {})).toEqual({ value: 'Name\nAda\n' });
       },
       script: async (inst) => {
         let out = '';
@@ -187,7 +215,8 @@ describe('app command', () => {
       },
     };
     for (const t of TEMPLATES) {
-      const id = `try-${t.name}`.replace(/-tool$/, '');
+      const id = `try-${t.name}`;
+      const own = t.name === 'page' || t.name === 'script';
       expect((await app(`new ${id} --template ${t.name}`)).exitCode, t.name).toBe(0);
       const check = await app(`check ${id}`);
       expect(check.exitCode, check.output).toBe(0);
@@ -197,9 +226,12 @@ describe('app command', () => {
       await inst.prepare();
       const page = await inst.fetch({ method: 'GET', path: '/' });
       expect(page.status, t.name).toBe(200);
-      expect(text(page.body), t.name).toContain('<script src="app.js"></script>');
+      // a page of its own, or the one tabcomputer supplies: the same script for every app that has none
+      expect(text(page.body), t.name).toContain(own ? '<script src="app.js"></script>' : `<script src="${PAGE_JS_PATH}"></script>`);
+      expect(text(page.body), t.name).toContain(`<script src="${TAB_JS_PATH}"></script>`);
       expect(page.headers?.['content-security-policy'], t.name).toBe(NO_NETWORK_CSP);
-      for (const p of ['/app.js', '/style.css']) expect((await inst.fetch({ method: 'GET', path: p })).status, `${t.name} ${p}`).toBe(200);
+      for (const p of own ? ['/app.js', '/style.css'] : [PAGE_JS_PATH]) expect((await inst.fetch({ method: 'GET', path: p })).status, `${t.name} ${p}`).toBe(200);
+      if (!own) expect((await inst.fetch({ method: 'GET', path: '/app.json' })).status, t.name).toBe(404);
       await work[t.name](inst);
       inst.stop();
     }

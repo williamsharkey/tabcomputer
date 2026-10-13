@@ -26,6 +26,8 @@ export interface BecomeConfig {
   cwd?: string;
   /** An installed app (docs/APPS.md): src/apps/window.ts brings it back, with its backend, from its id */
   app?: string;
+  /** App mode has a small "tabcomputer" control that leads to the desktop (an app link opened on a phone) */
+  back?: boolean;
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

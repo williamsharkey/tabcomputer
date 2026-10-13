@@ -6,6 +6,7 @@
  * then does it by the git protocol over the relay, which is private too.
  */
 import git from './git-cached';
+import { merge as mergeOnBase } from './git-merge-base';
 import type { CommandContext } from './index';
 
 /** Codes after which the relay takes over; any other error is the user's to read */
@@ -86,7 +87,7 @@ export function apiFetchOp(ctx: CommandContext, o: Remote & { branch?: string; a
 export function apiPullOp(ctx: CommandContext, o: Remote & { branch: string; author: { name: string; email: string } }): Promise<number | null> {
   return attempt(ctx, 'pull', o.token, async (m, gh) => {
     await m.apiFetch({ ...gh, token: o.token || undefined, remote: o.remote, fs: o.fs, dir: o.dir, branch: o.branch, onProgress: progress(ctx).report });
-    await git.merge({ fs: o.fs, dir: o.dir, ours: o.branch, theirs: `refs/remotes/${o.remote}/${o.branch}`, author: o.author, committer: o.author });
+    await mergeOnBase({ fs: o.fs, dir: o.dir, ours: o.branch, theirs: `refs/remotes/${o.remote}/${o.branch}`, author: o.author, committer: o.author });
     await git.checkout({ fs: o.fs, dir: o.dir, ref: o.branch });
     return 0;
   }, o.url);

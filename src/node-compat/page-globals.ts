@@ -18,6 +18,11 @@ export interface ScriptTimers {
 }
 /** The names a script's and its modules' wrappers bind to the script's timers */
 export const SCRIPT_TIMER_NAMES = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate'] as const;
+/**
+ * The names bound to worker_threads' classes, as node's globals are: the page's own
+ * MessagePort has no ref() or unref(), and the runner can't see what it holds open
+ */
+export const SCRIPT_PORT_NAMES = ['MessageChannel', 'MessagePort'] as const;
 
 /**
  * Run page code with the page's own timers as the globals. A node script's

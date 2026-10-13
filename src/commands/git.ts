@@ -7,6 +7,7 @@ import { gitRm, gitMv, gitRestore, gitClean, gitReset } from './git-worktree';
 import { gitBlame } from './git-blame';
 import { gitTagHandler } from './git-tag';
 import { resolveRevision } from './git-utils';
+import { merge as mergeOnBase, baseWalk, mergeBases, reachable } from './git-merge-base';
 import { startReflog } from './git-reflog';
 import { activeProfile } from '../profile';
 import { gitPlumbing, changeSummary, stagedCount, statusText, gitDate, unmergedPaths, pathEntries, changesBetweenTrees } from './git-plumbing';
@@ -767,15 +768,19 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
             if (code === 0) { ctx.stdout += `done.\n`; break; }
             if (code !== null) return code;
           }
-          await git.pull({
+          // (git.pull, with the merge on git's merge base: tabcomputer#131)
+          const fetched = await git.fetch({
             fs, http: net.http, dir,
             remote,
             ref: currentBranch,
             ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}),
             singleBranch: true,
-            author: await resolveAuthor(ctx, fs, dir),
             ...githubAuth(token, await remoteUrl(fs, dir, remote)),
           });
+          if (!fetched.fetchHead) { ctx.stderr = `fatal: couldn't find remote ref ${currentBranch}\n`; return 1; }
+          const author = await resolveAuthor(ctx, fs, dir);
+          await mergeOnBase({ fs, dir, ours: currentBranch, theirs: fetched.fetchHead, message: `Merge ${fetched.fetchHeadDescription}`, author, committer: author });
+          await git.checkout({ fs, dir, ref: currentBranch });
           ctx.stdout += `done.\n`;
           break;
         }
@@ -823,7 +828,7 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
           const local = new Set((await pathEntries(fs, dir, true)).filter((e) => !e.stage || e.work?.oid !== e.stage.oid).map((e) => e.path));
           let mergeResult;
           try {
-            mergeResult = await git.merge({
+            mergeResult = await mergeOnBase({
               // (a branch by name: isomorphic-git labels the conflict markers with it)
               fs, dir, ours, theirs: await git.expandRef({ fs, dir, ref: theirs }).then(() => theirs, () => theirOid),
               fastForward: !noFF,
@@ -863,6 +868,7 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
               return 1;
             }
             if (e.code === 'FastForwardError') { ctx.stderr = 'fatal: Not possible to fast-forward, aborting.\n'; return 128; }
+            if (e.code === 'UnrelatedHistoriesError') { ctx.stderr = 'fatal: refusing to merge unrelated histories\n'; return 128; }
             throw e;
           }
           // the merge moved the branch; the work tree and index follow
@@ -977,22 +983,22 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
             ctx.stderr = `fatal: invalid upstream '${target}'\n`; return 128;
           }
           const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
-          // Find merge base (walk both histories to find common ancestor)
-          const targetLog = await git.log({ fs, dir, ref: targetOid, depth: 200 });
-          const headLog = await git.log({ fs, dir, ref: headOid, depth: 200 });
-          const targetOids = new Set(targetLog.map(c => c.oid));
-          let mergeBase = '';
-          for (const c of headLog) {
-            if (targetOids.has(c.oid)) { mergeBase = c.oid; break; }
-          }
+          const walk = baseWalk(fs, dir);
+          const [mergeBase] = await mergeBases(walk, headOid, [targetOid]);
           if (!mergeBase) { ctx.stderr = 'fatal: no common ancestor found\n'; return 1; }
-          // Collect commits from merge-base..HEAD (exclusive of merge-base)
-          const toReplay: typeof headLog = [];
-          for (const c of headLog) {
-            if (c.oid === mergeBase) break;
-            toReplay.push(c);
-          }
-          toReplay.reverse();
+          // The commits to replay: HEAD's that the target doesn't have, parents first. Merges
+          // are left out, as git's rebase leaves them
+          const upstream = await reachable(walk, [targetOid]);
+          const toReplay: { oid: string; commit: any }[] = [];
+          const visited = new Set<string>();
+          const visit = async (oid: string) => {
+            if (visited.has(oid) || upstream.has(oid)) return;
+            visited.add(oid);
+            const { commit } = await git.readCommit({ fs, dir, oid });
+            for (const p of commit.parent) await visit(p);
+            if (commit.parent.length < 2) toReplay.push({ oid, commit });
+          };
+          await visit(headOid);
           if (toReplay.length === 0) {
             ctx.stdout = `Current branch is up to date.\n`;
             return 0;

@@ -42,8 +42,13 @@ export function venvTarget(venv: string): PipTarget {
   return { site: `${venv}/lib/python${PY_SHORT}/site-packages`, scripts: `${venv}/bin`, python: `${venv}/bin/python`, prefix: venv };
 }
 
+/**
+ * The built-in Python's own packages. Its console scripts (pytest, flask)
+ * name the interpreter by its file: /usr/bin/python3 is Debian's Python once
+ * `toolchain install python` ran, which does not look in this site-packages.
+ */
 export function systemTarget(): PipTarget {
-  return { site: `${PY_PREFIX}/lib/python${PY_SHORT}/site-packages`, scripts: '/usr/local/bin', python: '/usr/bin/python3', prefix: '/usr/local' };
+  return { site: `${PY_PREFIX}/lib/python${PY_SHORT}/site-packages`, scripts: '/usr/local/bin', python: PY_BIN, prefix: '/usr/local' };
 }
 
 // ── zip (wheels) ─────────────────────────────────────────────────────
@@ -129,9 +134,13 @@ export interface Candidate { name: string; version: string; wheel: PypiFile; req
 /** Requirements the Notebook app stands in for: Jupyter's own programs and the kernel package */
 export const JUPYTER_BUILT_IN = /^(jupyter|jupyterlab|notebook|nbclassic|ipykernel|jupyter[-_]server|jupyterlab[-_]server|jupyter[-_]core|jupyter[-_]client|nbclient)(\[[^\]]*\])?\s*([<>=!~;].*)?$/i;
 
-/** What to do about a project the built-in Python can't have (tabcomputer#125). */
+/**
+ * What to do about a project the built-in Python can't have (tabcomputer#125).
+ * With Debian's Python installed `pip` hands such a project to Debian's pip
+ * instead of saying this (python-default.ts, `PipOptions.compiled`).
+ */
 const COMPILED_HINT = `the built-in Python can't load compiled extensions, and there is no pure-Python build of this one.
-Debian's Python can install it: toolchain install python`;
+Debian's Python can install it. Run: toolchain install python, then this command again.`;
 /**
  * In the Pyodide distribution. pip records these as Pyodide's (the \`provided\` hook of resolve); this
  * hint is what is left to say when Pyodide's package list could not be fetched.
@@ -560,7 +569,17 @@ async function readRequirements(fs: FileSystem, file: string, cwd: string, seen 
   return out;
 }
 
-export async function pipMain(ctx: CommandContext, argv: string[], target: PipTarget, fetchFn?: typeof fetch): Promise<number> {
+export interface PipOptions {
+  /**
+   * `pip install` met a project with a compiled part that neither the built-in
+   * Python nor Pyodide can have (`what`: its name and version). Return an exit
+   * status when something else installed the request (Debian's pip), or null
+   * for the usual message.
+   */
+  compiled?: (what: string) => Promise<number | null>;
+}
+
+export async function pipMain(ctx: CommandContext, argv: string[], target: PipTarget, fetchFn?: typeof fetch, opts: PipOptions = {}): Promise<number> {
   const fs = ctx.fs;
   const out = (s: string) => { ctx.stdout += s; };
   const sub = argv[0];
@@ -781,7 +800,12 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
       log(`Successfully installed ${[...editableNames, ...recorded, ...toInstall.map(t => `${t.name}-${t.version}`)].join(' ')}\n`);
       return 0;
     } catch (e: any) {
-      ctx.stderr += `ERROR: ${e?.message ?? e}\n` + (e instanceof CompiledSdistError ? `${COMPILED_HINT}\n` : '');
+      const message = String(e?.message ?? e);
+      if (sub === 'install' && opts.compiled && (e instanceof CompiledSdistError || message.includes(COMPILED_HINT))) {
+        const code = await opts.compiled(message.split('\n')[0].replace(/:? (?:version \S+ )?has a compiled extension.*$/, ''));
+        if (code !== null) return code;
+      }
+      ctx.stderr += `ERROR: ${message}\n` + (e instanceof CompiledSdistError ? `${COMPILED_HINT}\n` : '');
       return 1;
     }
   }

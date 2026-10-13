@@ -130,6 +130,9 @@ export const toolchainCmd: Command = {
           }
         }
       }
+      // (before Debian's Python is there: what the built-in pip installed still names /usr/bin/python3)
+      const pyChoose = sets.includes('python') ? await import('../python/choose') : null;
+      const hadDebianPython = pyChoose ? await pyChoose.debianPython(ctx.fs) : null;
       for (const id of sets) {
         const t = (await listToolchains(ctx.fs)).find((x) => x.id === id)!;
         const t0 = Date.now();
@@ -165,6 +168,7 @@ export const toolchainCmd: Command = {
         await overlay.enableDebianShadows(ctx.fs, (n) => !!ctx.shell.commands.get(n));
         for (const l of overlay.overlayReport(await overlay.applyDefaults(ctx.fs), verbose)) out(l + '\n');
         await overlay.refreshShadows(ctx.fs);
+        if (id === 'python' && pyChoose && !hadDebianPython && await pyChoose.debianPython(ctx.fs)) await pyChoose.keepConsoleScripts(ctx.fs).catch(() => []);
         if (flags.has('--check') && t.check) status ||= await check(ctx, t, out, err);
         // javac is a Java program: its JVM takes half a minute or more to start, so it starts now
         // and stays up (src/commands/java.ts). TABCOMPUTER_JAVAC=jvm: the plain javac only.

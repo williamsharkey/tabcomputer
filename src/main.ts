@@ -116,6 +116,7 @@ import { installNodeWorkerBoot } from './node-worker/boot';
 import { bootStarted, bootFinished, bootStep, safeMode } from './safe-mode';
 import { safeModeCmd } from './commands/safe-mode';
 import { JAVAC_USED_KEY, javacPrestartWanted, scheduleJavacPrestart } from './java-defaults';
+import { pythonFrontend } from './pkg-manager';
 import * as agentResume from './agent-resume';
 import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, inboundCodeLink, parseGuestOrigin } from './guest';
 import { takeFragment } from './link-capture';
@@ -428,7 +429,10 @@ async function main() {
       ['python', 'cpythonCmd', 'Python 3 interpreter (CPython)'], ['python3', 'cpython3Cmd', 'Python 3 interpreter (CPython)'],
       ['pip', 'cpipCmd', 'Python package manager'], ['pip3', 'cpip3Cmd', 'Python package manager'],
     ] as const) {
-      registerCommand(commands, lazyCommand(name, desc, () => import('./commands/python-default').then(m => m[key])), 'src/commands/python-default.ts');
+      // (with Debian's Python installed these names stay tabcomputer's where it decides: pip always,
+      // python3 for -m pip / -m venv; a program is chosen for in shell-kernel.ts, src/python/choose.ts)
+      registerCommand(commands, lazyCommand(name, desc, () => import('./commands/python-default').then(m => m[key]),
+        { keepOverPackage: name.startsWith('pip') ? () => true : (args) => pythonFrontend(args) !== null }), 'src/commands/python-default.ts');
     }
   } else if (activeProfile().shims.python === 'pyodide') {
     registerCommand(commands, lazyCommand('python', 'Python interpreter (Pyodide)',
@@ -1124,6 +1128,16 @@ async function main() {
         .catch((e) => console.warn('[tabcomputer] javac prestart failed:', e?.message || e));
     },
   });
+  // GUI apps started this week whose snapshot is gone or outdated (another build, a changed setting)
+  // are started again where nobody sees them, when the tab is idle, so that the next launch is a
+  // restore (src/gui/retake.ts has the conditions; nothing is loaded for a tab that started none)
+  if (!safe) setTimeout(() => {
+    void import('./gui/snapshot-setting').then(async (s) => {
+      if (!s.snapshotsOn() || !s.recentSnapshotApps(7 * 24 * 3600_000).length) return;
+      const asked = await (await import('./gui/apps')).retakeOutdatedSnapshots(kernel);
+      if (asked.length) console.log(`[tabcomputer] app snapshots to take again when idle: ${asked.join(', ')}`);
+    }).catch((e) => console.warn('[tabcomputer] app snapshots: the look after load failed:', e?.message || e));
+  }, 20_000);
   // The other preinstall names are pkg packages (ca-certificates: the CA bundle
   // native programs' TLS looks for at /etc/ssl/certs/ca-certificates.crt).
   const pkgPreinstall = safe ? [] : profile.preinstall.filter((n) => n !== 'claude-code');

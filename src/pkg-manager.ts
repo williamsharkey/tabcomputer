@@ -576,6 +576,10 @@ async function installOne(fs: FileSystem, entry: PkgEntry, opts: PkgOptions): Pr
       log(`warning: not replacing ${link} (a regular file)`);
       continue;
     }
+    // Debian's /usr/bin/python3 stays Debian's: its own scripts start with `#!/usr/bin/python3` and need
+    // its modules (apt_pkg, debconf). `python3` at a prompt still runs this package when it can
+    // (src/python/choose.ts), by its file, not by this link
+    if (existing && entry.name === 'python3' && !(await fs.readlink(link)).startsWith(`${PKG_ROOT}/`)) continue;
     if (existing && !(await fs.readlink(link)).startsWith(`${PKG_ROOT}/${entry.name}/`)) {
       log(`warning: ${link} belonged to another package; now ${entry.name}`);
     }
@@ -847,6 +851,7 @@ export async function runPackageBinary(binPath: string, argv0: string, args: str
   }
   // (`import tkinter` and `import turtle` say what to do)
   if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(ctx.fs);
+  if (name === 'python3' && invokedPath) invokedPath = await ownPythonPath(ctx.fs, invokedPath, binPath);
   if (bin?.argv0 === 'path' && invokedPath) argv0 = invokedPath;
 
   if (entry) {
@@ -914,6 +919,7 @@ export async function packageKernelProgram(
   if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(fs);
   const rel =binPath.slice(PKG_ROOT.length + entry.name.length + 2);
   const bin = entry.bin[argv0]?.file === rel ? entry.bin[argv0] : Object.values(entry.bin).find(b => b.file === rel);
+  if (name === 'python3' && invokedPath) invokedPath = await ownPythonPath(fs, invokedPath, binPath);
   if (bin?.argv0 === 'path' && invokedPath) argv0 = invokedPath;
   if (entry.abi === 'x86_64-linux') {
     const { blinkRunner } = await import('./x86-engine/blink');
@@ -969,6 +975,23 @@ export async function packageArgsForPath(fs: FileSystem, path: string): Promise<
     if (args?.length) return args;
   }
   return undefined;
+}
+
+/**
+ * The path the built-in Python is told it was started as. It finds its
+ * library from that: started as /usr/bin/python3 it takes /usr as its prefix,
+ * and once Debian's Python is installed /usr/lib/python3.13 is Debian's
+ * library, with Debian's site.py and no site-packages of the built-in one
+ * (`pip install`ed packages were not found, and `import tkinter` got Debian's
+ * package instead of the line that says what to do). So with Debian's Python
+ * there, a start from a system bin directory names the interpreter's own file.
+ */
+async function ownPythonPath(fs: FileSystem, invokedPath: string, binPath: string): Promise<string> {
+  if (!/^\/usr\/(?:local\/)?bin\//.test(invokedPath)) return invokedPath;
+  try {
+    const real = await fs.realpath('/usr/bin/python3');
+    return real.startsWith(PKG_ROOT + '/') ? invokedPath : binPath;
+  } catch { return invokedPath; }
 }
 
 /**

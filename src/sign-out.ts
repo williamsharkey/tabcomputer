@@ -156,6 +156,9 @@ export async function signOutOfThisComputer(fs: FileSystem, go: () => void = () 
   await removeCredentialFiles(fs).catch(() => {});
   // Edits to the credential files that node's fs was still holding
   removeStoredSignIns();
+  // Snapshots of started GUI apps are those apps' memory (src/gui/snapshot.ts). None is taken of an
+  // app that read a sign-in, and they go now all the same, not with the next document
+  try { indexedDB.deleteDatabase('tabcomputer-gui-snapshots'); } catch { /* none, or no IndexedDB */ }
   try { sessionStorage.setItem(SIGN_OUT_KEY, '1'); } catch { /* no storage: the sign-ins are gone, the files stay */ }
   // No "leave site?" for work the confirm already named (src/lab.ts, main.ts's beforeunload)
   (globalThis as Record<string, unknown>)['__tabcomputerLeaving'] = true;

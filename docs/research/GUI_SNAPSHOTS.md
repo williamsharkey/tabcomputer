@@ -1,23 +1,31 @@
 # Snapshots of started GUI apps
 
-Status: a working prototype behind a setting that is off. With
-`localStorage['tabcomputer-gui-snapshots'] = '1'`, an app's first plain start
-is kept once its window is up and it has gone quiet, and the next launch
-rebuilds its processes from that instead of running the program. In a
-freshly loaded page Geany's window is back 0.3 s after the click instead of
-5.9 s, GIMP's main window after 0.8 s instead of 16 s, Inkscape's after 0.6 s
-instead of 13 s. The restored apps work: Geany opens a file through its file
-dialog, takes typing, saves and quits with Ctrl+Q; GIMP makes a new image
-through its dialog and quits. A snapshot is good until the app saves
-different settings: GIMP does after most sessions, and then its next start
-is a usual one ("What a snapshot is good for"). Eleven of the corpus's
-thirteen apps restore
-(xeyes, xclock, Dillo, GPicView, L3afpad, Galculator, Geany, Mousepad,
-FeatherPad, Inkscape, GIMP); the two terminals don't (a shell on a pty).
+Status (2026-10-13): working, with the safety rules and the background
+retake below, and **still off unless set**
+(`localStorage['tabcomputer-gui-snapshots'] = '1'`). With it on, an app's
+first plain start is kept once its window is up and it has gone quiet, and
+the next launch rebuilds its processes from that instead of running the
+program: Geany's window is back 0.3 to 0.5 s after the click instead of 5.6
+to 6.2 s, GIMP's main window after 0.9 to 1.0 s instead of 15 to 16 s,
+Inkscape's after 0.5 to 0.7 s instead of 13 to 14 s ("The launch table"). A
+snapshot that a quit outdated (GIMP saves its settings every time) is taken
+again in the background, from a start nobody sees, so the next launch is a
+restore all the same ("Retakes"). Eleven of the corpus's thirteen apps
+restore (xeyes, xclock, Dillo, GPicView, L3afpad, Galculator, Geany,
+Mousepad, FeatherPad, Inkscape, GIMP); the two terminals don't (a shell on a
+pty).
 
-Code: `src/gui/snapshot.ts`, `src/x11/display.ts` (`recordXClient`,
-`adoptXClient`), Blink patch 0551. Tests: `tests/browser/gui-snapshot.mjs`
-(real apps), `gui-snapshot.test.ts`, `x11.test.ts`, `x86-engine.test.ts`.
+What keeps it off by default is one failure with no known cause: in 1 of 12
+runs of the test with L3afpad, its restored process ended at once with
+SIGABRT ("Before it can be on by default").
+
+Code: `src/gui/snapshot.ts`, `src/gui/snapshot-setting.ts`,
+`src/gui/retake.ts`, the launcher in `src/gui/apps.ts`, `src/x11/display.ts`
+(`recordXClient`, `adoptXClient`), Blink patch 0551. Tests:
+`tests/browser/gui-snapshot.mjs` (real apps),
+`tests/browser/gui-snapshot-rules.mjs` (each rule below, and the retake),
+`gui-snapshot.test.ts`, `gui-retake.test.ts`, `x11.test.ts`,
+`x86-engine.test.ts`.
 
 Why: [GUI_LAUNCH.md](../GUI_LAUNCH.md) measured that a launch is the
 toolkit's start-up computed by the x86-64 engine (Geany: a billion guest
@@ -169,17 +177,44 @@ starts from must not hold what someone typed.
 ### What a snapshot is good for (validity)
 
 `snapshotKey` is everything known before the process runs: the build, the
-engine's version directory, the app, its arguments and environment, its
-packages with their versions, the screen's size and DPI, and the text mode.
-A launch with arguments (a file to open) never uses a snapshot.
+engine's version (the directory the Blink engine is loaded from, which is
+named by the content of its files, so a rebuilt engine is another key), the
+app, its arguments and environment, its packages with their versions, the
+screen's size and DPI, and the text mode. A launch with arguments (a file to
+open) never uses a snapshot. `keyChange` says which part differs ("the
+engine", "the screen").
 
-Beyond the key, the kernel logs every path the processes open or look for
-while they start (`proc.data.openLog`, inherited by children; 400 to 600
-paths for a GTK app), and the snapshot keeps what was at each: nothing, a
-directory, a system file's size and time, a file under `/home` by content
-hash. A restore checks them all first. A library that changed, a font
-added, a config file edited: the snapshot is dropped, the app starts the
-usual way, and a new one is taken.
+Beyond the key, the kernel logs every path the processes open, look at
+(`stat`, `access`) or list while they start (`proc.data.openLog`, inherited
+by children; a listed directory is logged as `path/`; 136 paths for xeyes,
+several hundred for a GTK app), and the snapshot keeps what was at each. A
+restore checks them all first. A library that changed, a font added, a
+config file edited: the snapshot is dropped, the app starts the usual way,
+and a new one is taken.
+
+| Path | What is kept and compared |
+|---|---|
+| Not there | That it is not there: a settings file made since outdates the snapshot (GTK looks for `gtk.css` with `stat` and never opens it) |
+| A system file (`/usr`, `/etc`, `/lib`, `/var`, …): the app's binary, its libraries | Size and time. The binary is in the list whether or not the log has it |
+| A settings file: under a dot name in a home directory | Its lines, whatever their order (below) |
+| Any other file (a document under `/home`, a file in `/tmp` the app did not write) | Its bytes. Geany starts with the files of its last session open: one that was edited since outdates the snapshot, so a restore never shows old contents |
+| A directory the app listed | The names in it |
+| A directory it only looked at | That it is a directory |
+| `/dev`, `/proc`, `/sys`, `~/.cache`; in `/tmp` what the app wrote itself; a path a socket of the app is bound to, or a link to one (Geany's instance socket) | Nothing: these change at every run |
+
+Three more rules, each with a test (`gui-snapshot.test.ts`,
+`tests/browser/gui-snapshot-rules.mjs`):
+
+- **No snapshot of an app that read a sign-in.** A snapshot is the
+  processes' memory. When a path in the log is a credential file
+  (`src/credentials.ts`: `~/.netrc`, gh's `hosts.yml`, …) or text with a
+  token in it, none is taken (`signInAmong`). `signout` deletes the snapshot
+  database at once.
+- **Two weeks at most** (`MAX_AGE_MS`): what these checks can't see is
+  bounded by it.
+- **A restored process that ends within 5 s, and not cleanly, is followed by
+  a usual start** of the app. Its snapshot is dropped, and none is taken in
+  the background until the build or a setting changes (`setSkip`).
 
 Three rules keep that from being too strict:
 
@@ -191,18 +226,20 @@ Three rules keep that from being too strict:
 - **The same lines in another order are the same file.** GIMP rewrites
   `controllerrc` at every exit from a hash table: the same entries, in
   whatever order the table gives them (4 quits of 4 in a row, nothing
-  touched). A home file's signature is the hash of its sorted lines. The
-  cost: a file where only the order changed, and the order means
-  something, doesn't outdate a snapshot.
+  touched). A settings file's signature is the hash of its sorted lines. The
+  cost: a settings file where only the order changed, and the order means
+  something, doesn't outdate a snapshot. A document is compared by its
+  bytes.
 - **Files under `~/.cache` don't count.** A cache is something the app does
   as well without, and babl rewrites its conversion cache at every exit of
   GIMP.
 
-What is left is right, and it is the feature's main limit today: **an app
-that saves different settings when it quits outdates its own snapshot.**
-The next start reads the new state, as it must, and is a usual start (a
-new snapshot is taken from it). Measured in the test, after the restored
-app was used and quit:
+What is left is right: **an app that saves different settings when it
+quits outdates its own snapshot.** The next start reads the new state, as it
+must. Without a retake it is a usual start; with one ("Retakes") it is a
+restore of a snapshot taken in the background meanwhile. Measured in the
+test on 2026-10-12, before retakes, after the restored app was used and
+quit at once:
 
 | App | What it was used for | The next launch |
 |---|---|---|
@@ -212,9 +249,10 @@ app was used and quit:
 | Mousepad | text typed, closed | usual start: its GSettings keyfile changed |
 | GIMP | a new image made, Ctrl+Q | usual start: `sessionrc` changed (its windows) |
 
-So for GIMP the 0.8 s start is what follows a session that left its
-windows as they were; after most real sessions the next start is the
-usual 15 s. Open problem 1 is how to get past that.
+So for GIMP the 0.8 s start followed only a session that left its windows
+as they were. The background retake is what gets past that: half a minute
+after such a quit (10 s of quiet, then 21 to 23 s of hidden start) the next
+launch is a restore again.
 
 ### What must never be shared
 
@@ -299,7 +337,14 @@ What a restored app can notice:
   reload, so a file the process had open by path is there. A file it had
   unlinked while open is gone: such a descriptor refuses the snapshot.
 - **The screen** is the one it was told at connection setup: the key has
-  the work area's size, so another size means another snapshot.
+  the work area's size, so another size means a usual start (laid out for
+  the new size) and another snapshot.
+- **The keyboard.** What the display told the client while its requests were
+  played back was dropped, and what the client believes about the focus is
+  from the session its snapshot was taken in (an app started hidden was
+  never given the keyboard). After the replay each toplevel is told again:
+  FocusOut and FocusIn with WM_TAKE_FOCUS for the one that has the keyboard,
+  FocusOut for the others (`Rootless.refocus`).
 - **Compiled code is gone.** The restored process starts with the JIT cold:
   the first key is shown after 40 to 400 ms, GIMP's first dialog after 2.4
   to 3 s. A second use is as fast as ever.
@@ -321,24 +366,161 @@ What a restored app can notice:
   launch that is JIT compiling (GUI_LAUNCH.md). Its better use is after a
   restore, where it would remove the cold-JIT seconds above.
 
+## The setting
+
+`src/gui/snapshot-setting.ts`. `localStorage['tabcomputer-gui-snapshots']`:
+`1` on for the eleven tested apps (`SNAPSHOT_TESTED`), `all` on for every app
+(how an app is tried before it joins the list), `0` off, unset the default,
+which is off (`SNAPSHOT_DEFAULT_ON = false`). `TABCOMPUTER_GUI_SNAPSHOTS=0`
+exported in `~/.profile` turns it off too, and safe mode always does.
+Settings → Storage shows an "Open apps faster" switch only where the key is
+set (or where the default is on): Off forgets every stored snapshot.
+
+When `SNAPSHOT_DEFAULT_ON` is made true, the default is on only where the
+tests have run: a Chromium browser that is not a phone's, with 4 GB of
+memory or more (`snapshotDefaultOn`). Apps outside the tested list, other
+browsers and Debian mode (apps from apt) start the usual way.
+
+## Retakes
+
+`src/gui/retake.ts`, `takeHidden` in `src/gui/apps.ts`. When an app quits,
+and once 20 s after the page has loaded (for the three apps started most
+recently this week), the snapshot is looked at. When it is gone or no longer
+good, the app is started again where nobody sees it: its X client is marked
+hidden (`Client.hidden`), so the display makes no window for its toplevels,
+the dock gets no mark, the pointer is never over them and no key reaches
+them. When it has gone quiet its snapshot is kept as for any start, and its
+processes are killed (not asked to quit: an app that is asked saves its
+settings, which is what outdated the last snapshot). The next launch is a
+restore.
+
+It waits for a moment when it takes nothing from the person
+(`retakeDecision`, tested in `gui-retake.test.ts`):
+
+- never in safe mode, in a guest, or with the setting off;
+- never while the page is hidden;
+- not until 10 s have passed without a key or button pressed anywhere on the
+  page, since the quit, and with no app being installed or started;
+- a key or button pressed in a GUI app, an app being started, or the page
+  being hidden ends it at once: its processes are gone 0.15 to 0.2 s after
+  the click, and it is asked for again later;
+- one at a time; an app whose hidden start failed twice in a row is left
+  alone for the rest of the page load; one that can take no snapshot (a
+  shell on a pty, a sign-in read, never quiet) is remembered with its key
+  and not started again for it;
+- on a machine with less than 8 GB, only apps whose image is 64 MB or less
+  (`retakeFits`; unit-tested only, this machine has 8 GB).
+
+Measured by `tests/browser/gui-snapshot-rules.mjs` and
+`gui-launch-bench.mjs --snapshots` (2026-10-13, an Apple M3 with 8 GB,
+headless Chrome 155, a local build):
+
+| App | Hidden start, to the snapshot kept | Memory of the browser's renderer processes: before → peak |
+|---|---:|---|
+| xeyes | 1.9 s | not measured |
+| GPicView | 2.5 s | |
+| L3afpad | 3.7 to 4.1 s | |
+| FeatherPad | 5.0 s | |
+| Galculator | 5.1 s | |
+| Geany | 6.8 to 8.7 s | 437 → 676 MB, 431 → 838, 737 → 1186, 930 → 1060, 1143 → 1486 (five runs): 0.13 to 0.45 GB more |
+| Mousepad | 7.2 to 7.5 s | |
+| Inkscape | 16 s | |
+| GIMP | 21 to 23 s | 551 → 1698 MB, 802 → 1064 (two runs): 0.26 to 1.15 GB more |
+
+A hidden start costs what a usual start of the app costs, plus the image
+while it is packed. The memory is back within seconds of its end, minus
+what the browser keeps. Geany, L3afpad, Mousepad and GIMP outdate their
+snapshot at every quit (window geometry, session files), so each quit of
+those is followed by a hidden start.
+
+## Storage
+
+One IndexedDB database, `tabcomputer-gui-snapshots`: the images and X
+requests per app (gzip), and an index that holds everything else, so that
+validity, `doctor` and Settings never read an image. Stored bytes per app,
+from the test:
+
+| xeyes | xclock | Dillo | GPicView | L3afpad | Galculator | Geany | Mousepad | FeatherPad | Inkscape | GIMP |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2.9 MB | 4.6 | 6.8 | 10.4 | 15.7 | 16.5 | 20.5 | 33.0 | 35.5 | 66.7 | 84.6 |
+
+All eleven together are 298 MB. The cap is **256 MB** (`SNAPSHOT_CAP`):
+room for the five largest at once (241 MB), and small beside a Debian
+install. It is never more than a tenth of what the browser says the site may
+still use, because storage that is not persisted is deleted whole when the
+disk runs low, and snapshots must not be why. Past the cap the least
+recently used snapshot goes (`evictions`; a restore counts as a use), and one
+that is over the cap alone is not kept. `doctor` counts them in its storage
+line: `… of which app snapshots 2.9 MB of at most 256 MB (xeyes 2.9 MB)`.
+
+## The launch table
+
+`tests/browser/gui-launch-bench.mjs` on 2026-10-13: an Apple M3 with 8 GB,
+headless Chrome 155, a local build of this branch, a fresh browser profile
+per app. Seconds from the click to the usable window. "Off" is the setting
+off, which is also what Build 1023 does. "On" is `--snapshots`: each start
+keeps its snapshot, and the next pass waits for the retake, as someone who
+opens the app a minute later does. Cold includes the install from the local
+mirror.
+
+| App | Off: cold | warm | after a reload | On: cold | warm | after a reload |
+|---|---:|---:|---:|---:|---:|---:|
+| xeyes | 1.1 | 0.2 | 0.4 | 1.2 | **0.1** | **0.3** |
+| xclock | 1.4 | 0.4 | 0.6 | 1.4 | **0.1** | **0.2** |
+| Dillo | 2.0 | 0.7 | 1.1 | 1.9 | **0.2** | **0.2** |
+| GPicView | 3.8 | 0.5 | 0.8 | 3.9 | **0.1** | **0.4** |
+| L3afpad | 5.3 | 1.9 | 2.2 | 5.1 | **0.2** | **0.4** |
+| Galculator | 7.3 | 4.1 | 4.1 | 7.5 | **0.1** | **0.4** |
+| Geany | 9.1 | 5.6 | 6.2 | 9.2 | **0.3** | **0.5** |
+| Mousepad | 8.6 | 5.2 | 5.5 | 8.0 | **0.4** | **0.4** |
+| FeatherPad | 5.1 | 2.4 | 2.7 | 5.0 | **0.3** | 2.6 (a usual start: "its environment changed") |
+| Inkscape | 19 | 13 | 14 | 18 | **0.5** | **0.7** |
+| GIMP | 20 | 15 | 16 | 19 | **1.0** | **0.9** |
+| xterm | 1.6 | 0.4 | 0.5 | no snapshot | | |
+| QTerminal | 4.6 | 1.9 | 2.5 | no snapshot | | |
+
+Bold is a restore. FeatherPad's start after the reload was a usual one in
+this run: a variable of its environment differed between the hidden start
+late in the page's life and the launch 1.5 s after the reload (not looked
+into; in `gui-snapshot.mjs` it restores after a reload).
+
+## Before it can be on by default
+
+1. **A restored process that aborted.** On 2026-10-13, in one run of
+   `gui-snapshot.mjs` out of twelve with L3afpad, the process restored after
+   a reload ended at once with SIGABRT (wait status 134). The machine was
+   under heavy load at the time (minutes after a restart, load average 12).
+   Its output was not captured then (the test prints it now), and eleven
+   further runs of L3afpad, eight of them in a row, restored and worked. Over
+   that day about 130 restores of the eleven apps were checked, with this
+   one failure. An abort means the image or the replayed X state was not what
+   the process expected: an X error under GDK, or Xlib's sequence check, are
+   the likely ways. Until the cause is known, an image cannot be called
+   sound, and one that is wrong without crashing cannot be ruled out. With
+   the setting on, the person gets a usual start after such a failure (the
+   window comes, goes, and the app starts again).
+2. **One machine, one browser.** Chrome 155 on an 8 GB Mac, headless.
+   Firefox, Safari, a 4 GB Chromebook and phones are not tried; the default
+   would be Chromium on a desktop with 4 GB or more for that reason.
+3. **A soak test**: restore, use for a long time, many restores in a row.
+4. **Every quit of Geany, Mousepad, L3afpad and GIMP starts a hidden one**,
+   7 to 23 s of one core each time. A snapshot that leaves out what these
+   rewrite at exit and don't read back differently (window geometry) would
+   avoid it; which files those are per app is not known.
+5. **The session bus.** GIMP, Inkscape, Mousepad and FeatherPad start
+   without it while snapshots are on for them, so a second invocation with
+   a file (Files → Open with) starts a second instance instead of handing
+   the file to the first.
+6. **Two tabs of one profile** share the snapshots and each runs its own
+   display. The atom table is merged when a tab saves it (`keepAtoms`), and
+   a snapshot whose atoms don't fit is refused, but a hidden start in one
+   tab while the app runs in the other is not prevented.
+
 ## Open problems
 
-1. **A session that changes the app's settings costs the next start.**
-   (Above: GIMP, Galculator, Mousepad.) The fix that keeps every setting
-   honest is to take the new snapshot before the user asks: when an app
-   quits and its snapshot is outdated, start it again hidden (its windows
-   not shown), let it go quiet, keep its image, end it. The next click is a
-   restore whatever the session did. It costs one start's worth of engine
-   time in the background after such a quit, and needs windows the desktop
-   doesn't show. The alternative, a list per app of files that may be stale
-   (GIMP's `sessionrc`), restores fast with the window layout of an older
-   session, which is a setting lost.
-2. **Before it can be on by default.** It has run on eleven apps, on one
-   machine, for minutes each. Wanted first: a way to turn it off per app
-   and a listing in Settings (what is stored, how big, forget); eviction
-   (snapshots are 3 to 85 MB each in IndexedDB and are only ever replaced);
-   a soak test (restore, use for a long time, many restores in a row);
-   Firefox and Safari; phones' memory.
+(Numbered from 3: the first two became "Retakes" and "Before it can be on
+by default".)
+
 3. **Ptys and non-engine children** (xterm, QTerminal): the line
    discipline's state, the session and foreground group, and a child that
    is tabcomputer's own shell rather than an engine process.
@@ -355,19 +537,24 @@ What a restored app can notice:
    file must be unchanged), timerfd (re-armed for the remaining time),
    epoll (the set, by descriptor), signalfd.
 7. **Atoms across tabs.** Two tabs of one profile each run a server and
-   save the table; the last save wins, and a snapshot taken in the other
-   tab may then find an atom's id taken. It is dropped and retaken. A
-   shared, append-only table (a lock, or a `BroadcastChannel`) would fix it.
-8. **55 apps** can hold a client number; beyond that, numbers have to be
-   handed back.
-9. **The screen.** Resizing the browser window between sessions drops every
-   snapshot (the key has the work area's size). An app only needs the
+   save the table. A tab now takes the other's atoms before it saves and
+   when the other saves (`keepAtoms`), so the tables stay one unless both
+   make a new atom at the same moment; then a snapshot from the other tab
+   is refused and retaken. Past 4,000 names the table is no longer kept.
+8. **55 apps** can hold a client number. A number is handed back when its
+   app's snapshot is dropped for space, not otherwise.
+9. **The screen.** Resizing the browser window between sessions outdates
+   every snapshot (the key has the work area's size); the look after a page
+   load takes the recent ones again at the new size. An app only needs the
    screen it was told about to still be plausible; a RANDR-style notice
    after the restore would let the key leave the size out.
-10. **Settings read with `stat` only** aren't in the open log (a file whose
-   time an app checks without opening it), and a directory counts only as
-   being there: a font added to a system font directory doesn't outdate a
-   snapshot unless the app opened the font.
+10. **A file's time alone.** A settings file is compared by its lines and a
+   document by its bytes, so an app that acts on a file's time and not its
+   content (a rebuild check) is restored after a `touch`. A directory that
+   was looked at and not listed counts only as being there, and this
+   filesystem does not change a directory's time when a file is added: a
+   font added to a font directory doesn't outdate a snapshot unless the app
+   listed the directory or opened the font.
 11. **A process tree needs all its pids**: later in a session, when one of
     them is taken, GIMP starts the usual way. Giving the apps' processes
     pids from a range of their own would make that never happen.
@@ -380,7 +567,8 @@ What a restored app can notice:
 localStorage.setItem('tabcomputer-gui-snapshots', '1')   // then reload
 ```
 
-Open Geany, wait a few seconds, quit it; open it again (twice, the first
-time, while it writes its settings). `window.__guiSnapshots` lists what
-happened (`taken`, `restored`, or why not).
-`indexedDB.deleteDatabase('tabcomputer-gui-snapshots')` forgets them all.
+Open Geany, wait a few seconds, quit it, and wait half a minute without
+touching the page; open it again. `window.__guiSnapshots` lists what
+happened (`taken`, `restored`, `retake: 'started'`, `retaken`, or why not),
+and `window.__guiRetakes` is the queue. Settings → Storage → "Open apps
+faster" → Off forgets them all.

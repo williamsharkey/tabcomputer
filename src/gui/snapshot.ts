@@ -1,6 +1,7 @@
 /**
- * Snapshots of started GUI apps (docs/research/GUI_SNAPSHOTS.md). Experimental:
- * off unless localStorage `tabcomputer-gui-snapshots` is `1`.
+ * Snapshots of started GUI apps (docs/research/GUI_SNAPSHOTS.md). The setting
+ * is in snapshot-setting.ts: off unless set, and then on for the apps the
+ * test restores.
  *
  * A GTK or Qt app spends its launch computing the same start-up every time
  * (docs/GUI_LAUNCH.md). With snapshots on, the first start of an app is kept:
@@ -23,11 +24,14 @@
  *   the window is on screen before the process runs.
  *
  * A snapshot is used only while what it was made from is unchanged: the
- * build, the engine, the app's packages, its arguments and environment, the
- * screen, and every file its processes opened or looked for (system files
- * by size and time, files under /home by content, caches not at all). It
- * holds the processes' memory, so it never leaves the profile's own
- * IndexedDB.
+ * build, the engine's version, the app's packages, its arguments and
+ * environment, the screen, and every path its processes opened, looked at
+ * or listed (system files by size and time, settings under a dot name in
+ * /home by their lines, any other file by its bytes, a listed directory by
+ * its names, caches not at all), and for two weeks at most. One that is
+ * outdated is taken again in the background (retake.ts). It holds the
+ * processes' memory, so it never leaves the profile's own IndexedDB, and
+ * an app that read a sign-in gets none.
  */
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from '../kernel/kernel';
@@ -37,17 +41,29 @@ import type { XRecording } from '../x11/display';
 import type { XServer } from '../x11/server';
 import type { EngineCheckpoint } from '../x86-engine/blink';
 
-const SETTING = 'tabcomputer-gui-snapshots';
+import { credentialFileReason } from '../credentials';
+import { snapshotsOn } from './snapshot-setting';
+export { snapshotsOn as snapshotsEnabled, setSnapshotsEnabled } from './snapshot-setting';
+
 const ATOMS = 'tabcomputer-x-atoms';
 const SLOTS = 'tabcomputer-gui-snapshot-slots';
+const SKIP = 'tabcomputer-gui-snapshot-skip';
 const DB = 'tabcomputer-gui-snapshots';
-const VERSION = 2;
+export const VERSION = 3;
+
+/**
+ * The most the snapshots take together, in bytes of what is stored (gzip).
+ * 256 MB holds the corpus's five largest at once (GIMP 85, Inkscape 67,
+ * FeatherPad 36, Mousepad 33, Geany 20: docs/research/GUI_SNAPSHOTS.md) and
+ * is small beside a Debian install. Never more than a tenth of what the
+ * browser says the site may still use: storage that is not persisted is
+ * deleted whole when the disk runs low, and snapshots must not be why.
+ */
+export const SNAPSHOT_CAP = 256_000_000;
+/** A snapshot older than this is taken again: what the checks below can't see (a clock, a file read through another path) is bounded by it */
+export const MAX_AGE_MS = 14 * 24 * 3600_000;
 
 const ls = (): Storage | null => { try { return (globalThis as { localStorage?: Storage }).localStorage ?? null; } catch { return null; } };
-
-/** The setting: off by default (experimental) */
-export function snapshotsEnabled(): boolean { return ls()?.getItem(SETTING) === '1'; }
-export function setSnapshotsEnabled(on: boolean): void { if (on) ls()?.setItem(SETTING, '1'); else ls()?.removeItem(SETTING); }
 
 // ── what a snapshot holds ──
 
@@ -83,6 +99,8 @@ export interface SnapshotMeta {
   /** What it was made from (snapshotKey): another key, another snapshot */
   key: string;
   taken: number;
+  /** Taken from a start nobody saw (retake.ts) */
+  hidden?: boolean;
   /** The app's process first, then its children, each after its parent */
   procs: ProcRecord[];
   files: FileRecord[];
@@ -98,22 +116,31 @@ export interface StoredSnapshot { meta: SnapshotMeta; images: ArrayBuffer[]; x: 
 
 // ── storage: the profile's own IndexedDB ──
 
+/** What is known of a stored snapshot without reading its images: the index store's value */
+export interface IndexEntry { meta: SnapshotMeta; used: number }
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore('snapshots'); };
+    const req = indexedDB.open(DB, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      // (version 1 kept each snapshot whole under one key: those were made by another VERSION)
+      if (db.objectStoreNames.contains('snapshots')) db.deleteObjectStore('snapshots');
+      db.createObjectStore('snapshots');
+      if (!db.objectStoreNames.contains('index')) db.createObjectStore('index');
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+async function tx<T>(mode: IDBTransactionMode, run: (snapshots: IDBObjectStore, index: IDBObjectStore) => IDBRequest<T> | null): Promise<T | undefined> {
   const db = await openDb();
   try {
-    return await new Promise<T>((resolve, reject) => {
-      const t = db.transaction('snapshots', mode);
-      const r = run(t.objectStore('snapshots'));
-      t.oncomplete = () => resolve(r.result);
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const t = db.transaction(['snapshots', 'index'], mode);
+      const r = run(t.objectStore('snapshots'), t.objectStore('index'));
+      t.oncomplete = () => resolve(r?.result);
       t.onerror = () => reject(t.error);
       t.onabort = () => reject(t.error);
     });
@@ -122,10 +149,84 @@ async function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRe
   }
 }
 
-export const loadSnapshot = (app: string): Promise<StoredSnapshot | null> => tx<StoredSnapshot | undefined>('readonly', (s) => s.get(app)).then((v) => v ?? null, () => null);
-export const saveSnapshot = (snap: StoredSnapshot): Promise<unknown> => tx('readwrite', (s) => s.put(snap, snap.meta.app));
-export const dropSnapshot = (app: string): Promise<unknown> => tx('readwrite', (s) => s.delete(app)).catch(() => undefined);
-export const listSnapshots = (): Promise<StoredSnapshot[]> => tx<StoredSnapshot[]>('readonly', (s) => s.getAll()).catch(() => []);
+/** The stored snapshots, without their images */
+export const listSnapshots = (): Promise<IndexEntry[]> => tx<IndexEntry[]>('readonly', (_s, i) => i.getAll()).then((v) => v ?? [], () => []);
+export const snapshotEntry = (app: string): Promise<IndexEntry | null> => tx<IndexEntry | undefined>('readonly', (_s, i) => i.get(app)).then((v) => v ?? null, () => null);
+
+export async function loadSnapshot(app: string): Promise<StoredSnapshot | null> {
+  try {
+    const entry = await snapshotEntry(app);
+    if (!entry) return null;
+    const body = await tx<{ images: ArrayBuffer[]; x: ArrayBuffer } | undefined>('readonly', (s) => s.get(app));
+    return body ? { meta: entry.meta, images: body.images, x: body.x } : null;
+  } catch { return null; }
+}
+
+/**
+ * Keep `snap`, then drop the least recently used ones until the total is
+ * within the cap. Returns the apps dropped. One that is over the cap alone
+ * is not kept (the answer is its own app), and the others stay.
+ */
+export async function saveSnapshot(snap: StoredSnapshot, cap?: number): Promise<string[]> {
+  const app = snap.meta.app;
+  cap ??= await snapshotCap();
+  if (snap.meta.sizes.stored > cap) { await dropSnapshot(app); return [app]; }
+  await tx('readwrite', (s, i) => { s.put({ images: snap.images, x: snap.x }, app); return i.put({ meta: snap.meta, used: Date.now() } satisfies IndexEntry, app); });
+  const drop = evictions(await listSnapshots(), cap, app);
+  for (const a of drop) { await dropSnapshot(a); releaseClientNumber(a); }
+  return drop;
+}
+
+export const dropSnapshot = (app: string): Promise<unknown> => tx('readwrite', (s, i) => { s.delete(app); return i.delete(app); }).catch(() => undefined);
+export const dropAllSnapshots = (): Promise<unknown> => tx('readwrite', (s, i) => { s.clear(); return i.clear(); }).catch(() => undefined);
+
+/** `app`'s snapshot was used now (a restore): the least recently used go first when space is needed */
+export async function touchSnapshot(app: string): Promise<void> {
+  // (one transaction: a snapshot that was dropped meanwhile is not put back)
+  await tx('readwrite', (_s, i) => {
+    const got = i.get(app) as IDBRequest<IndexEntry | undefined>;
+    got.onsuccess = () => { if (got.result) i.put({ ...got.result, used: Date.now() }, app); };
+    return null;
+  }).catch(() => undefined);
+}
+
+/**
+ * Which snapshots go so that the rest fit in `cap` bytes: the least recently
+ * used first, the one just kept (`keep`) last. When that one is over the cap
+ * alone, it goes and the others stay.
+ */
+export function evictions(entries: IndexEntry[], cap: number, keep?: string): string[] {
+  const kept = keep === undefined ? undefined : entries.find((e) => e.meta.app === keep);
+  if (kept && kept.meta.sizes.stored > cap) return evictions(entries.filter((e) => e !== kept), cap).concat(keep!);
+  let total = entries.reduce((a, e) => a + e.meta.sizes.stored, 0);
+  const out: string[] = [];
+  const order = [...entries].sort((a, b) => (a.meta.app === keep ? 1 : b.meta.app === keep ? -1 : a.used - b.used));
+  for (const e of order) {
+    if (total <= cap) break;
+    out.push(e.meta.app);
+    total -= e.meta.sizes.stored;
+  }
+  return out;
+}
+
+/** The cap now: SNAPSHOT_CAP, or a tenth of what the site may still use when that is less */
+export async function snapshotCap(estimate?: { usage?: number; quota?: number } | null, ours?: number): Promise<number> {
+  try {
+    const est = estimate === undefined ? await (globalThis as { navigator?: Navigator }).navigator?.storage?.estimate?.() : estimate;
+    if (!est || !est.quota) return SNAPSHOT_CAP;
+    ours ??= (await listSnapshots()).reduce((a, e) => a + e.meta.sizes.stored, 0);
+    const free = Math.max(0, est.quota - (est.usage ?? 0)) + ours;
+    return Math.min(SNAPSHOT_CAP, Math.floor(free / 10));
+  } catch { return SNAPSHOT_CAP; }
+}
+
+/** What the snapshots take: for `doctor` and Settings */
+export async function snapshotUsage(): Promise<{ apps: { app: string; stored: number; taken: number; used: number }[]; total: number; cap: number }> {
+  const entries = await listSnapshots();
+  const apps = entries.map((e) => ({ app: e.meta.app, stored: e.meta.sizes.stored, taken: e.meta.taken, used: e.used })).sort((a, b) => b.stored - a.stored);
+  const total = apps.reduce((a, e) => a + e.stored, 0);
+  return { apps, total, cap: await snapshotCap(undefined, total) };
+}
 
 async function pipe(data: Uint8Array, through: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }): Promise<ArrayBuffer> {
   return new Response(new Blob([data as BlobPart]).stream().pipeThrough(through as unknown as ReadableWritablePair<Uint8Array, Uint8Array>)).arrayBuffer();
@@ -143,15 +244,31 @@ export const gunzip = (data: Uint8Array): Promise<ArrayBuffer> => pipe(data, new
  */
 export async function keepAtoms(server: XServer): Promise<void> {
   const store = ls();
-  if (!store || !snapshotsEnabled()) return;
-  try {
-    const saved = JSON.parse(store.getItem(ATOMS) ?? '[]') as string[];
-    if (Array.isArray(saved) && !server.adoptAtoms(saved)) store.removeItem(ATOMS);
-  } catch { store.removeItem(ATOMS); }
+  if (!store || !snapshotsOn()) return;
+  const adopt = (text: string | null): boolean => {
+    try {
+      const saved = JSON.parse(text ?? '[]') as string[];
+      return !Array.isArray(saved) || server.adoptAtoms(saved);
+    } catch { return false; }
+  };
+  if (!adopt(store.getItem(ATOMS))) store.removeItem(ATOMS);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const save = () => { timer = null; try { store.setItem(ATOMS, JSON.stringify(server.atomNames())); } catch { /* full: the next snapshot is checked against the table anyway */ } };
+  let full = false;
+  const save = () => {
+    timer = null;
+    if (full) return;
+    // (another tab of the profile may have saved since: take its atoms first, so the two tables stay one.
+    // Where they can't be, each tab keeps its own, and a snapshot from the other is refused at restore)
+    adopt(store.getItem(ATOMS));
+    const names = server.atomNames();
+    // A client that makes up atom names without end would fill the profile's storage: stop keeping them
+    if (names.length > MAX_KEPT_ATOMS) { full = true; store.removeItem(ATOMS); return; }
+    try { store.setItem(ATOMS, JSON.stringify(names)); } catch { /* full: the next snapshot is checked against the table anyway */ }
+  };
   server.hooks.atomAdded = () => { timer ??= setTimeout(save, 300); };
+  (globalThis as { addEventListener?: (t: string, f: (e: { key: string | null; newValue: string | null }) => void) => void }).addEventListener?.('storage', (e) => { if (e.key === ATOMS && e.newValue) adopt(e.newValue); });
 }
+const MAX_KEPT_ATOMS = 4000;
 
 /** The X client number an app's snapshots use: one of the reserved ones, the same every time */
 export function clientNumberFor(app: string, first: number, last: number): number | null {
@@ -169,16 +286,85 @@ export function clientNumberFor(app: string, first: number, last: number): numbe
   return null;
 }
 
+/** Give `app`'s client number back (its snapshot was dropped for space) */
+export function releaseClientNumber(app: string): void {
+  const store = ls();
+  try {
+    const slots = JSON.parse(store?.getItem(SLOTS) ?? '{}') as Record<string, number>;
+    if (!(app in slots)) return;
+    delete slots[app];
+    store?.setItem(SLOTS, JSON.stringify(slots));
+  } catch { /* stays taken */ }
+}
+
+/**
+ * Apps that can't be snapshotted as they are (a shell on a pty, a connection
+ * to the session bus, never quiet), with the key that was true for: asked
+ * again only when the key changes. Without it every quit would start the app
+ * again in the background to find the same thing out.
+ */
+interface Skip { key: string; ids: string; why: string }
+export function skipReason(app: string, key: string): string | null {
+  try {
+    const all = JSON.parse(ls()?.getItem(SKIP) ?? '{}') as Record<string, Skip>;
+    return all[app] && all[app].key === keyHash(key) ? all[app].why : null;
+  } catch { return null; }
+}
+/** The same without the key (which takes the display to work out): `app` was found unfit on this build and engine */
+export function skippedOnThisBuild(app: string): boolean {
+  try {
+    const all = JSON.parse(ls()?.getItem(SKIP) ?? '{}') as Record<string, Skip>;
+    const ids = buildIds();
+    return !!all[app] && all[app].ids === `${ids.build}|${ids.engine}`;
+  } catch { return false; }
+}
+export function setSkip(app: string, key: string, why: string | null): void {
+  const store = ls();
+  try {
+    const all = JSON.parse(store?.getItem(SKIP) ?? '{}') as Record<string, Skip>;
+    const ids = buildIds();
+    if (why === null) { if (!(app in all)) return; delete all[app]; } else all[app] = { key: keyHash(key), ids: `${ids.build}|${ids.engine}`, why };
+    store?.setItem(SKIP, JSON.stringify(all));
+  } catch { /* asked again next time */ }
+}
+function keyHash(key: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16);
+}
+
 // ── validity ──
 
 export interface KeyParts { app: string; argv: string[]; env: Record<string, string>; packages: string[]; screen: [number, number, number]; textMode: string }
 
+/**
+ * The build and the engine this page runs: `engine` is the directory the
+ * Blink engine is loaded from, named by the content of its files
+ * (vite-plugin-engines.ts), so a rebuilt engine is another key.
+ */
+export function buildIds(): { build: string; engine: string } {
+  const g = globalThis as { __guiSnapshotBuild?: string; __guiSnapshotEngine?: string };
+  return {
+    build: g.__guiSnapshotBuild ?? (typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : ''),
+    engine: g.__guiSnapshotEngine ?? (typeof __BLINK_ENGINE_DIR__ === 'string' ? __BLINK_ENGINE_DIR__ : ''),
+  };
+}
+
 /** Everything a snapshot depends on that is known before the process runs */
-export function snapshotKey(p: KeyParts): string {
-  const g = globalThis as { __guiSnapshotBuild?: string };
-  const build = typeof __BUILD_SHA__ === 'string' ? __BUILD_SHA__ : '';
-  const engine = typeof __BLINK_ENGINE_DIR__ === 'string' ? __BLINK_ENGINE_DIR__ : '';
-  return JSON.stringify({ v: VERSION, build: g.__guiSnapshotBuild ?? build, engine, app: p.app, argv: p.argv, env: Object.entries(p.env).sort(([a], [b]) => (a < b ? -1 : 1)), packages: p.packages, screen: p.screen, text: p.textMode });
+export function snapshotKey(p: KeyParts, ids: { build: string; engine: string } = buildIds()): string {
+  return JSON.stringify({ v: VERSION, build: ids.build, engine: ids.engine, app: p.app, argv: p.argv, env: Object.entries(p.env).sort(([a], [b]) => (a < b ? -1 : 1)), packages: p.packages, screen: p.screen, text: p.textMode });
+}
+
+const KEY_WORDS: Record<string, string> = { v: 'the snapshot format', build: 'the build', engine: 'the engine', app: 'the app', argv: 'its arguments', env: 'its environment', packages: 'its packages', screen: 'the screen', text: 'the text mode' };
+
+/** What differs between two keys, in words ("the engine and the screen") */
+export function keyChange(was: string, now: string): string {
+  try {
+    const a = JSON.parse(was) as Record<string, unknown>, b = JSON.parse(now) as Record<string, unknown>;
+    const names = Object.keys(KEY_WORDS).filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).map((k) => KEY_WORDS[k]);
+    if (names.length) return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+  } catch { /* not keys of this form */ }
+  return 'what it was made from';
 }
 
 async function sha256(b: Uint8Array): Promise<string> {
@@ -186,50 +372,102 @@ async function sha256(b: Uint8Array): Promise<string> {
   return Array.from(d, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+/** Under a dot name in a home directory: an app's settings, not someone's document */
+const SETTINGS_PATH = /^\/(?:home\/[^/]+|root)\/(?:.*\/)?\.[^/]+(?:\/|$)/;
+/** Debian's files and tabcomputer's own: what packages write. Everything else is the person's */
+const SYSTEM_PATH = /^\/(?:usr|etc|lib|lib64|bin|sbin|var|opt|boot|run)\//;
+const MAX_HASHED = 16 << 20;
+
 /**
- * What is at `path`, as a short string: '' nothing; a file under /home by
- * content, any other by size and time. A home file's content is its lines
- * whatever their order: GIMP rewrites controllerrc at every exit from a hash
- * table, the same entries in another order, and that is not another setting.
- * (The cost: a file where only the order of lines changed, and the order
- * means something, doesn't outdate a snapshot.)
+ * What is at `path`, as a short string. '' is nothing; a directory is 'dir',
+ * and `path/` (a directory the process listed) is the names in it. A system
+ * file is its size and time. A file anywhere else is its bytes, so a document
+ * that was open when the snapshot was taken and has changed since outdates
+ * it; except settings (a file under a dot name in a home directory), which
+ * are their lines whatever the order: GIMP rewrites controllerrc at every
+ * exit from a hash table, the same entries in another order, and that is not
+ * another setting.
  */
 async function fileSignature(fs: FileSystem, path: string): Promise<string> {
+  if (path.endsWith('/') && path.length > 1) {
+    const names = await fs.readdir(path.slice(0, -1)).catch(() => null);
+    return names ? 'l' + await sha256(new TextEncoder().encode([...names].sort().join('\n'))) : '';
+  }
   const st = await fs.stat(path).catch(() => null);
   if (!st) return '';
   if (st.isDirectory()) return 'dir';
-  if (path.startsWith('/home/')) {
-    const data = await fs.readFile(path).catch(() => null);
-    if (data === null) return '';
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    // (text of a sensible size: sorted lines; anything else as it is)
-    const text = bytes.length < (1 << 20) && !bytes.includes(0) ? new TextDecoder().decode(bytes) : null;
-    return 'h' + await sha256(text === null ? bytes : new TextEncoder().encode(text.split('\n').sort().join('\n')));
-  }
-  return `${st.size}:${Math.floor(Number(st.mtime instanceof Date ? st.mtime.getTime() : st.mtime ?? 0))}`;
+  const byTime = `${st.size}:${Math.floor(Number(st.mtime instanceof Date ? st.mtime.getTime() : st.mtime ?? 0))}`;
+  if (SYSTEM_PATH.test(path) || st.size > MAX_HASHED) return byTime;
+  const data = await fs.readFile(path).catch(() => null);
+  if (data === null) return '';
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  if (!SETTINGS_PATH.test(path)) return 'c' + await sha256(bytes);
+  // (text of a sensible size: sorted lines; anything else as it is)
+  const text = bytes.length < (1 << 20) && !bytes.includes(0) ? new TextDecoder().decode(bytes) : null;
+  return 'h' + await sha256(text === null ? bytes : new TextEncoder().encode(text.split('\n').sort().join('\n')));
 }
 
 /**
- * Files the process opened that don't decide whether its snapshot is good:
- * devices and /proc, /tmp, and the user's cache directory. A cache is by
- * definition something the app does as well without, and some are rewritten
- * at every exit (babl's conversion cache under GIMP), which would outdate
- * every snapshot the moment the app quits.
+ * Paths that don't decide whether a snapshot is good: devices and /proc, and
+ * the user's cache directory. A cache is by definition something the app
+ * does as well without, and some are rewritten at every exit (babl's
+ * conversion cache under GIMP), which would outdate every snapshot the
+ * moment the app quits.
  */
-const IGNORED_PATH = /^\/(?:dev|proc|sys|tmp)\/|^\/home\/[^/]+\/\.cache\//;
+const IGNORED_PATH = /^\/(?:dev|proc|sys)(?:\/|$)|^\/(?:home\/[^/]+|root)\/\.cache(?:\/|$)/;
+const TMP_PATH = /^\/tmp(?:\/|$)/;
 
-/** What is at each of `paths` now, for a snapshot's `opened` (the paths that don't count are left out) */
-export async function signaturesOf(fs: FileSystem, paths: Iterable<string>): Promise<[string, string][]> {
+/**
+ * What is at each of `paths` now, for a snapshot's `opened` (the paths that
+ * don't count are left out). Under /tmp only a file that is there and that
+ * the processes did not write counts (`written`): a document opened from
+ * /tmp does, the app's own sockets, locks and swap files don't. A path a
+ * socket is bound to (`sockets`), or a link to one (Geany's instance socket
+ * is in /tmp, with a link to it under ~/.config/geany), is there while the
+ * app runs and gone when it has quit: it never counts.
+ */
+export async function signaturesOf(fs: FileSystem, paths: Iterable<string>, written: ReadonlySet<string> = new Set(), sockets: ReadonlySet<string> = new Set()): Promise<[string, string][]> {
   const out: [string, string][] = [];
-  for (const path of paths) if (!IGNORED_PATH.test(path)) out.push([path, await fileSignature(fs, path)]);
+  for (const path of paths) {
+    if (IGNORED_PATH.test(path) || sockets.has(path)) continue;
+    if (sockets.size && !path.endsWith('/') && sockets.has(await fs.realpath(path).catch(() => path))) continue;
+    if (TMP_PATH.test(path)) {
+      if (path.endsWith('/') || written.has(path)) continue;
+      const st = await fs.stat(path).catch(() => null);
+      if (!st || !st.isFile()) continue;
+    }
+    out.push([path, await fileSignature(fs, path)]);
+  }
   return out;
 }
 
+/**
+ * A file among `paths` that holds a sign-in (src/credentials.ts: a token
+ * file, or text with a token in it), or null. A snapshot is the processes'
+ * memory: an app that read one gets no snapshot.
+ */
+export async function signInAmong(fs: FileSystem, paths: Iterable<string>): Promise<string | null> {
+  for (const path of paths) {
+    if (path.endsWith('/') || SYSTEM_PATH.test(path) || IGNORED_PATH.test(path)) continue;
+    const st = await fs.stat(path).catch(() => null);
+    if (!st || !st.isFile()) continue;
+    let text: string | null = null;
+    if (st.size < (1 << 20)) {
+      const data = await fs.readFile(path).catch(() => null);
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      if (bytes && !bytes.includes(0)) text = new TextDecoder().decode(bytes);
+    }
+    if (credentialFileReason(path, text)) return path;
+  }
+  return null;
+}
+
 /** Why a stored snapshot can't be used now (null: it can) */
-export async function snapshotProblem(fs: FileSystem, snap: StoredSnapshot, key: string): Promise<string | null> {
+export async function snapshotProblem(fs: FileSystem, snap: { meta: SnapshotMeta }, key: string, now = Date.now()): Promise<string | null> {
   const m = snap.meta;
   if (m.v !== VERSION) return 'made by another version';
-  if (m.key !== key) return 'the app, the build or the screen changed';
+  if (m.key !== key) return `${keyChange(m.key, key)} changed`;
+  if (now - m.taken > MAX_AGE_MS) return 'it is more than two weeks old';
   for (const [path, was] of m.opened) {
     if (await fileSignature(fs, path) !== was) return `${path} changed`;
   }
@@ -238,7 +476,22 @@ export async function snapshotProblem(fs: FileSystem, snap: StoredSnapshot, key:
 
 // ── taking one ──
 
-export interface TakeResult { ok: boolean; why?: string; meta?: SnapshotMeta; ms?: number }
+export interface TakeResult {
+  ok: boolean; why?: string; meta?: SnapshotMeta; ms?: number;
+  /** Not this time, and not the next either while nothing changes: the app as it is can't have a snapshot */
+  never?: boolean;
+  /** Snapshots dropped to keep the total within the cap */
+  dropped?: string[];
+}
+
+/** What the launcher knows of the start a snapshot is taken from */
+export interface Started {
+  argv: string[]; env: Record<string, string>; cwd: string; output: OpenFile | null;
+  /** A start nobody sees (retake.ts): no window on the desktop, so no input can reach it */
+  hidden?: boolean;
+  /** True once nobody wants this snapshot any more: one being made is not kept */
+  cancelled?: () => boolean;
+}
 
 /** `main` and its descendants, each after its parent */
 function family(kernel: Kernel, main: Process): Process[] {
@@ -317,15 +570,15 @@ async function lookAtFiles(procs: Process[], xSock: OpenFile | null, output: Ope
  * descriptors. Otherwise `why` says what was in the way, and the caller
  * tries again later.
  */
-export async function takeSnapshot(kernel: Kernel, app: string, main: Process, rec: XRecording, key: string, started: { argv: string[]; env: Record<string, string>; cwd: string; output: OpenFile | null }): Promise<TakeResult> {
+export async function takeSnapshot(kernel: Kernel, app: string, main: Process, rec: XRecording, key: string, started: Started): Promise<TakeResult> {
   const t0 = Date.now();
   const fs = kernel.fs as FileSystem | undefined;
   if (!fs) return { ok: false, why: 'no filesystem' };
   const client = rec.client;
-  if (rec.over || rec.connections !== 1 || !client || client.closed) return { ok: false, why: rec.connections > 1 ? 'it has more than one X connection' : 'its X requests were not all kept' };
+  if (rec.over || rec.connections !== 1 || !client || client.closed) return { ok: false, never: true, why: rec.connections > 1 ? 'it has more than one X connection' : 'its X requests were not all kept' };
   const procs = family(kernel, main);
   for (const p of procs) {
-    if (!p.data.engineCheckpoint || p.state !== 'running' || p.data.embryo) return { ok: false, why: `process ${p.pid} (${p.comm}) is not one the engine can write out now` };
+    if (!p.data.engineCheckpoint || p.state !== 'running' || p.data.embryo) return { ok: false, never: !p.data.embryo && p.state === 'running', why: `process ${p.pid} (${p.comm}) is not one the engine can write out now` };
   }
   const xSock = main.fds.entries().map(([, f]) => f).find((f) => f.kind === 'socket' && (f as { remote?: { address?: string } }).remote?.address?.includes('.X11-unix')) ?? null;
   if (!xSock) return { ok: false, why: 'no X connection among its descriptors' };
@@ -333,7 +586,13 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
   const before = { bytes: rec.bytes, seq: client.seq, sent: client.sent };
   if (queued().rxQueue || queued().txQueue) return { ok: false, why: 'X data in flight' };
   const look = await lookAtFiles(procs, xSock, started.output);
-  if (typeof look === 'string') return { ok: false, why: look };
+  // (a descriptor that can't be made again is there for as long as the app runs: a pty, the session bus)
+  if (typeof look === 'string') return { ok: false, never: !/holds data|data waiting|events waiting/.test(look), why: look };
+  // The image is the processes' memory: one that read a sign-in is not kept
+  const paths = new Set<string>((main.data.openLog as Set<string> | undefined) ?? []);
+  for (const p of procs) paths.add(p.path);
+  const signIn = await signInAmong(fs, paths);
+  if (signIn) return { ok: false, never: true, why: `it read a sign-in (${signIn})` };
   const raw: ArrayBuffer[] = [];
   for (const p of procs) {
     const r = await (p.data.engineCheckpoint as () => Promise<EngineCheckpoint>)();
@@ -351,10 +610,12 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
   const requests = new Uint8Array(rec.bytes);
   let at = 0;
   for (const c of rec.chunks) { requests.set(c, at); at += c.length; }
-  const opened = await signaturesOf(fs, (main.data.openLog as Set<string> | undefined) ?? []);
+  // (again: what it opened while the images were made counts too)
+  for (const path of (main.data.openLog as Set<string> | undefined) ?? []) paths.add(path);
+  const opened = await signaturesOf(fs, paths, (main.data.openWritten as Set<string> | undefined) ?? new Set(), kernel.socketPaths ?? new Set());
   const [x, ...images] = await Promise.all([gzip(requests), ...raw.map((b) => gzip(new Uint8Array(b)))]);
   const meta: SnapshotMeta = {
-    v: VERSION, app, key, taken: Date.now(),
+    v: VERSION, app, key, taken: Date.now(), ...(started.hidden ? { hidden: true } : {}),
     procs: procs.map((p, i) => ({
       pid: p.pid, parent: procs.findIndex((q) => q.pid === p.ppid),
       path: p.path, argv: i ? p.argv : started.argv, env: i ? { ...p.env } : started.env, cwd: i ? p.cwd : started.cwd, umask: p.umask,
@@ -370,9 +631,11 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
     opened,
     sizes: { image: raw.reduce((a, b) => a + b.byteLength, 0), stored: x.byteLength + images.reduce((a, b) => a + b.byteLength, 0), x: rec.bytes },
   };
+  if (started.cancelled?.()) return { ok: false, why: 'cancelled' };
   // (the processes may have moved on while the images were packed: that doesn't matter, the images are of then)
-  await saveSnapshot({ meta, images, x });
-  return { ok: true, meta, ms: Date.now() - t0 };
+  const dropped = await saveSnapshot({ meta, images, x });
+  if (dropped.includes(app)) return { ok: false, never: true, why: `it is larger than the space snapshots may take (${Math.round(meta.sizes.stored / 1e6)} MB)`, dropped };
+  return { ok: true, meta, ms: Date.now() - t0, dropped };
 }
 
 /** After its first window: this long before the first try, and this long without an X byte before any */
@@ -387,7 +650,7 @@ export interface SnapshotWatch { done: Promise<TakeResult>; cancel(): void }
  * every later launch starts from). Gives up when the process ends, when it
  * can't be snapshotted, or after TRIES busy answers.
  */
-export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, rec: XRecording, key: string, started: { argv: string[]; env: Record<string, string>; cwd: string; output: OpenFile | null }): SnapshotWatch {
+export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, rec: XRecording, key: string, started: Started): SnapshotWatch {
   let cancelled = false;
   const done = (async (): Promise<TakeResult> => {
     const { getXSession } = await import('../x11/session');
@@ -404,8 +667,9 @@ export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, re
       await new Promise((res) => setTimeout(res, 100));
       if (cancelled) return finish({ ok: false, why: 'cancelled' });
       if (proc.exiting || proc.state === 'zombie') return finish({ ok: false, why: 'the app ended first' });
-      if (rec.over || rec.connections > 1) return finish({ ok: false, why: rec.connections > 1 ? 'it has more than one X connection' : 'its X requests were not all kept' });
-      if (server.inputCount !== input0) return finish({ ok: false, why: 'it was used before it went quiet' });
+      if (rec.over || rec.connections > 1) return finish({ ok: false, never: true, why: rec.connections > 1 ? 'it has more than one X connection' : 'its X requests were not all kept' });
+      // (a hidden start has no window to press a key in: what is typed meanwhile goes to other apps)
+      if (!started.hidden && server.inputCount !== input0) return finish({ ok: false, why: 'it was used before it went quiet' });
       const c = rec.client;
       if (!c || !server.topsOf(c).some((w) => w.mapped && !w.overrideRedirect && !isSplash(w))) { upSince = 0; continue; }
       const now = Date.now();
@@ -413,12 +677,12 @@ export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, re
       if (rec.bytes !== lastBytes) { lastBytes = rec.bytes; quietSince = now; continue; }
       if (now - upSince < SETTLE_MS || now - quietSince < QUIET_MS) continue;
       const r = await takeSnapshot(kernel, app, proc, rec, key, started);
-      if (r.ok) return finish(r);
+      if (r.ok || r.never) return finish(r);
       why = r.why ?? '';
       tries++;
       quietSince = Date.now();
     }
-    return finish({ ok: false, why: `never quiet: ${why}` });
+    return finish({ ok: false, never: true, why: `never quiet: ${why}` });
   })().catch((e) => ({ ok: false, why: String((e as Error)?.message ?? e) }));
   return { done, cancel: () => { cancelled = true; } };
 }
@@ -540,6 +804,7 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
     // (an end every process had closed: gone here too. After the spawns: a descriptor table holds its files)
     for (const p of pipes.values()) for (const e of [p.r, p.w]) if (!p.used.has(e)) void e.close();
     for (const p of pairs.values()) for (const e of p.sides) if (!p.used.has(e)) void e.close();
+    void touchSnapshot(m.app);
     return { proc: started[0], ms: { x: tx, image: ti, total: Date.now() - t0 } };
   } catch (e) {
     for (const p of started.reverse()) { try { kernel.kill(p.pid, 9); } catch { /* gone */ } }

@@ -218,10 +218,69 @@ not have: 23 more packages (Tcl/Tk, libX11, fontconfig, the DejaVu fonts),
 `python3` and draws in an X11 window on the desktop (`DISPLAY=:0`). The
 built-in WebAssembly `python3` (`pkg`) still has no tkinter: there `import
 tkinter` and `import turtle` fail with a line naming `toolchain install
-python` (`src/python-hints.ts`). Installing the set makes `python3` Debian's,
-which runs in the x86 emulator and is several times slower (#124: 0.40 s
-against 3.3 s for a 2-million sieve); `toolchain list` and the install say
-so, and the welcome card's Python is the built-in one.
+python` (`src/python-hints.ts`).
+
+**Which Python `python3` is after the set is installed** (#124,
+`src/python/choose.ts`). Debian's Python runs in the x86 emulator and is
+several times slower (0.40 s against 3.3 s for a 2-million sieve on
+tabcomputer.com), so `python3` stays the built-in one and runs a program on
+Debian's only when the program needs it:
+
+| What is typed | Runs on |
+| --- | --- |
+| `python3 FILE`, `-c CODE`, `-m MODULE`, a `#!/usr/bin/env python3` script | the built-in Python; Pyodide when it imports numpy, pandas or another package `pip` recorded as Pyodide's |
+| the same, when the program imports `tkinter` or `turtle` | Debian's (a turtle window opens) |
+| the same, when it imports a package only Debian's Python has (`python3-yaml` from apt, what Debian's pip installed) | Debian's, until `pip install NAME` installs it for the built-in one |
+| the same, when it imports a Pyodide package and `socket`, `subprocess`, `requests`… and Debian's Python has that package | Debian's (Pyodide has no sockets or processes) |
+| `python3` alone (the prompt), `python3 -`, `python3 -V` | the built-in Python |
+| `python3.13`, `/usr/bin/python3`, `python3 --debian …`, `TABCOMPUTER_PYTHON=debian` | Debian's |
+| `python3 --wasi …`, `python3 --pyodide …` | the built-in Python, Pyodide |
+| a `#!/usr/bin/python3` script, apt's maintainer scripts, `py3compile`, a program that starts `python3` itself (Debian's `sh`, `make`) | Debian's: the kernel runs the file it is given, and `/usr/bin/python3` is Debian's |
+| `python3` in an activated venv | that venv's Python: `python3 -m venv DIR` makes one for the built-in Python, `python3.13 -m venv DIR` one for Debian's |
+
+The imports are read from the program without running it (the file, and the
+modules beside it). One that is made at run time is not seen: the built-in
+Python then says `No module named 'tkinter' … Use it for this: python3
+--debian FILE.py`.
+
+`pip` is one command either way. It installs for the built-in Python as
+before (pure-Python packages; numpy and the like are recorded as Pyodide's).
+A package with a compiled part that neither has goes to Debian's pip, with a
+line that says so, and `python3` then runs a program that imports it on
+Debian's. `pip show NAME` and `pip uninstall NAME` go to Debian's pip for a
+package only Debian's Python has; `pip list` lists the built-in Python's
+(`python3.13 -m pip list` lists Debian's). In a venv, `pip` is that venv's.
+Without the set, the refusal says `Debian's Python can install it. Run:
+toolchain install python, then this command again.`
+
+Measured by `tests/browser/python-first.mjs` on 2026-10-13: a local build, an
+Apple M3, headless Chrome, a fresh profile, the python layer from the
+production mirror. Milliseconds from the command's start to its exit inside
+the page, the fastest of three runs:
+
+| Command | Before `toolchain install python` | After |
+| --- | ---: | ---: |
+| `python3 hello.py` | 21 | 19 |
+| `python3 lab.py` (`input()` and a 2-million sieve) | 36 | 29 |
+| `python3 -c "import numpy"` (after `pip install numpy`: Pyodide) | 361 | 384 |
+| a turtle program | 73 (the line that says what to run) | 6,906 (Debian's Python, a window) |
+| `pip install requests` | 515 | 188 (the wheels came from the browser's cache) |
+
+Debian's Python by name, which is what `python3` ran after the install until
+this change: `python3.13 hello.py` 476 ms (850 the first time), `python3.13
+lab.py` 608 ms, `python3.13 -c "import numpy"` 3,122 ms. Also: the first
+`python3` of a fresh profile 171 ms (the built-in Python is fetched), the
+first `import numpy` 1.9 s (Pyodide and numpy are fetched), `python3 -m venv
+DIR` 2 ms, `python3.13 -m venv DIR` 40 s (Debian's ensurepip), `pip install
+setproctitle` through Debian's pip 14 s. The local server has the layer on
+disk; `toolchain install python` itself took 0.5 s there. An earlier run of
+the same script on the same day gave the same picture (24 and 21 ms, 34 and
+29 ms, 421 and 623 ms, 7.7 s for the turtle program).
+
+Not done: `pip list` and `pip freeze` do not include what only Debian's
+Python has; a request that mixes a pure package and a compiled one goes to
+Debian's pip whole; a `python3` started by another program by a bare name is
+looked up on PATH by that program and is Debian's.
 
 `rescue` (#114) converts files no current program opens: `wpd2html` and
 `wpd2text` (WordPerfect), `pub2xhtml` (Publisher), `wps2html`, `wks2csv`
@@ -239,7 +298,7 @@ Not in `tex-full`: the LaTeX `svg` package runs Inkscape through `--shell-escape
 (`sudo apt-get install inkscape`, 133 more packages), and `minted` needs
 `python3-pygments`.
 
-`pip install NAME` works in Debian's python3 without a venv: tabcomputer writes
+`python3.13 -m pip install NAME` (Debian's pip) works without a venv: tabcomputer writes
 `/etc/pip.conf` with `break-system-packages = true` (`pipInstallsPackages` in
 `src/debian/rootfs.ts`) when the file doesn't exist; edit or empty it to get
 PEP 668's refusal back. gdb (installed with `c`) debugs a program through

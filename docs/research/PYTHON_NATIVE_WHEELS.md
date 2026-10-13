@@ -293,3 +293,36 @@ the whole script passed, and a file not yet on disk (scipy) was answered 502.
 In all runs with the route on, every Pyodide request of the page and its
 Workers went to the server under test (19 file names), none to jsdelivr; the
 script fails otherwise.
+
+## With Debian's Python installed as well (2026-10-13, branch `unix/first-minute`, #124)
+
+`toolchain install python` no longer changes which Python `python3` is. The
+rule, its table and the measured times are in
+[DEBIAN.md](../DEBIAN.md) ("Which Python `python3` is after the set is
+installed"); the code is `src/python/choose.ts`. For this document's
+subject: a program that imports numpy still runs in Pyodide after the set is
+installed (0.4 to 0.6 s for `python3 -c "import numpy"`, against 3.1 to 3.4 s
+for Debian's numpy under the emulator), and the case this document listed as
+working in neither Python, numpy together with the network, now runs on
+Debian's when the set is installed: a program that imports a Pyodide package
+and `socket`, `subprocess` or `requests` is sent there.
+
+Two things found on the way. The built-in Python, started as
+`/usr/bin/python3`, takes `/usr` for its prefix; once Debian's Python is
+installed, `/usr/lib/python3.13` is Debian's library, and the built-in one
+then ran with Debian's `site.py`, found none of its own `pip install`ed
+packages, and imported Debian's `tkinter` instead of the stand-in that says
+what to do. It is now told its own file as `argv[0]` when `/usr/bin/python3`
+is Debian's. And `pip`'s console scripts for the built-in Python said
+`#!/usr/bin/python3`, which is Debian's Python after the install: they name
+the interpreter's file now, and the ones written before are put right when
+the set is first installed.
+
+tabcomputer#148 for the plain `python3` (`tests/browser/python-first.mjs`,
+headless Chrome 155): a reload while a Pyodide program waits in `input()` or
+at the `python3 --pyodide` prompt did not crash the tab in five reloads; the
+page was back 1.6 s later each time. ^C in `while True: time.sleep(1)` of a
+script that imports numpy did reproduce: the interrupt was raised in a weak
+reference's callback and ignored, and only a second ^C ended the process.
+`time.sleep` under Pyodide is now one that ^C ends, as in the notebook: one
+^C, `KeyboardInterrupt`, the `finally` runs, status 130, 0.1 s.

@@ -111,11 +111,14 @@ async function runGuest(py: any, start: PyodideStart, post: (m: unknown) => void
       sys.exit(rc);
       return;
     }
+    const flag = start.interrupt ? new Uint8Array(start.interrupt) : null;
     const rc = await runProgram(py, start.pyodide, start.cwd, { ...start.env, TABCOMPUTER_PID: String(start.pid) }, {
       read: (buf) => sys.read(0, buf),
       write: (fd, data) => { sys.write(fd, data); },
       isatty: (fd) => isatty(sys, fd),
       show: (path, title) => post({ type: 'pyodide-show', path, title }),
+      interrupted: () => !!flag && Atomics.load(flag, 0) === 2,
+      clearInterrupt: () => { if (flag) Atomics.store(flag, 0, 0); },
     });
     sys.exit(rc);
   } catch (e) {

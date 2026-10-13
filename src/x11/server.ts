@@ -183,6 +183,12 @@ export class Client {
   /** Bytes queued for the client so far: replies, errors and events */
   sent = 0;
   saveSet = new Set<XWindow>();
+  /**
+   * Its windows are never shown (src/gui/retake.ts: an app started only to
+   * keep its snapshot). The server serves it like any client; the display
+   * makes no window for its toplevels, and the pointer is never over them.
+   */
+  hidden = false;
   constructor(readonly server: XServer, readonly index: number, readonly transport: XTransport) {}
   get base() { return this.index << CLIENT_SHIFT; }
 
@@ -1204,6 +1210,17 @@ export class XServer {
     this.event(w.owner, (e) => e.u8(P.ConfigureNotify).u8(0).u16(0).u32(w.id).u32(w.id).u32(0).i16(w.x).i16(w.y).u16(w.width).u16(w.height).u16(w.bw).u8(w.overrideRedirect ? 1 : 0), true);
   }
 
+  /**
+   * Tell a toplevel's owner whether it has the keyboard, whatever it was told
+   * before: a restored client's idea of the focus is from another session
+   * (FocusOut, or FocusIn, detail Nonlinear).
+   */
+  tellFocus(w: XWindow, has: boolean): void {
+    if (!w.owner || w.owner.closed || w.destroyed) return;
+    if (!((w.eventMasks.get(w.owner) ?? 0) & P.FocusChangeMask)) return;
+    this.event(w.owner, (e) => e.u8(has ? P.FocusIn : P.FocusOut).u8(3).u16(0).u32(w.id).u8(0));
+  }
+
   /** The toplevels `c` owns, bottom to top */
   topsOf(c: Client): XWindow[] { return this.root.children.filter((w) => w.owner === c); }
 
@@ -1552,7 +1569,7 @@ export class XServer {
       const kids = w === this.root && within ? [within] : w.children;
       for (let i = kids.length - 1; i >= 0; i--) {
         const ch = kids[i];
-        if (!ch.mapped) continue;
+        if (!ch.mapped || (w === this.root && ch.owner?.hidden)) continue;
         const cx = ox + ch.x, cy = oy + ch.y;
         const tw = ch.width + 2 * ch.bw, th = ch.height + 2 * ch.bw;
         if (x < cx || y < cy || x >= cx + tw || y >= cy + th) continue;

@@ -4,7 +4,11 @@
 // close button. From a fresh browser profile; the apps are installed from the server's mirror.
 //
 //   npx vite build && PORT=5391 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/gui-quit.mjs [URL] [APP...]        (default: xeyes geany)
+//   node tests/browser/gui-quit.mjs [URL] [--snapshots] [APP...]        (default: xeyes geany)
+//
+// --snapshots: with snapshots of started apps on (docs/research/GUI_SNAPSHOTS.md). A quit then
+// asks for a hidden start in the background once the tab has been quiet for 10 s; nothing of
+// the app may be there before that either.
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools. Exits 1 on a failure.
 import { createRequire } from 'node:module';
@@ -16,6 +20,7 @@ for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_
 }
 if (!pw) { console.error('playwright not found (set PLAYWRIGHT)'); process.exit(2); }
 const args = process.argv.slice(2);
+const snapshots = (() => { const i = args.indexOf('--snapshots'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 const apps = args.length ? args : ['xeyes', 'geany'];
 const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
@@ -25,6 +30,7 @@ const browser = await pw.chromium.launch({ executablePath: exe, args: ['--no-san
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
+if (snapshots) await page.addInitScript(() => localStorage.setItem('tabcomputer-gui-snapshots', '1'));
 await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=desktop');
 await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 90_000 });
 

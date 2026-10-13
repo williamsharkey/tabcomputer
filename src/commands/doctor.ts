@@ -261,8 +261,25 @@ async function storageCheck(ctx: CommandContext): Promise<Check> {
   return {
     label: 'storage',
     status: frac > 0.9 ? 'FAIL' : frac > 0.75 || !persisted || again.length ? 'WARN' : 'OK',
-    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%) · ${persisted ? 'persisted' : NOT_PERSISTED}${lostBefore}`,
+    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%)${await snapshotsPart()} · ${persisted ? 'persisted' : NOT_PERSISTED}${lostBefore}`,
   };
+}
+
+/**
+ * What the snapshots of started GUI apps take of that (src/gui/snapshot.ts):
+ * the bytes stored, the cap, and the apps. '' when there are none (the
+ * database is not made just to say so).
+ */
+async function snapshotsPart(): Promise<string> {
+  try {
+    const idb = g.indexedDB as IDBFactory | undefined;
+    const dbs = await idb?.databases?.();
+    if (!dbs?.some((d) => d.name === 'tabcomputer-gui-snapshots')) return '';
+    const { snapshotUsage } = await import('../gui/snapshot');
+    const u = await snapshotUsage();
+    if (!u.apps.length) return '';
+    return `, of which app snapshots ${mb(u.total)} of at most ${mb(u.cap)} (${u.apps.map((a) => `${a.app} ${mb(a.stored)}`).join(', ')})`;
+  } catch { return ''; }
 }
 
 /** What "not persisted" costs and what to do about it (tabcomputer#71) */

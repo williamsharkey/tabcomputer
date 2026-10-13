@@ -425,14 +425,25 @@ Against the goal of a window in under 2 seconds:
   installed is under a second with a snapshot, except the two terminals,
   which have none.
 
+Measured again on 2026-10-13 with the background retake
+([research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md) "The launch table":
+this corpus, the setting off and on, cold, warm and after a reload). With
+the setting on, every app but the two terminals is at its usable window in
+0.1 to 1.0 s on a warm start, and in 0.2 to 0.9 s after a reload except
+FeatherPad in that run (2.6 s, a usual start). Geany: 0.3 and 0.5 s against
+5.6 and 6.2 s. GIMP: 1.0 and 0.9 s against 15 and 16 s. That holds after a
+quit that saved settings too, because the snapshot is taken again in the
+background. The setting is still off unless set: one restored process in
+about 130 aborted and the cause is not known ("Before it can be on by
+default" there).
+
 What would close the rest, in the order of what it buys:
 
 1. **Snapshots on by default.** They are the only thing here that gets
    Geany and GIMP under 2 s, and they do it on 11 of 13 apps. What is
-   missing is listed in the research doc: a snapshot taken again in the
-   background when a session changed the app's settings (without it GIMP's
-   fast start is the exception), a place in Settings, eviction, a soak
-   test, other browsers. The first-start cost stays (a snapshot is of a
+   missing is listed in the research doc: the cause of the one restored
+   process that aborted, a soak test, other browsers. (The retake in the
+   background, the place in Settings, the cap and eviction are done.) The first-start cost stays (a snapshot is of a
    start that happened).
 2. **The first start**: 0.6 to 5 s of install (fetching and decoding `.deb`s
    from a local mirror; more from a real network) plus the start. A snapshot can't ship with the app while it holds a

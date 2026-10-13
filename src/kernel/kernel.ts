@@ -636,7 +636,7 @@ export class Kernel {
       for (const sig of parent.sigmask) proc.sigmask.add(sig);
     }
     for (const sig of opts.sigdefault ?? []) proc.dispositions.delete(sig);
-    if (parent.data.openLog) proc.data.openLog = parent.data.openLog;
+    if (parent.data.openLog) { proc.data.openLog = parent.data.openLog; proc.data.openWritten = parent.data.openWritten; }
     this.procs.set(pid, proc);
     const cpu = parent.data.cpuLimit as { cur: number; max: number } | undefined;
     if (cpu) this.setCpuLimit(proc, cpu.cur, cpu.max);
@@ -1149,6 +1149,17 @@ export class Kernel {
   // ── Files ─────────────────────────────────────────────────────────────────
 
   /** Absolute path for `path` relative to `dirfd` (AT_FDCWD = cwd), or -errno. */
+  /**
+   * proc.data.openLog: the paths a process opens, stats or looks for, for
+   * whoever set it (a GUI app's snapshot is good while what is at each is what
+   * it was: src/gui/snapshot.ts). A directory it lists is logged as `path/`.
+   * proc.data.openWritten: the ones it opened for writing or made.
+   */
+  private logLookup(proc: Process, p: string, write: boolean): void {
+    (proc.data.openLog as Set<string>).add(p);
+    if (write) (proc.data.openWritten as Set<string> | undefined)?.add(p);
+  }
+
   resolvePath(proc: Process, path: string, dirfd = A.AT_FDCWD): string | number {
     if (path === '') return -A.ENOENT;
     // PATH_MAX 4096 with its NUL, NAME_MAX 255 per component
@@ -1269,7 +1280,7 @@ export class Kernel {
     if (typeof p === 'number') return p;
     // (proc.data.openLog: the paths a process opens or looks for, for whoever set it: a GUI app's snapshot is
     // good while those files are what they were)
-    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
+    if (proc.data.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     // O_TMPFILE: an unnamed regular file in directory `p` (linkat names it)
     if (flags & A.__O_TMPFILE) {
@@ -1431,7 +1442,7 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.devices.has(p) || /^\/(?:dev|proc)\//.test(p)) return undefined;
-    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
+    if (proc.data.openLog) this.logLookup(proc, p, (flags & (A.O_WRONLY | A.O_RDWR | A.O_CREAT | A.O_TRUNC)) !== 0);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
     if (flags & (A.O_CREAT | A.O_TRUNC | A.O_NOFOLLOW)) {
@@ -1568,6 +1579,7 @@ export class Kernel {
     if (!fs || trailingSlash(path)) return undefined;
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
+    if (proc.data.openLog) this.logLookup(proc, p, false);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     if (this.devices.has(p) || p === '/proc' || p.startsWith('/proc/') || this.socketPaths?.has(p)) return undefined;
     const hit = fs.lookupCached(p, follow);
@@ -1609,6 +1621,7 @@ export class Kernel {
     }
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
+    if (proc.data.openLog) this.logLookup(proc, p, false);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const dev = this.devices.get(p);
     if (dev) {
@@ -3592,6 +3605,8 @@ export class Kernel {
     const f = proc.fds.get(fd);
     if (!f) return -A.EBADF;
     if (!(f instanceof DirFile)) return -A.ENOTDIR;
+    // (a directory it lists: its snapshot is good while the names in it are the same)
+    if (proc.data.openLog && f.path) (proc.data.openLog as Set<string>).add(f.path.replace(/\/+$/, '') + '/');
     const entries = await f.readdir();
     if (typeof entries === 'number') return entries;
     const dv = new DataView(out.buffer, out.byteOffset, out.length);
@@ -3650,7 +3665,7 @@ export class Kernel {
     copyCredentials(parent, child);
     this.shm.forked(parent, child);
     this.sem.forked(parent, child);
-    if (parent.data.openLog) child.data.openLog = parent.data.openLog; // (a GUI app's snapshot: its children's files count too)
+    if (parent.data.openLog) { child.data.openLog = parent.data.openLog; child.data.openWritten = parent.data.openWritten; } // (a GUI app's snapshot: its children's files count too)
     child.data.embryo = true;
     child.data.forkParent = parent.pid; // startForkChild: the parent may have exited (and the child been reparented) by then
     this.procs.set(pid, child);

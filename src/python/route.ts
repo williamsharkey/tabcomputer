@@ -7,6 +7,9 @@
  * `--pyodide` / `--wasi` as the first argument, or TABCOMPUTER_PYTHON=pyodide
  * / wasi in the environment, decide it outright. With nothing recorded this
  * costs one failed file read.
+ *
+ * Debian's Python, where `toolchain install python` installed it, is chosen
+ * before this (choose.ts): `--debian` is its flag.
  */
 import type { FileSystem } from '../filesystem';
 import type { PyRun } from '../pyodide-worker/runtime';
@@ -22,8 +25,8 @@ export interface PyInvocation {
   target: string;
   /** sys.argv */
   argv: string[];
-  force?: 'wasi' | 'pyodide';
-  /** The arguments without --wasi / --pyodide: what the built-in Python is given */
+  force?: 'wasi' | 'pyodide' | 'debian';
+  /** The arguments without --wasi / --pyodide / --debian: what the interpreter is given */
   args: string[];
 }
 
@@ -34,8 +37,8 @@ export function parsePythonArgs(input: string[]): PyInvocation {
   let force: PyInvocation['force'];
   const args = input.filter((a, i) => {
     // (only before the program: after it they are the program's own arguments)
-    if ((a === '--pyodide' || a === '--wasi') && input.slice(0, i).every((b) => b.startsWith('-') && b !== '-' && b !== '-c' && b !== '-m')) {
-      force = a === '--pyodide' ? 'pyodide' : 'wasi';
+    if ((a === '--pyodide' || a === '--wasi' || a === '--debian') && input.slice(0, i).every((b) => b.startsWith('-') && b !== '-' && b !== '-c' && b !== '-m')) {
+      force = a === '--pyodide' ? 'pyodide' : a === '--wasi' ? 'wasi' : 'debian';
       return false;
     }
     return true;
@@ -125,7 +128,9 @@ export async function routePython(fs: FileSystem, input: string[], rc: RouteCont
   const inv = parsePythonArgs(input);
   const wasi: PythonRoute = { engine: 'wasi', args: inv.args };
   const envForce = rc.env.TABCOMPUTER_PYTHON;
-  const force = inv.force ?? (envForce === 'pyodide' ? 'pyodide' : envForce === 'wasi' || envForce === 'cpython' ? 'wasi' : undefined);
+  // ('debian' is choose.ts's: a program that reaches here runs on one of tabcomputer's two)
+  const asked = inv.force === 'debian' ? undefined : inv.force;
+  const force = asked ?? (envForce === 'pyodide' ? 'pyodide' : envForce === 'wasi' || envForce === 'cpython' ? 'wasi' : undefined);
   if (force === 'wasi' || inv.kind === 'info') return wasi;
   if (!rc.canPyodide && force !== 'pyodide') return wasi;
 

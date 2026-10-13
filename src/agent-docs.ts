@@ -199,8 +199,13 @@ ${bootSection(ctx, name)}
   (Python 3.13 too; a second or so slower to start, the same files, \`plt.show()\` opens
   a window). There: no sockets, no subprocess, no threads. \`python3 --pyodide ...\` or
   \`TABCOMPUTER_PYTHON=pyodide\` forces it (pytest on code that imports numpy, the
-  REPL), \`--wasi\` forces the built-in one. check50 and other compiled
-  packages need Debian's Python (\`toolchain install python\`).
+  REPL), \`--wasi\` forces the built-in one. tkinter, turtle, check50 and other
+  compiled packages need Debian's Python (\`toolchain install python\`). With it
+  installed \`python3\` is still the built-in one: it runs a program on Debian's
+  only when the program imports tkinter, turtle or a package that only Debian's
+  has (several times slower). \`python3 --debian\`, \`python3.13\` and
+  \`/usr/bin/python3\` are Debian's by name. \`pip install\` stays one command:
+  what neither the built-in Python nor Pyodide can have goes to Debian's pip.
 - Jupyter notebooks are built in: \`jupyter notebook FILE.ipynb\` opens one in the
   Notebook app (cells run in Pyodide on the same files), and \`jupyter execute
   [--inplace] FILE.ipynb\` runs one in a terminal and prints its outputs. No

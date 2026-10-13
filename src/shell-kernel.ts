@@ -72,7 +72,27 @@ export async function resolveKernelProgram(
   const found = await shell.findExecutableInPath(name);
   if (!found) return null;
   let path = found;
-  try { path = await shell.fs.realpath(found); } catch { /* keep the PATH entry */ }
+  // `python3 FILE` where Debian's Python is installed too: tabcomputer's own, unless the program
+  // needs Debian's (src/python/choose.ts). Only the bare name: /usr/bin/python3 and python3.13 are Debian's
+  if (name === 'python3' || name === 'python') {
+    const py = await import('./python/choose');
+    const pick = await py.shellPython(shell.fs, args, found.startsWith('/') ? found : shell.fs.resolvePath(found, shell.cwd), { cwd: shell.cwd, env: shell.env });
+    if (pick?.engine === 'missing') {
+      const msg = new TextEncoder().encode(`${name}: ${py.DEBIAN_MISSING}\n`);
+      return { argv: [name, ...args], run: async (proc) => { await proc.fds.get(2)?.write(msg); return 1; } };
+    }
+    if (pick?.engine === 'debian') { path = pick.path; args = pick.args; }
+    else if (pick) {
+      if (!(await shell.fs.exists(py.BUILTIN_PYTHON))) {
+        // (Debian's was installed first: the built-in one comes now, once)
+        progress?.(`${name}: installing the built-in Python (pkg install python3) on first use...`);
+        const pm = await import('./pkg-manager');
+        try { await pm.installPackages(shell.fs, await pm.loadIndex(shell.fs), ['python3'], { env: shell.env }); } catch { return null; }
+      }
+      return packageKernelProgram(shell.fs, py.BUILTIN_PYTHON, name, pick.args, `/usr/bin/${name}`, { cwd: shell.cwd, env: shell.env });
+    }
+  }
+  if (path === found) { try { path = await shell.fs.realpath(found); } catch { /* keep the PATH entry */ } }
   let bytes: Uint8Array;
   try {
     const st = await shell.fs.stat(path);

@@ -161,6 +161,8 @@ export class Rootless {
 
   private mapped(w: XWindow): void {
     if (this.tops.get(w)?.cw) return;
+    // (a client started only for its snapshot: nothing of it is shown)
+    if (w.owner?.hidden) return;
     const hints = this.sizeHints(w);
     const t: Top = { win: w, cw: null, img: null, dirty: null, frame: 0, hints, cleanup: [] };
     this.tops.set(w, t);
@@ -338,6 +340,21 @@ export class Rootless {
     const protocols = this.server.prop(w, 'WM_PROTOCOLS');
     const take = this.server.existingAtom('WM_TAKE_FOCUS');
     if (protocols && take && hasAtom(protocols.data, take)) this.clientMessage(w, this.server.atom('WM_PROTOCOLS'), [take, this.server.time()]);
+  }
+
+  /**
+   * A restored client's toplevel (src/gui/snapshot.ts): say again whether it
+   * has the keyboard. What the display told it while its requests were played
+   * back was dropped, and what it believes is from the session its snapshot
+   * was taken in (an app started hidden was never given the keyboard at all).
+   */
+  refocus(w: XWindow): void {
+    if (!this.tops.get(w)?.cw || !w.mapped) return;
+    const f = this.server.focusWindow();
+    if (f && f !== this.server.root && (f === w || w.isAncestorOf(f))) {
+      this.server.setFocus(1, 1);
+      this.focusIn(w);
+    } else this.server.tellFocus(w, false);
   }
 
   private focusOut(w: XWindow): void {

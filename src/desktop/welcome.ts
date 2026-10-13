@@ -34,7 +34,7 @@ const VITE = 'npm create vite@latest hello-vite -- --template react --no-interac
 export const DEMOS: Demo[] = [
   { id: 'cowsay', title: 'Install a Debian package', detail: 'apt install cowsay', glyph: 'terminal', command: 'apt install cowsay && cowsay "Hello from a browser tab"' },
   { id: 'vite', title: 'Run a web app', detail: 'Vite + React, live reload', glyph: 'browser', command: VITE },
-  // The built-in Python (WebAssembly): `toolchain install python` makes python3 Debian's emulated one, several times slower (#124)
+  // The built-in Python (WebAssembly). It stays `python3` after `toolchain install python` too (src/python/choose.ts, #124)
   { id: 'python', title: 'Write some Python', detail: 'python3, built in', glyph: 'python3', command: `python3 -c "import sys, platform; print('Python', sys.version.split()[0], 'on', platform.machine())"` },
   { id: 'claude', title: 'Code with Claude', detail: 'claude, signed in from Accounts', glyph: 'claude', command: 'claude' },
   { id: 'gui', title: 'Open a Linux GUI app', detail: 'GIMP, xeyes… from Apps', glyph: 'apps', run: (ctx) => void ctx.wm.openApp('apps') },

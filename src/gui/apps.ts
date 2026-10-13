@@ -578,14 +578,14 @@ async function shipLib(fs: FileSystem, name: string, path: string): Promise<bool
   return true;
 }
 
+/** `pid` changes when a restored process ends at once and the app is started the usual way instead */
 export interface LaunchedApp { pid: number; exited: Promise<number>; output: () => string }
 
 type SnapshotModule = typeof import('./snapshot');
+type Stored = import('./snapshot').StoredSnapshot;
 
-/** The snapshots setting (src/gui/snapshot.ts snapshotsEnabled), read here so that the module loads only when it is on */
-export function snapshotsOn(): boolean {
-  try { return (globalThis as { localStorage?: Storage }).localStorage?.getItem('tabcomputer-gui-snapshots') === '1'; } catch { return false; }
-}
+import { lastSnapshotSize, noteSnapshotApp, noteSnapshotSize, recentSnapshotApps, snapshotsFor, snapshotsOn } from './snapshot-setting';
+export { snapshotsOn };
 
 /**
  * Apps started without the session bus while snapshots are on. An app that
@@ -595,16 +595,27 @@ export function snapshotsOn(): boolean {
  */
 const SNAPSHOT_WITHOUT_BUS = new Set(['gimp', 'inkscape', 'mousepad', 'featherpad']);
 
+interface Plan {
+  S: SnapshotModule;
+  key: string;
+  /** The X client number the app's snapshots use (null: taken, by another instance of it) */
+  index: number | null;
+  /** The stored snapshot when it is still good */
+  stored: Stored | null;
+  /** Why the stored one was not good (it was dropped) */
+  problem: string | null;
+}
+
 /**
  * Whether this launch can use snapshots, and with what: the stored one when it
  * is still good (a stale one is dropped), the key a new one would get, and
  * the X client number the app's snapshots use.
  */
-async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: GuiApp, argv: string[], env: Record<string, string>): Promise<{ S: SnapshotModule; key: string; index: number | null; stored: import('./snapshot').StoredSnapshot | null } | null> {
+async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: GuiApp, argv: string[], env: Record<string, string>, launch = true): Promise<Plan | null> {
   const fs = kernel.fs as FileSystem | undefined;
   if (!fs || typeof indexedDB === 'undefined') return null;
   try {
-    if (!snapshotsOn() || await debianMode(fs)) return null;
+    if (!snapshotsFor(name) || await debianMode(fs)) return null;
     const S = await import('./snapshot');
     const { getXSession } = await import('../x11/session');
     const { server } = await getXSession(0);
@@ -614,15 +625,20 @@ async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: 
       screen: [server.width, server.height, server.dpi], textMode: `${server.domText}/${server.domTextRaster}`,
     });
     const index = S.clientNumberFor(name, FIRST_RESERVED_CLIENT, LAST_CLIENT);
-    let stored = index !== null && !server.clients.has(index) ? await S.loadSnapshot(name) : null;
-    if (stored) {
-      const problem = await S.snapshotProblem(fs, stored, key);
-      if (problem) { snapshotLog(name, { restored: false, why: problem }); await S.dropSnapshot(name); stored = null; }
+    const free = index !== null && !server.clients.has(index);
+    let stored: Stored | null = null;
+    let problem: string | null = null;
+    // (the index says whether it is good: the images are read only for a restore)
+    const entry = free ? await S.snapshotEntry(name) : null;
+    if (entry) {
+      problem = await S.snapshotProblem(fs, entry, key);
+      // (`launch`: a start for the person, which says why it was not a restore; a retake's look says nothing)
+      if (problem) { if (launch) snapshotLog(name, { restored: false, why: problem }); await S.dropSnapshot(name); } else if (launch) stored = await S.loadSnapshot(name); else stored = { meta: entry.meta, images: [], x: new ArrayBuffer(0) };
     }
     // (another instance is running with the app's client number: this one starts the usual way, unrecorded)
-    return { S, key, index: index !== null && !server.clients.has(index) ? index : null, stored };
+    return { S, key, index: free ? index : null, stored, problem };
   } catch (e) {
-    snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
+    if (launch) snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
     return null;
   }
 }
@@ -634,42 +650,57 @@ function snapshotLog(app: string, what: Record<string, unknown>): void {
   if (g.__guiSnapshots.length > 50) g.__guiSnapshots.shift();
 }
 
-/** Start an installed app as a background kernel process. */
-export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}, opts: { onOutput?: (text: string) => void } = {}): Promise<LaunchedApp> {
+interface Prepared { m: AppsManifest; app: GuiApp; argv: string[]; env: Record<string, string>; cwd: string }
+
+/** What a start of `name` runs: its arguments and environment (the session bus is started when it is wanted) */
+async function prepare(kernel: Kernel, name: string, args: string[], env: Record<string, string>): Promise<Prepared> {
   const m = await guiManifest();
   const app = m.apps[name];
   if (!app) throw new Error(`no GUI app named ${name}`);
+  if (app.home) await writeHomeDefaults(kernel, app.home);
+  // Xlib keeps its parsed Compose table in ~/.compose-cache when that directory exists; without it every
+  // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
+  // and Dillo's launch: docs/GUI_LAUNCH.md)
+  await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
+  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && snapshotsFor(name);
+  const bus = withoutBus ? null : await sessionBus(kernel, m);
+  if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
+  // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile
+  env = { ...env, ...((globalThis as { __guiLaunchEnv?: Record<string, string> }).__guiLaunchEnv ?? {}) };
+  // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
+  // oosplash finds soffice.bin next to argv[0])
+  const argv = [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args];
+  const fullEnv = appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env });
+  return { m, app, argv, env: fullEnv, cwd: '/home/user' };
+}
+
+/** Apps the person has running (started here, not yet exited): no hidden start of one of these */
+const runningApps = new Map<string, number>();
+
+/** Start an installed app as a background kernel process. */
+export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}, opts: { onOutput?: (text: string) => void } = {}): Promise<LaunchedApp> {
+  // (a hidden start in the background ends now: the person's app gets the machine, and Geany's
+  // second instance would hand over to the hidden one)
+  if (snapshotsOn()) await (await retakesReady(kernel))?.userLaunch(name);
+  const { m, app, argv, env: fullEnv, cwd } = await prepare(kernel, name, args, env);
   const { BufferFile } = await import('../kernel/fd');
   // its windows belong to this app on the desktop, whatever their WM_CLASS
   const instance = app.bin.split('/').pop()!.toLowerCase().replace(/-\d+(\.\d+)*$/, '');
   const ids = await import('../x11/app-ids');
   if (instance !== name) ids.appIdAliases.set(instance, name);
   ids.setParentPid((pid) => kernel.procs.get(pid)?.ppid);
-  if (app.home) await writeHomeDefaults(kernel, app.home);
-  // Xlib keeps its parsed Compose table in ~/.compose-cache when that directory exists; without it every
-  // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
-  // and Dillo's launch: docs/GUI_LAUNCH.md)
-  await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
-  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && snapshotsOn();
-  const bus = withoutBus ? null : await sessionBus(kernel, m);
-  if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
-  // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile
-  env = { ...env, ...((globalThis as { __guiLaunchEnv?: Record<string, string> }).__guiLaunchEnv ?? {}) };
   const out = new BufferFile(null);
   if (opts.onOutput) {
     const dec = new TextDecoder();
     out.onData = (d) => { try { opts.onOutput!(dec.decode(d, { stream: true })); } catch { /* a listener's problem */ } };
   }
-  // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
-  // oosplash finds soffice.bin next to argv[0])
-  const argv = [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args];
-  const fullEnv = appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env });
-  const cwd = '/home/user';
-  // Snapshots (experimental, off by default: src/gui/snapshot.ts): a plain start of the app is
-  // restored from the image its last start left, when nothing it was made from has changed
+  // Snapshots (src/gui/snapshot.ts): a plain start of the app is restored from the image its
+  // last start left, when nothing it was made from has changed
   const plan = args.length === 0 ? await snapshotPlan(kernel, m, name, app, argv, fullEnv) : null;
+  if (plan) noteSnapshotApp(name);
   let p: Process | null = null;
   const restoredPids: number[] = [];
+  let restoredAt = 0;
   if (plan?.stored) {
     const t0 = Date.now();
     try {
@@ -677,10 +708,10 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
       if (!kernel.procs.has(plan.stored.meta.procs[0].pid) && !ids.pidAppIds.has(plan.stored.meta.procs[0].pid)) { ids.pidAppIds.set(plan.stored.meta.procs[0].pid, name); restoredPids.push(plan.stored.meta.procs[0].pid); }
       const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
       p = r.proc;
-      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.procs[0].pid });
-      // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again
-      const S = plan.S;
-      void p.wait().then((st) => { if (st !== 0 && Date.now() - t0 < 5000) { snapshotLog(name, { restored: false, why: `the restored process ended at once (${st})` }); void S.dropSnapshot(name); } });
+      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.procs[0].pid, hidden: !!plan.stored.meta.hidden });
+      restoredAt = t0;
+      // (tests: a restored process that dies as an image that doesn't run would)
+      if ((globalThis as { __guiSnapshotKillRestored?: boolean }).__guiSnapshotKillRestored) kernel.kill(p.pid, 6 /* SIGABRT */);
     } catch (e) {
       for (const pid of restoredPids.splice(0)) ids.pidAppIds.delete(pid);
       snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
@@ -693,14 +724,248 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
       // its first start: keep its X requests and the files it opens, and its image once it is up and quiet
       const proc = p;
       proc.data.openLog = new Set<string>();
+      proc.data.openWritten = new Set<string>();
       const { recordXClient } = await import('../x11/display');
-      const watch = plan.S.snapshotWhenQuiet(kernel, name, proc, recordXClient(proc.pid, plan.index), plan.key, { argv, env: fullEnv, cwd, output: out });
-      void watch.done.then((r) => { delete proc.data.openLog; snapshotLog(name, r.ok ? { taken: true, ms: r.ms, bytes: r.meta?.sizes } : { taken: false, why: r.why }); });
+      const { S, key } = plan;
+      const watch = S.snapshotWhenQuiet(kernel, name, proc, recordXClient(proc.pid, plan.index), key, { argv, env: fullEnv, cwd, output: out });
+      void watch.done.then((r) => {
+        delete proc.data.openLog; delete proc.data.openWritten;
+        S.setSkip(name, key, r.ok || !r.never ? null : r.why ?? '');
+        if (r.ok && r.meta) noteSnapshotSize(name, r.meta.sizes.image);
+        snapshotLog(name, r.ok ? { taken: true, ms: r.ms, bytes: r.meta?.sizes, dropped: r.dropped } : { taken: false, why: r.why });
+      });
     }
   }
-  const pid = p.pid;
-  ids.pidAppIds.set(pid, name);
-  const launched = { pid, exited: exitOf(kernel, p).finally(() => { ids.pidAppIds.delete(pid); for (const old of restoredPids) ids.pidAppIds.delete(old); }), output: () => out.text() };
+  const first = p;
+  ids.pidAppIds.set(first.pid, name);
+  runningApps.set(name, (runningApps.get(name) ?? 0) + 1);
+  const launched: LaunchedApp = { pid: first.pid, output: () => out.text(), exited: Promise.resolve(0) };
+  launched.exited = (async () => {
+    let st = await exitOf(kernel, first);
+    // An image that doesn't run (it ends within seconds, and not by a clean exit) is dropped, and none is
+    // taken in the background until something it was made from changes (the next start the person makes
+    // keeps a new one). The person asked for the app: it is started the usual way now
+    if (restoredAt && plan && st !== 0 && Date.now() - restoredAt < 5000) {
+      const why = `the restored process ended at once (${st})`;
+      snapshotLog(name, { restored: false, why });
+      await plan.S.dropSnapshot(name);
+      plan.S.setSkip(name, plan.key, why);
+      ids.pidAppIds.delete(first.pid);
+      for (const old of restoredPids.splice(0)) ids.pidAppIds.delete(old);
+      const again = kernel.spawn({ path: app.bin, argv, cwd, env: fullEnv, fds: { 0: new BufferFile(''), 1: out, 2: out } });
+      ids.pidAppIds.set(again.pid, name);
+      launched.pid = again.pid;
+      st = await exitOf(kernel, again);
+    }
+    return st;
+  })().finally(() => {
+    ids.pidAppIds.delete(launched.pid);
+    for (const old of restoredPids) ids.pidAppIds.delete(old);
+    const n = (runningApps.get(name) ?? 1) - 1;
+    if (n > 0) runningApps.set(name, n); else runningApps.delete(name);
+    // It may have saved its settings as it quit: then its snapshot is taken again, in the background
+    if (snapshotsFor(name)) void retakesReady(kernel).then((q) => q?.request(name));
+  });
   (globalThis as { __guiLast?: LaunchedApp }).__guiLast = launched;
   return launched;
+}
+
+// ── retakes: a snapshot taken again from a start nobody sees (retake.ts) ──
+
+type Queue = import('./retake').RetakeQueue;
+let queue: Queue | null | undefined;
+let queueLoad: Promise<void> | null = null;
+let lastInput = 0;
+
+/** Every process of `pid`'s family, each after its parent */
+function familyPids(kernel: Kernel, pid: number): number[] {
+  const out = [pid];
+  for (let i = 0; i < out.length; i++) for (const p of kernel.procs.values()) if (p.ppid === out[i] && !out.includes(p.pid)) out.push(p.pid);
+  return out;
+}
+
+/**
+ * Why `name` needs a new snapshot now, or null: it has a good one, can't
+ * have one, or is running (a second instance would be handed the first's
+ * files, and its client number is taken).
+ */
+async function retakeNeeded(kernel: Kernel, name: string): Promise<string | null> {
+  const fs = kernel.fs as FileSystem | undefined;
+  if (!fs || runningApps.has(name) || installing.has(name)) return null;
+  if (!snapshotsFor(name) || !(await isAppInstalled(fs, name).catch(() => false)) || await debianMode(fs)) return null;
+  const { m, app, argv, env } = await prepare(kernel, name, [], {});
+  // (snapshotPlan drops an outdated one)
+  const plan = await snapshotPlan(kernel, m, name, app, argv, env, false);
+  if (!plan || plan.index === null || plan.stored) return null;
+  if (plan.S.skipReason(name, plan.key)) return null;
+  return plan.problem ?? 'it has none';
+}
+
+/**
+ * The same question without starting anything (the display, the session
+ * bus): for the look after a page load. True unless the stored snapshot is
+ * known good as far as the build, the engine, the screen, its age and its
+ * files go, or the app is known not to take one on this build.
+ */
+async function mayNeedRetake(kernel: Kernel, name: string): Promise<boolean> {
+  const fs = kernel.fs as FileSystem | undefined;
+  if (!fs || runningApps.has(name) || !snapshotsFor(name)) return false;
+  const S = await import('./snapshot');
+  if (S.skippedOnThisBuild(name)) return false;
+  const entry = await S.snapshotEntry(name);
+  if (!entry) return true;
+  const ids = S.buildIds();
+  let made: { build?: string; engine?: string; screen?: number[] } = {};
+  try { made = JSON.parse(entry.meta.key) as typeof made; } catch { return true; }
+  if (made.build !== ids.build || made.engine !== ids.engine) return true;
+  // (the screen the display will have: the desktop's work area in device pixels, src/x11/session.ts)
+  try {
+    const host = await (await import('./window-host')).getWindowHost();
+    const size = host.desktopSize();
+    const screen = [size.width, size.height, Math.round(96 * (host.scale ?? 1))];
+    if (JSON.stringify(made.screen) !== JSON.stringify(screen)) return true;
+  } catch { /* no host: the launch decides */ }
+  return (await S.snapshotProblem(fs, entry, entry.meta.key)) !== null;
+}
+
+/**
+ * Start `name` with nothing of it shown, keep its snapshot once it is quiet,
+ * and end it. Its processes are killed, not asked to quit: an app that is
+ * asked saves its settings, which is what outdated the last snapshot.
+ */
+async function takeHidden(kernel: Kernel, name: string, signal: AbortSignal, onGone: () => void): Promise<import('./retake').RetakeResult> {
+  const t0 = Date.now();
+  const { m, app, argv, env, cwd } = await prepare(kernel, name, [], {});
+  const plan = await snapshotPlan(kernel, m, name, app, argv, env, false);
+  if (!plan || plan.index === null) return { ok: false, never: true, why: 'no snapshot can be taken now' };
+  if (plan.stored) return { ok: true, ms: 0, bytes: plan.stored.meta.sizes };
+  if (signal.aborted) return { ok: false, cancelled: true, why: String(signal.reason ?? 'cancelled') };
+  const { BufferFile } = await import('../kernel/fd');
+  const { recordXClient, forgetHidden } = await import('../x11/display');
+  const { getXSession } = await import('../x11/session');
+  const { server } = await getXSession(0);
+  const out = new BufferFile(null);
+  const proc = kernel.spawn({ path: app.bin, argv, cwd, env, fds: { 0: new BufferFile(''), 1: out, 2: out } });
+  proc.data.openLog = new Set<string>();
+  proc.data.openWritten = new Set<string>();
+  proc.data.hiddenStart = true;
+  const pids = new Set<number>([proc.pid]);
+  const { S, key } = plan;
+  let cancelled = '';
+  const watch = S.snapshotWhenQuiet(kernel, name, proc, recordXClient(proc.pid, plan.index, undefined, true), key, { argv, env, cwd, output: out, hidden: true, cancelled: () => !!cancelled });
+  // Ended at once when the person needs the machine: asked to (an app being started, the page hidden),
+  // or a key or button pressed in a GUI app. Its processes go now; a snapshot being packed is not kept
+  const input0 = server.inputCount;
+  const killAll = () => {
+    for (const pid of familyPids(kernel, proc.pid)) pids.add(pid);
+    for (const pid of [...pids].reverse()) { try { kernel.kill(pid, 9 /* SIGKILL */); } catch { /* gone */ } }
+  };
+  const gone = async () => {
+    await exitOf(kernel, proc).catch(() => undefined);
+    // (its X client goes when its socket closes: the next start of the app needs its client number)
+    for (let i = 0; i < 100 && server.clients.has(plan.index!); i++) await new Promise((res) => setTimeout(res, 20));
+  };
+  const end = (why: string) => { if (!cancelled) { cancelled = why; watch.cancel(); killAll(); void gone().then(onGone); } };
+  const onAbort = () => end(String(signal.reason ?? 'cancelled'));
+  signal.addEventListener('abort', onAbort);
+  const onHide = () => { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') end('the page was hidden'); };
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onHide);
+  const poll = setInterval(() => {
+    for (const pid of familyPids(kernel, proc.pid)) pids.add(pid);
+    if (server.inputCount !== input0) end('a GUI app was being used');
+  }, 100);
+  let r: import('./snapshot').TakeResult;
+  try {
+    r = await watch.done;
+  } finally {
+    clearInterval(poll);
+    signal.removeEventListener('abort', onAbort);
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onHide);
+    delete proc.data.openLog; delete proc.data.openWritten;
+    killAll();
+    await gone();
+    for (const pid of pids) forgetHidden(pid);
+    onGone();
+  }
+  if (cancelled) return { ok: false, cancelled: true, why: cancelled };
+  if (!r.ok) {
+    if (r.never) S.setSkip(name, key, r.why ?? '');
+    return { ok: false, never: r.never, why: r.why };
+  }
+  // The start itself must not have outdated it (an app that writes, each time it starts, something
+  // it reads): then a retake after every quit would never give a restore
+  const entry = await S.snapshotEntry(name);
+  const problem = entry ? await S.snapshotProblem(kernel.fs as FileSystem, entry, key) : 'it was dropped for space';
+  if (problem) {
+    await S.dropSnapshot(name);
+    S.setSkip(name, key, `outdated by its own start: ${problem}`);
+    return { ok: false, never: true, why: `outdated by its own start: ${problem}` };
+  }
+  S.setSkip(name, key, null);
+  if (r.meta) noteSnapshotSize(name, r.meta.sizes.image);
+  return { ok: true, ms: Date.now() - t0, bytes: r.meta?.sizes };
+}
+
+/** The page's retake queue (null where there is none: no document, or not loaded yet) */
+function retakes(kernel: Kernel): Queue | null {
+  if (queue !== undefined) return queue;
+  if (typeof document === 'undefined' || typeof indexedDB === 'undefined') return queue = null;
+  queue = null;
+  queueLoad ??= (async () => {
+    const R = await import('./retake');
+    const { isSafeMode } = await import('../safe-mode');
+    const { isGuest } = await import('../guest');
+    lastInput = Date.now();
+    const note = () => { lastInput = Date.now(); };
+    for (const ev of ['keydown', 'pointerdown', 'wheel'] as const) window.addEventListener(ev, note, { capture: true, passive: true });
+    const launching = () => {
+      const d = (globalThis as { __shiroDesktop?: { launches?: { list(): { active: boolean }[] } } }).__shiroDesktop;
+      return installing.size > 0 || !!d?.launches?.list().some((l) => l.active);
+    };
+    const q = new R.RetakeQueue({
+      now: () => Date.now(),
+      state: () => ({ on: snapshotsOn(), safe: isSafeMode(), guest: isGuest(), hidden: document.visibilityState === 'hidden', launching: launching() }),
+      lastInput: () => lastInput,
+      // (not on a machine too small for a hidden start of this app: retake.ts retakeFits)
+      needs: async (app) => (R.retakeFits((navigator as { deviceMemory?: number }).deviceMemory, lastSnapshotSize(app)) ? retakeNeeded(kernel, app).catch(() => null) : null),
+      take: (app, signal, onGone) => takeHidden(kernel, app, signal, onGone),
+      log: snapshotLog,
+      timer: (cb, ms) => setTimeout(cb, ms),
+      idle: (cb) => {
+        const ric = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => unknown }).requestIdleCallback;
+        if (ric) ric(cb, { timeout: 5000 }); else setTimeout(cb, 0);
+      },
+    });
+    queue = q;
+    (globalThis as { __guiRetakes?: Queue }).__guiRetakes = q;
+  })().catch(() => { queue = null; });
+  return queue;
+}
+
+/** The queue, once it is there (launchApp's own callers don't wait for it: a quit's request is made when it is) */
+async function retakesReady(kernel: Kernel): Promise<Queue | null> {
+  retakes(kernel);
+  await queueLoad;
+  return queue ?? null;
+}
+
+/**
+ * Once after the page has loaded (main.ts): the apps started in the last
+ * week whose snapshot is gone or no longer good (another build or engine, a
+ * changed setting, too old) are taken again when the tab is idle. A tab that
+ * started no GUI app this week starts nothing for this, not even the display.
+ */
+export async function retakeOutdatedSnapshots(kernel: Kernel): Promise<string[]> {
+  if (!snapshotsOn() || typeof indexedDB === 'undefined') return [];
+  const R = await import('./retake');
+  const asked: string[] = [];
+  for (const app of recentSnapshotApps(R.RECENT_MS).slice(0, R.BOOT_APPS)) {
+    if (!(await mayNeedRetake(kernel, app).catch(() => false))) continue;
+    const q = await retakesReady(kernel);
+    if (!q) break;
+    // (asked as of the page's load: the wait is for the person's input, not for a quit)
+    q.request(app, 0);
+    asked.push(app);
+  }
+  return asked;
 }

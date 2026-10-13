@@ -396,6 +396,9 @@ export function validateKind(raw: Record<string, unknown>, kind: Exclude<AppKind
   if (k.shell) {
     const q = quotedPlaceholder(k.run);
     if (q) bad(`run: {${q}} is inside quotes; with "shell": true tabcomputer quotes each value itself, so write it bare`);
+    // A backslash or a $ right before the value's opening quote changes what that quote means to the shell
+    const e = /([\\$])\{([a-z][a-z0-9_]*)\}/.exec(k.run);
+    if (e) bad(`run: {${e[2]}} comes right after ${e[1] === '$' ? 'a $' : 'a backslash'}; with "shell": true tabcomputer quotes each value itself, so write it bare`);
     return { ...k, commands };
   }
   let words: string[] = [];

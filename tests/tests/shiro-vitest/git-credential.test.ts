@@ -36,6 +36,17 @@ describe('gh as git credential helper', () => {
     expect(credentialAnswer('get', 'protocol=http\nhost=github.com\n', TOKEN)).toBeNull();
     expect(credentialAnswer('get', 'host=github.com\n', null)).toBeNull();
     expect(credentialAnswer('store', 'host=github.com\n', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', 'protocol=https\nhost=gist.github.com\n', TOKEN))
+      .toBe(`protocol=https\nhost=gist.github.com\nusername=x-access-token\npassword=${TOKEN}\n`);
+    // a request that names no host is not GitHub's: no token
+    expect(credentialAnswer('get', 'protocol=https\n', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', '', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', 'protocol=https\nhost=\n', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', 'protocol=https\npath=github.com/a/b\n', TOKEN)).toBeNull();
+    // nor one that names GitHub and then another host, or a host that only looks like it
+    expect(credentialAnswer('get', 'protocol=https\nhost=github.com\nhost=git.example.com\n', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', 'protocol=https\nhost=github.com.example.com\n', TOKEN)).toBeNull();
+    expect(credentialAnswer('get', 'protocol=https\nhost=github.com:8443\n', TOKEN)).toBeNull();
   });
 
   it('setup writes the helper once and keeps what ~/.gitconfig had', async () => {

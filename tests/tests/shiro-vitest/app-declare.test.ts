@@ -107,6 +107,10 @@ describe('an app that is its manifest: the three kinds', () => {
       [{ ...FILES, each: false, out: 'all.json', run: 'jq {name} {in}' }, /^run: \{name\} is not known .*there is no one input to name/],
       [{ ...FILES, shell: 1 }, /^shell must be true or false/],
       [{ ...FILES, shell: true, run: 'jq . "{in}" | sort' }, /^run: \{in\} is inside quotes; with "shell": true tabcomputer quotes each value itself/],
+      // (a backslash would escape the quote tabcomputer opens the value with, and $'…' is another kind of quote)
+      [{ ...FILES, shell: true, run: 'jq . \\{in} | sort' }, /^run: \{in\} comes right after a backslash; with "shell": true tabcomputer quotes each value itself, so write it bare/],
+      [{ ...FILES, shell: true, run: 'jq . \\\\{in} | sort' }, /^run: \{in\} comes right after a backslash/],
+      [{ ...FILES, shell: true, run: 'jq . ${in} | sort' }, /^run: \{in\} comes right after a \$/],
       [{ ...FILES, options: [] }, /^options must be an object/],
       [{ ...FILES, options: { Quality: { choices: ['a'] } } }, /^options\.Quality: a name is a-z, 0-9 and _/],
       [{ ...FILES, options: { name: { choices: ['a'] } } }, /^options\.name: \{name\} already means something/],
@@ -203,6 +207,10 @@ describe('run becomes a program and its arguments, and nothing reads them again'
     const line = shellLineFor('pdftotext {in} - | wc -w > {out}; echo {name}', { in: "/i/it's $(id); x.pdf", out: '/o/n.txt', name: '-n' }, RULES);
     expect(line).toBe(`pdftotext '/i/it'\\''s $(id); x.pdf' - | wc -w > '/o/n.txt'; echo './-n'`);
     expect(shellLineFor('cat {in} {verbose}', { in: ['/a b', '/c'], verbose: '' }, RULES)).toBe(`cat '/a b' '/c' `);
+    // a backslash elsewhere in a shell line is the shell's own and stays allowed
+    expect(validateManifest({ ...FILES, shell: true, run: 'printf "a\\tb\\n"; cat {in}' }).run).toBe('printf "a\\tb\\n"; cat {in}');
+    // without "shell": true no shell reads the line, so a backslash before a value is just a character
+    expect(argvFor(splitRun('grep \\{in}'), { in: 'x' }, RULES)).toEqual(['grep', '\\x']);
   });
 
   it('what a field holds becomes its argument: a choice its value, a box its switch, a number only a number', () => {

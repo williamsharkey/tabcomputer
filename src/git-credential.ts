@@ -30,7 +30,8 @@ export async function ensureGitCredentialHelper(fs: FsLike, path = GITCONFIG): P
 
 /**
  * git's credential protocol (`gh auth git-credential get|store|erase`): key=value
- * lines in; for `get` on github.com, the token as the password. null: nothing to say.
+ * lines in; for `get` on github.com or gist.github.com, the token as the password.
+ * null: nothing to say (another host, no host at all, another protocol than https).
  */
 export function credentialAnswer(op: string, input: string, token: string | null | undefined): string | null {
   if (op !== 'get' || !token) return null;
@@ -39,7 +40,8 @@ export function credentialAnswer(op: string, input: string, token: string | null
     const i = line.indexOf('=');
     if (i > 0) req[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
-  const host = req.host ?? 'github.com';
+  // The request has to name the host: the token is GitHub's, and a request that names none is for no one
+  const host = req.host;
   if (host !== 'github.com' && host !== 'gist.github.com') return null;
   if (req.protocol && req.protocol !== 'https') return null;
   return `protocol=https\nhost=${host}\nusername=x-access-token\npassword=${token}\n`;

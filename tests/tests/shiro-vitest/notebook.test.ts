@@ -17,6 +17,11 @@ import { ControlFile } from '@shiro/notebook/kernel';
 import { parseLabConfig } from '@shiro/lab';
 import { JUPYTER_BUILT_IN } from '@shiro/commands/pip';
 import { NB_KERNEL_PY, NB_MPL_PY, NB_STUBS } from '@shiro/pyodide-worker/notebook-py';
+import { runNotebookKernel } from '@shiro/pyodide-worker/notebook-guest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** A notebook as Jupyter writes it: sorted keys, one space of indent, sources as lines */
 const JUPYTER_FILE = `{
@@ -420,6 +425,116 @@ describe('the kernel\'s Python side', () => {
     expect(NB_MPL_PY).toContain('FigureCanvas = FigureCanvasNotebook');
     expect(Object.keys(NB_STUBS)).toEqual(['IPython', 'matplotlib_inline']);
     expect(NB_STUBS.IPython['IPython/display.py']).toContain('from tabcomputer_nb import display, update_display, clear_output');
+  });
+});
+
+/**
+ * A notebook comes from a cloned repository, and opening one runs none of its
+ * cells. So until a cell runs, nothing in the notebook's folder may be
+ * imported: the packages are loaded first, from outside the folder, and the
+ * folder is entered at the first cell.
+ */
+describe('a notebook\'s folder is entered at the first cell that runs, not when it is opened', () => {
+  it('the kernel loads packages first; the folder comes with the first cell, after that cell\'s packages', async () => {
+    const log: string[] = [];
+    const sent: any[] = [];
+    const nb = {
+      init: (_env: unknown, _sites: unknown, cwd: string) => { log.push(`init ${cwd}`); return '3.13.2'; },
+      enter: () => { log.push('enter'); },
+      run_cell: async (code: string) => { log.push(`run ${code}`); return JSON.stringify({ status: 'ok', count: 1 }); },
+      cancel_current: () => {},
+    };
+    const py = {
+      setStdin() {}, setStdout() {}, setStderr() {}, registerJsModule() {},
+      runPython: (code: string) => (code.includes('version_info') ? '3.13' : true),
+      FS: { mkdirTree() {}, writeFile() {} },
+      pyimport: () => nb,
+      toPy: () => ({ destroy() {} }),
+      loadPackage: async (names: string[]) => { log.push(`loadPackage ${names.join(',')}`); },
+      loadPackagesFromImports: async (code: string) => { log.push(`loadPackagesFromImports ${code}`); },
+    };
+    // what the page writes: the preload at open, then two cells the person runs, then it closes the file
+    const lines = [
+      { t: 'load', id: 1, code: 'import numpy', packages: ['numpy'] },
+      { t: 'exec', id: 2, code: 'import pandas', packages: ['pandas'] },
+      { t: 'exec', id: 3, code: 'x = 1' },
+    ].map((m) => new TextEncoder().encode(JSON.stringify(m) + '\n'));
+    const rc = await runNotebookKernel(py, { sitePaths: [] } as any, '/home/user/src/lab3', {}, {
+      ctlRead: (buf) => { const next = lines.shift(); if (!next) return 0; buf.set(next); return next.length; },
+      ctlWrite: (data) => { for (const l of new TextDecoder().decode(data).split('\n').filter(Boolean)) sent.push(JSON.parse(l)); },
+      write: () => {}, interrupted: () => false, clearInterrupt: () => {},
+    });
+    expect(rc).toBe(0);
+    expect(log).toEqual([
+      'init /home/user/src/lab3',
+      // opened: packages only
+      'loadPackage numpy', 'loadPackagesFromImports import numpy',
+      // the first cell: its packages, then the folder, then the cell
+      'loadPackage pandas', 'loadPackagesFromImports import pandas', 'enter', 'run import pandas',
+      'loadPackagesFromImports x = 1', 'enter', 'run x = 1',
+    ]);
+    expect(sent.filter((m) => m.t === 'done').map((m) => m.id)).toEqual([1, 2, 3]);
+  });
+
+  /** The kernel's own Python on this machine's python3, with a stand-in for the page's side; null where there is no python3 */
+  const python = (script: string, dir: string): any => {
+    try { execFileSync('python3', ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'], { stdio: 'ignore' }); } catch { return null; }
+    writeFileSync(join(dir, 'site', 'tabcomputer_nb.py'), NB_KERNEL_PY);
+    writeFileSync(join(dir, 'site', 'tabcomputer_nbjs.py'), 'sent = []\ndef send(text):\n    sent.append(text)\ndef request(text, rid):\n    return None\ndef sleep(seconds):\n    return False\n');
+    writeFileSync(join(dir, 'run.py'), script);
+    return JSON.parse(execFileSync('python3', ['-I', join(dir, 'run.py'), dir], { encoding: 'utf8', cwd: join(dir, 'elsewhere') }).trim().split('\n').pop()!);
+  };
+
+  it('a module beside the notebook that is named like one of Python\'s own does not run when the notebook is opened', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-folder-'));
+    for (const d of ['site', 'lab', 'elsewhere']) mkdirSync(join(dir, d));
+    // beside the notebook: a marker module with the name of a module Python loads for itself, and a module of the notebook's own
+    const marker = 'import os\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ran.txt"), "a").write("ran\\n")\nMARK = "the notebook\'s folder"\n';
+    writeFileSync(join(dir, 'lab', 'colorsys.py'), marker);
+    writeFileSync(join(dir, 'lab', 'helper.py'), 'VALUE = 42\n');
+    writeFileSync(join(dir, 'lab', 'lab.ipynb'), '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}\n');
+    const out = python(`
+import asyncio, json, os, sys
+work = sys.argv[1]
+lab = os.path.join(work, "lab")
+sys.path.insert(0, os.path.join(work, "site"))
+import tabcomputer_nb as nb
+out = {}
+before = os.getcwd()
+nb.init({}, [], lab)
+# opened: Python is not in the folder, and the folder is not where imports look
+out["cwd_at_open"] = os.getcwd() == before
+out["path_at_open"] = [p for p in sys.path if p in ("", ".", lab)]
+# what loading a package does before any cell: import a module of Python's own
+import colorsys
+out["at_open"] = getattr(colorsys, "MARK", "python's own")
+out["ran_at_open"] = os.path.exists(os.path.join(lab, "ran.txt"))
+del sys.modules["colorsys"]
+# the person runs a cell
+nb.enter()
+nb.enter()
+out["cwd_at_cell"] = os.path.realpath(os.getcwd()) == os.path.realpath(lab)
+out["path_at_cell"] = sys.path[:2].count("")
+out["cell"] = json.loads(asyncio.run(nb.run_cell("import helper, colorsys\\nfound = (helper.VALUE, colorsys.MARK)")))
+out["found"] = list(nb.user_ns.get("found", ()))
+out["ran_at_cell"] = os.path.exists(os.path.join(lab, "ran.txt"))
+sys.stdout.write("\\n" + json.dumps(out) + "\\n")
+`, dir);
+    if (out) {
+      expect(out).toEqual({
+        cwd_at_open: true, path_at_open: [], at_open: "python's own", ran_at_open: false,
+        cwd_at_cell: true, path_at_cell: 1, cell: { status: 'ok', count: 1 }, found: [42, "the notebook's folder"], ran_at_cell: true,
+      });
+      expect(existsSync(join(dir, 'lab', 'ran.txt'))).toBe(true);
+    }
+    rmSync(dir, { recursive: true, force: true });
+    // the same in the text itself, where no python3 is at hand: init keeps the folder, enter goes there
+    const init = NB_KERNEL_PY.slice(NB_KERNEL_PY.indexOf('def init(env, sitedirs, cwd):'));
+    expect(init).not.toMatch(/os\.chdir|sys\.path\.insert/);
+    expect(init).toContain('_home = cwd');
+    const enter = NB_KERNEL_PY.slice(NB_KERNEL_PY.indexOf('def enter():'), NB_KERNEL_PY.indexOf('def init(env, sitedirs, cwd):'));
+    expect(enter).toContain('os.chdir(_home)');
+    expect(enter).toContain('sys.path.insert(0, "")');
   });
 });
 

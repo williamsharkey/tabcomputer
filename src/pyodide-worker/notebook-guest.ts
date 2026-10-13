@@ -54,7 +54,13 @@ function installKernel(py: any): void {
   }
 }
 
-/** Run the kernel until the page closes it; resolves with the process's exit status. */
+/**
+ * Run the kernel until the page closes it; resolves with the process's exit status.
+ *
+ * `cwd` is the notebook's folder, which comes from a cloned repository. Python
+ * starts outside it: opening a notebook loads its packages (`load`), and
+ * loading imports modules. The folder is entered at the first `exec`.
+ */
 export async function runNotebookKernel(py: any, start: NotebookStart, cwd: string, env: Record<string, string>, io: NotebookIo): Promise<number> {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -164,6 +170,9 @@ export async function runNotebookKernel(py: any, start: NotebookStart, cwd: stri
       try {
         // (Stop pressed while the packages were loading: the cell does not start)
         if (io.interrupted()) throw new Error('KeyboardInterrupt');
+        // The notebook's folder becomes the working directory and the first place imports look
+        // now, at the first cell a person runs, and after this cell's packages are loaded
+        nb.enter();
         result = JSON.parse(String(await nb.run_cell(String(m.code))));
       } catch (e: any) {
         // (Python itself failed, or an interrupt landed outside the cell)

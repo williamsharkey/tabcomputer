@@ -31,6 +31,8 @@ _count = 0
 _retina = False
 _site_dirs = []
 _rid = 0
+_home = None
+_entered = False
 
 
 class UsageError(Exception):
@@ -959,22 +961,36 @@ def add_sites(dirs):
             site.addsitedir(d)
 
 
+def enter():
+    """At the first cell that runs: work in the notebook's folder, with it first on sys.path.
+
+    Not when the notebook is opened. Until the person runs a cell, no file beside
+    the notebook can be imported: packages are loaded ahead of that, and Python
+    imports modules of its own while it loads them.
+    """
+    global _entered
+    if _entered:
+        return
+    _entered = True
+    try:
+        os.chdir(_home)
+    except (OSError, TypeError):
+        pass
+    if "" not in sys.path:
+        sys.path.insert(0, "")
+
+
 def init(env, sitedirs, cwd):
-    """Once, before the first cell."""
+    """Once, when the notebook is opened. The notebook's folder is entered later (enter)."""
     import getpass
-    global _site_dirs
+    global _site_dirs, _home
     for key, value in env.items():
         os.environ[key] = value
     os.environ["MPLBACKEND"] = "module://tabcomputer_nb_mpl"
     os.environ.setdefault("TERM", "dumb")
     _site_dirs = list(sitedirs)
     add_sites(_site_dirs)
-    try:
-        os.chdir(cwd)
-    except OSError:
-        pass
-    if "" not in sys.path:
-        sys.path.insert(0, "")
+    _home = cwd
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(write_through=True, errors="replace")

@@ -34,6 +34,7 @@ One Python per open notebook: a kernel process (`python3 -m notebook NAME` in `p
 
 - Its files are the tab's, at their own paths; its working directory is the notebook's folder. `pd.read_csv('data.csv')` reads the file beside the notebook, and a file it writes is one `git status` shows.
 - Packages: when the notebook opens, the `import` lines of all its cells are read and those packages are fetched and loaded, so the first Run does not wait for them. Any package of the Pyodide distribution loads on import (numpy, pandas, matplotlib, scipy, scikit-learn, pillow, sympy, …), with no `pip install` first. Pure-Python packages from the tab's `pip` are on its path.
+- Opening a notebook runs nothing from its folder. The folder becomes the working directory, and the first place `import` looks, at the first cell that runs, after that cell's packages are loaded (`enter` in `src/pyodide-worker/notebook-py.ts`). Loading packages imports modules of Python's own, and a notebook comes from a cloned repository: a `json.py` beside it must not be what Python finds before the person has run anything. From the first cell on, `import helper` finds `helper.py` beside the notebook, as in Jupyter.
 - The page's main thread only answers the process's syscalls, so a long cell does not freeze the desktop (measured below).
 - Top-level `await` works. `asyncio.run()` in a cell says a loop is already running, as in Jupyter.
 

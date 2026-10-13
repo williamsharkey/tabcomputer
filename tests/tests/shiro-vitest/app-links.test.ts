@@ -187,7 +187,8 @@ describe('app links: which apps are curated', () => {
   });
 
   const ghCases: [string, Record<string, string | (() => Response)>, unknown[] | undefined, RegExp][] = [
-    ['a repository that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /does not exist, or it is private: a private repository needs a GitHub sign-in/],
+    ['a repository GitHub shows no visitor (it does not exist, or is private)', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }), 'https://api.github.com/users/someone': '{"login":"someone"}' }, undefined, /does not exist, or it is private: a private repository needs a GitHub sign-in/],
+    ['a repository of an account that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /^github\.com\/someone\/tool does not exist: GitHub has no account named someone$/],
     ['a head that is not a commit', { 'https://api.github.com/repos/someone/tool/commits/HEAD': 'main; rm -rf ~' }, undefined, /could not read the head commit/],
     ['a head that is a branch name', { 'https://api.github.com/repos/someone/tool/commits/HEAD': '../../other/repo/main' }, undefined, /could not read the head commit/],
     ['a folder without app.json', { [`https://raw.githubusercontent.com/someone/tool/${COMMIT}/app.json`]: () => new Response('404', { status: 404 }) }, undefined, /has no app\.json: it is not an app/],

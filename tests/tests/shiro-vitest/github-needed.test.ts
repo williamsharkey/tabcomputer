@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { githubSignInWanted, retrySignedIn, fetchSignedIn, setGitHubNeedHandler, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
-import { GITHUB_RATE_LIMITED, githubMissing, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
+import { GITHUB_RATE_LIMITED, githubMissing, githubNotThere, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
 import { fetchGhApp, handleAppLink } from '@shiro/apps/links';
 import { hotswapCmd } from '@shiro/commands/hotswap';
 import { createTestShell } from './helpers';
@@ -212,13 +212,16 @@ describe('github-needed: links and installs from GitHub', () => {
       [`https://raw.githubusercontent.com/a/b/${COMMIT}/app.json`]: MANIFEST,
       'https://api.github.com/repos/a/b/contents/.tabcomputer/run.sh?ref=HEAD': SCRIPT,
       'https://raw.githubusercontent.com/a/b/HEAD/.tabcomputer/run.sh': SCRIPT,
+      // (the account is there for anyone to see, and so is its public repository `open`, which has no script)
+      'https://api.github.com/users/a': '{"login":"a"}',
+      'https://api.github.com/repos/a/open': '{"full_name":"a/open","private":false}',
     };
     const fetchFn = async (url: string, init?: RequestInit) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
       calls.push({ url, auth });
       const api = url.startsWith('https://api.github.com/');
       if (!auth && opts.limited && api) return new Response('{"message":"API rate limit exceeded"}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
-      if (!auth && opts.isPrivate) return new Response('Not Found', { status: 404 });
+      if (!auth && opts.isPrivate && !url.startsWith('https://api.github.com/users/')) return new Response('Not Found', { status: 404 });
       if (auth && !api) return new Response('preflight refused', { status: 403 }); // the raw host takes no token from a page
       return files[url] === undefined ? new Response('Not Found', { status: 404 }) : new Response(files[url], { status: 200, headers: { 'content-type': api ? 'application/vnd.github.raw+json' : 'text/plain' } });
     };
@@ -297,7 +300,38 @@ describe('github-needed: links and installs from GitHub', () => {
     const none = github({});
     await expect(fetchSignedIn('gh:a/zzz', (token) => fetchGhApp({ owner: 'a', repo: 'zzz', path: '' }, none.fetchFn, token)))
       .rejects.toThrow('github.com/a/zzz does not exist (or this GitHub account cannot read it)');
-    expect(none.calls).toHaveLength(2);
+    // (the visitor's try, whether the account exists, the try with the token)
+    expect(none.calls.map((c) => [c.url.replace('https://api.github.com/', ''), !!c.auth])).toEqual([['repos/a/zzz/commits/HEAD', false], ['users/a', false], ['repos/a/zzz/commits/HEAD', true]]);
+  });
+
+  it('a 404 that no sign-in would change is said at once, and nobody is asked', async () => {
+    const { fetchFn, calls } = github({});
+    const reports: string[] = [];
+    const link = (search: string) => handleRunLink({
+      search, origin: 'https://tab.example', home: '/home/user', framed: false, fetch: fetchFn, github: fetchSignedIn,
+      fs: { mkdir: async () => {}, writeFile: async () => {}, exists: async () => false },
+      cleanUrl: () => {}, confirm: async () => true, openTerminal: () => {}, report: (m) => { reports.push(m); },
+    });
+    // a typo in the account's name: GitHub has no such account, so it has no private repository either
+    expect(await link('?run=gh:nobody/missing')).toBe('refused');
+    expect(reports.pop()).toBe('github.com/nobody/missing does not exist: GitHub has no account named nobody');
+    // a public repository without the script: the repository answers a visitor for itself
+    expect(await link('?run=gh:a/open')).toBe('refused');
+    expect(reports.pop()).toBe('github.com/a/open has no .tabcomputer/run.sh');
+    expect(asked).toEqual([]);
+    // the same for an app in a repository
+    await expect(fetchSignedIn('gh:nobody/tool', (token) => fetchGhApp({ owner: 'nobody', repo: 'tool', path: '' }, fetchFn, token))).rejects.toThrow('github.com/nobody/tool does not exist: GitHub has no account named nobody');
+    expect(asked).toEqual([]);
+    // an account that exists and a repository GitHub does not show a visitor: it may be private, so the sign-in is offered
+    answer = null;
+    expect(await link('?run=gh:a/secret')).toBe('refused');
+    expect(asked).toEqual([{ action: 'gh:a/secret', kind: 'private' }]);
+    expect(reports.pop()).toBe('github.com/a/secret, .tabcomputer/run.sh does not exist, or it is private: a private repository needs a GitHub sign-in');
+    // GitHub's limit reached while asking: nothing is known, so the visitor's message stands
+    expect(await githubNotThere('a', 'b', async () => new Response('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }), 'x.sh')).toBeNull();
+    expect(await githubNotThere('a', 'b', async () => { throw new Error('offline'); })).toBeNull();
+    // every question went to GitHub's API, as a visitor
+    expect(calls.filter((c) => c.auth).length).toBe(0);
   });
 
   it('the token goes to GitHub only, and a redirected answer stays a redirect', async () => {

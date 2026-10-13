@@ -80,7 +80,14 @@ async function newContext(options = {}) {
   await ctx.route('https://elsewhere.example/**', (route) => route.fulfill(text(RECIPE)));
   await ctx.route('https://raw.githubusercontent.com/**', (route) => {
     const url = route.request().url();
-    return url === 'https://raw.githubusercontent.com/someone/project/HEAD/.tabcomputer/run.sh' ? route.fulfill(text(GH_SCRIPT)) : route.fulfill({ status: 404, body: 'Not found' });
+    return url === 'https://raw.githubusercontent.com/someone/project/HEAD/.tabcomputer/run.sh' ? route.fulfill(text(GH_SCRIPT)) : route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'Not found' });
+  });
+  // GitHub's API, as a visitor sees it: the account `someone` and its public repository `plain`
+  // (which has no script); `someone/hidden` is private, so it answers as a repository that is not there
+  await ctx.route('https://api.github.com/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const known = { '/users/someone': { login: 'someone' }, '/repos/someone/plain': { full_name: 'someone/plain', private: false } };
+    return route.fulfill({ status: known[path] ? 200 : 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(known[path] ?? { message: 'Not Found' }) });
   });
   return ctx;
 }
@@ -177,7 +184,9 @@ const shot = async (page, name) => { if (shots) await page.screenshot({ path: jo
     [`?run=${encodeURIComponent(`${NAME}.sh`)}`, /run link: no such recipe/, 'a file name'],
     ['?run=changed', /run link: the recipe does not match/, 'a recipe changed after the list was made'],
     ['?run=moved', /run link: could not fetch the recipe/, 'a recipe the server redirects off the site'],
-    ['?run=gh:someone/missing', /run link: github.com\/someone\/missing, .tabcomputer\/run.sh does not exist/, 'a repository without a script'],
+    // GitHub tells a visitor these two apart from a private repository, so they are said at once, with no sign-in asked for
+    ['?run=gh:nobody/missing', /run link: github.com\/nobody\/missing does not exist: GitHub has no account named nobody/, 'a repository of an account that does not exist'],
+    ['?run=gh:someone/plain', /run link: github.com\/someone\/plain has no .tabcomputer\/run.sh/, 'a public repository without a script'],
   ]) {
     page = await load(ctx, q);
     await page.waitForFunction((re) => {
@@ -189,9 +198,37 @@ const shot = async (page, name) => { if (shots) await page.screenshot({ path: jo
     const text = (await mainScreen(page)).replace(/\n/g, '');
     check(why.test(text), `refused: ${what}`, text.slice(-300));
     check(await prompt(page).count() === 0, `refused: ${what} shows no prompt`);
+    check(await page.locator('.sd-sheet').count() === 0, `refused: ${what} asks for no sign-in`);
     check(!/run=/.test(await page.evaluate(() => location.search)), `refused: ${what} leaves the address clean`);
     await page.close();
   }
+
+  // A repository GitHub shows no visitor may be private: the sign-in is offered, and "Not now" leaves the plain message
+  page = await load(ctx, '?run=gh:someone/hidden');
+  const sheet = page.locator('.sd-sheet');
+  await sheet.waitFor({ timeout: 15_000 }).catch(() => {});
+  const asked = await sheet.count() ? (await sheet.innerText()).replace(/\s+/g, ' ') : '';
+  check(/Sign in with GitHub to finish/.test(asked) && /The repository is private, or its name is wrong\./.test(asked), 'maybe private: the sign-in sheet says why it asks', asked.slice(0, 300));
+  await shot(page, 'maybe-private-sheet');
+  await sheet.locator('[data-act=later]').click().catch(() => {});
+  const said = await page.waitForFunction(() => {
+    const buf = window.__tabcomputer.terminal.term.buffer.active;
+    let t = '';
+    for (let i = 0; i < buf.length; i++) t += buf.getLine(i).translateToString(true);
+    return /run link: github\.com\/someone\/hidden, \.tabcomputer\/run\.sh does not exist, or it is private/.test(t);
+  }, null, { timeout: 15_000 }).then(() => true, () => false);
+  check(said, 'maybe private: "Not now" leaves the plain message', (await mainScreen(page)).slice(-300));
+  await page.close();
+
+  // Eight loads of this profile so far, each of which printed a line: the main terminal has one
+  // restore note, under what the earlier loads printed (#128)
+  page = await load(ctx, '');
+  await page.waitForTimeout(2500);
+  const restored = await mainScreen(page);
+  const notes = (restored.match(/the output above is from before the page reloaded/g) ?? []).length;
+  check(notes === 1 && (restored.match(/run link: /g) ?? []).length >= 6, 'reloads: one restore note, however many loads printed something', `${notes} notes\n${restored.slice(-900)}`);
+  await shot(page, 'after-reloads');
+  await page.close();
   page = await load(ctx, '?ui=terminal');
   check(await sh(page, 'ls /tmp/pwned ~/run/changed ~/run/moved 2>/dev/null') === '', 'refused: none of them ran or left a directory');
   await page.close();
@@ -216,7 +253,8 @@ function encodeShLinkPlaceholder() { return 'sh:' + b64url(SH_SCRIPT); }
   await prompt(page).waitFor({ timeout: 20_000 });
   check(await prompt(page).locator('pre').textContent() === GH_SCRIPT, 'gh: the prompt shows the whole script');
   const from = await prompt(page).textContent();
-  check(/github\.com\/someone\/project, \.tabcomputer\/run\.sh/.test(from) && /not reviewed/.test(from), 'gh: it says where the script is from and that it is not reviewed');
+  check(/github\.com\/someone\/project, \.tabcomputer\/run\.sh/.test(from) && /Not reviewed by tabcomputer\./.test(from), 'gh: it says where the script is from and that it is not reviewed');
+  check((await prompt(page).locator('p').allInnerTexts()).length === 2, 'gh: two sentences beside the script: where it is from, and what it can touch', (await prompt(page).locator('p').allInnerTexts()).join(' | '));
   check(/RUN_WHO/.test(from) && /me/.test(from), 'gh: it shows what the link sets');
   check(await page.evaluate(() => window.__pwned) === undefined && await prompt(page).locator('img, script').count() === 0 && await prompt(page).locator('button').count() === 2,
     'gh: markup in the script stays text');
@@ -302,7 +340,7 @@ function encodeShLinkPlaceholder() { return 'sh:' + b64url(SH_SCRIPT); }
   await page.close();
   page = await load(ctx, `?ui=terminal&run=sh:${b64url(SH_SCRIPT)}`);
   await prompt(page).waitFor({ timeout: 20_000 });
-  check(await page.locator('.tc-run-overlay').count() === 1, 'terminal UI: the prompt is an overlay');
+  check(await page.locator('.tc-overlay').count() === 1, 'terminal UI: the prompt is an overlay');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(800);
   check(await prompt(page).count() === 0 && await sh(page, 'ls ~/run') === NAME, 'terminal UI: Escape cancels');

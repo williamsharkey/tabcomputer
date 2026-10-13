@@ -23,7 +23,7 @@
 import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, validateManifest, APP_ID, RESERVED_IDS, type AppManifest, type ManifestHint } from './manifest';
 import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX, pageBeside } from './registry';
 import { LINK_APP, unpackLink } from './share';
-import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
+import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubNotThere, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
 import { FragmentError, appFragment, manifestFromPairs, parseFragment } from '../link-fragment';
 
 export type AppTarget =
@@ -217,7 +217,12 @@ export async function fetchGhApp(t: { owner: string; repo: string; path: string 
   if (!GH_OWNER.test(t.owner) || !GH_REPO.test(t.repo) || t.repo === '.' || t.repo === '..' || (t.path && t.path.split('/').some((s) => !GH_SEGMENT.test(s) || s === '.' || s === '..'))) throw new AppLinkError('no such app');
   const where = `github.com/${t.owner}/${t.repo}${t.path ? `, ${t.path}` : ''}`;
   const api = `https://api.github.com/repos/${t.owner}/${t.repo}`;
-  const headBytes = await fetchRaw(`${api}/commits/HEAD`, (url, init) => fetchFn(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), accept: 'application/vnd.github.sha' } }), 200, where, githubMissing(where, !!githubToken));
+  const missing = githubMissing(where, !!githubToken);
+  const headBytes = await fetchRaw(`${api}/commits/HEAD`, (url, init) => fetchFn(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), accept: 'application/vnd.github.sha' } }), 200, where, missing).catch(async (e) => {
+    // A visitor's 404 that no sign-in would change (GitHub has no such account) is said as that, and no sign-in is asked for
+    const sure = !githubToken && e instanceof RunLinkError && e.message === missing ? await githubNotThere(t.owner, t.repo, visitorFetch) : null;
+    throw sure ? new AppLinkError(sure) : e;
+  });
   const commit = new TextDecoder().decode(headBytes).trim();
   if (!COMMIT.test(commit)) throw new AppLinkError(`could not read the head commit of ${where}`);
   const raw = (rel: string) => `https://raw.githubusercontent.com/${t.owner}/${t.repo}/${commit}/${[...(t.path ? t.path.split('/') : []), ...rel.split('/')].map(encodeURIComponent).join('/')}`;

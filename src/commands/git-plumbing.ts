@@ -12,6 +12,7 @@
 import git, { TREE, STAGE, WORKDIR } from './git-cached';
 import type { CommandContext } from './index';
 import { decodeBytes } from '../utils/byte-text';
+import { baseWalk, mergeBases } from './git-merge-base';
 import { resolveRevision, unifiedDiff, diffLines, diffCounts, formatStatRows } from './git-utils';
 import { detectRenames, renameName, renameThreshold, scorePercent, DEFAULT_RENAME_SCORE } from './git-renames';
 
@@ -1231,7 +1232,7 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
       }
       if (pos.length < 2) return fail('usage: git merge-base <commit> <commit>', 129);
       const oids = await Promise.all(pos.map((p) => rev(fs, dir, p)));
-      const bases = await git.findMergeBase({ fs, dir, oids }).catch(() => [] as string[]);
+      const bases = await mergeBases(baseWalk(fs, dir), oids[0], oids.slice(1));
       if (!bases.length) return 1;
       ctx.stdout += (args.includes('--all') ? bases : bases.slice(0, 1)).map((b: string) => b + '\n').join('');
       return 0;
@@ -1649,7 +1650,7 @@ async function diffSides(fs: Fs, dir: string, args: string[], prefix: string): P
       const three = p.includes('...');
       const [a, b] = p.split(three ? '...' : '..');
       const A = await rev(fs, dir, a || 'HEAD'), B = await rev(fs, dir, b || 'HEAD');
-      if (three) { const base = await git.findMergeBase({ fs, dir, oids: [A, B] }); return { from: base[0] ?? A, to: B, paths }; }
+      if (three) { const base = await mergeBases(baseWalk(fs, dir), A, [B]); return { from: base[0] ?? A, to: B, paths }; }
       return { from: A, to: B, paths };
     }
     try { revs.push(await rev(fs, dir, p)); } catch { paths.push((prefix + p).replace(/\/$/, '')); }

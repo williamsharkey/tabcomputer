@@ -272,10 +272,20 @@ async function hasProgramFile(fs: FileSystem, name: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Commands that stay tabcomputer's whatever file has their name. `claude`: the
+ * tab itself links /usr/local/bin/claude to the npm build it installs at boot,
+ * and that link took the command over in Debian mode (after any `toolchain
+ * install`), so `claude` ran the npm build with none of what the command adds:
+ * no `--vm` by default, no build flags, and Grep and Glob finding nothing.
+ */
+const KEEP_COMMAND = new Set(['claude']);
+
 export async function refreshShadows(fs: FileSystem, name?: string): Promise<void> {
   const entry = shadowSets.get(fs);
   if (!entry) return;
   if (name !== undefined) {
+    if (KEEP_COMMAND.has(name)) { entry.set.delete(name); return; }
     if (!entry.names(name)) return;
     if (await hasProgramFile(fs, name)) entry.set.add(name); else entry.set.delete(name);
     return;
@@ -283,7 +293,7 @@ export async function refreshShadows(fs: FileSystem, name?: string): Promise<voi
   const names = new Set<string>();
   for (const dir of BIN_DIRS) for (const n of await fs.readdir(dir).catch(() => [] as string[])) names.add(n);
   entry.set.clear();
-  for (const n of names) if (entry.names(n) && await hasProgramFile(fs, n)) entry.set.add(n);
+  for (const n of names) if (!KEEP_COMMAND.has(n) && entry.names(n) && await hasProgramFile(fs, n)) entry.set.add(n);
 }
 
 /**

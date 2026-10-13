@@ -12,6 +12,8 @@ import type { Shell } from '@shiro/shell';
 import { parseRunUrl, handleRunLink, originRepo, labFolder, RunLinkError, type RunLinkDeps, type RunPromptInfo } from '@shiro/run-url';
 import { LAB_CONFIG_PATH, parseLabConfig, readLabConfig, labState, submitLab, unsavedReason, attachLab, unsavedWork, UNSAVED_TEXT, SAVED_TEXT } from '@shiro/lab';
 import { labCmd } from '@shiro/commands/lab';
+import { signoutCmd } from '@shiro/commands/signout';
+import { SIGN_OUT_KEY, signOutPlan, signOutText, signOutLines, signOutOfThisComputer, bootSignOut } from '@shiro/sign-out';
 import { GITHUB_TOKEN_STORAGE_KEY } from '@shiro/credentials';
 import { createTestShell, run } from './helpers';
 import { fakeGitHub, parseCommit, parseTree, type FakeGitHub } from './git-github-api-fake';
@@ -68,6 +70,7 @@ beforeAll(async () => {
   ({ fs, shell } = await createTestShell());
   gfs = fs.toIsomorphicGitFS();
   shell.commands.register(labCmd);
+  shell.commands.register(signoutCmd);
   // `gh auth login` is GitHub's device flow in the page: here it only records that it was asked
   shell.commands.register({
     name: 'gh', description: 'stand-in',
@@ -320,7 +323,7 @@ describe('Submit and the saved state', () => {
     for (const [k, v] of other.objects) work.objects.set(k, v);
     const mine = work.refs.get('main')!;
     work.refs.set('main', foreign);
-    await fs.writeFile(`${dir}/main.py`, 'print("again")\n');
+    await fs.writeFile(`${dir}/main.py`, 'print("again, after the teacher")\n');
     const r = await submitLab(fs, dir, { run: exec, now });
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/^Not submitted\. 1 changed file is committed on this computer only\. /);
@@ -409,5 +412,80 @@ describe('Submit and the saved state', () => {
     lab.dispose();
     expect(unsavedWork()).toEqual([]);
     expect(document.title).toBe('tabcomputer');
+  });
+});
+
+describe('sign-out for a shared computer', () => {
+  const ANTHROPIC = 'sk-ant-' + 'b'.repeat(40);
+  const session = new Map<string, string>();
+  beforeAll(() => {
+    (globalThis as any).sessionStorage = {
+      getItem: (k: string) => session.get(k) ?? null, setItem: (k: string, v: string) => { session.set(k, String(v)); },
+      removeItem: (k: string) => { session.delete(k); }, clear: () => session.clear(),
+    };
+  });
+
+  it('the confirm names the sign-ins, the files and the work GitHub does not have, never a value', async () => {
+    localStorage.clear();
+    localStorage.setItem(GITHUB_TOKEN_STORAGE_KEY, TOKEN);
+    localStorage.setItem('tabcomputer_anthropic_key', ANTHROPIC);
+    await fs.mkdir(`${HOME}/.claude`, { recursive: true });
+    await fs.writeFile(`${HOME}/.claude/.credentials.json`, JSON.stringify({ claudeAiOauth: { accessToken: ANTHROPIC } }));
+    await fs.writeFile(`${HOME}/.netrc`, 'machine example.com login a password b\n');
+    // ~/src/work still has the lab.json edit from the test above: uncommitted
+    const plan = await signOutPlan(fs, localStorage, HOME);
+    expect(plan.signins).toEqual(['The GitHub sign-in', 'The Claude sign-in', 'The Anthropic API key', 'Other saved logins: netrc logins']);
+    expect(plan.homeEntries).toBeGreaterThan(2);
+    expect(plan.unpushed).toEqual([{ dir: '~/src/work', why: '1 changed file' }]);
+    const t = signOutText(plan);
+    expect(t.title).toBe('Sign out of this computer?');
+    expect(t.deleted[0]).toBe('The GitHub sign-in');
+    expect(t.deleted[t.deleted.length - 1]).toMatch(/^Every file in this tab computer: the home folder \(\d+ items\), installed programs and settings$/);
+    expect(t.warning).toBe('GitHub does not have this work yet. Signing out deletes it. Submit or push it first.');
+    expect(t.lost).toEqual(['~/src/work: 1 changed file']);
+    const lines = signOutLines(plan);
+    expect(lines).toContain('  - ~/src/work: 1 changed file');
+    expect(lines).not.toContain(TOKEN);
+    expect(lines).not.toContain(ANTHROPIC);
+    // The command says it and deletes nothing without --yes
+    const r = await run(shell, 'signout');
+    expect(r.exitCode).toBe(1);
+    expect(r.output).toContain('Nothing was deleted. Run "signout --yes" to do it.');
+    expect(localStorage.getItem(GITHUB_TOKEN_STORAGE_KEY)).toBe(TOKEN);
+    expect((await run(shell, 'signout --now')).exitCode).toBe(2);
+  });
+
+  it('with nothing signed in and nothing unpushed, it says so', () => {
+    const t = signOutText({ signins: [], homeEntries: 1, unpushed: [] });
+    expect(t.deleted).toEqual(['No sign-in is saved here', 'Every file in this tab computer: the home folder (1 item), installed programs and settings']);
+    expect(t.warning).toBe('');
+    expect(t.lost).toEqual([]);
+  });
+
+  it('removes every sign-in at once and leaves the rest to the next document', async () => {
+    localStorage.setItem(`wal:${HOME}/.claude/.credentials.json`, '{"x":1}');
+    localStorage.setItem('some-cache', `{"t":"${TOKEN}"}`);
+    localStorage.setItem('tabcomputer-desktop-theme', 'dark');
+    let went = 0;
+    await signOutOfThisComputer(fs, () => { went++; });
+    expect(went).toBe(1);
+    expect(session.get(SIGN_OUT_KEY)).toBe('1');
+    for (const k of [GITHUB_TOKEN_STORAGE_KEY, 'tabcomputer_anthropic_key', `wal:${HOME}/.claude/.credentials.json`, 'some-cache']) expect(localStorage.getItem(k), k).toBeNull();
+    expect(localStorage.getItem('tabcomputer-desktop-theme')).toBe('dark');
+    expect(await fs.exists(`${HOME}/.claude/.credentials.json`)).toBe(false);
+    expect(await fs.exists(`${HOME}/.netrc`)).toBe(false);
+    // The work is still there until the next document deletes the profile, and the tab leaves without a warning
+    expect(await fs.exists(`${HOME}/src/work/main.py`)).toBe(true);
+    expect(unsavedWork()).toEqual([]);
+  });
+
+  it('the next document deletes what is left and says so', async () => {
+    expect(await bootSignOut()).toBe(true);
+    expect(localStorage.getItem('tabcomputer-desktop-theme')).toBeNull();
+    expect(session.get(SIGN_OUT_KEY)).toBeUndefined();
+    expect(document.title).toBe('Signed out');
+    expect(document.getElementById('signed-out')!.textContent).toBe('The sign-ins and every file this tab computer kept in this browser are deleted. You can close this tab.');
+    // A load that was not asked to sign out does nothing
+    expect(await bootSignOut()).toBe(false);
   });
 });

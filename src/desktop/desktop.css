@@ -584,6 +584,13 @@ a.sd-gh-row:hover { background: var(--sd-hover); }
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; padding: 8px 10px;
   border-radius: 8px; background: color-mix(in srgb, #e5484d 10%, transparent); border: 1px solid color-mix(in srgb, #e5484d 30%, transparent);
 }
+/* Settings, Accounts: sign-out for a shared computer (src/sign-out.ts) */
+.sd-signout .sd-btn { flex: none; white-space: nowrap; }
+.sd-signout-confirm { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.sd-signout-confirm ul { margin: 0; padding-left: 18px; }
+.sd-signout-confirm li { overflow-wrap: anywhere; }
+.sd-signout-warn { color: #e5484d; font-weight: 600; }
+.sd-signout-confirm ul.sd-signout-warn { font-weight: 400; }
 .sd-pop-net { padding-bottom: 6px; }
 .sd-pop-h { padding: 8px 0 2px; border-top: 1px solid var(--sd-sep); font-weight: 600; }
 .sd-pop-accounts .sd-acct-row { min-height: 38px; padding: 4px 0; }

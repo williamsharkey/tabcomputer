@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
@@ -7,6 +7,7 @@ import { hashEngineWasm, versionBlinkEngine } from './vite-plugin-engines';
 import { hotswapLiveModules, hotswapSource } from './vite-plugin-hotswap';
 import { isogitPackOffMainThread } from './vite-plugin-isogit';
 import { siteApps } from './vite-plugin-apps';
+import { precompress } from './vite-plugin-precompress';
 import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,10 +28,22 @@ const isolationHeaders: Record<string, string> = process.env.TABCOMPUTER_ISOLATI
 let buildSha = '';
 try { buildSha = execSync('git rev-parse HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* no git */ }
 
+// PGlite (src/postgres/) imports `stream/promises` and `fs/promises` only under
+// Node. The Node polyfills turn them into stream-browserify/promises and
+// mock/empty.js/promises, which are no files.
+const nodeOnly = (): Plugin => ({
+  name: 'tabcomputer-node-only',
+  enforce: 'pre',
+  resolveId(id) {
+    return /^(node:)?(stream|fs)\/promises$|\/(stream-browserify|mock\/empty\.js)\/promises$/.test(id) ? path.resolve(__dirname, 'src/postgres/node-only.ts') : null;
+  },
+});
+
 export default defineConfig({
   base,
   define: { __BUILD_SHA__: JSON.stringify(buildSha) },
   plugins: [
+    nodeOnly(),
     nodePolyfills({
       // Enable Buffer polyfill for isomorphic-git
       globals: {
@@ -45,6 +58,7 @@ export default defineConfig({
     hotswapLiveModules(__dirname),
     hotswapSource(__dirname, buildSha),
     siteApps(),
+    precompress(),
   ],
   build: {
     target: 'es2022',
@@ -60,7 +74,7 @@ export default defineConfig({
   worker: {
     format: 'es',
     // the git pack worker (src/git-pack-worker.ts) runs isomorphic-git: Node's Buffer and the build transform
-    plugins: () => [nodePolyfills({ globals: { Buffer: true, process: true } }), isogitPackOffMainThread()],
+    plugins: () => [nodeOnly(), nodePolyfills({ globals: { Buffer: true, process: true } }), isogitPackOffMainThread()],
   },
   resolve: {},
   server: {

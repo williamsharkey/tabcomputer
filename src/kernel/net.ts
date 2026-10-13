@@ -763,7 +763,15 @@ export class KSocket implements OpenFile {
   private async finishConnect(host: string, port: number, remoteOf: (info?: RelayConnected) => SockAddr, signal?: AbortSignal): Promise<number> {
     const stack = this.stack;
     // Loopback: only sockets listening in this kernel
-    const listener = isLoopback(host) ? stack.listenerFor(port, host) : undefined;
+    let listener = isLoopback(host) ? stack.listenerFor(port, host) : undefined;
+    if (isLoopback(host) && !listener) {
+      // (a service of the tab that starts when it is first connected to: postgres on 5432)
+      const start = stack.onDemand.get(port);
+      if (start) {
+        await start().catch(() => {});
+        listener = stack.listenerFor(port, host);
+      }
+    }
     if (isLoopback(host) && !listener && !stack.config.relayLoopback) return -ECONNREFUSED;
     if (listener) {
       const local = this.local ?? stack.autobindAddr(this.domain === AF_INET6 && host.includes(':') ? AF_INET6 : AF_INET, this, host);
@@ -1404,6 +1412,8 @@ export class NetStack {
   readonly unixDgram = new Map<string, KSocket>();
   /** AF_UNIX: resolved paths of socket files made by bind() (they stat as sockets) */
   readonly unixPaths = new Set<string>();
+  /** Loopback port, or AF_UNIX socket path → what starts the service that listens there, run by a connection that finds no listener */
+  readonly onDemand = new Map<number | string, () => Promise<unknown>>();
   private bound = new Map<number, { s: KSocket; use: PortUse }[]>();
   /** UDP port → the datagram sockets bound to it (loopback delivery, EADDRINUSE) */
   private udp = new Map<number, KDatagramSocket[]>();
@@ -1530,6 +1540,8 @@ export class NetStack {
     if (!key.startsWith('\0')) {
       const p = ops.resolve(key);
       if (typeof p === 'number') return p;
+      // (a service of the tab that starts when its socket is first connected to: postgres)
+      if (!this.unixListeners.has(p)) await this.onDemand.get(p)?.().catch(() => {});
       if (!(await ops.exists(p))) return -ENOENT;
       const w = (await ops.mayWrite?.(p)) ?? 0;
       if (w < 0) return w;

@@ -36,6 +36,12 @@ export const systemctlCmd: Command = {
     const subcommand = args[0];
     const serviceName = args[1]?.replace(/\.service$/, '');
 
+    // The tab's own PostgreSQL (src/postgres/service.ts) is not a unit file
+    if (serviceName && /^postgres(ql)?(@.*)?$/.test(serviceName)) {
+      const r = await (await import('./psql')).postgresUnit(ctx, subcommand, serviceName);
+      if (r !== null) return r;
+    }
+
     switch (subcommand) {
       case 'start': {
         if (!serviceName) {

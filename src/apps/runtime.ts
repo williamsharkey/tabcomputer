@@ -33,8 +33,10 @@ export interface AppsDeps {
 
 /**
  * Installing the Debian packages a manifest's `needs` names. The one place
- * that knows how: a faster way (a prebuilt layer per package) replaces
- * `realPackages` and nothing else changes.
+ * that knows how. `realPackages` asks the server for the layer of the set
+ * (src/debian/package-sets.ts: seconds when someone needed the same packages
+ * before, a build on the server with its progress when nobody did) and
+ * installs with apt when the server has none.
  */
 export interface Packages {
   /** Which of `names` are installed */
@@ -149,12 +151,19 @@ const realPackages: Packages = {
       const code = await sh('debian install');
       if (code) return code;
     }
+    // The layer of exactly this set, when the server has it or builds it
+    const sets = await import('../debian/package-sets');
+    const shell = appsDeps().shell;
+    const r = await sets.installPackageSet(fs, names, { progress: onLine, afterApply: async () => { await sets.afterLayer(fs, (n) => !!shell.commands.get(n)); } });
+    if (r.ok) { await fs.sync(); return 0; }
+    onLine(sets.fallbackSentence(names, r));
     const lists = await fs.readdir('/var/lib/apt/lists').catch(() => [] as string[]);
     if (!lists.some((f) => f.endsWith('_Packages'))) {
       const code = await sh('sudo apt-get update');
       if (code) return code;
     }
-    return sh(`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${names.join(' ')}`);
+    // (TABCOMPUTER_APT_LAYERS=0: the question was just asked; apt itself does not ask again)
+    return sh(`sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y ${names.join(' ')}`);
   },
 };
 

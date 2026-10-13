@@ -13,6 +13,7 @@ import {
   previewManifest, sampleCsv, samplePdf, sampleKind, PREVIEW_ID, draftText,
 } from '@shiro/apps/studio';
 import { shareFiles } from '@shiro/apps/share';
+import { jsonPlaces, locateProblems, problemPath } from '@shiro/apps/manifest-locate';
 
 const EXAMPLES = join(__dirname, '../../../apps/examples');
 const example = (id: string) => JSON.parse(readFileSync(join(EXAMPLES, id, 'app.json'), 'utf8')) as Record<string, unknown>;
@@ -271,5 +272,52 @@ describe('Try it and Share', () => {
     expect(share.readable).toBe(true);
     expect(share.url.startsWith(`${ORIGIN}/#`)).toBe(true);
     expect(share.url).toContain('run=convert%20%7Bin%7D');
+  });
+});
+
+describe('app mode in the Code app: app.json checked as it is typed', () => {
+  const at = (text: string, l: { from: number; to: number }) => text.slice(l.from, l.to);
+
+  it('finds every key path with where its key and its value are', () => {
+    const text = '{\n  "name": "A",\n  "columns": ["x", { "name": "y", "type": "nope" }],\n  "window": { "width": "wide" }\n}\n';
+    const j = jsonPlaces(text);
+    expect(j.error).toBeNull();
+    expect(text.slice(...j.places.get('name')!.key!)).toBe('"name"');
+    expect(text.slice(...j.places.get('window.width')!.value)).toBe('"wide"');
+    expect(text.slice(...j.places.get('columns[1].type')!.key!)).toBe('"type"');
+    expect(j.places.get('columns[0]')!.key).toBeNull();
+  });
+
+  it('underlines each problem at the key it names, in app check\'s words', () => {
+    const text = '{\n  "name": "Shrink",\n  "acept": [".pdf"],\n  "run": "gs -o {out} {in} {q}",\n  "window": { "width": "wide" }\n}\n';
+    const found = locateProblems(text);
+    const by = (re: RegExp) => found.find((p) => re.test(p.message))!;
+    expect(at(text, by(/^unknown key acept/))).toBe('"acept"');
+    expect(at(text, by(/^run: \{q\} is not known/))).toBe('"run"');
+    expect(at(text, by(/^window\.width must be/))).toBe('"width"');
+    // Each message is validateManifest's own
+    let own: string[] = [];
+    try { validateManifest(JSON.parse(text)); } catch (e) { own = (e as { problems: string[] }).problems; }
+    expect(found.map((p) => p.message).sort()).toEqual([...own].sort());
+  });
+
+  it('puts a missing key at the nearest key above it, the top line for the whole', () => {
+    const text = '{ "name": "Big table",\n  "table": "t.csv" }';
+    const [p] = locateProblems(text);
+    expect(p.message).toMatch(/^columns must be a list/);
+    expect(at(text, p)).toBe('{ "name": "Big table",');
+    const t2 = '{ "name": "X", "fields": { "a": { "type": "choice" } }, "run": "echo {a}" }';
+    const q = locateProblems(t2).find((x) => /choices/.test(x.message))!;
+    expect(at(t2, q)).toBe('"a"');
+    expect(problemPath('unknown key backend.socket (known: start)')).toBe('backend.socket');
+    expect(problemPath('columns[2].type must be one of')).toBe('columns[2].type');
+  });
+
+  it('says where the text stops being JSON', () => {
+    const text = '{\n  "name": "A",\n  "run": "cat {in}"\n  "accept": []\n}';
+    const [p] = locateProblems(text);
+    expect(p.message).toMatch(/^app\.json is not valid JSON: a , or a \} is expected here/);
+    expect(text.slice(p.from).startsWith('"accept"')).toBe(true);
+    expect(locateProblems('{"name": "Cat", "run": "cat {in}"}')).toEqual([]);
   });
 });

@@ -342,7 +342,7 @@ async function dev(
   if (rest.length > 1) { err('dev takes one folder'); return 2; }
   const runtime = await core(ctx);
   const dir = ctx.fs.resolvePath(rest[0] ?? '.', ctx.cwd);
-  let manifest = await loadManifest(ctx.fs, dir);
+  const manifest = await loadManifest(ctx.fs, dir);
   const installed = await findInstalled(ctx.fs, manifest.id);
   if (installed && installed.dir !== dir && runtime.instanceOf(manifest.id)?.dir === installed.dir) {
     err(`the installed ${manifest.id} is open: app stop ${manifest.id} first`);
@@ -377,40 +377,8 @@ async function dev(
     }
 
     // ── restart on save ──
-    const { PAGE_SET_TIMEOUT, PAGE_CLEAR_TIMEOUT } = await import('../node-compat/page-globals');
-    const changed = new Set<string>();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const pageRoot = !manifest.entry ? '' : /\.html?$/i.test(manifest.entry) ? manifest.entry.split('/').slice(0, -1).join('/') : manifest.entry === '.' ? '' : manifest.entry;
-    const apply = async () => {
-      timer = null;
-      const rels = [...changed];
-      changed.clear();
-      let restart = false;
-      if (rels.includes(MANIFEST_FILE)) {
-        try {
-          manifest = await loadManifest(ctx.fs, dir);
-          inst.setManifest(manifest);
-          out(`[app] ${MANIFEST_FILE} changed: read again`);
-          restart = !!inst.supervisor;
-        } catch (e) { out(`[app] ${MANIFEST_FILE} changed and is not valid; the app keeps the last valid one:\n${(e as Error).message}`); return; }
-      }
-      const backendFiles = rels.filter((r) => r !== MANIFEST_FILE && inst.supervisor && (manifest.entry === '.' || !pageRoot || !(r === pageRoot || r.startsWith(pageRoot + '/'))));
-      if (backendFiles.length) restart = true;
-      const shown = rels.slice(0, 3).join(', ') + (rels.length > 3 ? `, and ${rels.length - 3} more` : '');
-      if (restart && inst.supervisor) {
-        out(`[app] changed: ${shown}: restarting the backend`);
-        await inst.supervisor.restart();
-      } else out(`[app] changed: ${shown}: reloading the page`);
-      inst.reload();
-    };
-    stopWatch = ctx.fs.onChange((_ev, path) => {
-      if (path !== dir && !path.startsWith(dir + '/')) return;
-      const rel = path.slice(dir.length + 1);
-      if (!rel || /(^|\/)(node_modules|\.git)(\/|$)/.test(rel) || /(^|\/)\.[^/]*\.sw.$|~$/.test(rel)) return;
-      changed.add(rel);
-      if (timer) PAGE_CLEAR_TIMEOUT(timer);
-      timer = PAGE_SET_TIMEOUT(() => { void apply(); }, 200);
-    });
+    const { watchAppDir } = await import('../apps/dev-watch');
+    stopWatch = watchAppDir(ctx.fs as unknown as import('../apps/dev-watch').WatchFs, dir, inst, out);
 
     // Until Ctrl-C, or the app's last window closes
     await new Promise<void>((resolve) => {

@@ -58,8 +58,11 @@ export const CODE_HINT = 'File ▸ Open… in the menu bar opens a file or folde
 /** The same on a phone, where the menus are the pill's sheet (docs/DESKTOP.md "Phone layout") */
 export const CODE_HINT_PHONE = 'Tap the pill twice for the menu: File ▸ Open… opens a file or folder · ☰ (bottom left) shows the file list';
 
-/** `phone`: the desktop's phone layout: the file list starts closed and opens over the editor, controls are finger-sized */
-function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string, hint = '', phone = false): string {
+/**
+ * `phone`: the desktop's phone layout: the file list starts closed and opens over the editor, controls are finger-sized.
+ * `app`: the folder is an app's (src/apps/app-pane.ts): its app.json is checked as it is typed, and the bar has Run and Share.
+ */
+export function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string, hint = '', phone = false, app = false): string {
   const filesJson = JSON.stringify(files);
   const cwdJson = JSON.stringify(cwd);
 
@@ -122,6 +125,7 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
   #lab button[hidden] { display: none; }
   #lab-submit { background: #89b4fa; border-color: #89b4fa; color: #11111b; font-weight: 600; }
   #lab-submit:hover { background: #b4befe; }
+  .cm-app-problem { text-decoration: underline wavy #f38ba8; text-decoration-skip-ink: none; text-underline-offset: 3px; }
   #lab-msg { flex: 1 1 12em; min-width: 0; color: #a6adc8; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
   #lab-msg.ok { color: #a6e3a1; }
   #lab-msg.bad { color: #f38ba8; }
@@ -144,6 +148,8 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
     <button id="lab-run" type="button" title="Save, then run the lab's run command in the Terminal">Run</button>
     <button id="lab-test" type="button" title="Save, then run the lab's tests in the Terminal">Test</button>
     <button id="lab-submit" type="button" title="Save, commit and push to GitHub">Submit</button>
+    <button id="lab-app-run" type="button" title="Save, then load the app again" hidden>Run</button>
+    <button id="lab-app-share" type="button" title="A link to the app" hidden>Share</button>
     <span id="lab-msg" role="status" aria-live="polite"></span>
   </div>
   <div id="tabs"></div>
@@ -164,17 +170,26 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
   var $ = function (id) { return document.getElementById(id); };
   var lab = window.__lab = { saveAll: function () {} };
   var send = function (m) { window.parent.postMessage(m, '*'); };
-  var actions = ['run', 'test', 'submit'];
+  var actions = ['run', 'test', 'submit', 'app-run', 'app-share'];
   actions.forEach(function (a) {
     $('lab-' + a).onclick = function () { lab.saveAll(); send({ type: 'shiro-editor-action', action: a }); };
   });
+  // The bar shows for a lab (src/lab.ts) or an app's folder (src/apps/app-pane.ts), or both
+  var shown = { lab: false, app: false, labName: '', appName: '' };
+  var bar = function () { $('lab').hidden = !(shown.lab || shown.app); $('lab-name').textContent = shown.lab ? shown.labName : shown.appName; };
   var say = function (text, cls) { var m = $('lab-msg'); m.textContent = text || ''; m.className = cls || ''; };
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (e.source !== window.parent || !d) return;
-    if (d.type === 'shiro-editor-lab') {
-      $('lab').hidden = !d.show;
-      $('lab-name').textContent = d.name || '';
+    if (d.type === 'shiro-editor-app') {
+      shown.app = !!d.show;
+      shown.appName = d.name || '';
+      $('lab-app-run').hidden = $('lab-app-share').hidden = !d.show;
+      bar();
+    } else if (d.type === 'shiro-editor-lab') {
+      shown.lab = !!d.show;
+      shown.labName = d.name || '';
+      bar();
       $('lab-run').hidden = !d.run;
       $('lab-test').hidden = !d.test;
       $('lab-submit').hidden = !d.submit;
@@ -200,11 +215,12 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
 const CDN = ${JSON.stringify(CM_CDN)};
 const FILES = ${filesJson};
 const CWD = ${cwdJson};
+const APP_MODE = ${app ? 'true' : 'false'};
 
 // Dynamic import from CDN
 const [
-  { EditorState },
-  { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine, rectangularSelection, crosshairCursor },
+  { EditorState, StateEffect, StateField },
+  { EditorView, Decoration, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine, rectangularSelection, crosshairCursor },
   { defaultKeymap, history, historyKeymap, indentWithTab },
   { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, foldKeymap },
   { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap },
@@ -234,6 +250,37 @@ async function getLang(name) {
   } catch {}
   return javascript(); // fallback
 }
+
+// An app's folder: app.json is checked as it is typed, each problem underlined at its key (src/apps/manifest-locate.ts)
+const isManifest = (p) => APP_MODE && (p || '').split('/').pop() === 'app.json';
+const setProblems = StateEffect.define();
+const problemMarks = StateField.define({
+  create: () => Decoration.none,
+  update(marks, tr) {
+    marks = marks.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setProblems)) continue;
+      const len = tr.state.doc.length;
+      const ranges = [];
+      for (const p of e.value) {
+        const from = Math.max(0, Math.min(p.from, len)), to = Math.max(0, Math.min(Math.max(p.to, p.from + 1), len));
+        if (to > from) ranges.push(Decoration.mark({ class: 'cm-app-problem', attributes: { title: p.message } }).range(from, to));
+      }
+      marks = Decoration.set(ranges, true);
+    }
+    return marks;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+const problemsFor = new Map(); // path -> [{ from, to, message }]
+let checkTimer = 0;
+const askCheck = (path, text) => { clearTimeout(checkTimer); checkTimer = setTimeout(() => window.parent.postMessage({ type: 'shiro-editor-text', path, content: text }, '*'), 250); };
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (e.source !== window.parent || !d || d.type !== 'shiro-editor-problems' || typeof d.path !== 'string' || !Array.isArray(d.items)) return;
+  problemsFor.set(d.path, d.items.map((p) => ({ from: Number(p.from) || 0, to: Number(p.to) || 0, message: String(p.message || '') })));
+  if (d.path === activeFile && view) view.dispatch({ effects: setProblems.of(problemsFor.get(d.path)) });
+});
 
 // State
 const openFiles = new Map(); // path -> { content, view, modified, original }
@@ -342,6 +389,7 @@ async function openFile(path) {
         highlightSelectionMatches(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         lang,
+        problemMarks,
         oneDark,
         keymap.of([
           ...closeBracketsKeymap,
@@ -355,6 +403,7 @@ async function openFile(path) {
         ]),
         EditorView.updateListener.of(update => {
           if (update.docChanged && activeFile) {
+            if (isManifest(activeFile)) askCheck(activeFile, update.state.doc.toString());
             const state = openFiles.get(activeFile);
             if (state) {
               state.content = update.state.doc.toString();
@@ -392,6 +441,10 @@ function switchTo(path) {
     parent: editorContainer,
   });
   view.focus();
+  if (isManifest(path)) {
+    if (problemsFor.has(path)) view.dispatch({ effects: setProblems.of(problemsFor.get(path)) });
+    askCheck(path, view.state.doc.toString());
+  }
 
   statusFile.textContent = path;
   renderTabs();
@@ -536,19 +589,49 @@ export const codeEditorCmd: Command = {
       const phone = !!(wm as { phone?: boolean }).phone;
       let hint = '';
       try { if (!localStorage.getItem(CODE_HINT_KEY)) { hint = phone ? CODE_HINT_PHONE : CODE_HINT; localStorage.setItem(CODE_HINT_KEY, String(Date.now())); } } catch {}
+      const codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
+      // An app's folder (docs/APPS.md "App mode in the Code app"): the app runs in a pane beside the editor
+      const appDir = await ctx.fs.exists(`${codeDir === '/' ? '' : codeDir}/app.json`).catch(() => false) ? codeDir : '';
+      const wa = (wm as { workArea?(): { width: number; height: number } }).workArea?.();
       const dwin = wm.createWindow({
-        appId: 'code', title, width: 960, height: 620, minWidth: 360, minHeight: 220,
-        content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint, phone) },
+        appId: 'code', title,
+        width: appDir && wa ? Math.min(1240, Math.max(960, wa.width - 40)) : 960, height: appDir && wa ? Math.min(700, Math.max(620, wa.height - 60)) : 620, minWidth: 360, minHeight: 220,
+        content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint, phone, !!appDir) },
       });
       // session restore opens it again; File ▸ Open… starts in its folder
       (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };
-      const codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
       (dwin as { codeDir?: string }).codeDir = codeDir;
       // Saves from this window's editor only (another Code window has its own files), in the order they were sent
       let saving: Promise<void> = Promise.resolve();
       let lab: import('../lab').LabEditor | null = null;
+      let pane: import('../apps/app-pane').AppPane | null = null;
+      const post = (msg: Record<string, unknown>) => dwin.iframe?.contentWindow?.postMessage(msg, '*');
+      const sayApp = () => { if (pane) post({ type: 'shiro-editor-app', show: true, name: pane.name() || appDir.split('/').pop() }); };
+      /** The app.json as it is typed: its problems, each at its key, for the editor to underline and the pane to list */
+      const checkManifest = async (path: string, content: string) => {
+        if (await savePathFor(path) !== `${appDir}/app.json`) return;
+        const [{ locateProblems }, { pageBeside }] = await Promise.all([import('../apps/manifest-locate'), import('../apps/registry')]);
+        const has = new Set<string>();
+        for (const rel of ['index.html', 'public/index.html']) if (await ctx.fs.exists(`${appDir}/${rel}`).catch(() => false)) has.add(rel);
+        const items = locateProblems(content, { id: appDir.split('/').pop(), page: pageBeside((rel) => has.has(rel)) });
+        post({ type: 'shiro-editor-problems', path, items });
+        pane?.problems(items.map((i) => i.message));
+      };
       const onMessage = (e: MessageEvent) => {
         if (e.source !== dwin.iframe?.contentWindow || !e.data) return;
+        if (appDir && e.data.type === 'shiro-editor-text' && typeof e.data.path === 'string' && typeof e.data.content === 'string') { void checkManifest(e.data.path, e.data.content); return; }
+        if (appDir && e.data.type === 'shiro-editor-ready') sayApp();
+        if (appDir && e.data.type === 'shiro-editor-action' && (e.data.action === 'app-run' || e.data.action === 'app-share')) {
+          const action = e.data.action;
+          void saving.then(async () => {
+            if (!pane) return;
+            if (action === 'app-share') { await pane.share(); return; }
+            const text = await pane.run();
+            post({ type: 'shiro-editor-result', ok: null, text });
+            sayApp();
+          });
+          return;
+        }
         if (e.data.type === 'shiro-editor-save') {
           const { path, content } = e.data;
           saving = saving.then(async () => {
@@ -597,7 +680,17 @@ export const codeEditorCmd: Command = {
           },
         });
       });
-      dwin.on('close', () => { closed = true; window.removeEventListener('message', onMessage); lab?.dispose(); });
+      if (appDir) {
+        const body = (dwin as { body?: HTMLElement }).body;
+        if (body) void import('../apps/app-pane').then(({ appPane }) => appPane({ fs: ctx.fs, shell: ctx.shell, dir: appDir, container: body })).then((p) => {
+          if (closed) { p.dispose(); return; }
+          pane = p;
+          sayApp();
+          // (the name comes from app.json once it is read)
+          setTimeout(sayApp, 1500);
+        });
+      }
+      dwin.on('close', () => { closed = true; window.removeEventListener('message', onMessage); lab?.dispose(); pane?.dispose(); });
       return 0;
     }
 

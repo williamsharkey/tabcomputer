@@ -15,6 +15,7 @@ import { isEmptyCell, parseJupyterArgs, pyString, translateCell } from '@shiro/n
 import { highlightPython, markdownToHtml } from '@shiro/notebook/markup';
 import { ControlFile } from '@shiro/notebook/kernel';
 import { parseLabConfig } from '@shiro/lab';
+import { JUPYTER_BUILT_IN } from '@shiro/commands/pip';
 import { NB_KERNEL_PY, NB_MPL_PY, NB_STUBS } from '@shiro/pyodide-worker/notebook-py';
 
 /** A notebook as Jupyter writes it: sorted keys, one space of indent, sources as lines */
@@ -434,5 +435,12 @@ describe('a lab that names a notebook', () => {
     expect(parseLabConfig('{"lab":1,"notebook":"/etc/x.ipynb"}').problems[0]).toMatch(/inside the repository/);
     expect(parseLabConfig('{"lab":1,"notebook":"main.py"}').problems[0]).toMatch(/must name a \.ipynb file/);
     expect(parseLabConfig('{"lab":1,"notebook":7}').problems[0]).toMatch(/notebook must be the path/);
+  });
+});
+
+describe('pip install jupyter', () => {
+  it("Jupyter's own programs and its kernel package are the built-in ones; other packages are not", () => {
+    for (const spec of ['jupyter', 'jupyterlab', 'JupyterLab>=4', 'notebook==7.2.1', 'ipykernel', 'jupyter-server', 'jupyter_core', 'notebook[test]', 'nbclient ; python_version > "3.8"']) expect(JUPYTER_BUILT_IN.test(spec), spec).toBe(true);
+    for (const spec of ['jupyterlab-widgets', 'notebook-shim', 'numpy', 'ipywidgets', 'ipython', 'nbformat', 'jupytext']) expect(JUPYTER_BUILT_IN.test(spec), spec).toBe(false);
   });
 });

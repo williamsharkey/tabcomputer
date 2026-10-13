@@ -15,6 +15,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
 | [CLASSROOM.md](CLASSROOM.md) | The classroom workspace: lab links (`?run=lab:owner/repo`), `.tabcomputer/lab.json`, Run / Test / Submit in the Code app, "Not saved to GitHub yet", sign-out for a shared computer |
+| [NOTEBOOK.md](NOTEBOOK.md) | The Notebook app: Jupyter notebooks (.ipynb) opened, run and saved on the desktop, `jupyter notebook`, what runs the cells, the file format, what is not Jupyter, and why not JupyterLite |
 | [SCHOOL_IT.md](SCHOOL_IT.md) | For a school's IT: what the tab connects to, the hosts to allow, that nothing is installed, private network mode, shared computers |
 | [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links, the apps the site ships and their dock entries, `app share` |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |

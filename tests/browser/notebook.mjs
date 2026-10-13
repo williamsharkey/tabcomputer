@@ -6,7 +6,8 @@
 // Python's state stays between cells, Stop, Restart, that a long cell leaves
 // the page responsive, Save (nbformat 4, what git sees), and the notebook
 // after a reload. Then `jupyter notebook`, `jupyter execute`, `code FILE.ipynb`.
-// Needs the Pyodide distribution (cdn.jsdelivr.net unless the build serves it).
+// Needs the Pyodide distribution: the server's own copy, which it fetches from
+// cdn.jsdelivr.net the first time, or that CDN.
 //
 //   npx vite build && PORT=6521 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/notebook.mjs [http://localhost:6521/] [--shots DIR] [--save-to FILE]
@@ -222,6 +223,14 @@ try {
   check(await win.locator('.nb-stdin').count() === 0, 'Stop ends a cell that waits in input()');
   await win.locator('.nb-cell').nth(7).locator('textarea').click();
   await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type("import asyncio\nprint('waiting')\nawait asyncio.sleep(60)");
+  await page.keyboard.press('Control+Enter');
+  await until(page, 'the await to start', (x) => /waiting/.test(x.cells[7].out) && x.state === 'busy');
+  await win.locator('[data-act=stop]').click();
+  await until(page, 'Stop during an await', (x) => /KeyboardInterrupt/.test(x.cells[7].out) && x.state === 'idle', 20_000);
+  ok('Stop ends a cell that waits in an await');
+  await win.locator('.nb-cell').nth(7).locator('textarea').click();
+  await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('total * 2');
   await page.keyboard.press('Control+Enter');
   await until(page, 'a cell after Stop', (x) => x.cells[7].out.trim() === '1012');
@@ -294,8 +303,8 @@ try {
   check(small.cells[0].execution_count === 1 && small.cells[0].outputs.length === 2, 'jupyter execute --inplace saves the outputs in the file');
   r = await sh(page, `cd ${DIR} && jupyter nbconvert --to script small.ipynb && cat small.py`);
   check(/import numpy as np/.test(r.out), 'jupyter nbconvert --to script writes the code cells as a .py file', r.out);
-  r = await sh(page, 'jupyter --version; pip install jupyterlab 2>&1 | tail -3');
-  console.log(`  note  pip install jupyterlab says: ${r.out.trim().split('\n').slice(-2).join(' / ')}`);
+  r = await sh(page, 'pip install jupyterlab');
+  check(r.code === 0 && /Notebooks are built in here: jupyterlab was not installed and is not needed/.test(r.out), 'pip install jupyterlab says notebooks are built in, and exits 0', r.out);
 
   if (errors.length) throw new Error(`page errors:\n${errors.slice(0, 5).join('\n')}`);
 } catch (e) {

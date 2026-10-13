@@ -195,8 +195,13 @@ ${bootSection(ctx, name)}
   (Python 3.13 too; a second or so slower to start, the same files, \`plt.show()\` opens
   a window). There: no sockets, no subprocess, no threads. \`python3 --pyodide ...\` or
   \`TABCOMPUTER_PYTHON=pyodide\` forces it (pytest on code that imports numpy, the
-  REPL), \`--wasi\` forces the built-in one. check50, Jupyter and other compiled
+  REPL), \`--wasi\` forces the built-in one. check50 and other compiled
   packages need Debian's Python (\`toolchain install python\`).
+- Jupyter notebooks are built in: \`jupyter notebook FILE.ipynb\` opens one in the
+  Notebook app (cells run in Pyodide on the same files), and \`jupyter execute
+  [--inplace] FILE.ipynb\` runs one in a terminal and prints its outputs. No
+  server, no \`pip install jupyter\`. Not there: widgets, JavaScript outputs,
+  kernels other than Python.
 - \`gui\` lists X11 desktop apps; \`gui NAME\` opens one in a window.
 
 ## Useful here

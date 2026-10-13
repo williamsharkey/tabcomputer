@@ -8,6 +8,7 @@
 
 import { Command, CommandContext } from './index';
 import { createServerWindow, commandLine } from '../server-window';
+import { noteEdited } from '../session-log';
 
 const CM_CDN = 'https://esm.sh';
 
@@ -540,7 +541,8 @@ export const codeEditorCmd: Command = {
         if (e.data.type === 'shiro-editor-save') {
           const { path, content } = e.data;
           saving = saving.then(async () => {
-            try { await ctx.fs.writeFile(await savePathFor(path), content); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
+            // (noteEdited: `link` records a file saved here as it is when the link is made, src/session-log.ts)
+            try { const to = await savePathFor(path); await ctx.fs.writeFile(to, content); noteEdited(to); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
           });
         } else if (e.data.type === 'shiro-editor-open-notebook' && typeof e.data.path === 'string') {
           void savePathFor(e.data.path).then((p) => notebooks?.openApp?.('notebook', { path: p }));
@@ -605,6 +607,7 @@ export const codeEditorCmd: Command = {
       const savePath = await savePathFor(path);
       try {
         await ctx.fs.writeFile(savePath, content);
+        noteEdited(savePath);
       } catch (err: any) {
         console.error(`code: save error: ${err.message}`);
       }

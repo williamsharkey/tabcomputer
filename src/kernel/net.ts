@@ -24,6 +24,7 @@ import { retain, release, type FdTable, type OpenFile } from './fd';
 import type { Kernel } from './kernel';
 import { klog, LOG_WARNING } from './klog';
 import { AF_NETLINK, KNetlinkSocket, netlinkSocket } from './netlink';
+import { tallyRelay } from '../net-tally';
 import {
   EPERM, EINTR, EIO, EBADF, EAGAIN, EACCES, EFAULT, EINVAL, ENOTTY, EPIPE, ETIMEDOUT, EPROTO, ENOTSOCK, EDESTADDRREQ,
   EMSGSIZE, ENOPROTOOPT, EPROTONOSUPPORT, EPROTOTYPE, EOPNOTSUPP, EAFNOSUPPORT, EADDRINUSE, EADDRNOTAVAIL, ENETDOWN,
@@ -389,6 +390,8 @@ class RelayPeer implements StreamPeer {
         return;
       }
       const data = new Uint8Array(ev.data as ArrayBuffer);
+      // (what `link` says a setup pulled through the relay: src/net-tally.ts)
+      tallyRelay(this.sock.remote?.address ?? '', data.length);
       this.inflight += data.length;
       this.sock._deliver(data);
       if (!this.stalled && this.inflight >= this.stack.config.relayWindow) {

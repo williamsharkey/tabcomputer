@@ -15,6 +15,7 @@ import { activeProfile } from './profile';
 import { pinTerminalTimers } from './node-compat/page-globals';
 import { safeMode, safeModeBanner, bootStep } from './safe-mode';
 import * as agentResume from './agent-resume';
+import { sessionEnd, sessionStart } from './session-log';
 import { frozenLastTimeNotice } from './watchdog';
 import { installFilePaste, pasteImagePaths } from './terminal-file-paste';
 import { readClipboardImage } from './utils/clipboard';
@@ -848,18 +849,22 @@ export class ShiroTerminal {
     let stdout = '';
     let stderr = '';
 
-    const exitCode = await this.shell.execute(
-      command,
-      (s: string) => {
-        stdout += s;
-        this.term.write(s);
-      },
-      (s: string) => {
-        stderr += s;
-        this.term.write(`\x1b[31m${s}\x1b[0m`);
-      },
-      true, // remote command
-    );
+    const typed = sessionStart(command, this.shell.cwd);
+    let exitCode = 1;
+    try {
+      exitCode = await this.shell.execute(
+        command,
+        (s: string) => {
+          stdout += s;
+          this.term.write(s);
+        },
+        (s: string) => {
+          stderr += s;
+          this.term.write(`\x1b[31m${s}\x1b[0m`);
+        },
+        true, // remote command
+      );
+    } finally { sessionEnd(typed, exitCode, this.shell.cwd); }
 
     this.showPrompt();
     return { stdout, stderr, exitCode };
@@ -872,9 +877,13 @@ export class ShiroTerminal {
   private async runLine(line: string): Promise<number> {
     agentResume.lineStarted(this, line, this.shell.cwd, this.shell.env, this.shell.fs);
     this.foregroundLine = line;
+    // What `link` makes its script from (src/session-log.ts): the line, where, and how it ended
+    const typed = sessionStart(line, this.shell.cwd);
+    let status = 1;
     try {
-      return await this.shell.execute(line, (s: string) => this.term.write(s));
+      return status = await this.shell.execute(line, (s: string) => this.term.write(s));
     } finally {
+      sessionEnd(typed, status, this.shell.cwd);
       this.foregroundLine = null;
       agentResume.lineEnded(this);
     }

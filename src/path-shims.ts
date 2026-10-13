@@ -33,7 +33,7 @@ export const SHIM_COMMANDS = [
  * the kernel runs the builtin of that name (kernel.ts builtinLoader) and
  * Debian's sh is never involved; Debian's install leaves them in place.
  */
-export const ALWAYS_SHIMS = ['xdg-open', 'sensible-browser', 'xclip', 'xsel', 'pbcopy', 'pbpaste', 'wl-copy', 'tabcomputer-gdbserver'];
+export const ALWAYS_SHIMS = ['xdg-open', 'sensible-browser', 'xclip', 'xsel', 'pbcopy', 'pbpaste', 'wl-copy', 'tabcomputer-gdbserver', 'link'];
 /** The `#!` of those files: no such program, so the kernel and the shell run the builtin the file is named after. */
 export const BUILTIN_SHIM_INTERP = '/usr/libexec/tabcomputer/builtin';
 /** Is `path` a builtin's shim file (`#!/usr/libexec/tabcomputer/builtin`) rather than a program? Small files only. */

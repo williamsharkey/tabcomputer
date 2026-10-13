@@ -687,6 +687,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   const systemMenu = (): MenuSpec => ({ title: 'System', items: [
     { label: 'About This Computer', action: () => void wm.openApp('about') },
     { label: 'How Your Data Flows', action: () => void wm.openApp('dataflow') },
+    // `link` (src/commands/link.ts): the commands typed in this tab's terminals, as one address
+    { label: 'Share This Setup as a Link…', action: () => void import('../commands/link').then((m) => m.openLinkWindow(deps.fs, deps.shell.env['HOME'] || '/home/user', deps.shell.cwd)).catch((e) => console.warn('[link]', e)) },
     'separator',
     ...guestItems(),
     { label: 'Settings…', shortcut: 'Alt+Shift+,', action: () => void wm.openApp('settings') },

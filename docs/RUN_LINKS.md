@@ -72,6 +72,65 @@ Code: `src/link-fragment.ts` (what the part after `#` means, with no DOM), `src/
 
 Addresses of the page's examples, with `https://tabcomputer.com` as the site (`link-fragment.test.ts` prints them): a Python one-liner 68 characters, a Flask hello 285, the jq playground 531, the expenses table 215, a C hello 460.
 
+### link: a link from what you did
+
+`link` (and System → "Share This Setup as a Link…") writes the shortest script that gets another person to where this tab is, and the address that carries it. It reads what was typed at this tab's terminals since the tab was new. It works by rules; no model reads the session.
+
+Code: `src/session-log.ts` (what is recorded), `src/link-trim.ts` (the rules, with no DOM and no filesystem), `src/net-tally.ts` (the downloads), `src/commands/link.ts` (the command), `src/link-ui.ts` (the window). Tests: `tests/tests/shiro-vitest/link-trim.test.ts` with six recorded sessions in `fixtures/link-sessions.ts`, and the `link` part of `tests/browser/link-is-computer.mjs`.
+
+```
+link              the script, which form it fits, what it downloaded here, and the link
+link --print      the link only
+link --script     the script only
+link --why        each line that was left out, and why
+link -o FILE      write the script to FILE; edit it, then: link FILE
+link FILE         the link for the script in FILE
+```
+
+On the desktop `link` also opens a window with the script in a box. The person can change the script there; the size line and the link follow. Without a desktop, `link -o setup.sh`, an editor, and `link setup.sh` do the same. (`link FILE1 FILE2` is still link(1): a second name for a file.)
+
+**What is recorded.** The terminal records each line a person entered (`runLine` in `src/terminal.ts`): the line, the shell's folder before and after, the exit status, the start and end times, the files that changed while it ran, and what the page downloaded while it ran. The files come from the filesystem's own change events (`FileSystem.onChange`); nothing is scanned and no copy of a file is kept. The Code app says which files it saved (`noteEdited`). The log is in `sessionStorage`: a reload keeps it, and closing the tab ends it. It is never sent anywhere.
+
+**The rules.**
+
+| A line | What happens to it |
+| --- | --- |
+| It succeeded and wrote, made or removed files (a clone, a build, a redirect) | Kept. |
+| It is an install by name (`pip`, `npm`, `apt`, `pkg`, `toolchain`, `app` … `install`) and succeeded | Kept. |
+| It set the shell up (`export`, `alias`, `source`, `X=1`) | Kept. |
+| It failed | Dropped. |
+| It only looked (`ls`, `cat`, `pwd`, `git status`, `--help`, `man`, `history`, `clear`, and others without a redirect) | Dropped. |
+| It succeeded and changed nothing | Dropped. |
+| It is entered again later, word for word, in the same folder | The last one stays. |
+| `cd` | Never kept as typed. Each kept line gets the folder it ran in: one `cd` where the folder changes, and one at the end for where the shell is now. A `cd` that nets out leaves nothing. |
+| An editor (`vim`, `nano`, the Code app …) | Not replayed. Each file it was started on and wrote is recorded as a here-document with what the file holds now, where it was first edited, if it is text of at most 20,000 characters. A larger or binary file is named under "not in the link". |
+| Work inside a program (`claude`, `python3` alone, `ssh`) | Dropped, and named under "not in the link" when it changed files. |
+| A program that is still running, or that ran for 3 seconds or more until Ctrl-C (a server) | The last one is kept, at the end of the script. |
+| It may hold a secret (`export API_KEY=…`, `--token …`, text shaped like a token) | Dropped, and the link says which name. |
+| `link` | Dropped. |
+| A line that sourced a link's own commands (`. ~/run/sh-…/.run-link`) | Replaced by those commands. |
+
+A change that belongs to no line is ignored, so a download in the background does not make a line look as if it changed something. While boot's own preinstalls run, a change outside home belongs to no line (`sessionBackground`).
+
+**The size line** says which form the script fits: a link a person can read (at most 2,000 characters), a compressed link (`#gz:`, at most 48,000 characters after the `#`), or neither. For the last, "Make a gist" keeps the script as a secret gist of the person's GitHub account and gives `#gist:USER/ID`. It asks for the GitHub sign-in with the desktop's sheet when the tab has none. That button is the one place `link` sends a script anywhere: to GitHub, through this site's GitHub proxy unless the network mode is private.
+
+**The downloads line** says what the kept lines downloaded here and by which path: straight from the browser (npm, PyPI, GitHub), from this site's own files (Debian packages, Pyodide, tabcomputer packages), or through this site's relay (the TCP relay, the git proxy). More than 5 MB through the relay gets a warning: the relay is the part that costs this site each time someone opens the link. The counts come from the browser's own record of the page's requests (Resource Timing) and from the relay's transport (`tallyRelay` in `src/kernel/net.ts`); no request is intercepted. A site that does not let its sizes be read is counted in files only. A Worker's own requests (Pyodide loading a package) are not counted.
+
+**The six recorded sessions** (`link-trim.test.ts` prints these; "too many" is lines kept that a person would still take out):
+
+| Session | Typed | Kept | Dropped | Files as here-documents | Too many | Link |
+| --- | --- | --- | --- | --- | --- | --- |
+| A Flask hello | 11 | 3 | 8 | 1 | 0 | readable, 316 characters |
+| A Vite app | 12 | 4 | 8 | 1 | 0 | readable, 306 |
+| A C lab with an edited file | 13 | 2 | 11 | 1 | 0 | readable, 429 |
+| A clone and a build | 14 | 7 | 7 | 0 | 0 | readable, 254 |
+| A session full of mistakes | 24 | 8 | 16 | 0 | 2 | readable, 214 |
+| A session with a large binary file | 6 | 3 | 3 | 2 | 0 | readable, 458 |
+
+The two lines kept too many are `touch main.py` and `rm main.py`: each changed a file, and the rules do not see that together they changed nothing.
+
+Not built: a QR code for the link, "Tidy with Claude", files that reached the tab by drag and drop or upload (they are not recorded), and a count of what a Worker downloads.
+
 ## Trust
 
 A tab can hold Claude and GitHub tokens and the person's files, so a link never runs code that nobody reviewed without asking.

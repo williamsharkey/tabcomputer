@@ -428,6 +428,134 @@ if (wants('page')) for (const device of DEVICES) {
   await done(ctx, `${D} page`);
 }
 
+// ── link: a link from what was done, opened in a second fresh profile ──
+/** Enter a line at a Terminal window's prompt, as a person would, and wait for it to end */
+async function typeLine(page, line, ms = 30_000) {
+  await page.evaluate(async (line) => {
+    const wm = window.__shiroDesktop;
+    const term = () => wm.windows().map((w) => w.content?.activeTerminal?.()).find(Boolean);
+    if (!term()) await wm.openApp('terminal');
+    for (let i = 0; i < 100 && !term(); i++) await new Promise((r) => setTimeout(r, 50));
+    window.__linkTerm = term();
+    window.__linkTerm.injectInput(line + '\r');
+  }, line);
+  await page.waitForTimeout(150);
+  await page.waitForFunction(() => window.__linkTerm.foregroundLine === null, null, { timeout: ms });
+}
+/** Keys for a program that reads them one at a time (an editor) */
+const keys = async (page, text) => { for (const ch of text) { await page.evaluate((c) => window.__linkTerm.injectInput(c), ch); await page.waitForTimeout(25); } };
+const linkWindow = (page) => page.evaluate(() => {
+  const el = document.querySelector('.tc-link');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const part = (n) => el.querySelector(`[data-part=${n}]`);
+  return {
+    script: part('script').value, size: part('size').textContent, downloads: part('downloads')?.textContent ?? '', link: part('link').value,
+    dropped: part('dropped')?.querySelector('summary')?.textContent ?? '', why: [...(part('dropped')?.querySelectorAll('li') ?? [])].map((li) => li.textContent),
+    gist: !el.querySelector('[data-act=gist]').hidden, left: Math.round(r.left), right: Math.round(r.right), sw: el.scrollWidth, cw: el.clientWidth,
+  };
+});
+
+if (wants('link')) for (const device of DEVICES) {
+  const D = device.name;
+  const mark = secret(`zqlink${D}mark`);
+  const vim = secret(`zqvim${D}mark`);
+  const ctx = await newContext(device);
+  let page = await open(ctx, base);
+  await booted(page);
+  // a short session with what a person does: a mistake, a look around, a cd that nets out, an editor
+  await typeLine(page, 'mkdir zqsite && cd zqsite');
+  await typeLine(page, `echo '<h1>${mark}</h1>' > index.html`);
+  await typeLine(page, 'ls');
+  await typeLine(page, 'cat nope.txt');
+  await typeLine(page, 'cd /tmp');
+  await typeLine(page, 'cd ~/zqsite');
+  // vi: insert a line, save, quit
+  await page.evaluate(() => window.__linkTerm.injectInput('vi notes.txt\r'));
+  await page.waitForTimeout(1500);
+  await keys(page, `i${vim}\x1b:wq\r`);
+  const edited = await until(page, async () => { const r = await side(page, 'cat ~/zqsite/notes.txt'); return r.o.includes(vim) ? r.o : null; }, 15_000);
+  check(`${D} link: the editor wrote its file (the session has an edited file)`, !!edited, String(edited));
+  await page.waitForFunction(() => window.__linkTerm.foregroundLine === null, null, { timeout: 15_000 }).catch(() => {});
+  await typeLine(page, `echo '<h1>${mark}</h1>' > index.html`);
+  await typeLine(page, 'pwd');
+
+  // (the line entered twice stays where it was entered last, after the editor's file)
+  const want = `mkdir zqsite && cd zqsite\ncat > notes.txt <<'EOF'\n${vim}\nEOF\necho '<h1>${mark}</h1>' > index.html\n`;
+  const script = await side(page, 'link --script');
+  check(`${D} link: the script keeps what changed something, in the folder it ran in, with the editor's file as it is now`, script.o === want + 'cd ~', script.o);
+  const why = (await side(page, 'link --why')).o;
+  check(`${D} link: link --why says why each other line went`, /cat nope\.txt\n\s+left out: it failed \(status 1\)/.test(why) && /ls\n\s+left out: looking around/.test(why) && /cd \/tmp\n\s+left out: a change of folder/.test(why)
+    && /vi notes\.txt\n\s+left out: an editor/.test(why) && /left out: entered again later/.test(why), why);
+  const printed = (await side(page, 'link --print')).o;
+  check(`${D} link: link --print is an address with the script after its #, readable`, printed.startsWith(`${origin}/#mkdir%20zqsite%20&&%20cd%20zqsite%0Acat%20%3E%20notes.txt%20`) && printed.endsWith('%0Acd%20~') && printed.length < 2000, printed);
+
+  // typed at the prompt: the window, with the script to edit
+  await typeLine(page, 'link');
+  await page.waitForSelector('.tc-link', { timeout: 15_000 }).catch(() => null);
+  let w = await linkWindow(page);
+  // (typed in ~/zqsite, so the script ends there and needs no last cd)
+  check(`${D} link: the Link window shows the script, the form it fits and what it downloaded`, !!w && w.script === want && /^The script fits in a link a person can read: \d+ characters\.$/.test(w.size)
+    && w.downloads === 'What the script downloaded here: The commands in the link downloaded nothing here.' && w.link === `${origin}/#${printed.slice(origin.length + 2).replace(/%0Acd%20~$/, '')}`, JSON.stringify(w));
+  check(`${D} link: it says how many lines were left out, and why`, !!w && /^\d+ lines were left out$/.test(w.dropped) && w.why.some((x) => x === 'cat nope.txt: it failed (status 1)') && w.why.some((x) => x === 'link: the link command itself'), JSON.stringify(w && [w.dropped, w.why]));
+  check(`${D} link: the window fits`, !!w && w.left >= 0 && w.right <= device.viewport.width && w.sw <= w.cw, JSON.stringify(w && { left: w.left, right: w.right, sw: w.sw, cw: w.cw }));
+  await shot(page, `${D}-link-window`);
+  // the person changes the script: the link follows
+  await page.fill('.tc-link [data-part=script]', want + `echo ${mark} > edited.txt\n`);
+  const made = await until(page, async () => { const x = await linkWindow(page); return x.link.endsWith('edited.txt') ? x : null; }, 5000);
+  check(`${D} link: an edit in the window changes the link and its length`, !!made && made.size === `The script fits in a link a person can read: ${made.link.length} characters.`, JSON.stringify(made && [made.size, made.link.length]));
+  const link = made?.link ?? '';
+  // a script too long for any link: only then is a gist offered, and it needs the person's click
+  check(`${D} link: no gist is offered for a script that fits a link`, !!made && !made.gist);
+  await page.evaluate(() => { try { localStorage.setItem('tabcomputer_github_token', 'gho_standin'); } catch {} });
+  let posted = null;
+  // (this site's GitHub proxy, or GitHub itself where the network mode is private)
+  for (const where of ['**/api/github/gists', 'https://api.github.com/gists']) await ctx.route(where, (route) => {
+    posted = { method: route.request().method(), auth: route.request().headers().authorization, body: JSON.parse(route.request().postData() ?? '{}') };
+    return route.fulfill({ status: 201, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ id: GIST_SH, owner: { login: 'octocat' } }) });
+  });
+  let noise = '', seed = 7;
+  while (noise.length < 70_000) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; noise += seed.toString(36); }
+  await page.fill('.tc-link [data-part=script]', `echo ${noise}\n`);
+  const long = await until(page, async () => { const x = await linkWindow(page); return x.gist ? x : null; }, 8000);
+  check(`${D} link: a script too long for a link says so, has no link, and offers a gist`, !!long && long.link === '' && /^The script is too long for a link: [\d,]+ characters compressed, and a link holds up to 48,000\. A gist can hold it\. Making a gist needs a GitHub sign-in\.$/.test(long.size), JSON.stringify(long && [long.size, long.link.length]));
+  check(`${D} link: nothing was sent to GitHub before the button`, posted === null);
+  await page.click('.tc-link [data-act=gist]');
+  const gisted = await until(page, async () => { const x = await linkWindow(page); return x.link.includes('#gist:') ? x : null; }, 8000);
+  check(`${D} link: Make a gist sends the script to GitHub as a secret gist and gives #gist:USER/ID`, !!gisted && gisted.link === `${origin}/#gist:octocat/${GIST_SH}` && posted?.method === 'POST' && posted.auth === 'Bearer gho_standin'
+    && posted.body.public === false && posted.body.files['setup.sh'].content === `echo ${noise}\n`, JSON.stringify(gisted && gisted.link));
+  await page.click('.tc-link [data-act=close]');
+  // the System menu's item opens the same window
+  if (!device.hasTouch) {
+    await page.click('[aria-label="System menu"]');
+    await page.click('text=Share This Setup as a Link…');
+    await page.waitForSelector('.tc-link', { timeout: 10_000 }).catch(() => null);
+    w = await linkWindow(page);
+    check(`${D} link: System → Share This Setup as a Link… opens the window with the same script`, !!w && w.script.startsWith(want), JSON.stringify(w && w.script));
+  }
+  await page.close();
+  await done(ctx, `${D} link`);
+
+  // a second fresh profile opens the link: asked, then the same place
+  const other = await newContext(device);
+  const t0 = Date.now();
+  page = await open(other, link);
+  await page.waitForSelector(RUN, { timeout: 90_000 }).catch(() => null);
+  const p = await promptOf(page, RUN);
+  check(`${D} link: in a second fresh profile the link shows the same script, and asks`, !!p && p.box === want + `echo ${mark} > edited.txt\n` && p.focus === 'cancel' && p.hash === '', JSON.stringify(p && { box: p.box, focus: p.focus }));
+  await agree(page, RUN, 'run');
+  const same = await until(page, async () => {
+    const r = await side(page, 'cat ~/zqsite/index.html ~/zqsite/notes.txt ~/zqsite/edited.txt');
+    return r.o === `<h1>${mark}</h1>\n${vim}\n${mark}` ? r.o : null;
+  }, 30_000);
+  time(`${D} link: its link in a second profile, from opening it to the same files (the click included)`, Date.now() - t0);
+  check(`${D} link: Run there makes the same files`, !!same, (await side(page, 'ls -la ~/zqsite; cat ~/zqsite/*')).o);
+  const where = await until(page, async () => (await windows(page)).find((x) => x.title === 'From a link' && x.cwd === '/home/user/zqsite'), 10_000);
+  check(`${D} link: and leaves the Terminal in the same folder`, !!where, JSON.stringify((await windows(page)).map((x) => [x.title, x.cwd])));
+  await page.close();
+  await done(other, `${D} link (second profile)`);
+}
+
 // ── each /link example, from its link to working ───────────────────
 if (wants('times')) {
   const ctx0 = await newContext(WIDE);

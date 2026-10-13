@@ -1,0 +1,11 @@
+{
+  "name": "Shrink a PDF",
+  "about": "Makes a PDF smaller by storing its pictures at a lower resolution.",
+  "accept": [".pdf"],
+  "options": {
+    "quality": { "label": "Pictures", "choices": { "For a screen (smallest)": "/screen", "For reading": "/ebook", "For printing": "/printer" }, "value": "For reading" }
+  },
+  "run": "gs -q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dPDFSETTINGS={quality} -sOutputFile={out} {in}",
+  "out": "{name}-small.pdf",
+  "needs": ["ghostscript"]
+}

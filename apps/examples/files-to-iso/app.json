@@ -1,0 +1,8 @@
+{
+  "name": "Put files into an ISO image",
+  "about": "Makes one .iso disc image that holds the files you give it.",
+  "each": false,
+  "run": "genisoimage -quiet -J -r -o {out} {in}",
+  "out": "files.iso",
+  "needs": ["genisoimage"]
+}

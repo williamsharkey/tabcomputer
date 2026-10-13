@@ -1,0 +1,8 @@
+{
+  "name": "WAV to MP3",
+  "about": "Turns WAV or AIFF recordings into MP3 files a tenth of the size.",
+  "accept": [".wav", ".aif", ".aiff"],
+  "run": "lame --quiet -V 4 {in} {out}",
+  "out": "{name}.mp3",
+  "needs": ["lame"]
+}

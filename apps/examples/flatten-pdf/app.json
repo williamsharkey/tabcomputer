@@ -1,0 +1,8 @@
+{
+  "name": "Turn a PDF's pages into pictures",
+  "about": "Makes a PDF whose pages are pictures only, so text under a black box cannot be copied out.",
+  "accept": [".pdf"],
+  "run": "gs -q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfimage24 -r150 -sOutputFile={out} {in}",
+  "out": "{name}-pictures.pdf",
+  "needs": ["ghostscript"]
+}

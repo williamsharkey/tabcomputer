@@ -1,0 +1,8 @@
+{
+  "name": "Word to Markdown",
+  "about": "Turns Word, OpenDocument or web pages into Markdown text.",
+  "accept": [".docx", ".odt", ".html", ".htm", ".epub"],
+  "run": "pandoc {in} -t gfm --wrap=none",
+  "out": "{name}.md",
+  "needs": ["pandoc"]
+}

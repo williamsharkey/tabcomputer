@@ -1,0 +1,9 @@
+{
+  "name": "Join PDFs into one",
+  "about": "Puts the PDFs you give it into one PDF, in the order of their names.",
+  "accept": [".pdf"],
+  "each": false,
+  "run": "qpdf --empty --pages {in} -- {out}",
+  "out": "joined.pdf",
+  "needs": ["qpdf"]
+}

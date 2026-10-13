@@ -1,0 +1,8 @@
+{
+  "name": "iPhone photos to JPEG",
+  "about": "Turns HEIC photos from an iPhone into JPEG pictures any program opens.",
+  "accept": [".heic", ".heif"],
+  "run": "heif-convert -q 90 {in} {out}",
+  "out": "{name}.jpg",
+  "needs": ["libheif-examples"]
+}

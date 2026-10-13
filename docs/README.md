@@ -63,5 +63,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/BLINK_RWX_JIT.md](research/BLINK_RWX_JIT.md): the x86 engine's JIT compiling the code other JITs generate (HotSpot, V8): why it didn't, the write tracking that makes it safe, the fixtures, the measurements, and what remains (2026-10-13).
 - [research/PYTHON_NATIVE_WHEELS.md](research/PYTHON_NATIVE_WHEELS.md): compiled Python packages on the built-in Python (#125): why it can't load extensions, what `pip` installs from sdists instead, why Pyodide's wheels don't fit, and the plan for numpy (not built; 2026-10-12).
 - [research/PACKAGE_LAYERS.md](research/PACKAGE_LAYERS.md): where `apt install`'s minute goes in the tab, and the layers built on request that replace it (#135): the profile, the two designs compared, limits on the server, what was measured and what was not run (2026-10-13).
+- [research/BUILDER_CONFINEMENT.md](research/BUILDER_CONFINEMENT.md): a proposal, not applied: the systemd properties and script changes that would confine the package set builder further, and how to try them on the droplet first.
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

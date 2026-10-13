@@ -161,7 +161,9 @@ destroyed), and the next Terminal window adopts it again.
   (its Preview opens when the dev server is up), Python (`toolchain install
   python`), Claude Code, a Linux GUI app (the Apps window) and Settings.
   Dismissed once per browser (localStorage `tabcomputer-desktop-welcome`);
-  after that the module isn't loaded. Help → Welcome shows it again. It
+  after that the module isn't loaded. Help → Welcome shows it again. A visit
+  whose address asked for an app (`?app=`) does not show it: the app is what
+  was asked for, and the card waits for a visit without a link. It
   drags like a window, by any part that isn't a button. Its "How your data
   flows" button opens the window below.
 - **How Your Data Flows** (`apps/dataflow.ts`, drawn from `src/data-flow.ts`;
@@ -219,7 +221,9 @@ destroyed), and the next Terminal window adopts it again.
   apply to the next letter typed on the phone's keyboard. The keyboard button
   in the menu bar turns the bar on or off; Settings → Appearance → Extra keys
   picks Off, Auto (hidden while the phone's keyboard is open) or Always
-  (localStorage `tabcomputer-keybar`). The classic UI keeps `src/mobile-input.ts`.
+  (localStorage `tabcomputer-keybar`). In every mode the bar shows only while
+  the focused window holds a terminal: under an app's window its keys go
+  nowhere. The classic UI keeps `src/mobile-input.ts`.
 - **Dock stacks**: when the dock would not fit (phones), Settings and
   Activity share a System stack and Vim, Python and installed programs a
   Programs stack; Terminal, Files and htop stay loose. Debian GUI apps stack

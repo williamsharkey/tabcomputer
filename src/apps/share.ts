@@ -4,6 +4,7 @@
  *
  *   an app this site ships       ?app=<id>
  *   an app from GitHub           ?app=gh:<owner>/<repo>[/<path>]
+ *   an app from a gist           ?app=gist:<id>
  *   any other app (a folder, an archive, a link)
  *                                ?app=link#app=<the app's files>
  *
@@ -67,8 +68,12 @@ async function pipe(bytes: Uint8Array, stream: { readable: ReadableStream<Uint8A
   return out;
 }
 
-/** An app's files as the text a link carries */
-export async function packApp(files: Map<string, Uint8Array>): Promise<string> {
+/**
+ * An app's files as the text a link carries. `id`: the app's id where its
+ * app.json leaves it to the folder's name, so the copy made from the link is
+ * the same app under the same id.
+ */
+export async function packApp(files: Map<string, Uint8Array>, id?: string): Promise<string> {
   const t: Record<string, string> = {};
   const b: Record<string, string> = {};
   const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -77,14 +82,19 @@ export async function packApp(files: Map<string, Uint8Array>): Promise<string> {
     // Text goes in as text (it compresses better); anything else as base64
     try { t[rel] = utf8.decode(bytes); } catch { b[rel] = b64(bytes); }
   }
-  const json = new TextEncoder().encode(JSON.stringify({ v: 1, t, b }));
+  const json = new TextEncoder().encode(JSON.stringify({ v: 1, ...(id ? { id } : {}), t, b }));
   return toUrl(b64(await pipe(json, new CompressionStream('gzip') as never, 64 << 20)));
 }
 
 /** The files a link carries. Throws AppError for anything that is not a packed app. */
 export async function unpackApp(payload: string): Promise<Map<string, Uint8Array>> {
+  return (await unpackLink(payload)).files;
+}
+
+/** The files a link carries, and the id it names for an app.json that has none ('' without one) */
+export async function unpackLink(payload: string): Promise<{ files: Map<string, Uint8Array>; id: string }> {
   if (!payload || payload.length > SHARE_PAYLOAD_MAX * 2 || !PAYLOAD.test(payload)) throw new AppError('the link does not hold an app (it may have been cut short when it was copied)');
-  let doc: { v?: unknown; t?: unknown; b?: unknown };
+  let doc: { v?: unknown; id?: unknown; t?: unknown; b?: unknown };
   try {
     const raw = await pipe(unb64(fromUrl(payload)), new DecompressionStream('gzip') as never, SHARE_UNPACKED_MAX);
     doc = JSON.parse(new TextDecoder().decode(raw));
@@ -108,7 +118,8 @@ export async function unpackApp(payload: string): Promise<Map<string, Uint8Array
   take(doc.b, unb64);
   if (!out.has(MANIFEST_FILE)) throw new AppError(`the app in the link has no ${MANIFEST_FILE}`);
   if (out.size > FETCHED_FILES_MAX) throw new AppError('the app in the link has too many files');
-  return out;
+  // (only a hint: the manifest's own id wins, and what is not an id is ignored where it is used)
+  return { files: out, id: typeof doc.id === 'string' ? doc.id.slice(0, 64) : '' };
 }
 
 /** Every file of an installed app's folder (links and the repository's own metadata left out) */
@@ -131,7 +142,7 @@ export async function collectAppFiles(fs: RegistryFs, dir: string): Promise<Map<
   return out;
 }
 
-export type ShareKind = 'site' | 'gh' | 'files';
+export type ShareKind = 'site' | 'gh' | 'gist' | 'files';
 
 export interface AppShare {
   id: string;
@@ -141,7 +152,7 @@ export interface AppShare {
   /** For 'files': how many the link carries and their size before packing */
   files?: number;
   bytes?: number;
-  /** For 'gh': github.com/<owner>/<repo>[, <path>] */
+  /** For 'gh': github.com/<owner>/<repo>[, <path>]; for 'gist': gist.github.com/<id> */
   repo?: string;
   /** Does tabcomputer ask the person who opens the link before it installs? (No only for an app the site ships.) */
   asks: boolean;
@@ -156,11 +167,15 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
     const [owner, repo, ...path] = gh[1].split('/');
     return { ...base, kind: 'gh', url: `${origin}/?app=gh:${gh[1]}`, repo: `github.com/${owner}/${repo}${path.length ? `, ${path.join('/')}` : ''}`, asks: true };
   }
+  const gist = /^gist:([0-9a-f]{5,40})@[0-9a-f]{40}$/.exec(app.source);
+  if (gist) return { ...base, kind: 'gist', url: `${origin}/?app=gist:${gist[1]}`, repo: `gist.github.com/${gist[1]}`, asks: true };
   const files = await collectAppFiles(fs, app.dir);
   if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE} in ${app.dir}`);
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
-  const payload = await packApp(files);
+  let named = false;
+  try { named = typeof JSON.parse(new TextDecoder().decode(files.get(MANIFEST_FILE)!)).id === 'string'; } catch { /* not valid: the person who opens the link is told */ }
+  const payload = await packApp(files, named ? undefined : app.id);
   if (payload.length > SHARE_PAYLOAD_MAX) {
     throw new AppError(`${app.name} is too large for a link: its ${files.size} files pack to ${Math.ceil(payload.length / 1000)} KB and a link holds ${SHARE_PAYLOAD_MAX / 1000} KB. `
       + `Put its folder in a public GitHub repository and share ${origin}/?app=gh:OWNER/REPO instead`);
@@ -184,8 +199,8 @@ export function shareStatement(s: AppShare): { promise: string[]; details: strin
   if (s.kind === 'files') {
     details.push(`The link holds the app's files (${s.files} ${s.files === 1 ? 'file' : 'files'}, ${size(s.bytes ?? 0)}). The files are in the link itself and are not stored on a server.`);
     details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
-  } else if (s.kind === 'gh') {
-    details.push(`The link names ${s.repo}. Each person gets the files that repository holds when they open the link.`);
+  } else if (s.kind === 'gh' || s.kind === 'gist') {
+    details.push(`The link names ${s.repo}. Each person gets the files that ${s.kind === 'gist' ? 'gist' : 'repository'} holds when they open the link.`);
   } else details.push(`This site ships ${s.name}. Each person gets the site's copy.`);
   details.push(`The link does not hold the data you stored in ${s.name}.`);
   details.push(s.asks

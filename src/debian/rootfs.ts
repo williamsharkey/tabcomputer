@@ -174,6 +174,27 @@ export function attachRootfsLoader(fs: FileSystem, bases: Record<string, string>
   });
 }
 
+/**
+ * Fetch chunks of source `src` ahead of their first use, a few at a time and
+ * in order: the bytes go to the browser's cache, so the first run of a
+ * program reads them from this computer and not one request after another
+ * from the server. Nothing is written to the filesystem. Errors are left to
+ * the read that needs the chunk. Resolves to how many were fetched.
+ */
+export async function warmChunks(src: string, ids: string[], concurrent = 4): Promise<number> {
+  const store = stores.get(src);
+  if (!store) return 0;
+  let next = 0, done = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++];
+      try { await store.get(id); done++; } catch { /* the read that needs it reports it */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrent, ids.length)) }, worker));
+  return done;
+}
+
 /** The installed rootfs record, or null when Debian isn't installed. */
 export async function installedRootfs(fs: FileSystem): Promise<InstalledRootfs | null> {
   try {

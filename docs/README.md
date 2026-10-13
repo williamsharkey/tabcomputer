@@ -13,8 +13,10 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [NETWORKING.md](NETWORKING.md) | Kernel sockets, the WebSocket-to-TCP relay, its security model and how to run it |
 | [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
+| [POSTGRES.md](POSTGRES.md) | PostgreSQL in the tab: the server on `localhost:5432` that starts on the first connection (PGlite), `psql`, `createdb`, `pg_dump`, node and Python programs, the data directory, the measurements, what it does not do, and Debian's own PostgreSQL |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
 | [CLASSROOM.md](CLASSROOM.md) | The classroom workspace: lab links (`?run=lab:owner/repo`), `.tabcomputer/lab.json`, Run / Test / Submit in the Code app, "Not saved to GitHub yet", sign-out for a shared computer |
+| [NOTEBOOK.md](NOTEBOOK.md) | The Notebook app: Jupyter notebooks (.ipynb) opened, run and saved on the desktop, `jupyter notebook`, what runs the cells, the file format, what is not Jupyter, and why not JupyterLite |
 | [SCHOOL_IT.md](SCHOOL_IT.md) | For a school's IT: what the tab connects to, the hosts to allow, that nothing is installed, private network mode, shared computers |
 | [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links, the apps the site ships and their dock entries, `app share` |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
@@ -59,5 +61,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/JAVA_SPEED.md](research/JAVA_SPEED.md): Java: where `javac`'s minute went, why JVM flags crashed (#122), the routes measured (JVM options, a warm compiler, ECJ, the Zero VM), what shipped, and the WebAssembly routes assessed (2026-10-13).
 - [research/BLINK_RWX_JIT.md](research/BLINK_RWX_JIT.md): the x86 engine's JIT compiling the code other JITs generate (HotSpot, V8): why it didn't, the write tracking that makes it safe, the fixtures, the measurements, and what remains (2026-10-13).
 - [research/PYTHON_NATIVE_WHEELS.md](research/PYTHON_NATIVE_WHEELS.md): compiled Python packages on the built-in Python (#125): why it can't load extensions, what `pip` installs from sdists instead, why Pyodide's wheels don't fit, and the plan for numpy (not built; 2026-10-12).
+- [research/PACKAGE_LAYERS.md](research/PACKAGE_LAYERS.md): where `apt install`'s minute goes in the tab, and the layers built on request that replace it (#135): the profile, the two designs compared, limits on the server, what was measured and what was not run (2026-10-13).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

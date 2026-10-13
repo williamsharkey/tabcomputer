@@ -202,6 +202,29 @@ export const shiroAptCmd: Command = {
       }
       return child;
     };
+    // `apt install NAME...` and nothing else: the layer of that set, when the
+    // server has it or builds it (src/debian/package-sets.ts). Seconds instead
+    // of apt's minutes under the emulator; apt does it when there is no layer.
+    if ((asRoot || (ctx.shell.uid ?? 1000) === 0) && ctx.env.TABCOMPUTER_APT_LAYERS !== '0') {
+      const sets = await import('../debian/package-sets');
+      const names = sets.plainInstall(args);
+      const missing = names ? await sets.missingPackages(ctx.fs, names) : [];
+      if (names && missing.length) {
+        const abort = ctx.shell.abortController ?? ctx.shell.inheritedAbort;
+        const r = await sets.installPackageSet(ctx.fs, missing, {
+          progress: (line) => err(line + '\n'), signal: abort?.signal,
+          afterApply: async () => { await sets.afterLayer(ctx.fs, (n) => !!ctx.shell.commands.get(n)); },
+        });
+        if (r.ok) {
+          const had = names.filter((n) => !missing.includes(n));
+          if (had.length) out(`${had.join(', ')} ${had.length > 1 ? 'were' : 'was'} already installed.\n`);
+          await ctx.fs.sync();
+          return 0;
+        }
+        if (r.reason === 'stopped') return 130;
+        err(`tabcomputer: ${sets.fallbackSentence(missing, r)}\n`);
+      }
+    }
     return aptGuard({
       script, args, uid: asRoot ? 0 : ctx.shell.uid ?? 1000, fs: ctx.fs as any,
       // argv[0] can't be set from the shell; apt and apt-get don't look at it

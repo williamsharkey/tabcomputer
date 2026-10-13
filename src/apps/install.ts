@@ -8,7 +8,7 @@ import type { Launch } from '../desktop/launch-state';
 import type { DesktopWindow, WindowManager } from '../desktop/wm';
 import { appsConfig } from './frame';
 import {
-  archiveApp, fetchArchive, fetchGhApp, fetchSiteApp, handleAppLink, linkApp,
+  archiveApp, fetchArchive, fetchGhApp, fetchGistApp, fetchSiteApp, handleAppLink, linkApp,
   type AppLinkOutcome, type AppTarget, type FetchedApp, type InstallChoice, type InstallPromptInfo,
 } from './links';
 import { AppError, findInstalled, installFromDir, installFromFiles, type InstalledApp } from './registry';
@@ -50,6 +50,7 @@ export async function confirmInstall(app: FetchedApp): Promise<InstallChoice> {
 export async function fetchApp(target: AppTarget, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i), githubToken?: string | null): Promise<FetchedApp> {
   if (target.kind === 'site') return fetchSiteApp(target.id, location.origin, fetchFn);
   if (target.kind === 'gh') return fetchGhApp(target, fetchFn, githubToken);
+  if (target.kind === 'gist') return fetchGistApp(target, fetchFn, githubToken);
   if (target.kind === 'link') return linkApp(target.payload);
   return archiveApp(await unpack(await fetchArchive(target.url, fetchFn), target.url), target.url);
 }
@@ -114,7 +115,7 @@ export async function installFetched(app: FetchedApp, files?: Map<string, Uint8A
   const { fs } = appsDeps();
   if (idTaken(app.manifest.id)) throw new AppError(`the id ${app.manifest.id} belongs to an app that is built in`);
   stopApp(app.manifest.id);
-  const r = await installFromFiles(fs, files ?? await app.files(), { home: homeDir(), source: app.source });
+  const r = await installFromFiles(fs, files ?? await app.files(), { home: homeDir(), source: app.source, id: app.manifest.id });
   afterInstall(r.app);
   return r;
 }
@@ -135,12 +136,13 @@ export async function installDir(dir: string): Promise<{ app: InstalledApp; mani
  */
 export async function prepareInstalled(id: string, line: (text: string) => void = () => {}): Promise<void> {
   const { ref, app } = await installedRef(id);
-  if (!ref.manifest.toolchains.length && !ref.manifest.files.length) return;
+  const installs = ref.manifest.toolchains.length + ref.manifest.needs.length;
+  if (!installs && !ref.manifest.files.length) return;
   const had = !!instanceOf(id);
   const inst = instanceFor(ref);
   const wm = desktop();
   let launch: Launch | null = null;
-  if (wm && ref.manifest.toolchains.length && !wm.launches.get(id)) {
+  if (wm && installs && !wm.launches.get(id)) {
     launch = wm.launches.request({
       id, name: app.name, icon: app.icon || monogramIcon(app.name, id), placeholder: true, note: 'installing what it needs',
       size: { width: ref.manifest.window.width, height: ref.manifest.window.height },
@@ -177,7 +179,11 @@ export async function startAppLink(o: {
       await prepareInstalled(app.manifest.id).catch((e) => o.report((e as Error).message));
     },
     open: async (id, become) => {
-      if (become) await becomeApp((await installedRef(id)).ref);
+      // A phone has no room for a desktop around the app that was asked for: the tab is the app,
+      // with a way back to the desktop (tabcomputer#139)
+      const { compactViewport } = await import('../desktop/wm');
+      const small = !become && compactViewport() && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      if (become || small) await becomeApp((await installedRef(id)).ref, { back: small });
       else {
         const wm = desktop();
         if (wm?.apps().some((a) => a.id === id)) await wm.openApp(id); else await openInstalled(id);

@@ -60,11 +60,24 @@ async function jsonKeys(fs: InventoryFs, path: string): Promise<string[]> {
   } catch { return []; }
 }
 
+/**
+ * The toolchain layers among the applied layers. A package set's layer
+ * (`kind: 'packages'`, src/debian/package-sets.ts) is not listed: the app
+ * that needs it installs it again by itself, and `toolchain install` has no
+ * name for it.
+ */
+async function toolchainLayers(fs: InventoryFs): Promise<string[]> {
+  try {
+    const o = JSON.parse(await fs.readFile(LAYERS_STATE, 'utf8') as string);
+    return o && typeof o === 'object' ? Object.keys(o).filter((k) => o[k]?.kind !== 'packages') : [];
+  } catch { return []; }
+}
+
 /** The list for this filesystem as it is now; null when its storage is lost (the files it would read are gone). */
 export async function collectInventory(fs: InventoryFs): Promise<Inventory | null> {
   if (fs.storageLost || !fs.volumeId) return null;
   const [pkg, layers, native, debian, claudeSignin] = await Promise.all([
-    jsonKeys(fs, PKG_STATUS), jsonKeys(fs, LAYERS_STATE), jsonKeys(fs, CLAUDE_NATIVE),
+    jsonKeys(fs, PKG_STATUS), toolchainLayers(fs), jsonKeys(fs, CLAUDE_NATIVE),
     fs.exists(ROOTFS_STATE).catch(() => false), fs.exists(CLAUDE_CREDENTIALS).catch(() => false),
   ]);
   if (fs.storageLost) return null;

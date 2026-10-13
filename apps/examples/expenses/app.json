@@ -1,0 +1,12 @@
+{
+  "name": "Expenses",
+  "about": "A list of what was spent, with a total.",
+  "table": "expenses.csv",
+  "columns": [
+    { "name": "Date", "type": "date" },
+    "What",
+    { "name": "Category", "choices": ["Food", "Travel", "Home", "Other"] },
+    { "name": "Amount", "type": "number" },
+    { "name": "Paid back", "type": "checkbox" }
+  ]
+}

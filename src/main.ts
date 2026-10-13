@@ -80,7 +80,7 @@ import { hotswap } from './hotswap/swap';
 import { liveModule, trackInstance } from './hotswap/live';
 import { startDisplay } from './x11/display';
 import { startGLServer, getGLServer } from './gl/server';
-import { installNet, followRelaySetting } from './kernel/net';
+import { installNet, followRelaySetting, netStackOf } from './kernel/net';
 import { attachKernelTty } from './kernel/pty';
 import { sudoCmd } from './commands/sudo';
 import { shiroAptCmd, shiroAptMethodCmd, shiroAptStoreCmd, shiroPreconfigureCmd } from './commands/debian';
@@ -364,6 +364,16 @@ async function main() {
   registerCommand(commands, titleCmd, 'src/commands/title.ts');
   registerCommand(commands, desktopCmd, 'src/commands/desktop.ts');
 
+  // PostgreSQL in the tab (src/postgres/, docs/POSTGRES.md): the server starts on the first connection
+  for (const [name, description] of [
+    ['psql', 'PostgreSQL interactive terminal'], ['createdb', 'Create a PostgreSQL database'], ['dropdb', 'Remove a PostgreSQL database'],
+    ['pg_isready', 'Check whether PostgreSQL accepts connections'], ['pg_dump', 'Write a PostgreSQL database as a script of SQL'],
+    ['service', 'Start, stop or ask about a service'],
+  ]) {
+    registerCommand(commands, lazyCommand(name, description,
+      () => import('./commands/psql').then(m => m.postgresCommands.find(c => c.name === name)!),
+      name === 'service' ? { keepOverPackage: (args) => /^postgres(ql)?(@.*)?(\.service)?$/.test(args[0] ?? '') } : {}), 'src/commands/psql.ts');
+  }
   registerCommand(commands, lazyCommand('gh', 'GitHub CLI',
     () => import('./commands/gh').then(m => m.ghCmd)), 'src/commands/gh.ts');
   registerCommand(commands, lazyCommand('x86', 'Run x86-64 ELF binaries',
@@ -426,6 +436,12 @@ async function main() {
     () => import('./commands/finder').then(m => m.finderCmd)), 'src/commands/finder.ts');
   registerCommand(commands, lazyCommand('code', 'Rich code editor (CodeMirror)',
     () => import('./commands/code-editor').then(m => m.codeEditorCmd)), 'src/commands/code-editor.ts');
+  registerCommand(commands, lazyCommand('jupyter', 'Notebooks: open one in the Notebook app, or run one here',
+    () => import('./commands/jupyter').then(m => m.jupyterCmd)), 'src/commands/jupyter.ts');
+  for (const sub of ['notebook', 'lab']) {
+    registerCommand(commands, lazyCommand(`jupyter-${sub}`, `The same as jupyter ${sub}`,
+      () => import('./commands/jupyter').then(m => m.jupyterAlias(`jupyter-${sub}`, sub))), 'src/commands/jupyter.ts');
+  }
   registerCommand(commands, lazyCommand('lab', 'Class repositories: open one, run it, test it, submit it',
     () => import('./commands/lab').then(m => m.labCmd)), 'src/commands/lab.ts');
   registerCommand(commands, lazyCommand('signout', 'Sign out of a shared computer: remove the sign-ins and every file from this browser',
@@ -442,8 +458,6 @@ async function main() {
     () => import('./commands/lua').then(m => m.luaCmd)), 'src/commands/lua.ts');
   registerCommand(commands, lazyCommand('play', 'Auto-detect and run current project',
     () => import('./commands/play').then(m => m.playCmd)), 'src/commands/play.ts');
-  registerCommand(commands, lazyCommand('psql', 'PostgreSQL database (PGlite)',
-    () => import('./commands/postgres').then(m => m.psqlCmd)), 'src/commands/postgres.ts');
   registerCommand(commands, lazyCommand('convert', 'ImageMagick image conversion (magick-wasm)',
     () => import('./commands/magick').then(m => m.convertCmd)), 'src/commands/magick.ts');
   registerCommand(commands, lazyCommand('magick', 'ImageMagick (magick-wasm)',
@@ -596,6 +610,10 @@ async function main() {
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
   // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
   followRelaySetting(kernel);
+  // PostgreSQL on localhost:5432 (src/postgres/service.ts): nothing is loaded until something connects there
+  for (const at of [5432, '/var/run/postgresql/.s.PGSQL.5432']) {
+    netStackOf(kernel)?.onDemand.set(at, () => import('./postgres/service').then((m) => m.postgresService({ fs, stack: netStackOf(kernel)!, kernel }).start()));
+  }
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)
   const blinkLoader = import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
   // TABCOMPUTER_NODE_WORKER=1: node the kernel starts (sh -c, #! scripts) runs as a guest
@@ -895,7 +913,7 @@ async function main() {
       // An installed app (docs/APPS.md): the toolkit brings back its backend and its page
       await appsCore();
       const { restoreBecomeApp } = await import('./apps/window');
-      if (!await restoreBecomeApp(becomeConfig.app).catch(() => false)) {
+      if (!await restoreBecomeApp(becomeConfig.app, !!becomeConfig.back).catch(() => false)) {
         localStorage.removeItem('tabcomputer-become');
         document.body.classList.remove('become-active');
         history.replaceState({}, '', '/');

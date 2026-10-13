@@ -6,7 +6,9 @@ import type { Command, CommandContext } from './index';
  *   toolchain install ID... [--check] [--apt] [-v]
  *                                  apply prebuilt layers (Debian packages, so apt and
  *                                  dpkg know them); --apt installs with apt instead;
- *                                  -v lists each overlay change
+ *                                  -v lists each overlay change. A name that is no
+ *                                  set is a Debian package: those names are one
+ *                                  package set (src/debian/package-sets.ts)
  *   toolchain check ID...          run each set's smoke test
  * Debian is installed first if it isn't.
  */
@@ -90,10 +92,15 @@ export const toolchainCmd: Command = {
     }
 
     if (sub === 'install' || sub === 'add') {
-      if (!ids.length) { err('usage: toolchain install ID... [--check] [--apt] [-v]   (toolchain list shows the IDs)\n'); return 2; }
+      if (!ids.length) { err('usage: toolchain install ID|PACKAGE... [--check] [--apt] [-v]   (toolchain list shows the IDs; other names are Debian packages)\n'); return 2; }
       const verbose = flags.has('-v') || flags.has('--verbose');
       const all = await listToolchains(ctx.fs);
-      for (const id of ids) if (!all.some((t) => t.id === id)) { err(`toolchain: no toolchain named ${id} (toolchain list)\n`); return 1; }
+      // Names that are no toolchain set are Debian packages: together they are one
+      // package set, installed from its layer like a toolchain (docs/DEBIAN.md "Package layers")
+      const packages = ids.filter((id) => !all.some((t) => t.id === id));
+      const { PACKAGE_NAME } = await import('../debian/package-sets');
+      for (const id of packages) if (!PACKAGE_NAME.test(id)) { err(`toolchain: ${id} is not a toolchain (toolchain list) or a Debian package name\n`); return 1; }
+      const sets = ids.filter((id) => !packages.includes(id));
 
       // Hundreds of MB in browser storage: keep it from eviction (tabcomputer#71)
       void import('../storage').then(m => m.requestPersistentStorage('toolchain install', true));
@@ -106,7 +113,24 @@ export const toolchainCmd: Command = {
       const layers = await import('../debian/layers');
       const overlay = await import('../debian/overlay');
       let status = 0;
-      for (const id of ids) {
+      if (packages.length) {
+        const ps = await import('../debian/package-sets');
+        const missing = await ps.missingPackages(ctx.fs, packages);
+        if (!missing.length) out(`${packages.join(', ')}: already installed.\n`);
+        else if (flags.has('--apt')) status = (await aptInstall(ctx, missing, out, err)) ? 1 : 0;
+        else {
+          const r = await ps.installPackageSet(ctx.fs, missing, {
+            progress: (m) => out(m + '\n'), signal: (ctx.shell.abortController ?? ctx.shell.inheritedAbort)?.signal,
+            afterApply: async () => { for (const l of overlay.overlayReport(await ps.afterLayer(ctx.fs, (n) => !!ctx.shell.commands.get(n)), verbose)) out(l + '\n'); },
+          });
+          if (!r.ok) {
+            if (r.reason === 'stopped') return 130;
+            err(`toolchain: ${ps.fallbackSentence(missing, r)}\n`);
+            if (await aptInstall(ctx, missing, out, err)) status = 1;
+          }
+        }
+      }
+      for (const id of sets) {
         const t = (await listToolchains(ctx.fs)).find((x) => x.id === id)!;
         const t0 = Date.now();
         if (t.note) out(`note: ${t.note}\n`);
@@ -186,5 +210,6 @@ async function aptInstall(ctx: CommandContext, packages: string[], out: (s: stri
     const code = await runShell(ctx, 'sudo apt-get update', out, err);
     if (code) return code;
   }
-  return runShell(ctx, `sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${packages.join(' ')}`, out, err);
+  // (TABCOMPUTER_APT_LAYERS=0: the caller has already asked for a layer, or was told to use apt)
+  return runShell(ctx, `sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y ${packages.join(' ')}`, out, err);
 }

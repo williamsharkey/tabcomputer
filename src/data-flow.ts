@@ -226,8 +226,8 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   flows.push({
     id: 'mirror',
     title: 'Package downloads',
-    from: 'apt, GUI apps, claude install, numpy',
-    via: '/debian/mirror, /claude-releases, /pyodide',
+    from: 'apt, apps that need programs, GUI apps, claude install, numpy',
+    via: '/debian/mirror, /debian/layers, /claude-releases, /pyodide',
     to: 'deb.debian.org, security.debian.org, downloads.claude.ai, cdn.jsdelivr.net',
     dest: 'Debian',
     reads: 'requests',

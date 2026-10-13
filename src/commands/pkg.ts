@@ -74,8 +74,59 @@ async function cmdInstall(ctx: CommandContext, args: string[]): Promise<number> 
     return 0;
   } catch (e: any) {
     ctx.stderr += `E: ${e.message}\n`;
+    // (`apt install` goes on to Debian by itself; `pkg` is tabcomputer's own list only)
+    if (/^unable to locate package /.test(e.message)) ctx.stderr += "   pkg installs tabcomputer's own packages (pkg available). Debian may have it: apt install NAME\n";
     return 100;
   }
+}
+
+/**
+ * `apt install` before Debian mode (#136). A name tabcomputer's own list has
+ * is installed from it, as before. Any other name is a Debian package: Debian
+ * is set up (`debian install`, under a second) and its apt installs the name,
+ * from a ready-made layer when the server has one (src/debian/package-sets.ts).
+ * Each name's source is said, and a name neither has does not stop the rest.
+ */
+async function aptInstallAnywhere(ctx: CommandContext, args: string[]): Promise<number> {
+  const { names } = splitArgs(args);
+  const flags = args.filter(a => a.startsWith('-'));
+  const index = await loadIndex(ctx.fs);
+  const own = names.filter(n => findEntry(index, n));
+  if (own.length === names.length) return cmdInstall(ctx, args);
+  const sets = await import('../debian/package-sets');
+  const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
+  const err = (s: string) => { if (ctx.streamStderr) ctx.streamStderr(s); else ctx.stderr += s; };
+  let other = names.filter(n => !own.includes(n));
+  let rc = 0;
+  const notNames = other.filter(n => !sets.PACKAGE_NAME.test(n));
+  // What Debian's archive does not have either, when the server can say (it starts no build for this question)
+  const debian = other.filter(n => sets.PACKAGE_NAME.test(n));
+  const answer = debian.length ? await sets.askAboutSet(debian) : null;
+  const unknown = [...notNames, ...(answer?.unknown ?? [])];
+  if (unknown.length) {
+    for (const n of unknown) err(`E: unable to locate package ${n}: it is not one of tabcomputer's own packages, and Debian has no package of that name\n`);
+    other = other.filter(n => !unknown.includes(n));
+    rc = 100;
+  }
+  if (own.length) {
+    if (other.length || unknown.length) out(`${own.join(', ')}: from tabcomputer's own packages.\n`);
+    const before = ctx.stdout.length;
+    const code = await cmdInstall(ctx, [...flags, ...own]);
+    if (ctx.streamStdout && ctx.stdout.length > before) { ctx.streamStdout(ctx.stdout.slice(before)); ctx.stdout = ctx.stdout.slice(0, before); }
+    rc ||= code;
+  }
+  if (!other.length) return rc;
+  const { installedRootfs } = await import('../debian/rootfs');
+  const haveDebian = !!await installedRootfs(ctx.fs);
+  out(`${other.join(', ')}: not in tabcomputer's own packages; installing from Debian${haveDebian ? '' : ' (Debian is set up first, once)'}.\n`);
+  const run = (line: string) => ctx.shell.fork().runScriptText(line, ctx.terminal, out, err);
+  if (!haveDebian) {
+    const code = await run('debian install');
+    if (code) return code;
+  }
+  // Debian's apt from here on (src/commands/debian.ts): a layer when the server has one, else apt itself
+  const code = await run(`/usr/bin/apt-get install -y ${other.join(' ')}`);
+  return rc || code;
 }
 
 async function cmdRemove(ctx: CommandContext, args: string[]): Promise<number> {
@@ -328,13 +379,15 @@ export const pkgCmd: Command = {
 
 export const aptCmd: Command = {
   name: 'apt',
-  description: 'Package manager (same as pkg)',
+  description: 'Package manager (same as pkg; a package tabcomputer does not have comes from Debian)',
   exec(ctx) {
     const args = ctx.args.filter(a => a !== '-y' && a !== '--yes' && a !== '-q');
     // Options may come before the verb, as in apt (`apt-get -s upgrade`)
     const i = args.findIndex(a => !a.startsWith('-'));
-    if (i <= 0) return dispatch(ctx, 'apt', args[0], args.slice(1));
-    return dispatch(ctx, 'apt', args[i], [...args.slice(0, i), ...args.slice(i + 1)]);
+    const sub = i < 0 ? args[0] : args[i];
+    const rest = i <= 0 ? args.slice(1) : [...args.slice(0, i), ...args.slice(i + 1)];
+    if ((sub === 'install' || sub === 'i' || sub === 'add') && rest.some(a => !a.startsWith('-'))) return aptInstallAnywhere(ctx, rest);
+    return dispatch(ctx, 'apt', sub, rest);
   },
 };
 

@@ -168,11 +168,14 @@ ${bootSection(ctx, name)}
 
 ## Installing software
 
-- Real Debian: \`debian install\` streams in Debian 13, then \`apt install -y NAME\`
-  (no \`sudo\` needed; the first one fetches the package lists, about 45 s, as
-  \`apt update\` does; Debian's own apt and dpkg, x86-64 in the
-  emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
-  popcon's top 2000 packages pass a smoke test.
+- Real Debian: \`apt install -y NAME\` (no \`sudo\` needed). A name that is not one of
+  ${name}'s own packages comes from Debian 13 by itself (\`debian install\` runs first,
+  under a second). When the server has a ready-made layer for the names, or builds one
+  (it says how far it is), the install takes seconds and files load on first use.
+  Otherwise Debian's own apt and dpkg run, x86-64 in the emulator: the first one
+  fetches the package lists, then about a minute for a small package, python3
+  about 4 minutes. Name every package you need in one \`apt install\`: the layer is
+  for exactly that set. 1846 of popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`tex-full\` (TikZ, biblatex/biber, XeTeX, LuaTeX,
   fonts), \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\` or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
@@ -182,7 +185,8 @@ ${bootSection(ctx, name)}
 - Prebuilt: \`pkg install NAME\` installs one of ${name}'s 72 prebuilt programs
   (WebAssembly or static x86-64: vim, htop, git, python3, jq, curl, make, clang,
   go, ...) in about a second, and they start faster than Debian's. \`pkg available\`
-  lists them. Before \`debian install\`, \`apt\` is \`pkg\`; after it, \`apt\` is Debian's.
+  lists them. Before \`debian install\`, \`apt install\` takes a name from these first;
+  after it, \`apt\` is Debian's.
 - \`/usr/bin/NAME\` is whichever was installed last. To go back from Debian's to the
   prebuilt one: \`sudo apt remove -y NAME && pkg install --reinstall NAME\`.
   \`tabcomputer-alternatives --list\` shows which programs are ${name}'s builtins
@@ -195,8 +199,13 @@ ${bootSection(ctx, name)}
   (Python 3.13 too; a second or so slower to start, the same files, \`plt.show()\` opens
   a window). There: no sockets, no subprocess, no threads. \`python3 --pyodide ...\` or
   \`TABCOMPUTER_PYTHON=pyodide\` forces it (pytest on code that imports numpy, the
-  REPL), \`--wasi\` forces the built-in one. check50, Jupyter and other compiled
+  REPL), \`--wasi\` forces the built-in one. check50 and other compiled
   packages need Debian's Python (\`toolchain install python\`).
+- Jupyter notebooks are built in: \`jupyter notebook FILE.ipynb\` opens one in the
+  Notebook app (cells run in Pyodide on the same files), and \`jupyter execute
+  [--inplace] FILE.ipynb\` runs one in a terminal and prints its outputs. No
+  server, no \`pip install jupyter\`. Not there: widgets, JavaScript outputs,
+  kernels other than Python.
 - \`gui\` lists X11 desktop apps; \`gui NAME\` opens one in a window.
 
 ## Useful here
@@ -211,7 +220,17 @@ ${bootSection(ctx, name)}
   (quicker than \`gh auth login\`, which needs them at a terminal; point them
   to the globe). git and gh then use the token. The built-in
   gh takes \`--body-file FILE\` and \`--json FIELDS --jq EXPR\`; a flag it doesn't
-  implement is an error, never silently ignored.
+  implement is an error, never silently ignored. \`gh extension install OWNER/REPO\`
+  works (a script extension is cloned, a precompiled one runs its linux-amd64
+  build in the emulator), and \`gh NAME\` runs it with GH_TOKEN set from the sign-in.
+- PostgreSQL is already here: a PostgreSQL 18 server (PGlite) answers on
+  localhost:5432 and starts by itself on the first connection, a few seconds the
+  first time. \`psql\` (\`-c\`, \`-f\`, \`-d\`, \`-U\`, and \`\\dt\`, \`\\d NAME\`, \`\\l\`, \`\\c\` at its
+  prompt), \`createdb\`, \`dropdb\`, \`pg_isready\`, node's \`pg\` and Python's \`pg8000\`
+  connect with any user name and no password. Its data is in /var/lib/postgresql
+  and survives a reload. One backend serves every connection in turn: no
+  extensions, no LISTEN/NOTIFY between connections, no replication. Don't
+  \`apt install postgresql\` for a database: that takes minutes.
 - If a prebuilt package misbehaves, check \`pkg outdated\` and run \`pkg upgrade\` first: fixed builds ship as
   new versions (a stale python3 caused tabcomputer#5).
 

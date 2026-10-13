@@ -181,6 +181,9 @@ export const ghCmd: Command = {
     : retrySignedIn(ctx, ['gh', ...ctx.args.filter((a) => !a.startsWith('-')).slice(0, 2)].join(' '), () => ghMain(ctx)))),
 };
 
+/** The commands this gh has itself: any other first word is looked up among the installed extensions */
+const BUILT_IN = new Set(['auth', 'repo', 'pr', 'issue', 'release', 'api', 'workflow', 'run', 'label', 'search']);
+
 async function ghMain(ctx: CommandContext): Promise<number> {
   {
     const sub = ctx.args[0];
@@ -204,8 +207,19 @@ Commands:
   run       Workflow runs (list, view)
   label     Labels (list, create)
   search    Search (issues, repos)
+  extension Extensions (install OWNER/REPO, list, upgrade, remove, exec); \`gh NAME\` runs an installed one
 `;
       return 0;
+    }
+
+    // Extensions (gh-extension.ts): their own flags are theirs, so nothing is checked here
+    if (sub === 'extension' || sub === 'extensions' || sub === 'ext') {
+      return (await import('./gh-extension')).ghExtensionHandler(ctx, getToken(ctx));
+    }
+    if (!BUILT_IN.has(sub) && !sub.startsWith('-')) {
+      const ext = await import('./gh-extension');
+      const found = await ext.findExtension(ctx, sub);
+      if (found) return ext.runExtension(ctx, found, ctx.args.slice(1), getToken(ctx));
     }
 
     // Flags checked against what each subcommand does (unknown ones are errors), file bodies read, --json/--jq taken out

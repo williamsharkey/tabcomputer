@@ -66,7 +66,12 @@ interface LayerIndex {
   merged: Record<string, string>;
 }
 
-export interface AppliedLayer { id: string; name: string; base: string; url: string; appliedAt: number; packages: string[] }
+export interface AppliedLayer {
+  id: string; name: string; base: string; url: string; appliedAt: number; packages: string[];
+  /** A layer of a package set (src/debian/package-sets.ts), not a toolchain: the names that were asked for. */
+  kind?: 'packages';
+  requested?: string[];
+}
 
 /** Applied layers: name → record. Boot re-attaches their chunk loaders. */
 export const LAYERS_STATE = '/var/lib/shiro/layers.json';
@@ -229,6 +234,10 @@ export interface ApplyResult {
   kept: string[];
   paths: number;
   ms: number;
+  /** The chunks that hold the written files' bytes, programs and libraries first (src/debian/rootfs.ts warmChunks). */
+  chunks: string[];
+  /** How many of `chunks`, from the start, hold a program or a library: what a first run reads before anything else. */
+  chunksFirst: number;
 }
 
 /**
@@ -236,12 +245,22 @@ export interface ApplyResult {
  * rootfs the layer was built on (`debian install`).
  */
 export async function applyLayer(fs: FileSystem, name: string, opts: { base?: string; progress?: (msg: string) => void } = {}): Promise<ApplyResult> {
-  const t0 = Date.now();
   const base = opts.base ?? defaultLayersBase();
-  const rootfs = await installedRootfs(fs);
-  if (!rootfs) throw new Error('Debian is not installed (debian install)');
   const layer = (await fetchLayerCatalog(base)).find((l) => l.name === name);
   if (!layer) throw new Error(`no layer named ${name} on this server`);
+  return applyLayerInfo(fs, layer, base, opts);
+}
+
+/**
+ * Apply `layer`, whose index and chunks are under `base`: a toolchain layer
+ * from the catalog, or the layer of a package set the server answered with
+ * (src/debian/package-sets.ts; `opts.packages` records it as one).
+ */
+export async function applyLayerInfo(fs: FileSystem, layer: LayerInfo, base: string, opts: { progress?: (msg: string) => void; packages?: boolean } = {}): Promise<ApplyResult> {
+  const t0 = Date.now();
+  const name = layer.name;
+  const rootfs = await installedRootfs(fs);
+  if (!rootfs) throw new Error('Debian is not installed (debian install)');
   if (layer.base !== rootfs.id) throw new Error(`layer ${name} was built for Debian rootfs ${layer.base}; this machine has ${rootfs.id}`);
   const index: LayerIndex = JSON.parse(new TextDecoder().decode(await gunzip(await getBytes(base + layer.index))));
   attachRootfsLoader(fs, { [layer.id]: base });
@@ -276,6 +295,8 @@ export async function applyLayer(fs: FileSystem, name: string, opts: { base?: st
   for (let i = 0; i + 2 < dl.length && dl[i]; i += 3) divs.set(dl[i], { to: dl[i + 1], by: dl[i + 2] });
 
   const nodes: FSNode[] = [];
+  // Chunks of the written files; the ones a program needs to start (it and its libraries) come first
+  const first = new Set<string>(), later = new Set<string>();
   for (const row of index.entries) {
     const owner = row[row.length - 1] as number;
     if (owner >= 0 && !apply[owner]) continue;
@@ -300,7 +321,10 @@ export async function applyLayer(fs: FileSystem, name: string, opts: { base?: st
       const size = row[4] as number;
       if (existing?.isDirectory()) await fs.rm(path, { recursive: true });
       const node: FSNode = { path, type: 'file', content: size ? null : new Uint8Array(0), mode, mtime, ctime: mtime, size };
-      if (size) node.lazy = { src: layer.id, chunk: index.chunks[row[5] as number][0], off: row[6] as number };
+      if (size) {
+        node.lazy = { src: layer.id, chunk: index.chunks[row[5] as number][0], off: row[6] as number };
+        (/^\/usr\/(s?bin\/|lib\/.*\.so(\.|$))/.test(row[0]) ? first : later).add(node.lazy.chunk);
+      }
       nodes.push(node);
     }
   }
@@ -326,7 +350,10 @@ export async function applyLayer(fs: FileSystem, name: string, opts: { base?: st
   }
 
   const applied = await appliedLayers(fs);
-  applied[name] = { id: layer.id, name, base: layer.base, url: base, appliedAt: Date.now(), packages: index.packages.filter((_, i) => apply[i]).map((p) => p.name) };
+  applied[name] = {
+    id: layer.id, name, base: layer.base, url: base, appliedAt: Date.now(), packages: index.packages.filter((_, i) => apply[i]).map((p) => p.name),
+    ...(opts.packages ? { kind: 'packages' as const, requested: layer.requested ?? [] } : {}),
+  };
   await fs.mkdir('/var/lib/shiro', { recursive: true });
   await fs.writeFile(LAYERS_STATE, JSON.stringify(applied, null, 2) + '\n');
   await fs.sync();
@@ -336,5 +363,7 @@ export async function applyLayer(fs: FileSystem, name: string, opts: { base?: st
     kept,
     paths: nodes.length,
     ms: Date.now() - t0,
+    chunks: [...first, ...[...later].filter((c) => !first.has(c))],
+    chunksFirst: first.size,
   };
 }

@@ -126,6 +126,9 @@ interface PypiProject { info: { name: string; version: string; requires_dist?: s
 /** `wheel` is the file to download: a pure-Python wheel, or with `sdist` the source distribution. */
 export interface Candidate { name: string; version: string; wheel: PypiFile; requires: string[]; sdist?: boolean }
 
+/** Requirements the Notebook app stands in for: Jupyter's own programs and the kernel package */
+export const JUPYTER_BUILT_IN = /^(jupyter|jupyterlab|notebook|nbclassic|ipykernel|jupyter[-_]server|jupyterlab[-_]server|jupyter[-_]core|jupyter[-_]client|nbclient)(\[[^\]]*\])?\s*([<>=!~;].*)?$/i;
+
 /** What to do about a project the built-in Python can't have (tabcomputer#125). */
 const COMPILED_HINT = `the built-in Python can't load compiled extensions, and there is no pure-Python build of this one.
 Debian's Python can install it: toolchain install python`;
@@ -659,6 +662,17 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
     const target2: PipTarget = tgt ? { site: fs.resolvePath(tgt, ctx.cwd), scripts: null, python: target.python, prefix: fs.resolvePath(tgt, ctx.cwd) } : target;
     const specs = rest.filter(a => !a.startsWith('-'));
     for (const f of reqFiles) specs.push(...await readRequirements(fs, f, ctx.cwd));
+    // Notebooks are built in (docs/NOTEBOOK.md). The packages that serve them need pyzmq, psutil and
+    // threads, which no Python here has, so a class's `pip install jupyter` is answered, not refused.
+    if (sub === 'install') {
+      const builtIn = specs.filter((s) => JUPYTER_BUILT_IN.test(s.trim()));
+      if (builtIn.length) {
+        for (const s of builtIn) specs.splice(specs.indexOf(s), 1);
+        const names = builtIn.map((s) => s.trim().replace(/[\s\[<>=!~;].*$/, ''));
+        if (!quiet) out(`Notebooks are built in here: ${names.join(', ')} ${names.length > 1 ? 'were' : 'was'} not installed and ${names.length > 1 ? 'are' : 'is'} not needed. Open a notebook with: jupyter notebook FILE.ipynb\n`);
+        if (!specs.length && !editables.length) return 0;
+      }
+    }
     if (!specs.length && !editables.length) { ctx.stderr += 'ERROR: You must give at least one requirement to install (see "pip help install")\n'; return 1; }
 
     const pypi = new PyPI(index ? index.replace(/\/simple\/?$/, '').replace(/\/$/, '') : 'https://pypi.org', fetchFn);

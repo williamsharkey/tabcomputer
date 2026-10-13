@@ -31,6 +31,9 @@ import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
 import { flushStorage, reloadAfterFlush } from '../storage';
 
+/** The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts) */
+const ASKED_FOR_APP = typeof location !== 'undefined' && new URLSearchParams(location.search).has('app');
+
 export interface DesktopDeps {
   fs: FileSystem;
   shell: Shell;
@@ -271,7 +274,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   })();
 
   // ── Apps ──
-  const lazy = (load: () => Promise<{ open: (ctx: AppContext, args?: Record<string, unknown>) => DesktopWindow | null }>) =>
+  const lazy = (load: () => Promise<{ open: (ctx: AppContext, args?: Record<string, unknown>) => DesktopWindow | null | Promise<DesktopWindow | null> }>) =>
     async (args?: Record<string, unknown>) => (await load()).open(ctx, args);
   const focusOrLaunch = (appId: string, launch: (args?: Record<string, unknown>) => Promise<DesktopWindow | null> | DesktopWindow | null) =>
     (args?: Record<string, unknown>) => {
@@ -284,6 +287,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'files', name: 'Files', icon: ICONS.files, order: 1, launch: lazy(() => import('./apps/files')) },
     { id: 'settings', name: 'Settings', icon: ICONS.settings, order: 2, group: 'system', launch: focusOrLaunch('settings', lazy(() => import('./apps/settings'))) },
     { id: 'browser', name: 'Browser', icon: ICONS.browser, order: 4, launch: focusOrLaunch('browser', lazy(() => import('./apps/browser'))) },
+    // Jupyter notebooks (docs/NOTEBOOK.md): `jupyter notebook`, a .ipynb opened in Files or Code, a lab's notebook
+    { id: 'notebook', name: 'Notebook', icon: ICONS.notebook, glyph: 'M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7zM7 3.5v17M4.5 8h2.5M4.5 12h2.5M4.5 16h2.5M10.5 9h4.5M10.5 13h4.5', order: 5, launch: lazy(() => import('./apps/notebook')) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
@@ -960,9 +965,10 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         performance.mark('shiro:desktop:revealed');
         // A first visit gets the tour
         // A first visit gets the welcome (welcome.ts, loaded only until it's dismissed)
+        // Never over an app the address asked for (tabcomputer#139): the card waits for a visit without a link
         let seen = true;
         try { seen = !!localStorage.getItem('tabcomputer-desktop-welcome'); } catch {}
-        if (!seen) setTimeout(() => void import('./welcome').then(m => m.showWelcome(ctx)), 900);
+        if (!seen && !ASKED_FOR_APP) setTimeout(() => void import('./welcome').then(m => m.showWelcome(ctx)), 900);
         // A live icon set showed its still so far: bring it to life (crossfaded)
         if (iconSet(iconSetId).kind === 'live') void switchIconSet(iconSetId);
       };

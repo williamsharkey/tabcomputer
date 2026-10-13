@@ -10,7 +10,7 @@ import { readFileSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
-  parseAppSpec, parseAppUrl, appLinkQuery, fetchSiteApp, fetchGhApp, archiveApp, handleAppLink, AppLinkError,
+  parseAppSpec, parseAppUrl, appLinkQuery, fetchSiteApp, fetchGhApp, fetchGistApp, archiveApp, handleAppLink, AppLinkError,
   type AppLinkDeps, type FetchedApp, type InstallChoice,
 } from '@shiro/apps/links';
 import { cleanRunUrl, RunLinkError } from '@shiro/run-url';
@@ -66,19 +66,19 @@ describe('app links: what the address names', () => {
     expect(parseAppUrl('?app=gh:o/r/x&become')).toEqual({ target: { kind: 'gh', owner: 'o', repo: 'r', path: 'x' }, become: true });
     expect(parseAppUrl('?app=converter&become=0')!.become).toBe(false);
     // an address never names an archive: only something typed does
-    expect(refused(() => parseAppUrl('?app=https://example.com/a.zip'))).toMatch(/an app link names an app of this site or gh:/);
+    expect(refused(() => parseAppUrl('?app=https://example.com/a.zip'))).toMatch(/an app link names an app of this site, gh:/);
   });
 
   it('refuses names that could reach another file or host', () => {
     for (const bad of ['', 'Converter', '../converter', 'converter/../x', 'a/b', '.hidden', 'x', 'conv erter', 'converter?x', 'terminal', 'api', 'apps', 'guest',
       'gh:', 'gh:o', 'gh:o/', 'gh:/r', 'gh:o/..', 'gh:o/r/..', 'gh:o/r/a/../../b', 'gh:o/r/a//b', 'gh:o/r/a/./b', 'gh:o/r/a%2f..', 'gh:o/r/a\\b', 'gh:o@evil.example/r', 'gh:o:8080/r', 'gh:-o/r',
-      'gh:o/r/' + 'a/'.repeat(13) + 'x', 'sh:ZWNobyBoaQ', 'gist:abc123def/abcdef12345', 'file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x',
+      'gh:o/r/' + 'a/'.repeat(13) + 'x', 'sh:ZWNobyBoaQ', 'file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x',
     ]) expect(refused(() => parseAppSpec(bad)), bad).not.toBe('');
     for (const bad of ['http://example.com/a.zip', 'https://user:pw@example.com/a.zip', 'https://example.com/a.zip.exe', 'https://example.com/', 'ftp://example.com/a.zip', 'https://']) {
       expect(refused(() => parseAppSpec(bad)), bad).not.toBe('');
     }
     // what a refusal says has nothing from the link in it
-    expect(refused(() => parseAppSpec('<img src=x onerror=alert(1)>'))).toBe('no such app (an app is an id, gh:<owner>/<repo>[/<path>], or the address of an archive)');
+    expect(refused(() => parseAppSpec('<img src=x onerror=alert(1)>'))).toBe('no such app (an app is an id, gh:<owner>/<repo>[/<path>], gist:<id>, or the address of an archive)');
   });
 
   it('the address loses the link and keeps the page\'s own parameters', () => {
@@ -376,5 +376,145 @@ describe('the apps this site ships', () => {
     const files = await app.files();
     expect(files.has('public/index.html')).toBe(true);
     expect(files.has('measure/lib.mjs')).toBe(false);
+  });
+});
+
+describe('apps from a gist (tabcomputer#137)', () => {
+  const ID = 'abcdef0123456789abcdef0123456789';
+  const REV = 'beef'.padEnd(40, '1');
+  const ONE = '{\n  "name": "Tidy JSON",\n  "accept": [".json"],\n  "run": "jq . {in}"\n}\n';
+  const gistSite = (files: Record<string, string | { truncated: true }>, extra: Record<string, string | (() => Response)> = {}, over: Record<string, unknown> = {}) => site({
+    [`https://api.github.com/gists/${ID}`]: JSON.stringify({
+      id: ID, owner: { login: 'octocat' }, history: [{ version: REV }, { version: 'a'.repeat(40) }],
+      files: Object.fromEntries(Object.entries(files).map(([n, c]) => [n, typeof c === 'string' ? { filename: n, content: c, truncated: false } : { filename: n, content: 'cut sh', truncated: true }])),
+      ...over,
+    }),
+    ...extra,
+  });
+
+  it('gist:<id> and gist:<user>/<id> name one, in an address and at the prompt', () => {
+    expect(parseAppSpec(`gist:${ID}`)).toEqual({ kind: 'gist', user: '', id: ID });
+    expect(parseAppSpec(`gist:Octo-Cat/${ID}`)).toEqual({ kind: 'gist', user: 'Octo-Cat', id: ID });
+    expect(parseAppUrl(`?app=gist:${ID}&become`)).toEqual({ target: { kind: 'gist', user: '', id: ID }, become: true });
+    expect(appLinkQuery({ kind: 'gist', user: '', id: ID })).toBe(`?app=gist:${ID}`);
+    expect(appLinkQuery({ kind: 'gist', user: 'octocat', id: ID }, { become: '1' })).toBe(`?app=gist:octocat/${ID}&become=1`);
+    expect(cleanRunUrl(`${ORIGIN}/?app=gist:${ID}&ui=desktop`)).toBe(`${ORIGIN}/?ui=desktop`);
+    for (const bad of ['gist:', 'gist:/', `gist:/${ID}`, 'gist:octocat/', `gist:octocat/${ID}/app.json`, `gist:octocat/${ID}/`, `gist:../${ID}`, `gist:octocat/../${ID}`, `gist:${ID.toUpperCase()}`,
+      'gist:not-hex', 'gist:abc', `gist:${'a'.repeat(41)}`, `gist:octocat@evil.example/${ID}`, `gist:evil.example/${ID}`, `gist:-octocat/${ID}`, `gist:${ID}?x=1`, `gist:${ID}#x`, `gist:o/${ID} `]) {
+      expect(refused(() => parseAppSpec(bad)), bad).toMatch(/a gist: app is gist:<id> or gist:<user>\/<id>/);
+    }
+  });
+
+  it('one app.json is a whole app, read at one revision: what is shown is what is installed', async () => {
+    const { fetchFn, calls } = gistSite({ 'app.json': ONE, 'README.md': '# Tidy' });
+    const app = await fetchGistApp({ user: '', id: ID }, fetchFn);
+    // one request gave the revision and the files together
+    expect(calls.map((c) => c.url)).toEqual([`https://api.github.com/gists/${ID}`]);
+    expect(calls[0].init).toMatchObject({ redirect: 'error', credentials: 'omit' });
+    expect(app).toMatchObject({ curated: false, source: `gist:${ID}@${REV}`, from: `gist.github.com/${ID} at revision ${REV.slice(0, 10)}`, manifestText: ONE });
+    // the id comes from the app's name: a gist has no folder to name it
+    expect(app.manifest).toMatchObject({ id: 'tidy-json', name: 'Tidy JSON', kind: 'files', run: 'jq . {in}', access: { commands: ['jq'], network: false } });
+    const files = await app.files();
+    expect([...files.keys()].sort()).toEqual(['README.md', 'app.json']);
+    expect(new TextDecoder().decode(files.get('app.json'))).toBe(ONE);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('a gist with a page: its files are the app\'s, flat, and entry may be left out', async () => {
+    const { fetchFn } = gistSite({ 'app.json': '{"name": "Flat page"}', 'index.html': '<!doctype html><script src="app.js"></script>', 'app.js': '1', 'style.css': 'b{}' });
+    const app = await fetchGistApp({ user: 'octocat', id: ID }, fetchFn);
+    expect(app.manifest).toMatchObject({ kind: 'page', entry: '.', id: 'flat-page' });
+    expect(app.from).toBe(`gist.github.com/octocat/${ID} at revision ${REV.slice(0, 10)}`);
+    expect([...(await app.files()).keys()].sort()).toEqual(['app.js', 'app.json', 'index.html', 'style.css']);
+    // without a page and without a kind's keys it is not an app
+    await expect(fetchGistApp({ user: '', id: ID }, gistSite({ 'app.json': '{"name": "Nothing"}' }).fetchFn)).rejects.toThrow(/entry is missing/);
+  });
+
+  it('a file too large for the answer is fetched by itself, at the same revision', async () => {
+    const raw = `https://gist.githubusercontent.com/octocat/${ID}/raw/${REV}/big%20data.js`;
+    const { fetchFn, calls } = gistSite({ 'app.json': '{"name": "Big"}', 'index.html': '<p>', 'big data.js': { truncated: true } }, { [raw]: 'the whole file' });
+    const files = await (await fetchGistApp({ user: '', id: ID }, fetchFn)).files();
+    expect(new TextDecoder().decode(files.get('big data.js'))).toBe('the whole file');
+    expect(calls.map((c) => c.url)).toEqual([`https://api.github.com/gists/${ID}`, raw]);
+  });
+
+  const gistCases: [string, Parameters<typeof gistSite>, { user: string; id: string }, RegExp][] = [
+    ['a gist that does not exist', [{}, { [`https://api.github.com/gists/${ID}`]: () => new Response('{}', { status: 404 }) }], { user: '', id: ID }, /gist\.github\.com\/abcdef\S+ does not exist/],
+    ['a gist of another account than the link names', [{ 'app.json': ONE }], { user: 'someone-else', id: ID }, /is not a gist of that account/],
+    ['a gist without app.json', [{ 'index.html': '<p>' }], { user: '', id: ID }, /has no app\.json: it is not an app/],
+    ['a revision that is not one', [{ 'app.json': ONE }, {}, { history: [{ version: '../../main' }] }], { user: '', id: ID }, /could not read the revision/],
+    ['a gist without a history', [{ 'app.json': ONE }, {}, { history: [] }], { user: '', id: ID }, /could not read the revision/],
+    ['a file whose name is a path', [{ 'app.json': ONE, '../../.claude/settings.json': 'x' }], { user: '', id: ID }, /not a plain name/],
+    ['a file in a folder', [{ 'app.json': ONE, 'public/index.html': 'x' }], { user: '', id: ID }, /not a plain name/],
+    ['a list of files cut short', [{ 'app.json': ONE }, {}, { truncated: true }], { user: '', id: ID }, /too many files/],
+    ['an answer that is not JSON', [{}, { [`https://api.github.com/gists/${ID}`]: '<html>' }], { user: '', id: ID }, /could not read gist\.github\.com/],
+    ['a manifest that is not valid', [{ 'app.json': '{"name": "Tidy", "run": "jq ."}' }], { user: '', id: ID }, /manifest is not valid:\napp\.json: run must say where the file goes: \{in\}/],
+    ['GitHub\'s limit for visitors', [{}, { [`https://api.github.com/gists/${ID}`]: () => new Response('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }) }], { user: '', id: ID }, /rate limit for visitors/],
+  ];
+  for (const [what, args, target, why] of gistCases) {
+    it(`refuses ${what}`, async () => {
+      await expect((async () => (await fetchGistApp(target, gistSite(...args).fetchFn)).files())()).rejects.toThrow(why);
+    });
+  }
+
+  it('a target the parser did not make is refused before any fetch', async () => {
+    const { fetchFn, calls } = gistSite({ 'app.json': ONE });
+    for (const t of [{ user: '', id: '../x' }, { user: '../..', id: ID }, { user: 'o@evil', id: ID }, { user: '', id: `${ID}/../../repos/o/r` }]) await expect(fetchGistApp(t, fetchFn)).rejects.toThrow(/no such app/);
+    expect(calls).toEqual([]);
+  });
+
+  it('the link asks first; the same revision opens without asking; a new revision asks again', async () => {
+    const { fetchFn } = gistSite({ 'app.json': ONE });
+    const h = harness(`?app=gist:${ID}`, fetchFn, 'install');
+    expect(await handleAppLink(h.deps)).toBe('installed');
+    expect(h.log.prompts).toHaveLength(1);
+    expect(h.log.prompts[0].manifestText).toBe(ONE);
+    expect(new TextDecoder().decode(h.log.installs[0].files.get('app.json'))).toBe(ONE);
+    expect(h.log.opens).toEqual([['tidy-json', false]]);
+    expect(await handleAppLink(h.deps)).toBe('opened');
+    expect(h.log.prompts).toHaveLength(1);
+    const moved = gistSite({ 'app.json': ONE.replace('jq . {in}', 'jq -c . {in}') }, {}, { history: [{ version: 'c'.repeat(40) }] });
+    expect(await handleAppLink({ ...h.deps, fetch: moved.fetchFn })).toBe('installed');
+    expect(h.log.prompts).toHaveLength(2);
+    expect(h.log.prompts[1].manifest.run).toBe('jq -c . {in}');
+    // Cancel installs nothing; the sign-in sheet's fetch is used when one is given
+    const c = harness(`?app=gist:${ID}`, fetchFn, 'cancel');
+    expect(await handleAppLink(c.deps)).toBe('cancelled');
+    expect(c.log.installs).toEqual([]);
+    const asked: string[] = [];
+    const g = harness(`?app=gist:${ID}`, fetchFn, 'install', { github: async (action, run) => { asked.push(action); return run('tok'); } });
+    expect(await handleAppLink(g.deps)).toBe('installed');
+    expect(asked).toEqual([`gist:${ID}`]);
+  });
+
+  it('signed in, the token goes to GitHub\'s API only', async () => {
+    const raw = `https://gist.githubusercontent.com/octocat/${ID}/raw/${REV}/big.js`;
+    const { fetchFn, calls } = gistSite({ 'app.json': '{"name": "Big"}', 'index.html': '<p>', 'big.js': { truncated: true } }, { [raw]: 'x' });
+    await (await fetchGistApp({ user: '', id: ID }, fetchFn, 'secret-token')).files();
+    expect((calls[0].init?.headers as Record<string, string>).authorization).toBe('Bearer secret-token');
+    expect(JSON.stringify(calls[1].init ?? {})).not.toContain('secret-token');
+  });
+});
+
+describe('the examples (apps/examples)', () => {
+  it('are installable by id, as examples/<id> too, and have no dock entry', async () => {
+    const apps = siteApps(ROOT) as { id: string; files: { path: string }[] }[];
+    for (const id of ['searchable-pdf', 'jq-playground', 'expenses']) {
+      expect(apps.find((a) => a.id === id)?.files.map((f) => f.path), id).toEqual(['app.json']);
+      expect(parseAppSpec(`examples/${id}`)).toEqual({ kind: 'site', id });
+    }
+    const out = mkdtempSync(join(tmpdir(), 'tc-apps-'));
+    writeSiteApps(out, ROOT);
+    const fetchFn = async (url: string) => {
+      const file = join(out, new URL(url).pathname);
+      if (!existsSync(file)) return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } });
+      return new Response(readFileSync(file), { status: 200, headers: { 'content-type': file.endsWith('.json') ? 'application/json' : 'application/octet-stream' } });
+    };
+    const app = await fetchSiteApp('expenses', ORIGIN, fetchFn);
+    // the one file has no id: the site's entry (its folder's name) gives it
+    expect(app).toMatchObject({ curated: true, manifest: { id: 'expenses', kind: 'table', table: 'expenses.csv' } });
+    expect([...(await app.files()).keys()]).toEqual(['app.json']);
+    const { shippedApps } = await import('@shiro/apps/shipped');
+    expect(shippedApps().some((a) => ['searchable-pdf', 'jq-playground', 'expenses', 'examples'].includes(a.id))).toBe(false);
   });
 });

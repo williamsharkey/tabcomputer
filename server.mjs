@@ -5,7 +5,7 @@
  */
 
 import { createServer } from 'node:http';
-import { readFile, writeFile, stat, readdir, unlink, mkdir, rename, open, rm } from 'node:fs/promises';
+import { readFile, writeFile, stat, readdir, unlink, mkdir, rename, open, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -577,7 +577,16 @@ async function handleStatic(req, res, guest = null, guests = null) {
       || /^\/engines\/.*\.[0-9a-f]{12}\.wasm$/.test(pathname)
       || /^\/engines\/blink\/v-[0-9a-f]{12}\//.test(pathname)
       ? { 'cache-control': 'public, max-age=31536000, immutable' } : { 'cache-control': 'no-cache' };
-    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', ...staticHeaders, ...isolation, ...immutable });
+    // A brotli copy made by the build (vite-plugin-precompress.ts: PostgreSQL's
+    // wasm and data), for a browser that takes it
+    let encoding = {};
+    if (pathname.startsWith('/assets/') && /\bbr\b/.test(String(req.headers['accept-encoding'] || ''))) {
+      try {
+        data = await readFile(filePath + '.br');
+        encoding = { 'content-encoding': 'br', vary: 'accept-encoding' };
+      } catch { /* no copy: the file as it is */ }
+    }
+    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', ...staticHeaders, ...isolation, ...immutable, ...encoding });
     res.end(data);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...staticHeaders });
@@ -594,7 +603,8 @@ const DEBIAN_LAYERS = process.env.TABCOMPUTER_DEBIAN_LAYERS || '';
 
 async function handleDebianLayers(req, res, rel) {
   const headers = { 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
-  if (!/^(index\.json|[a-z0-9-]+\/(layer\.json|index-[0-9a-f]+\.json\.gz)|chunks\/[0-9a-f]{64}\.gz)$/.test(rel)) {
+  // (sets/…: the package layers below, a tree of their own with its own chunks)
+  if (!/^(?:sets\/)?(index\.json|[a-z0-9-]+\/(layer\.json|index-[0-9a-f]+\.json\.gz)|chunks\/[0-9a-f]{64}\.gz)$/.test(rel)) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...headers });
     return res.end('Not found');
   }
@@ -609,6 +619,324 @@ async function handleDebianLayers(req, res, rel) {
     res.end('Not found');
   }
 }
+
+// --- Package layers (docs/DEBIAN.md "Package layers") ---
+// A layer for any set of Debian packages, built the first time a tab asks:
+//
+//   GET /debian/layers/set?base=ROOTFS_ID&packages=a,b[&build=0]
+//
+// answers with JSON whose `state` is one of
+//   ready        { key, base: '/debian/layers/sets/', layer }   apply it as a toolchain layer
+//   queued       { key, ahead }                                 ask again
+//   building     { key, phase, done, total }                    ask again
+//   failed       { key, reason, message }                       use apt
+//   unavailable  { reason, message[, unknown] }                 use apt
+// A set's key is the Debian base, its snapshot and the sorted names, so two
+// apps that need the same packages share one layer. The layer is what
+// scripts/debian/build-layers.sh makes for a toolchain set, made by
+// scripts/debian/build-set.sh: apt and dpkg run natively in a chroot of the
+// base tabs install, and what changed is packed
+// (TABCOMPUTER_DEBIAN_LAYERS/sets/<key>/, chunks in sets/chunks/).
+//
+// What a request can cause is small on purpose. Names must be Debian package
+// names (a grammar; never a version, a file or an option), at most
+// `maxNames` of them, none of a kind that touches the machine it is
+// configured on (PACKAGE_REFUSED), and, once the builder has listed the
+// archive, names the pinned snapshot's main archive has. The names reach the
+// builder as a JSON file and as nothing else. One build runs at a time; the
+// queue, the builds one address may have waiting and may start in an hour,
+// a build's download size and time, and the disk all sets take together
+// (least recently used go first) are capped. The builder is off unless
+// TABCOMPUTER_LAYER_BUILDER=1: a server without it still serves the sets it
+// has (the ones release.sh builds at deploy) and answers `unavailable` for
+// the rest, and the tab uses apt.
+//
+//   TABCOMPUTER_LAYER_BUILDER=1             build on request (needs root, systemd, Linux)
+//   TABCOMPUTER_LAYER_BUILDER_TOOLS         build-set.sh and its helpers (default /opt/tabcomputer/set-build/tools)
+//   TABCOMPUTER_LAYER_BUILDER_WORK          scratch directory (default /opt/tabcomputer/set-build)
+//   TABCOMPUTER_LAYER_BUILDER_CMD           a JSON array to run instead of systemd-run (the key is appended)
+//   TABCOMPUTER_LAYER_SET_MAX_NAMES         12     names in one request
+//   TABCOMPUTER_LAYER_SET_MAX_PACKAGES      400    packages a set may install, dependencies included
+//   TABCOMPUTER_LAYER_SET_MAX_DEB_MB        200    their .debs together
+//   TABCOMPUTER_LAYER_SETS_MAX_MB           3072   chunks of all sets on disk
+//   TABCOMPUTER_LAYER_QUEUE                 8      builds waiting
+//   TABCOMPUTER_LAYER_PER_ADDRESS           2      builds one address has waiting or running
+//   TABCOMPUTER_LAYER_PER_ADDRESS_HOUR      6      builds one address starts in an hour
+//   TABCOMPUTER_LAYER_BUILD_SECONDS         900    a build's time limit
+
+/** A Debian binary package name (Debian policy 5.6.1), at most 63 characters. */
+export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{1,62}$/;
+/**
+ * Packages never built on request: they act on the machine they are
+ * configured on (kernels, boot loaders, init, device and storage managers,
+ * kernel modules, containers and hypervisors, firmware) and do nothing in a
+ * tab. build-set.sh checks everything the set installs against this too.
+ */
+export const PACKAGE_REFUSED = /^(?:linux-(?:image|headers|modules|kbuild|base)|grub|lilo|syslinux|extlinux|shim-|systemd-boot|systemd-sysv$|sysvinit|runit-init|init$|initramfs-tools|dracut|udev$|eudev|kmod$|dkms$|.+-dkms$|firmware-|mdadm$|lvm2$|cryptsetup|open-iscsi|multipath-tools|zfs|btrfs-progs$|docker|containerd|runc$|podman$|lxc|lxd|incus|libvirt-daemon|qemu-system|virtualbox|xen-|kexec-tools|apparmor$|selinux-|ufw$|iptables-persistent|nftables$|openssh-server$|ifupdown|network-manager$|netplan)/;
+
+/** The names of a set in their one order, or why they are not a set: { ok, names } | { ok: false, reason, message } */
+export function packageSetNames(list, maxNames = 12) {
+  const names = [...new Set((Array.isArray(list) ? list : String(list ?? '').split(/[\s,]+/)).map((n) => String(n)).filter(Boolean))].sort();
+  if (!names.length) return { ok: false, reason: 'bad-name', message: 'No package was named.' };
+  for (const n of names) {
+    if (!PACKAGE_NAME.test(n)) return { ok: false, reason: 'bad-name', message: `"${n.slice(0, 64)}" is not a Debian package name.` };
+  }
+  if (names.length > maxNames) return { ok: false, reason: 'too-many', message: `A set has at most ${maxNames} packages; this one names ${names.length}.` };
+  const refused = names.filter((n) => PACKAGE_REFUSED.test(n));
+  if (refused.length) return { ok: false, reason: 'not-allowed', message: `${refused.join(', ')} ${refused.length > 1 ? 'are' : 'is'} not built on this server.` };
+  return { ok: true, names };
+}
+
+/** The key of a set: the base rootfs, its snapshot and the sorted names (scripts/debian/set-key.mjs is the builder's copy). */
+export function packageSetKey(baseId, snapshot, names) {
+  return 'p-' + createHash('sha256').update(`${baseId}\n${snapshot}\n${[...names].sort().join(' ')}\n`).digest('hex').slice(0, 24);
+}
+
+export function packageLayersConfig(env = process.env) {
+  const int = (v, d) => (Number.isFinite(Number(v)) && String(v ?? '').trim() !== '' ? Number(v) : d);
+  let cmd = null;
+  try { const c = JSON.parse(env.TABCOMPUTER_LAYER_BUILDER_CMD || 'null'); if (Array.isArray(c) && c.length && c.every((s) => typeof s === 'string')) cmd = c; } catch { /* not a command */ }
+  const layers = env.TABCOMPUTER_DEBIAN_LAYERS || '';
+  return {
+    dir: layers ? join(layers, 'sets') : '',
+    rootfs: join(env.STATIC_DIR || '/opt/tabcomputer/public', 'debian'),
+    builder: env.TABCOMPUTER_LAYER_BUILDER === '1' && !!layers,
+    tools: env.TABCOMPUTER_LAYER_BUILDER_TOOLS || '/opt/tabcomputer/set-build/tools',
+    work: env.TABCOMPUTER_LAYER_BUILDER_WORK || '/opt/tabcomputer/set-build',
+    cmd,
+    maxNames: int(env.TABCOMPUTER_LAYER_SET_MAX_NAMES, 12),
+    maxPackages: int(env.TABCOMPUTER_LAYER_SET_MAX_PACKAGES, 400),
+    maxDebMb: int(env.TABCOMPUTER_LAYER_SET_MAX_DEB_MB, 200),
+    maxDiskMb: int(env.TABCOMPUTER_LAYER_SETS_MAX_MB, 3072),
+    queue: int(env.TABCOMPUTER_LAYER_QUEUE, 8),
+    perAddress: int(env.TABCOMPUTER_LAYER_PER_ADDRESS, 2),
+    perAddressHour: int(env.TABCOMPUTER_LAYER_PER_ADDRESS_HOUR, 6),
+    buildSeconds: int(env.TABCOMPUTER_LAYER_BUILD_SECONDS, 900),
+    failedMs: 10 * 60_000,
+    trustProxy: env.TABCOMPUTER_TRUST_PROXY || 'loopback',
+  };
+}
+
+/**
+ * The builder's process for one set. `spec` is the JSON file that names the
+ * packages; nothing of the request is on the command line but the key (hex).
+ * By default a transient systemd unit, as release.sh runs the toolchain
+ * builder: its own mount namespace, idle priority, half a CPU, and for a
+ * requested set a memory and a time limit and no device but the standard ones.
+ */
+export function packageBuildCommand(cfg, key, spec) {
+  const env = {
+    BASE: cfg.rootfs, OUT: cfg.dir, WORK: cfg.work, SPEC: spec,
+    TC_SET_MAX_PACKAGES: String(cfg.maxPackages), TC_SET_MAX_DEB_MB: String(cfg.maxDebMb), TC_SETS_MAX_MB: String(cfg.maxDiskMb),
+    TC_SET_REFUSE: PACKAGE_REFUSED.source,
+  };
+  const script = join(cfg.tools, 'build-set.sh');
+  if (cfg.cmd) return { file: cfg.cmd[0], args: [...cfg.cmd.slice(1), key], env };
+  return {
+    file: 'systemd-run',
+    args: [
+      `--unit=tabcomputer-set-${key}`, '--wait', '--pipe', '--collect', '--quiet',
+      '-p', 'PrivateMounts=yes', '-p', 'PrivateDevices=yes', '-p', 'Nice=19', '-p', 'IOSchedulingClass=idle', '-p', 'CPUQuota=50%',
+      '-p', 'MemoryMax=900M', '-p', `RuntimeMaxSec=${cfg.buildSeconds}`,
+      ...Object.entries(env).flatMap(([k, v]) => ['-E', `${k}=${v}`]),
+      'bash', script, key,
+    ],
+    env: {},
+  };
+}
+
+/** The address a request came from: the proxy's word for it when the peer is the proxy (as the TCP relay reads it). */
+function requestAddress(req, trustProxy) {
+  const peer = req.socket?.remoteAddress || '';
+  const loop = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  if (trustProxy === 'always' || (trustProxy === 'loopback' && loop)) {
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (xff.length) return xff[xff.length - 1];
+  }
+  return peer;
+}
+
+export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = null, log = console.log, now = () => Date.now() } = {}) {
+  /** key → { key, names, state: 'queued'|'building'|'failed', phase, done, total, addresses, reason, message, at } */
+  const jobs = new Map();
+  const queue = [];
+  let current = null;
+  /** address → times its builds started */
+  const started = new Map();
+  let rootfs = null, rootfsAt = 0;
+  let known = null, knownAt = 0;
+
+  /** The base tabs install from this server: { id, snapshot }, or null when it ships none. */
+  async function base() {
+    if (rootfs && now() - rootfsAt < 60_000) return rootfs;
+    try {
+      const m = JSON.parse(await readFile(join(cfg.rootfs, 'rootfs.json'), 'utf8'));
+      rootfs = typeof m.id === 'string' && typeof m.snapshot === 'string' ? { id: m.id, snapshot: m.snapshot } : null;
+    } catch { rootfs = null; }
+    rootfsAt = now();
+    return rootfs;
+  }
+
+  /** The archive's package names, once the builder has written them (sets/names.txt); null until then. */
+  async function archiveNames() {
+    if (!cfg.dir) return null;
+    try {
+      const st = await stat(join(cfg.dir, 'names.txt'));
+      if (!known || st.mtimeMs !== knownAt) {
+        known = new Set((await readFile(join(cfg.dir, 'names.txt'), 'utf8')).split('\n').filter(Boolean));
+        knownAt = st.mtimeMs;
+      }
+    } catch { known = null; }
+    return known && known.size > 1000 ? known : null;
+  }
+
+  /** A built set's manifest, when it is for this server's base. */
+  async function built(key, baseId) {
+    if (!cfg.dir) return null;
+    const file = join(cfg.dir, key, 'layer.json');
+    try {
+      const m = JSON.parse(await readFile(file, 'utf8'));
+      if (m.kind !== 'layer' || m.name !== key || m.base !== baseId) return null;
+      // Used now: the sets used longest ago are the first removed when the disk cap is reached
+      const t = new Date(now());
+      const st = await stat(file);
+      if (now() - st.mtimeMs > 60_000) await utimes(file, t, t).catch(() => {});
+      return m;
+    } catch { return null; }
+  }
+
+  function progress(job, line) {
+    const m = /^::tc:: (\w+)(?: (.*))?$/.exec(line);
+    if (m) {
+      if (m[1] === 'phase') { job.phase = m[2]; job.done = 0; }
+      else if (m[1] === 'total') job.total = Number(m[2]) || 0;
+      else if (m[1] === 'waiting') job.phase = 'waiting';
+      else if (m[1] === 'refused') {
+        const sp = (m[2] || '').indexOf(' ');
+        job.reason = sp > 0 ? m[2].slice(0, sp) : (m[2] || 'refused');
+        job.message = sp > 0 ? m[2].slice(sp + 1) : 'The builder refused this set.';
+      }
+      return;
+    }
+    if (job.phase === 'downloading' && /^Get:\d+ /.test(line)) job.done = Math.min(job.done + 1, job.total || Infinity);
+    else if (job.phase === 'installing' && /^Setting up /.test(line)) job.done = Math.min(job.done + 1, job.total || Infinity);
+    else if (/^E: Unable to locate package |^E: Package '.*' has no installation candidate/.test(line)) {
+      job.reason = 'unknown-package';
+      job.message = line.replace(/^E: /, '') + '.';
+    }
+  }
+
+  async function run(job) {
+    current = job;
+    job.state = 'building'; job.phase = 'starting'; job.done = 0; job.total = 0; job.at = now();
+    for (const a of job.addresses) started.set(a, [...(started.get(a) || []), now()]);
+    let code = 1;
+    try {
+      const specs = join(cfg.work, 'specs');
+      await mkdir(specs, { recursive: true });
+      await mkdir(cfg.dir, { recursive: true });
+      const spec = join(specs, `${job.key}.json`);
+      await writeFile(spec, JSON.stringify({ format: 1, layers: { [job.key]: { title: job.names.join(', '), description: 'Debian packages', packages: job.names } } }) + '\n');
+      const c = packageBuildCommand(cfg, job.key, spec);
+      log(`[layers] building ${job.key}: ${job.names.join(' ')}`);
+      const spawn = spawnFn || (await import('node:child_process')).spawn;
+      code = await new Promise((done) => {
+        const p = spawn(c.file, c.args, { env: { ...process.env, ...c.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+        job.proc = p;
+        let buf = '';
+        const feed = (d) => {
+          const parts = (buf + d).split('\n');
+          buf = parts.pop() ?? '';
+          for (const l of parts) progress(job, l.replace(/\r$/, ''));
+        };
+        p.stdout?.setEncoding('utf8').on('data', feed);
+        p.stderr?.setEncoding('utf8').on('data', feed);
+        const timer = setTimeout(() => { job.reason = 'timeout'; job.message = 'The build took too long.'; p.kill('SIGTERM'); }, (cfg.buildSeconds + 30) * 1000);
+        p.on('error', (e) => { clearTimeout(timer); job.message = `The builder did not start (${e.code || e.message}).`; job.reason = 'no-builder'; done(127); });
+        p.on('close', (c2) => { clearTimeout(timer); if (buf) progress(job, buf); done(c2 ?? 1); });
+      });
+    } catch (e) {
+      job.message = `The builder did not start (${e.code || e.message}).`; job.reason = 'no-builder';
+    }
+    delete job.proc;
+    const ok = code === 0 && !!(await built(job.key, job.baseId));
+    log(`[layers] ${job.key}: ${ok ? 'built' : `failed (exit ${code}${job.reason ? `, ${job.reason}` : ''})`} in ${Math.round((now() - job.at) / 1000)} s`);
+    if (ok) jobs.delete(job.key);
+    else {
+      job.state = 'failed'; job.at = now();
+      job.reason ||= 'failed';
+      job.message ||= 'The build failed.';
+    }
+    current = null;
+    const next = queue.shift();
+    if (next) void run(next);
+  }
+
+  /** What to tell a tab that asks for `packages` on the Debian base `baseId`. */
+  async function request({ packages, baseId, address = '', build = true }) {
+    const set = packageSetNames(packages, cfg.maxNames);
+    if (!set.ok) return { state: 'unavailable', reason: set.reason, message: set.message };
+    // What is remembered stays small: failures for ten minutes, an address's builds for an hour
+    for (const [k, j] of jobs) if (j.state === 'failed' && now() - j.at >= cfg.failedMs) jobs.delete(k);
+    for (const [a, times] of started) if (!times.some((t) => now() - t < 3600_000)) started.delete(a);
+    const b = await base();
+    if (!b) return { state: 'unavailable', reason: 'no-builder', message: 'This server has no Debian base.' };
+    if (baseId && baseId !== b.id) return { state: 'unavailable', reason: 'base', message: 'This server builds for another Debian base than this tab has.' };
+    const key = packageSetKey(b.id, b.snapshot, set.names);
+    const layer = await built(key, b.id);
+    if (layer) return { state: 'ready', key, base: '/debian/layers/sets/', layer: { title: set.names.join(', '), description: 'Debian packages', requested: set.names, ...layer } };
+    const names = await archiveNames();
+    const unknown = names ? set.names.filter((n) => !names.has(n)) : [];
+    if (unknown.length) {
+      return { state: 'unavailable', reason: 'unknown-package', unknown, message: `${unknown.join(', ')} ${unknown.length > 1 ? 'are' : 'is'} not in Debian's main archive under ${unknown.length > 1 ? 'those names' : 'that name'}.` };
+    }
+    let job = jobs.get(key);
+    if (job?.state === 'failed') {
+      if (now() - job.at < cfg.failedMs) return { state: 'failed', key, reason: job.reason, message: job.message };
+      jobs.delete(key); job = undefined;
+    }
+    if (!job) {
+      if (!cfg.builder) return { state: 'unavailable', reason: 'no-builder', message: 'This server does not build package sets.' };
+      if (!build) return { state: 'unavailable', reason: 'not-built', message: 'This set is not built yet.' };
+      const mine = [...jobs.values()].filter((j) => j.state !== 'failed' && j.addresses.has(address)).length;
+      if (mine >= cfg.perAddress) return { state: 'unavailable', reason: 'busy', message: `This address already has ${mine} builds waiting.` };
+      const recent = (started.get(address) || []).filter((t) => now() - t < 3600_000);
+      started.set(address, recent);
+      if (recent.length >= cfg.perAddressHour) return { state: 'unavailable', reason: 'rate', message: 'This address has asked for many builds this hour.' };
+      if (queue.length >= cfg.queue) return { state: 'unavailable', reason: 'busy', message: 'The builder has a full queue.' };
+      job = { key, names: set.names, baseId: b.id, state: 'queued', phase: 'queued', done: 0, total: 0, addresses: new Set([address]), reason: '', message: '', at: now() };
+      jobs.set(key, job);
+      if (current) queue.push(job); else void run(job);
+    } else {
+      job.addresses.add(address);
+    }
+    if (job.state === 'queued') return { state: 'queued', key, ahead: queue.indexOf(job) + 1 };
+    return { state: 'building', key, phase: job.phase, done: job.done, total: job.total };
+  }
+
+  async function handle(req, res, url) {
+    const headers = { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
+    if (req.method !== 'GET') { res.writeHead(405, headers); return res.end(JSON.stringify({ state: 'unavailable', reason: 'bad-request', message: 'GET only.' })); }
+    const packages = (url.searchParams.get('packages') || '').slice(0, 2000);
+    let answer;
+    try {
+      answer = await request({ packages, baseId: (url.searchParams.get('base') || '').slice(0, 64), address: requestAddress(req, cfg.trustProxy), build: url.searchParams.get('build') !== '0' });
+    } catch (e) {
+      log(`[layers] request failed: ${e.message}`);
+      answer = { state: 'unavailable', reason: 'failed', message: 'The server could not answer.' };
+    }
+    res.writeHead(200, headers);
+    res.end(JSON.stringify(answer));
+  }
+
+  return {
+    request, handle,
+    stats: () => ({ building: current?.key ?? null, queued: queue.map((j) => j.key), failed: [...jobs.values()].filter((j) => j.state === 'failed').map((j) => j.key) }),
+    close() { queue.length = 0; current?.proc?.kill('SIGTERM'); },
+  };
+}
+
+const packageLayers = createPackageLayers();
 
 // --- Debian package mirror (docs/DEBIAN.md "Package mirror") ---
 // apt inside the page fetches http://HOST/PATH as /debian/mirror/HOST/PATH
@@ -2115,13 +2443,14 @@ async function handleBrowseHost(req, res, cfg) {
 // browse zone: app--<id>--<16 hex>.<zone> (src/apps/frame.ts makes the label).
 // Its `--` runs can't be a browse key's, so the two never meet. Such a host
 // serves only /__tabcomputer/: the frame that holds the port to the tab, the
-// origin's service worker, and tab.js. The app's own files and its backend
+// origin's service worker, tab.js, and page.js (the page of an app that has
+// none of its own). The app's own files and its backend
 // are answered by the tab, through that worker. Never the app shell, /api,
 // /tcp or anything else: script on an app origin must find nothing here.
 // Where there are no browse origins there are no app origins, and the tab
 // shows an app's page on its own origin instead (and says so).
 const APP_LABEL = /^app--[a-z0-9]{1,24}--[a-f0-9]{16}$/;
-const APP_HOST_SCRIPTS = new Set(['frame.js', 'sw.js', 'tab.js']);
+const APP_HOST_SCRIPTS = new Set(['frame.js', 'sw.js', 'tab.js', 'page.js']);
 
 /** The app label when `hostHeader` is an app host of `cfg` (browseConfigFor), else null. */
 export function appLabelOf(hostHeader, cfg) {
@@ -2462,6 +2791,10 @@ const server = createServer(async (req, res) => {
   }
   if (pathname.startsWith('/debian/mirror/')) {
     return handleDebianMirror(req, res, pathname.slice('/debian/mirror/'.length));
+  }
+  if (pathname === '/debian/layers/set') {
+    // (always answered, so a tab never takes the app shell for a layer)
+    return packageLayers.handle(req, res, new URL(req.url, 'http://localhost'));
   }
   if (pathname.startsWith('/debian/layers/') && DEBIAN_LAYERS) {
     return handleDebianLayers(req, res, pathname.slice('/debian/layers/'.length));

@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "about": "Package layers built ahead (docs/DEBIAN.md \"Package layers\"): each list is one set of Debian packages. scripts/debian/build-deploy.sh builds a layer for each after a deploy, so the first person who needs one waits a second, not a build. Any other set is built the first time a tab asks (server.mjs). The example apps' `needs` are here (tests check it).",
+  "sets": [
+    ["tesseract-ocr"],
+    ["ghostscript", "poppler-utils", "qpdf"],
+    ["pandoc"],
+    ["genisoimage"],
+    ["imagemagick"]
+  ]
+}

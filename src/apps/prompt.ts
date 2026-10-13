@@ -10,7 +10,7 @@
  * made (not a person) does nothing.
  */
 import type { InstallChoice, InstallPromptInfo } from './links';
-import { describeManifest } from './manifest';
+import { describeManifest, manifestSentences } from './manifest';
 import type { DesktopAPI, DesktopWindow } from '../desktop/wm';
 
 const STYLE_ID = 'tc-app-prompt-style';
@@ -58,15 +58,21 @@ export function buildInstallPrompt(info: InstallPromptInfo, done: (choice: Insta
   root.append(el('h3', `Install ${m.name}?`));
   root.append(el('p', `From ${info.from}. tabcomputer has not reviewed it.`));
   if (m.description) root.append(el('p', m.description));
-  const dl = el('dl');
-  dl.append(el('dt', 'App'), el('dd', `${m.id}${m.version ? `, version ${m.version}` : ''}${info.replaces ? ' (replaces the one installed here)' : ''}`));
-  for (const line of describeManifest(m)) dl.append(el('dt', line.label), el('dd', line.text, line.warn ? 'tc-app-flag' : ''));
-  root.append(dl);
+  if (m.kind === 'page') {
+    const dl = el('dl');
+    dl.append(el('dt', 'App'), el('dd', `${m.id}${m.version ? `, version ${m.version}` : ''}${info.replaces ? ' (replaces the one installed here)' : ''}`));
+    for (const line of describeManifest(m)) dl.append(el('dt', line.label), el('dd', line.text, line.warn ? 'tc-app-flag' : ''));
+    root.append(dl);
+  } else {
+    // An app that is its manifest reads as sentences: the exact command, what it installs (the first is its description, above)
+    for (const s of manifestSentences(m).slice(m.description ? 1 : 0)) root.append(el('p', s, 'tc-app-warn'));
+    if (info.replaces) root.append(el('p', `It replaces the ${m.name} installed here.`));
+  }
   const runs = !!m.backend || m.access.shell || m.access.commands.length > 0;
   root.append(el('p', info.confined
     ? 'Its page runs on an address of its own: it cannot read this tab\'s files or sign-ins except through what is listed above.'
     : 'This server gives app pages no address of their own: its page runs with this tab\'s own access, whatever is listed above.', info.confined ? '' : 'tc-app-warn'));
-  if (runs) {
+  if (runs && m.kind === 'page') {
     root.append(el('p', `What it runs are ordinary programs in this tab: they can read and change every file here and use the accounts this tab is signed in to (Claude, GitHub). The list above is what the app says it does, not a limit on those programs.${info.guests ? ' To keep it away from your files and sign-ins, open it in a guest.' : ''}`, 'tc-app-warn'));
   }
   const details = el('details');

@@ -2,7 +2,9 @@
  * App manifests (docs/APPS.md): `app.json` in an app's folder says what the
  * app is (id, name, icon, window), what its page is (`entry`), what runs
  * behind it (`backend`), what it needs before its first start (`toolchains`,
- * `files`) and what its page may ask the tab for (`access`).
+ * `files`, `needs`) and what its page may ask the tab for (`access`). An app
+ * with `run`, `fields` or `table` has no page of its own: tabcomputer supplies
+ * it, and derives its `access` (declare.ts).
  *
  * Validation is strict: an unknown key, a wrong type or a path that climbs
  * out of the app's folder is an error, and every problem found is reported,
@@ -10,6 +12,8 @@
  * filesystem: the `app` command, the desktop, the Code app and tests all
  * parse manifests through this one module.
  */
+
+import { KIND_KEYS, KIND_WINDOW, NO_KIND, kindOf, kindSentences, validateKind, type KindKeys } from './declare';
 
 /** The manifest format this build reads */
 export const MANIFEST_VERSION = 1;
@@ -57,7 +61,7 @@ export interface AppAccess {
   shell: boolean;
 }
 
-export interface AppManifest {
+export interface AppManifest extends KindKeys {
   manifest: number;
   id: string;
   name: string;
@@ -73,7 +77,17 @@ export interface AppManifest {
   toolchains: string[];
   /** Paths that must exist before it starts; one ending in `/` is a folder that is made */
   files: string[];
+  /** Debian packages installed before the first start */
+  needs: string[];
   access: AppAccess;
+}
+
+/** What the place an app.json was found in says, for the keys it leaves out */
+export interface ManifestHint {
+  /** A name to make the id from: the folder's, the repository's (else the app's own `name` is used) */
+  id?: string;
+  /** The page found beside it, when it names none: '.' (index.html) or 'public' */
+  page?: string;
 }
 
 /** A manifest that can't be used: every problem, one per line in `message` */
@@ -96,7 +110,11 @@ const ICON_EXT = /\.(svg|png|jpe?g|webp)$/i;
 const TOOLCHAIN = /^[a-z][a-z0-9-]{0,31}$/;
 const COMMAND = /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}$/;
 
-const TOP_KEYS = ['manifest', 'id', 'name', 'description', 'version', 'icon', 'window', 'entry', 'backend', 'toolchains', 'files', 'access'];
+const PACKAGE = /^[a-z0-9][a-z0-9+.-]{1,62}$/;
+
+/** Keys every app may have; a page app also has PAGE_KEYS, a declared one its kind's (declare.ts) */
+const COMMON_KEYS = ['manifest', 'id', 'name', 'about', 'description', 'version', 'icon', 'window', 'toolchains', 'needs'];
+const PAGE_KEYS = ['entry', 'backend', 'files', 'access'];
 const WINDOW_KEYS = ['width', 'height', 'minWidth', 'minHeight', 'resizable', 'multiple'];
 const BACKEND_KEYS = ['start', 'port', 'health', 'lazy', 'keepAlive'];
 const ACCESS_KEYS = ['fs', 'network', 'commands', 'shell'];
@@ -125,6 +143,12 @@ export function cleanAbsPath(p: string): string {
   return (home ? '~' : '') + (parts.length ? '/' + parts.join('/') : home ? '' : '/');
 }
 
+/** A name someone typed, as an app id: "My Notes!" → "my-notes"; '' when nothing usable is left */
+export function idFromName(name: string): string {
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+  return APP_ID.test(id) && !RESERVED_IDS.has(id) ? id : '';
+}
+
 /** `~/x` → `/home/user/x` */
 export const expandHome = (p: string, home: string): string => (p === '~' ? home : p.startsWith('~/') ? home + p.slice(1) : p);
 
@@ -132,34 +156,41 @@ export const expandHome = (p: string, home: string): string => (p === '~' ? home
  * Check a parsed app.json and fill in its defaults. Throws ManifestError with
  * every problem found.
  */
-export function validateManifest(raw: unknown): AppManifest {
+export function validateManifest(raw: unknown, hint: ManifestHint = {}): AppManifest {
   const problems: string[] = [];
   const bad = (msg: string) => { problems.push(msg); };
   if (!isObject(raw)) throw new ManifestError(['it must be a JSON object']);
   const unknown = (obj: Record<string, unknown>, keys: string[], where: string) => {
     for (const k of Object.keys(obj)) if (!keys.includes(k)) bad(`unknown key ${where}${k} (known: ${keys.join(', ')})`);
   };
-  unknown(raw, TOP_KEYS, '');
+  const kind = kindOf(raw);
+  const topKeys = [...COMMON_KEYS, ...(kind === 'page' ? PAGE_KEYS : KIND_KEYS[kind])];
+  for (const k of Object.keys(raw)) if (!topKeys.includes(k) && !PAGE_KEYS.includes(k)) bad(`unknown key ${k} (known: ${topKeys.join(', ')})`);
+  const lead = kind === 'table' ? 'table' : kind === 'form' ? 'fields' : 'run';
+  if (kind !== 'page') for (const k of PAGE_KEYS) if (raw[k] !== undefined) bad(`${k} does not go with ${lead}: tabcomputer supplies the page of an app that has ${lead}, and works out what it may use`);
 
   // manifest version
-  const v = raw.manifest;
-  if (v === undefined) bad(`manifest is missing: the format version, ${MANIFEST_VERSION}`);
-  else if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) bad(`manifest must be the format version, a whole number (got ${show(v)})`);
+  const v = raw.manifest ?? MANIFEST_VERSION;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) bad(`manifest must be the format version, a whole number (got ${show(v)})`);
   else if (v > MANIFEST_VERSION) bad(`manifest is ${v}, and this tabcomputer reads up to ${MANIFEST_VERSION}: update tabcomputer, or the app`);
 
   // id, name
-  const id = raw.id;
-  if (typeof id !== 'string' || !APP_ID.test(id)) bad(`id must be 2 to 32 of a-z, 0-9 and -, starting with a letter (got ${show(id)})`);
-  else if (RESERVED_IDS.has(id)) bad(`id ${show(id)} is taken by tabcomputer itself`);
   const name = raw.name;
-  if (typeof name !== 'string' || !name.trim() || name.length > 60 || CONTROL.test(name) || /[<>]/.test(name)) bad(`name must be 1 to 60 characters, without control characters, < or > (got ${show(name)})`);
+  const nameOk = typeof name === 'string' && !!name.trim() && name.length <= 60 && !CONTROL.test(name) && !/[<>]/.test(name);
+  if (!nameOk) bad(`name ${name === undefined ? 'is missing' : 'must be 1 to 60 characters, without control characters, < or >'} (got ${show(name)})`);
+  // Left out, the id comes from where the app was found (its folder, its repository), else from its name
+  const id = raw.id ?? (idFromName(hint.id ?? '') || (nameOk ? idFromName(name as string) : ''));
+  if (raw.id === undefined && !id) { if (nameOk) bad(`id is missing, and neither the folder nor the name ${show(name)} makes one: add an id (a-z, 0-9 and -)`); }
+  else if (typeof id !== 'string' || !APP_ID.test(id)) bad(`id must be 2 to 32 of a-z, 0-9 and -, starting with a letter (got ${show(id)})`);
+  else if (RESERVED_IDS.has(id)) bad(`id ${show(id)} is taken by tabcomputer itself`);
   const text = (key: string, max: number): string => {
     const t = raw[key];
     if (t === undefined) return '';
     if (typeof t !== 'string' || t.length > max || CONTROL.test(t.replace(/\n/g, ' '))) { bad(`${key} must be text of at most ${max} characters (got ${show(t)})`); return ''; }
     return t;
   };
-  const description = text('description', 300);
+  if (raw.about !== undefined && raw.description !== undefined) bad('about and description are the same thing: give one');
+  const description = raw.about !== undefined ? text('about', 300) : text('description', 300);
   const version = text('version', 40);
 
   // icon
@@ -171,7 +202,7 @@ export function validateManifest(raw: unknown): AppManifest {
   }
 
   // window
-  const window: AppWindow = { width: 720, height: 560, minWidth: 280, minHeight: 200, resizable: true, multiple: false };
+  const window: AppWindow = { ...KIND_WINDOW[kind], minWidth: 280, minHeight: 200, resizable: true, multiple: false };
   if (raw.window !== undefined) {
     if (!isObject(raw.window)) bad(`window must be an object (got ${show(raw.window)})`);
     else {
@@ -227,12 +258,17 @@ export function validateManifest(raw: unknown): AppManifest {
     }
   }
 
+  // the kind's own keys (an app without a page of its own)
+  const declared = kind === 'page' ? { ...NO_KIND, commands: [] as string[] } : validateKind(raw, kind, bad);
+
   // entry
   let entry = '';
-  if (raw.entry !== undefined) {
+  if (kind !== 'page') { /* tabcomputer's page */ }
+  else if (raw.entry === undefined && !backend && hint.page) entry = hint.page;
+  else if (raw.entry !== undefined) {
     entry = typeof raw.entry === 'string' ? (raw.entry === '.' || raw.entry === './' ? '.' : cleanRelPath(raw.entry)) : '';
     if (!entry) bad(`entry must be a folder or an .html file inside the app's folder (got ${show(raw.entry)})`);
-  } else if (!backend) bad('entry is missing: the folder (its index.html) or .html file that is the app\'s page; or give a backend that serves the page');
+  } else if (!backend) bad('entry is missing: the folder (its index.html) or .html file that is the app\'s page. Or give run, fields or table, and tabcomputer supplies the page');
   if (backend?.lazy && !entry) bad('backend.lazy needs an entry: something has to serve the page before the backend starts');
 
   // toolchains, files
@@ -250,6 +286,7 @@ export function validateManifest(raw: unknown): AppManifest {
     return out;
   };
   const toolchains = list('toolchains', (s) => (TOOLCHAIN.test(s) ? s : ''), 'the name of a toolchain set (toolchain list)', 16);
+  const needs = list('needs', (s) => (PACKAGE.test(s) ? s : ''), 'the name of a Debian package', 16);
   const files = list('files', (s) => {
     const dir = s.endsWith('/') && s.length > 1;
     const p = cleanAbsPath(s) || cleanRelPath(s);
@@ -257,8 +294,8 @@ export function validateManifest(raw: unknown): AppManifest {
   }, 'a path: absolute, under ~, or inside the app\'s folder', 64);
 
   // access
-  const access: AppAccess = { fs: [], network: false, commands: [], shell: false };
-  if (raw.access !== undefined) {
+  const access: AppAccess = { fs: [], network: false, commands: declared.commands, shell: declared.shell };
+  if (kind === 'page' && raw.access !== undefined) {
     if (!isObject(raw.access)) bad(`access must be an object (got ${show(raw.access)})`);
     else {
       const a = raw.access;
@@ -301,12 +338,12 @@ export function validateManifest(raw: unknown): AppManifest {
   if (problems.length) throw new ManifestError(problems);
   return {
     manifest: v as number, id: id as string, name: (name as string).trim(), description, version, icon,
-    window, entry, backend, toolchains, files, access,
+    window, entry, backend, toolchains, files, needs, access, ...(({ commands: _c, ...k }) => k)(declared),
   };
 }
 
 /** Parse the text of an app.json. Throws ManifestError. */
-export function parseManifest(text: string | Uint8Array): AppManifest {
+export function parseManifest(text: string | Uint8Array, hint: ManifestHint = {}): AppManifest {
   let s: string;
   if (typeof text === 'string') s = text;
   else {
@@ -316,7 +353,7 @@ export function parseManifest(text: string | Uint8Array): AppManifest {
   if (s.length > MANIFEST_MAX) throw new ManifestError([`it is larger than ${MANIFEST_MAX >> 10} KB`]);
   let raw: unknown;
   try { raw = JSON.parse(s.replace(/^\ufeff/, '')); } catch (e) { throw new ManifestError([`it is not valid JSON (${(e as Error).message})`]); }
-  return validateManifest(raw);
+  return validateManifest(raw, hint);
 }
 
 /** The manifest as app.json text (what `app new` writes): defaults left out */
@@ -353,6 +390,8 @@ export interface AccessLine { label: string; text: string; warn?: boolean }
  * page may touch. The install prompt shows exactly these lines.
  */
 export function describeManifest(m: AppManifest): AccessLine[] {
+  // A declared app reads as sentences (declare.ts); the first is its own description, shown apart
+  if (m.kind !== 'page') return manifestSentences(m).slice(m.description ? 1 : 0).map((text) => ({ label: '', text, warn: / runs this /.test(text) }));
   const lines: AccessLine[] = [];
   if (m.backend) {
     lines.push({
@@ -360,7 +399,8 @@ export function describeManifest(m: AppManifest): AccessLine[] {
       text: `${m.backend.start}  (a program in this tab, started when the app opens${m.backend.keepAlive ? ' and kept running after its window closes' : ''}; it can read and change every file here and use the tab's sign-ins)`,
     });
   } else lines.push({ label: 'Runs', text: 'nothing in the background: the app is a page' });
-  if (m.toolchains.length) lines.push({ label: 'Installs', text: `toolchain ${m.toolchains.join(', ')} (Debian packages, before its first start)` });
+  const installs = [m.toolchains.length ? `toolchain ${m.toolchains.join(', ')}` : '', m.needs.join(', ')].filter(Boolean);
+  if (installs.length) lines.push({ label: 'Installs', text: `${installs.join('; ')} (Debian packages, before its first start)` });
   if (m.access.shell) lines.push({ label: 'Commands', warn: true, text: 'any shell command (the page can then do everything a terminal here can)' });
   else if (m.access.commands.length) lines.push({ label: 'Commands', warn: true, text: `${m.access.commands.join(', ')}  (each is an ordinary program: what it is given, it can read and write)` });
   else lines.push({ label: 'Commands', text: 'none' });
@@ -370,4 +410,9 @@ export function describeManifest(m: AppManifest): AccessLine[] {
   lines.push({ label: 'Network', warn: m.access.network, text: m.access.network ? 'its page may reach other sites' : 'its page is kept from other sites' });
   if (m.files.length) lines.push({ label: 'Expects', text: m.files.join(', ') });
   return lines;
+}
+
+/** A declared app (run, fields or table) as the sentences a person reads before installing it; [] for an app with its own page */
+export function manifestSentences(m: AppManifest): string[] {
+  return m.kind === 'page' ? [] : kindSentences(m);
 }

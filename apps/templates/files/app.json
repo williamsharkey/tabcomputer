@@ -1,0 +1,7 @@
+{
+  "name": "Files",
+  "about": "Makes a tidy, indented copy of each JSON file.",
+  "accept": [".json"],
+  "run": "jq . {in}",
+  "out": "{name}.json"
+}

@@ -208,6 +208,13 @@ these runs with Javad up, and 853 MiB a few seconds after it was stopped
 
 - The first compile of a page load: 27 s when `toolchain install java` had
   just started Javad, 35 s when `javac` starts it. A reload ends Javad.
+  A tab that ran `javac` in the last 7 days starts Javad again by itself
+  5 s after boot (`scheduleJavacPrestart` in `src/java-defaults.ts`;
+  `TABCOMPUTER_JAVAC_PRESTART=0` turns it off). Measured on a Mac, system
+  Chrome headless, local build, 2026-10-13, `javac Hello.java` typed 60 s
+  after a reload, two rounds: 41.1 s and 40.2 s without it, 0.7 s and 0.8 s
+  with it. A `javac` typed before the compiler is up waits for the same
+  one; that case was not timed.
 - `jshell`: 105 s to evaluate `1+1` (91 s in #121). It compiles each
   snippet in a JVM of its own.
 - `java Hello.java`: 24 s. The source launcher compiles in its own JVM.

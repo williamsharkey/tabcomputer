@@ -114,6 +114,7 @@ import { requestPersistentStorage, setActiveFileSystem, storageInfo } from './st
 import { installNodeWorkerBoot } from './node-worker/boot';
 import { bootStarted, bootFinished, bootStep, safeMode } from './safe-mode';
 import { safeModeCmd } from './commands/safe-mode';
+import { JAVAC_USED_KEY, javacPrestartWanted, scheduleJavacPrestart } from './java-defaults';
 import * as agentResume from './agent-resume';
 import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, inboundCodeLink, parseGuestOrigin } from './guest';
 import { guestCmd } from './commands/guest';
@@ -1027,6 +1028,20 @@ async function main() {
       .then(() => console.log('[tabcomputer] Claude Code ready'))
       .catch((e) => console.warn('[tabcomputer] Claude Code background install failed:', e?.message || e));
   }, 3000);
+  // A tab that compiled Java this week gets its warm compiler started now, not at
+  // the first `javac` (half a minute): java-defaults.ts has the conditions
+  scheduleJavacPrestart({
+    check: () => {
+      let usedAt: string | null = null;
+      try { usedAt = localStorage.getItem(JAVAC_USED_KEY); } catch { /* no storage */ }
+      return javacPrestartWanted({ usedAt, now: Date.now(), env: shell.env, safe: !!safe, guestNoNetwork: !!guest?.noNetwork, hidden: document.visibilityState === 'hidden' });
+    },
+    start: () => {
+      void import('./commands/java').then((m) => m.prestartJavad(shell))
+        .then((started) => { if (started) console.log('[tabcomputer] javac: the warm compiler is starting'); })
+        .catch((e) => console.warn('[tabcomputer] javac prestart failed:', e?.message || e));
+    },
+  });
   // The other preinstall names are pkg packages (ca-certificates: the CA bundle
   // native programs' TLS looks for at /etc/ssl/certs/ca-certificates.crt).
   const pkgPreinstall = safe ? [] : profile.preinstall.filter((n) => n !== 'claude-code');

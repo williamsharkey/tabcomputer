@@ -7,8 +7,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createTestShell, run } from './helpers';
-import { encodeRequest, ReplyParser, mayUseJavad, javacCmd } from '@shiro/commands/java';
-import { jdkLauncher, jvmDefaultArgs, mayBeJdkLauncher } from '@shiro/java-defaults';
+import { encodeRequest, ReplyParser, mayUseJavad, javacCmd, prestartJavad } from '@shiro/commands/java';
+import {
+  jdkLauncher, jvmDefaultArgs, mayBeJdkLauncher,
+  JAVAC_PRESTART_DELAY_MS, JAVAC_USED_KEY, javacPrestartWanted, noteJavacUsed, scheduleJavacPrestart, type JavacPrestartState,
+} from '@shiro/java-defaults';
 
 const frame = (kind: number, bytes: Uint8Array | number): Uint8Array => {
   const n = typeof bytes === 'number' ? bytes : bytes.length;
@@ -111,6 +114,94 @@ describe('JVM options under the emulator', () => {
     expect(jvmDefaultArgs('jar', ['jar', '-J-Xint', '-J-XX:+UseParallelGC', 'tf', 'a.jar'], {})).toBeUndefined();
     expect(jvmDefaultArgs('java', ['java', 'Hello'], { JAVA_TOOL_OPTIONS: '-XX:+UseZGC' })).toEqual(['java', '-XX:TieredStopAtLevel=1', 'Hello']);
     expect(jvmDefaultArgs('java', ['java', 'Hello'], { TABCOMPUTER_JVM_DEFAULTS: '0' })).toBeUndefined();
+  });
+});
+
+describe('warm javac: started at page load', () => {
+  const DAY = 24 * 3600_000;
+  const now = 1_800_000_000_000;
+  const state = (over: Partial<JavacPrestartState> = {}): JavacPrestartState =>
+    ({ usedAt: String(now - DAY), now, env: {}, safe: false, guestNoNetwork: false, hidden: false, ...over });
+
+  it('for a tab that compiled Java in the last 7 days', () => {
+    expect(javacPrestartWanted(state())).toBe('start');
+    expect(javacPrestartWanted(state({ usedAt: String(now - 7 * DAY + 1000) }))).toBe('start');
+    expect(javacPrestartWanted(state({ usedAt: String(now - 7 * DAY) }))).toBe('no');
+    expect(javacPrestartWanted(state({ usedAt: null }))).toBe('no');
+    expect(javacPrestartWanted(state({ usedAt: 'soon' }))).toBe('no');
+    expect(javacPrestartWanted(state({ usedAt: String(now + DAY) }))).toBe('no'); // the clock changed
+  });
+
+  it('never in safe mode, in a guest with no network, or when turned off; a hidden page waits', () => {
+    expect(javacPrestartWanted(state({ safe: true }))).toBe('no');
+    expect(javacPrestartWanted(state({ guestNoNetwork: true }))).toBe('no');
+    expect(javacPrestartWanted(state({ env: { TABCOMPUTER_JAVAC_PRESTART: '0' } }))).toBe('no');
+    expect(javacPrestartWanted(state({ env: { TABCOMPUTER_JAVAC: 'jvm' } }))).toBe('no');
+    expect(javacPrestartWanted(state({ env: { TABCOMPUTER_JAVAC_PRESTART: '1' } }))).toBe('start');
+    expect(javacPrestartWanted(state({ hidden: true }))).toBe('later');
+    expect(javacPrestartWanted(state({ hidden: true, safe: true }))).toBe('no');
+  });
+
+  /** The scheduler with its clock, idle queue and visibility in the test's hands */
+  function scheduled(answers: ('start' | 'later' | 'no')[]) {
+    const timers: { cb: () => void; ms: number }[] = [];
+    const idle: (() => void)[] = [];
+    const visible: (() => void)[] = [];
+    let started = 0, checks = 0;
+    scheduleJavacPrestart({
+      check: () => answers[Math.min(checks++, answers.length - 1)],
+      start: () => { started++; },
+      idle: (cb) => { idle.push(cb); }, onVisible: (cb) => { visible.push(cb); }, timer: (cb, ms) => { timers.push({ cb, ms }); },
+    });
+    return { timers, idle, visible, started: () => started };
+  }
+
+  it('waits a few seconds, then for an idle page, and checks again before it starts', () => {
+    const s = scheduled(['start']);
+    expect(s.timers.map((t) => t.ms)).toEqual([JAVAC_PRESTART_DELAY_MS]);
+    expect(JAVAC_PRESTART_DELAY_MS).toBeGreaterThanOrEqual(3000);
+    expect(s.started()).toBe(0);
+    s.timers[0].cb();
+    expect(s.started()).toBe(0); // not before the page is idle
+    s.idle[0]();
+    expect(s.started()).toBe(1);
+
+    const off = scheduled(['no']);
+    off.timers[0].cb();
+    expect(off.idle).toEqual([]);
+    expect(off.visible).toEqual([]);
+  });
+
+  it('a hidden page starts nothing until it is shown; one hidden again by the idle moment waits again', () => {
+    const s = scheduled(['later', 'start', 'later', 'start', 'start']);
+    s.timers[0].cb();
+    expect(s.idle).toHaveLength(0);
+    expect(s.visible).toHaveLength(1);
+    s.visible[0]();        // shown: 'start', queued for an idle moment
+    expect(s.started()).toBe(0);
+    s.idle[0]();           // hidden again by then: 'later'
+    expect(s.started()).toBe(0);
+    expect(s.visible).toHaveLength(2);
+    s.visible[1]();
+    s.idle[1]();
+    expect(s.started()).toBe(1);
+  });
+
+  it('javac records that this tab compiles Java, and prestart does nothing without Java', async () => {
+    const store = new Map<string, string>();
+    const real = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, String(v)); }, removeItem: (k: string) => { store.delete(k); } };
+    try {
+      noteJavacUsed(now);
+      expect(store.get(JAVAC_USED_KEY)).toBe(String(now));
+      expect(javacPrestartWanted(state({ usedAt: store.get(JAVAC_USED_KEY)!, now: now + DAY }))).toBe('start');
+      const { shell } = await createTestShell();
+      shell.commands.register(javacCmd);
+      store.clear();
+      await run(shell, 'javac Hello.java'); // no Java here: nothing to keep warm
+      expect(store.has(JAVAC_USED_KEY)).toBe(false);
+      expect(await prestartJavad(shell)).toBe(false);
+    } finally { (globalThis as any).localStorage = real; }
   });
 });
 

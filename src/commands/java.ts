@@ -2,7 +2,7 @@ import type { Command, CommandContext } from './index';
 import type { Shell } from '../shell';
 import { AF_INET, SOCK_STREAM } from '../kernel/abi';
 import { getShiroOrigin } from '../utils/shiro-origin';
-import { JDK_HOME, JVM_FLAGS } from '../java-defaults';
+import { JDK_HOME, JVM_FLAGS, noteJavacUsed } from '../java-defaults';
 
 /**
  * `javac`, kept warm (docs/research/JAVA_SPEED.md).
@@ -11,7 +11,9 @@ import { JDK_HOME, JVM_FLAGS } from '../java-defaults';
  * starts a JVM and loads javac in the x86 emulator, half a minute or more. This
  * builtin sends the compile to a JVM that stays up instead (Javad,
  * scripts/java/Javad.java, shipped as java/javad.jar): the first compile of a
- * page load starts it, later ones take a second or two.
+ * page load starts it, later ones take a second or two. A tab that compiled
+ * Java in the last week starts it by itself a few seconds after boot
+ * (`prestartJavad`; the conditions are in java-defaults.ts).
  *
  * The real javac still does everything Javad doesn't take (it answers 127):
  * -version, --release, modules, annotation processors, jars on the class path,
@@ -102,6 +104,17 @@ export function ensureJavad(shell: Shell): { daemon: Daemon; started: boolean } 
   if (daemon && !daemon.exited) return { daemon, started: false };
   daemon = startDaemon(shell);
   return { daemon, started: true };
+}
+
+/**
+ * Page load (main.ts, java-defaults.ts `scheduleJavacPrestart`): start Javad
+ * before the first `javac`, when Java is installed and it isn't running.
+ * True when this call started it.
+ */
+export async function prestartJavad(shell: Shell): Promise<boolean> {
+  if (daemon && !daemon.exited) return false;
+  if (!await javaInstalled(shell.fs)) return false;
+  return ensureJavad(shell).started;
 }
 
 /** Stop Javad (tests; `javac --tabcomputer-stop`). */
@@ -232,6 +245,8 @@ export const javacCmd: Command = {
       err('javac: Java is not installed. Install it with: toolchain install java\n');
       return 127;
     }
+    // (a tab that compiles Java gets the warm compiler started at its next page loads)
+    noteJavacUsed();
     const real = () => runReal(ctx, REAL_JAVAC, ctx.args, out, err);
     if (ctx.env.TABCOMPUTER_JAVAC === 'jvm' || !mayUseJavad(ctx.args)) return real();
     const body = encodeRequest('c', ctx.cwd, ctx.env.CLASSPATH ?? '', ctx.args);

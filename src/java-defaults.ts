@@ -29,6 +29,77 @@ export const JVM_FLAGS: readonly string[] = [QUICK_COMPILER, SERIAL_GC];
  */
 const INLINE_CONCAT = '-XDstringConcat=inline';
 
+// ── The warm compiler, started at page load ───────────────────────────────
+//
+// `javac` (src/commands/java.ts) keeps a JVM up between compiles, but a reload
+// ends it and the next first compile waits half a minute for a new one. A tab
+// that compiled Java in the last week starts it a few seconds after boot
+// instead (main.ts), when the page is idle and visible. It is a JVM in the
+// emulator (a Worker and about 200 MB until it has idled for half an hour),
+// so not in safe mode, not in a guest without a network, and not for a tab
+// that is in the background. TABCOMPUTER_JAVAC_PRESTART=0 turns it off.
+
+/** localStorage: when this tab last ran `javac` (epoch ms) */
+export const JAVAC_USED_KEY = 'tabcomputer-javac-used';
+const JAVAC_RECENT_MS = 7 * 24 * 3600_000;
+export const JAVAC_PRESTART_DELAY_MS = 5000;
+
+export function noteJavacUsed(now = Date.now()): void {
+  try { localStorage.setItem(JAVAC_USED_KEY, String(now)); } catch { /* no storage: no prestart */ }
+}
+
+export interface JavacPrestartState {
+  /** localStorage[JAVAC_USED_KEY] */
+  usedAt: string | null;
+  now: number;
+  env: Record<string, string | undefined>;
+  safe: boolean;
+  guestNoNetwork: boolean;
+  hidden: boolean;
+}
+
+/** 'start' now, 'later' (wanted, but the page is hidden: when it is shown), or 'no' */
+export function javacPrestartWanted(s: JavacPrestartState): 'start' | 'later' | 'no' {
+  if (s.safe || s.guestNoNetwork) return 'no';
+  if (s.env.TABCOMPUTER_JAVAC_PRESTART === '0' || s.env.TABCOMPUTER_JAVAC === 'jvm') return 'no';
+  const t = Number(s.usedAt);
+  // (a time in the future is a changed clock, not a recent compile)
+  if (!s.usedAt || !Number.isFinite(t) || t <= 0 || t > s.now + 60_000 || s.now - t >= JAVAC_RECENT_MS) return 'no';
+  return s.hidden ? 'later' : 'start';
+}
+
+/**
+ * After `delayMs`, and then when the page has nothing else to do, call
+ * `start` if `check` says so. A hidden page waits until it is shown, and
+ * checks again then.
+ */
+export function scheduleJavacPrestart(o: {
+  check(): 'start' | 'later' | 'no';
+  start(): void;
+  delayMs?: number;
+  /** Run `cb` when the page is idle (requestIdleCallback where there is one) */
+  idle?(cb: () => void): void;
+  onVisible?(cb: () => void): void;
+  timer?(cb: () => void, ms: number): unknown;
+}): void {
+  const idle = o.idle ?? ((cb) => {
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => unknown }).requestIdleCallback;
+    if (ric) ric(cb, { timeout: 15_000 }); else setTimeout(cb, 0);
+  });
+  const onVisible = o.onVisible ?? ((cb) => {
+    const on = () => { if (document.visibilityState !== 'visible') return; document.removeEventListener('visibilitychange', on); cb(); };
+    document.addEventListener('visibilitychange', on);
+  });
+  let waiting = false;
+  const attempt = (isIdle: boolean) => {
+    const c = o.check();
+    // (checked again at the idle moment: the page may have been hidden, or javac turned off, since)
+    if (c === 'start') { if (isIdle) o.start(); else idle(() => attempt(true)); return; }
+    if (c === 'later' && !waiting) { waiting = true; onVisible(() => { waiting = false; attempt(false); }); }
+  };
+  (o.timer ?? setTimeout)(() => attempt(false), o.delayMs ?? JAVAC_PRESTART_DELAY_MS);
+}
+
 /** A launcher in a JDK's or JRE's bin directory (`path` with symlinks resolved): its name, else null. */
 export function jdkLauncher(realPath: string): string | null {
   return /^\/usr\/lib\/jvm\/[^/]+\/bin\/([^/]+)$/.exec(realPath)?.[1] ?? null;

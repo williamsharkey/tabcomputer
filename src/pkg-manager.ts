@@ -837,6 +837,8 @@ export async function runPackageBinary(binPath: string, argv0: string, args: str
     const { runPythonFrontend } = await import('./commands/python-wasi');
     return runPythonFrontend(ctx, args, invokedPath ?? binPath);
   }
+  // (`import tkinter` and `import turtle` say what to do)
+  if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(ctx.fs);
   if (bin?.argv0 === 'path' && invokedPath) argv0 = invokedPath;
 
   if (entry) {
@@ -892,7 +894,8 @@ export async function packageKernelProgram(
   if ((mode === 'none' && entry.abi !== 'x86_64-linux') || missingFeatures(entry).length) return null;
   // `python -m pip/venv` are Shiro's (runPackageBinary)
   if (name === 'python3' && pythonFrontend(args)) return null;
-  const rel = binPath.slice(PKG_ROOT.length + entry.name.length + 2);
+  if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(fs);
+  const rel =binPath.slice(PKG_ROOT.length + entry.name.length + 2);
   const bin = entry.bin[argv0]?.file === rel ? entry.bin[argv0] : Object.values(entry.bin).find(b => b.file === rel);
   if (bin?.argv0 === 'path' && invokedPath) argv0 = invokedPath;
   if (entry.abi === 'x86_64-linux') {

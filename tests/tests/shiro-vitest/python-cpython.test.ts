@@ -156,6 +156,21 @@ describe('python3 (CPython WASI package)', () => {
     expect(e).toEqual({ out: '', err: '', exitCode: 0 });
   }, 60_000);
 
+  it('import tkinter and import turtle say what to do (#124)', async () => {
+    for (const mod of ['tkinter', 'turtle']) {
+      const r = await sh(shell, `python3 -c 'import ${mod}'`);
+      expect(r.exitCode, mod).toBe(1);
+      expect(r.err, mod).toMatch(/ModuleNotFoundError: No module named 'tkinter'.*toolchain install python/);
+    }
+    // code that probes for it still sees an ImportError
+    const p = await sh(shell, `python3 -c '
+try:
+    import tkinter
+except ImportError as e:
+    print("no tk:", e.name)'`);
+    expect(p.out).toBe('no tk: tkinter\n');
+  }, 60_000);
+
   it('runs by its path too: the stdlib under /usr is preopened (#70)', async () => {
     // (it imports the socket shim's WASIX calls, which made it look like a WASIX-libc program)
     const r = await sh(shell, `cd /tmp && /usr/lib/pkg/python3/bin/python3.wasm -c 'import encodings, json; print(json.dumps([1]))'`);

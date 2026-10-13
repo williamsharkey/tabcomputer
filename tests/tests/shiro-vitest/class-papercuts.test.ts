@@ -64,6 +64,41 @@ describe('the built-in gcc on a program it cannot compile (#123)', () => {
   });
 });
 
+describe('Python for a beginner (#124)', () => {
+  it("the welcome card's Python runs the built-in python3, not the Debian toolchain", async () => {
+    const { DEMOS } = await import('@shiro/desktop/welcome');
+    const py = DEMOS.find((d) => d.id === 'python')!;
+    expect(py.title).toBe('Write some Python');
+    expect(py.command).toMatch(/^python3 /);
+    expect(`${py.command} ${py.detail}`).not.toMatch(/toolchain|apt|debian/i);
+  });
+
+  it('toolchain list says what the python set costs', async () => {
+    const { shell } = await createTestShell();
+    const lines = (await run(shell, 'toolchain list')).output.replace(/\r/g, '').split('\n');
+    const i = lines.findIndex((l) => /^python\s/.test(l));
+    expect(lines[i + 1]).toMatch(/note: .*slower than the built-in python3/);
+  });
+
+  it('the built-in Python gets a tkinter that says what to do, and leaves a real one alone', async () => {
+    const { fs } = await createTestShell();
+    const { ensurePythonHints, TKINTER_STUB } = await import('@shiro/python-hints');
+    const site = '/usr/lib/pkg/python3/lib/python3.13/site-packages';
+    // not installed: nothing written, and asked again once it is
+    await ensurePythonHints(fs);
+    expect(await fs.exists('/usr/lib/pkg/python3')).toBe(false);
+    await fs.mkdir(site, { recursive: true });
+    await ensurePythonHints(fs);
+    expect(await fs.readFile(`${site}/tkinter/__init__.py`, 'utf8')).toBe(TKINTER_STUB);
+    expect(TKINTER_STUB).toMatch(/ModuleNotFoundError[\s\S]*toolchain install python[\s\S]*name='tkinter'/);
+    const other = (await createTestShell()).fs;
+    await other.mkdir(`${site}/tkinter`, { recursive: true });
+    await other.writeFile(`${site}/tkinter/__init__.py`, 'X = 1\n');
+    await ensurePythonHints(other);
+    expect(await other.readFile(`${site}/tkinter/__init__.py`, 'utf8')).toBe('X = 1\n');
+  });
+});
+
 describe('valgrind (#128)', () => {
   it('command not found says what to use instead', async () => {
     const { shell } = await createTestShell();

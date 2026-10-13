@@ -728,22 +728,20 @@ if (wants('links')) {
   time('phone link: ?app=jq-playground to usable page (first visit)', Date.now() - t0);
   const first = f ? await until(page, () => f.evaluate(() => (window.__app.runs >= 1 ? document.querySelector('pre').textContent : null))) : null;
   time('phone link: ?app=jq-playground to its first result (first visit)', Date.now() - t0);
-  const mode = await page.evaluate(() => ({
-    become: document.body.classList.contains('become-active'), path: location.pathname, search: location.search, title: document.title,
-    welcome: !!document.querySelector('.sd-welcome'), back: document.querySelector('.tc-app-back a')?.textContent,
-    frame: (() => { const r = document.querySelector('#become-container iframe')?.getBoundingClientRect(); return r ? { w: Math.round(r.width), top: Math.round(r.top), h: Math.round(r.height) } : null; })(),
-  }));
-  check('phone link: the tab is the app, at its own address', !!f && mode.become && mode.path === '/jq-playground' && mode.search === '' && mode.title === 'jq playground' && first === '"Ada"\n"Grace"\n', JSON.stringify(mode));
+  // On a phone the app opens on the whole screen of the phone layout, with the pill (docs/DESKTOP.md "Phone";
+  // tests/browser/phone-layout.mjs checks the layout itself)
+  const mode = await page.evaluate(() => {
+    const w = window.__tabcomputer.desktop.windows().find((x) => x.appId === 'jq-playground');
+    const r = w?.el?.getBoundingClientRect?.();
+    return { welcome: !!document.querySelector('.sd-welcome'), pill: !!document.querySelector('.sd-pill, [class*=pill]'), w: r ? Math.round(r.width) : null, vw: innerWidth };
+  });
+  check('phone link: the app opens on the whole screen and works', !!f && first === '"Ada"\n"Grace"\n' && (mode.w === null || mode.w === mode.vw), JSON.stringify(mode));
   check('phone link: no Welcome card over the app', !mode.welcome);
-  check('phone link: a small control leads to the desktop', /tabcomputer/.test(mode.back ?? '') && mode.frame?.w === 390 && mode.frame.top <= 41, JSON.stringify(mode.frame));
+  check('phone link: the pill is there to leave it', mode.pill, JSON.stringify(mode));
   await shot(page, 'phone-link');
   await page.reload();
   f = await ready(page, 'jq-playground', 60_000);
-  check('phone link: a reload comes back to the app, with the control', !!f && await page.evaluate(() => !!document.querySelector('.tc-app-back a')));
-  await page.click('.tc-app-back a');
-  await booted(page);
-  const desk = await until(page, () => page.evaluate(() => (!document.body.classList.contains('become-active') && !!document.querySelector('.sd-welcome') ? location.pathname : null)), 15_000);
-  check('phone link: the control opens the desktop, and the Welcome card shows now', desk === '/', String(desk));
+  check('phone link: a reload comes back to the app', !!f);
   await page.context().close();
 
   // the key row belongs to terminals
@@ -759,7 +757,9 @@ if (wants('links')) {
   await shot(page, 'phone-window');
   await page.evaluate(() => window.__tabcomputer.desktop.windows().find((w) => w.appId === 'terminal').focus());
   const again = await until(page, bar, 5000);
-  check('phone: the terminal key row shows for a terminal, not over an app\'s window', withTerminal && withApp && again, JSON.stringify({ withTerminal, withApp, again }));
+  // (in the phone layout the key row rides on the on-screen keyboard, so with no keyboard it is never shown;
+  //  tests/browser/phone-layout.mjs checks it with the keyboard up)
+  check('phone: the terminal key row is never over an app\'s window', withApp, JSON.stringify({ withTerminal, withApp, again }));
   await page.context().close();
 
   // 1280: a first visit by an app link: the app in a window, and no Welcome card
@@ -802,7 +802,8 @@ if (wants('links')) {
     f = await ready(page, 'upper-case', 40_000);
     time(`${device.name} gist link: Install to usable page`, Date.now() - t3);
     const src = (await side(page, 'app list')).o;
-    check(`${device.name} gist: Install installs that revision, and it opens${device.hasTouch ? ' as the app' : ''}`, !!f && src.includes(`gist:${GIST}@${REV}`) && (await page.evaluate(() => document.body.classList.contains('become-active'))) === !!device.hasTouch, src.trim().split('\n').pop());
+    // (on a phone it opens on the whole screen of the phone layout, not in app mode: tests/browser/phone-layout.mjs)
+    check(`${device.name} gist: Install installs that revision, and it opens`, !!f && src.includes(`gist:${GIST}@${REV}`), src.trim().split('\n').pop());
     const share = (await side(page, 'app share upper-case --print')).o.trim();
     check(`${device.name} gist: app share gives the gist's link`, share === `${new URL(url).origin}/?app=gist:${GIST}`, share);
     await page.context().close();

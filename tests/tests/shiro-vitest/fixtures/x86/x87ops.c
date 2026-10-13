@@ -558,6 +558,75 @@ static void rest(void) {
   printf("the rest: %s\n", bad == before ? "ok" : "WRONG");
 }
 
+// ---------------------------------------------------------------------------
+// 8. The exception flags in the status word (IE 1, ZE 4, SF 0x40) after
+//    ordinary instructions, and the tags across fxsave and fxrstor. ld.so
+//    runs that pair around the first call of each library function; Blink
+//    brought four empty registers back "in use", so the next code that used
+//    the whole stack got IE and SF (numpy's "invalid value encountered").
+
+#define FLAGFN(name, code)                                                   \
+  int g_##name(const double *, void *) __asm__("x87g_" #name);               \
+  __asm__(".text\n.globl x87g_" #name "\nx87g_" #name ":\nfninit\n" code "\nfnstsw %ax\nandl $0x4d, %eax\nfninit\nret\n");
+#define EIGHT "fldz\nfldz\nfldz\nfldz\nfldz\nfldz\nfldz\nfld1\n"
+#define DROP8 "fstp %st(0)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)\n"
+FLAGFN(eight, EIGHT DROP8)
+FLAGFN(nine, EIGHT "fldz")                                                      // one too many: IE SF
+FLAGFN(fxsave_eight, "fxsave (%rsi)\nfxrstor (%rsi)\n" EIGHT DROP8)
+FLAGFN(fxsave_two_eight, "fld1\nfldz\nfxsave (%rsi)\nfninit\nfxrstor (%rsi)\nfstp %st(0)\nfstp %st(0)\n" EIGHT DROP8)
+FLAGFN(fxsave_two_pop3, "fld1\nfldz\nfxsave (%rsi)\nfninit\nfxrstor (%rsi)\nfstp %st(0)\nfstp %st(0)\nfstp %st(0)")  // one too many: IE SF
+FLAGFN(fmod_inline, "fldl 8(%rdi)\nfldl (%rdi)\nfprem\nfstp %st(1)\nfstpl (%rsi)")
+FLAGFN(fucom_nan, "fldl 16(%rdi)\nfldl (%rdi)\nfucompp")
+FLAGFN(fucomi_nan, "fldl 16(%rdi)\nfldl (%rdi)\nfucomip %st(1), %st\nfstp %st(0)")
+FLAGFN(fcom_nan, "fldl 16(%rdi)\nfldl (%rdi)\nfcompp")
+FLAGFN(fcomi_nan, "fldl 16(%rdi)\nfldl (%rdi)\nfcomip %st(1), %st\nfstp %st(0)")
+FLAGFN(fistp_big, "fldl 24(%rdi)\nfistpl (%rsi)")
+FLAGFN(fistp_fits, "fldl (%rdi)\nfistpl (%rsi)")
+FLAGFN(div_zero, "fldz\nfld1\nfdivp\nfstp %st(0)")
+FLAGFN(zero_by_zero, "fldz\nfldz\nfdivp\nfstp %st(0)")
+FLAGFN(sqrt_neg, "fldl 32(%rdi)\nfsqrt\nfstp %st(0)")
+FLAGFN(arith, "fldl (%rdi)\nfldl 8(%rdi)\nfadd %st(1), %st\nfmul %st(1), %st\nfsub %st(1), %st\nfstp %st(0)\nfstp %st(0)")
+// C0 C3 C1 after fprem: the low bits of the quotient's magnitude
+#define QFN(name, code)                                                      \
+  int q_##name(const double *) __asm__("x87q_" #name);                       \
+  __asm__(".text\n.globl x87q_" #name "\nx87q_" #name ":\nfninit\nfldl 8(%rdi)\nfldl (%rdi)\n" code "\nfnstsw %ax\nandl $0x4700, %eax\nfninit\nret\n");
+QFN(fprem, "fprem")
+QFN(fprem1, "fprem1")
+
+static void flags(void) {
+  static const double in[5] = {5.5, 17, NAN, 1e300, -4};
+  static unsigned char area[512] __attribute__((aligned(16)));
+  static const struct { const char *name; int (*fn)(const double *, void *); int want; } k[] = {
+      {"eight pushes", g_eight, 0}, {"nine pushes", g_nine, 0x41},
+      {"fxsave, fxrstor, eight pushes", g_fxsave_eight, 0},
+      {"two values across fxsave and fxrstor, then eight pushes", g_fxsave_two_eight, 0},
+      {"two values across fxsave and fxrstor, then three pops", g_fxsave_two_pop3, 0x41},
+      {"fld, fld, fprem, fstp st(1), fstpl (gcc's fmod)", g_fmod_inline, 0},
+      {"fucompp with a NaN", g_fucom_nan, 0}, {"fucomip with a NaN", g_fucomi_nan, 0},
+      {"fcompp with a NaN", g_fcom_nan, 1}, {"fcomip with a NaN", g_fcomi_nan, 1},
+      {"fistpl of 1e300", g_fistp_big, 1}, {"fistpl of 5.5", g_fistp_fits, 0},
+      {"1 / 0", g_div_zero, 4}, {"0 / 0", g_zero_by_zero, 1}, {"fsqrt of -4", g_sqrt_neg, 1},
+      {"fadd, fmul, fsub", g_arith, 0},
+  };
+  int before = bad;
+  for (unsigned c = 0; c < sizeof(k) / sizeof(k[0]); ++c) {
+    int got = k[c].fn(in, area);
+    if (got != k[c].want && bad++ < 40) printf("%s: IE ZE SF = %#x, expected %#x\n", k[c].name, got, k[c].want);
+  }
+  {
+    // x, y, the quotient fprem uses (truncated) and the one fprem1 uses (to nearest)
+    static const double v[][4] = {{17, 5.5, 3, 3}, {-40.25, 17, 2, 2}, {40.25, -17, 2, 2}, {100, 7, 14, 14}, {7.5, 2, 3, 4}, {5.5, 17, 0, 0}};
+    for (unsigned a = 0; a < sizeof(v) / sizeof(v[0]); ++a) {
+      for (int one = 0; one < 2; ++one) {
+        int q = (int)v[a][2 + one], want = (q & 1 ? 0x200 : 0) | (q & 2 ? 0x4000 : 0) | (q & 4 ? 0x100 : 0);
+        int got = one ? q_fprem1(v[a]) : q_fprem(v[a]);
+        if (got != want && bad++ < 40) printf("%s(%g, %g): C0 C3 C1 C2 = %#x, expected %#x\n", one ? "fprem1" : "fprem", v[a][0], v[a][1], got, want);
+      }
+    }
+  }
+  printf("flags and tags: %s\n", bad == before ? "ok" : "WRONG");
+}
+
 int main(void) {
   regforms();
   memforms();
@@ -566,6 +635,7 @@ int main(void) {
   stack();
   longdouble();
   rest();
+  flags();
   if (!bad) puts("x87ops ok");
   return !!bad;
 }

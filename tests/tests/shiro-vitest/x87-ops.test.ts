@@ -13,7 +13,11 @@
  * Before the patch: `fsubp %st,%st(i)` wrote st(1) whatever i was (Debian's
  * tesseract lost text lines to it), `fdiv`/`fdivr %st,%st(i)` were each
  * other's, `fucompp` was SIGILL, an integer store that doesn't fit was
- * saturated, and fxam called a subnormal double a denormal.
+ * saturated, and fxam called a subnormal double a denormal. With infinite
+ * operands fsub's two cases were each other's (inf - 1 was -inf). And
+ * fxrstor brought four empty registers back in use (patch 0557), so after
+ * ld.so's fxsave and fxrstor x87 code that used the whole stack set IE and
+ * SF: numpy's "invalid value encountered" warnings.
  *
  * Built with the host's gcc, or `zig cc` for x86_64-linux-musl (macOS: zig on
  * PATH or ZIG); skipped without either.
@@ -45,6 +49,7 @@ const ALL_OK = [
   'stack: ok',
   'long double: ok',
   'the rest: ok',
+  'flags and tags: ok',
   'x87ops ok',
   '',
 ].join('\n');

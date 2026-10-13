@@ -35,7 +35,8 @@ Blink engine.
 | rustc, cargo (Debian) | `apt install cargo` | works: cargo new, build, run |
 | ruby (Debian) | `apt install ruby` | works (3.3.8) |
 | php (Debian) | `apt install php-cli` | works (8.4.26) |
-| java, deno, bun | — | not available (see "Not available") |
+| java (Debian) | `toolchain install java` | works (OpenJDK 21): `javac X.java && java X` in 1.4–2 s after the first compile of a page load, which takes about half a minute ([research/JAVA_SPEED.md](research/JAVA_SPEED.md)) |
+| deno, bun | — | not available (see "Not available") |
 
 Smoke tests: `tests/tests/shiro-vitest/compat-dev.test.ts` (kernel processes
 in Node worker threads). Browser checks: `scripts/browser-check.mjs` against a
@@ -65,7 +66,6 @@ Not available (yet), and why:
 | Software | Tried | Blocker |
 | --- | --- | --- |
 | Rust (rustc, cargo) as a pkg | — | no maintained WASI build of rustc to pin; use Debian's (`apt install cargo`, above) |
-| Java (JVM) | — | a JDK image is ~200 MB and HotSpot needs its JIT (mprotect RWX code) for usable speed; Blink would interpret the interpreter |
 | Deno, Bun | — | single ~100 MB binaries around V8 / JavaScriptCore JITs; tabcomputer's own `node` covers the npm use case |
 | PHP | — | owned by unix/wasix (WASIX build in `pkg`) |
 

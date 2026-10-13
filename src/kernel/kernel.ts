@@ -18,6 +18,7 @@ import { KernelProfiler, type ProfileOptions, type ProfileReport } from './profi
 import { klog, KmsgFile, LOG_ERR, LOG_INFO, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_SIZE_BUFFER, SYSLOG_ACTION_SIZE_UNREAD } from './klog';
 import { processTable, type ShiroProcess } from '../process-table';
 import { packageShadows, pkgOwnShadows, packageArgsForPath, PKG_BIN_DIR } from '../pkg-manager';
+import { jdkLauncher, jvmDefaultArgs, mayBeJdkLauncher } from '../java-defaults';
 import * as A from './abi';
 import { elfInterpreter } from '../elf-interp';
 import {
@@ -435,9 +436,27 @@ export class Kernel {
   async findProgram(path: string, proc: Process): Promise<Runner | null> {
     for (const l of this.loaders) {
       const r = await l(path, proc, this);
-      if (r) return this.withPackageArgs(path, r);
+      // (the usual case returns as it always did: a second await here changes when a
+      // process starts relative to its caller, and tmux's pane shells lost a race for it)
+      if (r) return mayBeJdkLauncher(path) ? this.withJvmDefaults(path, await this.withPackageArgs(path, r)) : this.withPackageArgs(path, r);
     }
     return null;
+  }
+
+  /** `path` is a JDK launcher (java, javac, jshell, ...): its name, else null. */
+  private async jdkLauncherAt(path: string): Promise<string | null> {
+    if (!this.fs || !mayBeJdkLauncher(path)) return null;
+    return jdkLauncher(await this.fs.realpath(path).catch(() => path));
+  }
+
+  /** A JDK launcher starts with the JVM options that suit the emulator (java-defaults.ts). */
+  private async withJvmDefaults(path: string, run: Runner): Promise<Runner> {
+    const tool = await this.jdkLauncherAt(path);
+    if (!tool) return run;
+    return (p, k) => {
+      p.argv = jvmDefaultArgs(tool, p.argv, p.env) ?? p.argv;
+      return run(p, k);
+    };
   }
 
   /** An installed command's own arguments (`egrep` runs `grep -E`) go in after argv[0]. */
@@ -3720,7 +3739,10 @@ export class Kernel {
     const embryo = !!proc.data.embryo;
     // A package command with its own arguments (zcat = gzip -dc) can't be
     // reloaded in place with the caller's argv: start it like any program
-    const inproc = isElf && !!req.inproc && !(this.fs && (await packageArgsForPath(this.fs, path)));
+    // (nor can a JDK launcher that gets the emulator's JVM options: withJvmDefaults)
+    const jdkTool = isElf && req.inproc && mayBeJdkLauncher(path) ? await this.jdkLauncherAt(path) : null;
+    const inproc = isElf && !!req.inproc && !(this.fs && (await packageArgsForPath(this.fs, path))) &&
+      !(jdkTool && jvmDefaultArgs(jdkTool, argv, env));
     const runner = embryo || !inproc ? await this.findProgram(path, probe) : null;
     if ((embryo || !inproc) && !runner) return -A.ENOEXEC;
     // The point of no return: exec bookkeeping, as Linux does it

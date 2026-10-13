@@ -222,6 +222,8 @@ const ssecmpBin = join(out, 'ssecmp');
 const haveSsecmp = tryBuild('gcc', ['-static', '-O1', '-o', ssecmpBin, 'ssecmp.c', '-lm']);
 const brkmapBin = join(out, 'brkmap');
 const haveBrkmap = tryBuild('gcc', ['-static', '-O1', '-o', brkmapBin, 'brkmap.c']);
+const mmapholeBin = join(out, 'mmaphole');
+const haveMmaphole = tryBuild('gcc', ['-static', '-O1', '-o', mmapholeBin, 'mmaphole.c']);
 const rawepollBin = join(out, 'rawepoll');
 const haveRawepoll = tryBuild('gcc', ['-static', '-O1', '-pthread', '-o', rawepollBin, 'rawepoll.c']);
 const bigfileBin = join(out, 'bigfile');
@@ -2165,6 +2167,14 @@ describe('Blink engine: CPU and syscall fixes', () => {
     const r = await run(shell, './prog');
     expect(r.output.replace(/\r\n/g, '\n')).toBe(
       'mmap(0) clear of the break: 1\nmapping intact: 1\nsbrk over a mapping refused: 1, mapping kept: 1\n');
+    expect(r.exitCode).toBe(0);
+  }, 60_000);
+
+  // java -Xint exited 139: a 64 MiB reservation was placed over glibc's arena (tabcomputer#122)
+  it.skipIf(!haveMmaphole)('mmap(0) never returns a range over a mapping, next to a hole just too small', async () => {
+    const { shell } = await setup(readFileSync(mmapholeBin));
+    const r = await run(shell, './prog');
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('overlap 0, heap intact 1\n');
     expect(r.exitCode).toBe(0);
   }, 60_000);
 

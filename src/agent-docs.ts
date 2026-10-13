@@ -168,11 +168,14 @@ ${bootSection(ctx, name)}
 
 ## Installing software
 
-- Real Debian: \`debian install\` streams in Debian 13, then \`apt install -y NAME\`
-  (no \`sudo\` needed; the first one fetches the package lists, about 45 s, as
-  \`apt update\` does; Debian's own apt and dpkg, x86-64 in the
-  emulator: about a minute for a small package, python3 about 4 minutes). 1846 of
-  popcon's top 2000 packages pass a smoke test.
+- Real Debian: \`apt install -y NAME\` (no \`sudo\` needed). A name that is not one of
+  ${name}'s own packages comes from Debian 13 by itself (\`debian install\` runs first,
+  under a second). When the server has a ready-made layer for the names, or builds one
+  (it says how far it is), the install takes seconds and files load on first use.
+  Otherwise Debian's own apt and dpkg run, x86-64 in the emulator: the first one
+  fetches the package lists, then about a minute for a small package, python3
+  about 4 minutes. Name every package you need in one \`apt install\`: the layer is
+  for exactly that set. 1846 of popcon's top 2000 packages pass a smoke test.
 - Whole toolchains: \`toolchain install c\` (gcc, g++, make, gdb, cmake), \`python\`,
   \`go\` (std precompiled), \`tex\`, \`tex-full\` (TikZ, biblatex/biber, XeTeX, LuaTeX,
   fonts), \`classic\` (Fortran, COBOL, Pascal, Ada), \`node\` or \`java\` puts the Debian packages in place in seconds instead of apt's minutes;
@@ -182,7 +185,8 @@ ${bootSection(ctx, name)}
 - Prebuilt: \`pkg install NAME\` installs one of ${name}'s 72 prebuilt programs
   (WebAssembly or static x86-64: vim, htop, git, python3, jq, curl, make, clang,
   go, ...) in about a second, and they start faster than Debian's. \`pkg available\`
-  lists them. Before \`debian install\`, \`apt\` is \`pkg\`; after it, \`apt\` is Debian's.
+  lists them. Before \`debian install\`, \`apt install\` takes a name from these first;
+  after it, \`apt\` is Debian's.
 - \`/usr/bin/NAME\` is whichever was installed last. To go back from Debian's to the
   prebuilt one: \`sudo apt remove -y NAME && pkg install --reinstall NAME\`.
   \`tabcomputer-alternatives --list\` shows which programs are ${name}'s builtins

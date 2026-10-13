@@ -396,6 +396,126 @@ Behind a TLS-intercepting proxy, pass its CA as `CA_BUNDLE=...`
 **Measured:** BENCHMARKS.md "Toolchain layers" (`node bench/run.mjs --suites
 toolchains`).
 
+## 5. Package layers
+
+A toolchain layer is a fixed set. A package layer is the same thing for any
+set of Debian packages: the set an app names in `needs`, or the names typed
+after `apt install`. The first time anyone asks for a set, the server builds
+its layer. Every later tab applies it in about a second.
+
+```
+apt install -y tesseract-ocr           # before Debian mode too: Debian is set up first, by itself
+apt install -y qpdf ghostscript        # one set: the layer is for exactly these names
+toolchain install pandoc               # a name that is no toolchain set is a package
+```
+
+Why, and what was measured: [research/PACKAGE_LAYERS.md](research/PACKAGE_LAYERS.md).
+`apt install tesseract-ocr` in the tab takes 66 s, almost all of it apt and
+dpkg running under the emulator. Its layer is 71 packages, 40 MB of chunks
+(99 MB unpacked), and applies in under a second.
+
+**The tab** (`src/debian/package-sets.ts`). `installPackageSet` asks
+`/debian/layers/set?base=ROOTFS_ID&packages=a,b` and acts on the answer's
+`state`:
+
+| state | the tab |
+| --- | --- |
+| `ready` | applies the layer as `toolchain install` applies one (`applyLayerInfo` in `layers.ts`), then fetches the set's chunks in the background, programs and libraries first, so a first run does not ask for them one file at a time |
+| `queued`, `building` | says what the server reports, one sentence per change ("The server is installing package 12 of 71 for tesseract-ocr."), and asks again each second. It gives up after 90 s without a change |
+| `failed`, `unavailable` | says one sentence ("No ready-made copy of tesseract-ocr (this server keeps none): apt installs it here, which takes a few minutes.") and the caller runs apt |
+
+Callers:
+
+- **An app's `needs`** (`Packages` in `src/apps/runtime.ts`). The launch
+  placeholder shows the sentences above (`src/apps/progress.ts`).
+- **`apt install NAME...` in Debian mode** (`shiroAptCmd`). Only a plain
+  install goes this way (`plainInstall`: names and `-y`, `-q`,
+  `--no-install-recommends`). A version, a release, a file, a removal, `-s`
+  or any other option is apt's, unchanged. The set asked for is the names
+  dpkg does not have yet. `TABCOMPUTER_APT_LAYERS=0` turns this off.
+- **`apt install NAME...` before Debian mode** (`aptCmd` in
+  `src/commands/pkg.ts`, #136). A name tabcomputer's own list has is
+  installed from it. Any other name goes on to Debian by itself: `debian
+  install`, then Debian's apt as above. Each name's source is said. A name
+  neither has is an error for that name and does not stop the others; when
+  the server has listed the archive it is said before Debian is set up.
+- `toolchain install NAME...` treats names that are no toolchain set as one
+  package set.
+
+A layer is recorded in `/var/lib/shiro/layers.json` with `kind: "packages"`.
+It is not a toolchain: the reinstall offer after lost storage does not list
+it, and the app that needs it installs it again by itself.
+
+A set is one layer. `apt install a` and later `apt install b` are two sets;
+`apt install a b` is a third. Chunks are per package and named by content,
+so the three share their bytes on the server and in the browser's cache.
+
+**The server** (`server.mjs`, "Package layers"). A set's key is `p-` and 24
+hex digits of the sha256 of the base rootfs id, its snapshot and the sorted
+names. Sets live in `TABCOMPUTER_DEBIAN_LAYERS/sets/<key>/` with their own
+`sets/chunks/`, served at `/debian/layers/sets/`. What a request can cause:
+
+- Names must match Debian's grammar for package names (`PACKAGE_NAME`). No
+  version, file, path or option gets through.
+- At most 12 names. Packages that act on the machine they are configured on
+  are refused by name (`PACKAGE_REFUSED`: kernels, boot loaders, init, udev,
+  kernel modules, storage and container managers, firmware), and the builder
+  refuses a set when anything it would install matches.
+- Once the builder has listed the archive (`sets/names.txt`), a name the
+  pinned snapshot's main archive does not have is answered at once, with the
+  names, and no build starts.
+- The names reach the builder in a JSON file. Its command line carries the
+  key and nothing else of the request.
+- One build at a time. At most 8 wait. One address has at most 2 builds
+  waiting or running and starts at most 6 in an hour. A failed build is not
+  started again for ten minutes.
+- A set installs at most 400 packages and 200 MB of `.deb`s, checked from
+  apt's own plan before anything is downloaded (`set-limits.mjs`). A build
+  has 15 minutes and 900 MB of memory.
+- All sets together take at most `TABCOMPUTER_LAYER_SETS_MAX_MB` of chunks
+  (3072). Past that the sets used longest ago are removed
+  (`set-evict.mjs`); the sets built at deploy are never removed.
+
+The builder is off unless `TABCOMPUTER_LAYER_BUILDER=1`. A server without it
+(a local `node server.mjs`, another profile) still serves the sets it has
+and answers `unavailable` for the rest, and tabs use apt.
+
+**The builder** (`scripts/debian/build-set.sh`, root, Linux). It is
+`build-layers.sh` for one set, kept as a script of its own so toolchain
+layers build exactly as before: the same chroot of the base, the same pinned
+snapshot (main only), the same packer. It adds the limits above, keeps apt's
+lists between builds (the snapshot never changes), and prints lines for the
+server (`::tc:: phase installing`, `::tc:: total 71`). The server starts it
+as a transient systemd unit, as `release.sh` starts the toolchain builder:
+`PrivateMounts`, `PrivateDevices`, nice 19, idle I/O, `CPUQuota=50%`,
+`MemoryMax=900M`, `RuntimeMaxSec=900` (`packageBuildCommand`). What runs as
+root is apt, dpkg and the maintainer scripts of the Debian packages the set
+installs, inside the chroot, as for toolchain sets.
+
+**Built at deploy.** `src/debian/package-sets.json` lists sets that should
+never be a first request: what the example apps need, and the usual file
+tools (tesseract-ocr; ghostscript, poppler-utils and qpdf; pandoc;
+genisoimage; imagemagick). `release.sh` builds them after the toolchain
+layers (`build-deploy.sh`), in the same background unit, and marks them
+`pinned`. ffmpeg is not in the list: its set is 207 packages and 133 MB of
+`.deb`s, and the tab has an ffmpeg of its own.
+
+**Disk.** tesseract-ocr's layer is 40 MB of chunks. The five sets built at
+deploy are 116 MB of `.deb`s by apt's index, so about 150 MB of chunks. The
+builder also keeps a copy of the base (84 MB), apt's lists (58 MB of `Packages` files) and
+up to 1 GB of downloaded `.deb`s in `/opt/tabcomputer/set-build`. With the
+3 GB cap that is under 4.5 GB in all.
+
+**Without a Linux host.** `tests/browser/capture-layer.mjs` makes a real
+layer on a machine that cannot run the builder: Debian's apt and dpkg
+install the set in a headless tab, what that changed is copied out, and
+`pack-layer.mjs` packs it. It is for `tests/browser/package-layers.mjs`;
+production layers come from `build-set.sh`.
+
+Tests: `package-layers.test.ts` (the server with a stand-in builder: key,
+grammar, queue, caps, limits, disk cap), `package-sets.test.ts` (the tab
+with real packed layers and a stand-in server), `tests/browser/package-layers.mjs`.
+
 ## Known gaps
 
 - systemd's postinst (systemd-sysusers, pulled in by cron, udev, logrotate)
@@ -406,6 +526,7 @@ toolchains`).
 - One guest thread runs at a time (Blink's GIL); apt and dpkg are
   interpreted/JIT-compiled x86. `apt-get update` takes about 45 s
   (BENCHMARKS.md "Real workloads": 43 s), installing a small package about a minute.
+  A package layer avoids both for a plain `apt install` ("Package layers").
 - dpkg-deb's `.xz` decompression occasionally crashes or reports corrupt data
   under Blink (X86_ENGINES.md item 57); rerunning the install gets past it.
 - How Debian packages coexist with `pkg`'s prebuilt ones (who owns `/usr/bin/NAME`,

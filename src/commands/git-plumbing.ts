@@ -13,6 +13,7 @@ import git, { TREE, STAGE, WORKDIR } from './git-cached';
 import type { CommandContext } from './index';
 import { decodeBytes } from '../utils/byte-text';
 import { resolveRevision, unifiedDiff, diffLines, diffCounts, formatStatRows } from './git-utils';
+import { detectRenames, renameName, renameThreshold, scorePercent, DEFAULT_RENAME_SCORE } from './git-renames';
 
 type Fs = any;
 interface CommitInfo { oid: string; commit: any; payload?: string }
@@ -816,10 +817,13 @@ const oct = (m?: number) => (m ? m.toString(8).padStart(6, '0') : '000000');
 
 /** What commit and merge print after their first line: the totals (merge: each file's row first), then created and deleted files */
 export async function changeSummary(fs: Fs, dir: string, from: string | null, to: string, rows: boolean): Promise<string> {
-  const ch = await changesBetween(fs, dir, from, to);
+  const ch = await findRenames(fs, dir, await changesBetween(fs, dir, from, to), DEFAULT_RENAME_SCORE);
   if (!ch.length) return '';
   let out = await formatChanges(fs, dir, ch, rows ? 'stat' : 'shortstat', false, '', { from, to });
-  for (const c of ch) if (c.status !== 'M') out += ` ${c.status === 'A' ? 'create' : 'delete'} mode ${oct(c.mode ?? 0o100644)} ${c.path}\n`;
+  for (const c of ch) {
+    if (c.status === 'R') out += ` rename ${renameName(c.from!, c.path)} (${scorePercent(c.score!)}%)\n`;
+    else if (c.status !== 'M') out += ` ${c.status === 'A' ? 'create' : 'delete'} mode ${oct(c.mode ?? 0o100644)} ${c.path}\n`;
+  }
   return out;
 }
 
@@ -1379,6 +1383,7 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         }
         let ch = await changesFor(fs, dir, from, to);
         if (paths.length) ch = ch.filter((c) => paths.some((p) => c.path === p || c.path.startsWith(p + '/')));
+        ch = await findRenames(fs, dir, ch, renameThreshold(args, false));
         if (args.includes('--quiet')) return ch.length ? 1 : 0;
         ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to }, contextOf(args));
         return args.includes('--exit-code') && ch.length ? 1 : 0;
@@ -1403,6 +1408,7 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
       const { from, to, paths } = await diffSides(fs, dir, args, prefix);
       let ch = await changesFor(fs, dir, from, to);
       if (paths.length) ch = ch.filter((c) => paths.some((p) => c.path === p || c.path.startsWith(p.replace(/\/?$/, '/'))));
+      ch = await findRenames(fs, dir, ch, renameThreshold(args, true));
       if (args.includes('--quiet')) return ch.length ? 1 : 0;
       ctx.stdout += await formatChanges(fs, dir, ch, mode, nul, prefix, { from, to }, contextOf(args));
       return args.includes('--exit-code') && ch.length ? 1 : 0;
@@ -1535,7 +1541,7 @@ async function showCommits(ctx: CommandContext, fs: Fs, dir: string, o: LogOptio
     // (a merge's changes aren't shown, as git without -m / --cc)
     if (o.changes && c.commit.parent.length < 2) {
       const parent = c.commit.parent[0] ?? null;
-      const ch = await changesBetween(fs, dir, parent, c.oid);
+      const ch = await findRenames(fs, dir, await changesBetween(fs, dir, parent, c.oid), renameThreshold(args, true));
       const extra = await formatChanges(fs, dir, ch, o.changes, nul, prefix, { from: parent, to: c.oid }, contextOf(args));
       // git's layout: oneline and format: lines run straight on; a tformat gets a blank line; the
       // long formats a blank line, and one after the changes before the next commit
@@ -1626,7 +1632,8 @@ async function logOptions(fs: Fs, dir: string, args: string[]): Promise<LogOptio
 
 // ── diff ──────────────────────────────────────────────────────────────────
 
-interface Change { path: string; status: 'A' | 'M' | 'D'; old?: string; new?: string; newWork?: boolean; mode?: number }
+/** 'R': `from` renamed to `path` (`old` is the blob at `from`, `score` of git-renames' MAX_SCORE) */
+interface Change { path: string; status: 'A' | 'M' | 'D' | 'R'; old?: string; new?: string; newWork?: boolean; mode?: number; from?: string; score?: number }
 
 /** What a diff compares: commits (oid), 'index' or 'work' */
 type Side = string;
@@ -1712,6 +1719,25 @@ async function changesFor(fs: Fs, dir: string, from: Side | null, to: Side): Pro
   return out.sort((x, y) => (x.path < y.path ? -1 : 1));
 }
 
+/** Deletions and additions that are one file renamed, as one 'R' change (`minScore` null: none looked for) */
+async function findRenames(fs: Fs, dir: string, ch: Change[], minScore: number | null): Promise<Change[]> {
+  if (minScore === null) return ch;
+  return detectRenames(ch, async (c, side) => {
+    if (side === 'new' && c.newWork) {
+      const d = await fs.promises.readFile(`${dir}/${c.path}`);
+      return typeof d === 'string' ? new TextEncoder().encode(d) : d;
+    }
+    const o = await git.readObject({ fs, dir, oid: (side === 'old' ? c.old : c.new)!, format: 'content' });
+    return o.object as Uint8Array;
+  }, minScore);
+}
+
+/** The path `path` had in `parent`, when `commit` renamed it (null: it is new there) */
+export async function renamedFrom(fs: Fs, dir: string, parent: string, commit: string, path: string): Promise<string | null> {
+  const ch = await findRenames(fs, dir, await changesBetween(fs, dir, parent, commit), DEFAULT_RENAME_SCORE);
+  return ch.find((c) => c.status === 'R' && c.path === path)?.from ?? null;
+}
+
 async function textOf(fs: Fs, dir: string, oid: string | undefined, path: string, fromWork: boolean): Promise<string | null> {
   if (fromWork) {
     try {
@@ -1731,11 +1757,15 @@ async function textOf(fs: Fs, dir: string, oid: string | undefined, path: string
 async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nul: boolean, prefix: string, sides: { from: Side | null; to: Side }, context = 3): Promise<string> {
   void prefix; void sides;
   const counts = async (c: Change): Promise<[number, number] | null> => {
-    const a = await textOf(fs, dir, c.old, c.path, false);
+    const a = await textOf(fs, dir, c.old, c.from ?? c.path, false);
     const b = await textOf(fs, dir, c.new, c.path, !!c.newWork && c.status !== 'D');
     if (a === null || b === null) return null;
     return diffCounts(a, b);
   };
+  /** A change's status as --name-status and --raw print it: a rename with its score, `R089` */
+  const letter = (c: Change) => (c.status === 'R' ? `R${String(scorePercent(c.score!)).padStart(3, '0')}` : c.status);
+  /** Its paths for those two: a rename's old path first */
+  const names = (c: Change) => (c.status === 'R' ? [c.from!, c.path] : [c.path]);
   let out = '';
   if (mode === 'patch-with-stat') {
     const stat = await formatChanges(fs, dir, ch, 'stat', nul, prefix, sides);
@@ -1744,17 +1774,19 @@ async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nu
   if (mode === 'raw') {
     const z = '0'.repeat(40);
     for (const c of ch) {
-      const line = `:${c.status === 'A' ? '000000' : '100644'} ${c.status === 'D' ? '000000' : '100644'} ${c.old ?? z} ${c.newWork ? z : c.new ?? z} ${c.status}`;
-      out += nul ? `${line}\0${c.path}\0` : `${line}\t${c.path}\n`;
+      const line = `:${c.status === 'A' ? '000000' : '100644'} ${c.status === 'D' ? '000000' : '100644'} ${c.old ?? z} ${c.newWork ? z : c.new ?? z} ${letter(c)}`;
+      out += nul ? `${line}\0${names(c).join('\0')}\0` : `${line}\t${names(c).join('\t')}\n`;
     }
     return out;
   }
   if (mode === 'name-only') for (const c of ch) out += c.path + (nul ? '\0' : '\n');
-  else if (mode === 'name-status') for (const c of ch) out += nul ? `${c.status}\0${c.path}\0` : `${c.status}\t${c.path}\n`;
+  else if (mode === 'name-status') for (const c of ch) out += nul ? `${letter(c)}\0${names(c).join('\0')}\0` : `${letter(c)}\t${names(c).join('\t')}\n`;
   else if (mode === 'numstat') {
     for (const c of ch) {
       const n = await counts(c);
-      out += `${n ? n[0] : '-'}\t${n ? n[1] : '-'}\t${c.path}${nul ? '\0' : '\n'}`;
+      // (-z: a rename's two paths follow an empty one)
+      const name = c.status !== 'R' ? c.path : nul ? `\0${c.from}\0${c.path}` : renameName(c.from!, c.path);
+      out += `${n ? n[0] : '-'}\t${n ? n[1] : '-'}\t${name}${nul ? '\0' : '\n'}`;
     }
   } else if (mode === 'stat' || mode === 'shortstat') {
     let files = 0, ins = 0, del = 0;
@@ -1762,9 +1794,10 @@ async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nu
     for (const c of ch) {
       const n = await counts(c);
       files++;
-      if (!n) { rows.push({ name: c.path, add: 0, del: 0, binary: 'Bin' }); continue; }
+      const name = c.status === 'R' ? renameName(c.from!, c.path) : c.path;
+      if (!n) { rows.push({ name, add: 0, del: 0, binary: 'Bin' }); continue; }
       ins += n[0]; del += n[1];
-      rows.push({ name: c.path, add: n[0], del: n[1] });
+      rows.push({ name, add: n[0], del: n[1] });
     }
     if (mode === 'stat') out += formatStatRows(rows);
     // (neither: both, as 0)
@@ -1772,21 +1805,27 @@ async function formatChanges(fs: Fs, dir: string, ch: Change[], mode: string, nu
   } else if (mode === 'patch') {
     const short = (o?: string) => (o ?? '0'.repeat(40)).slice(0, 7);
     for (const c of ch) {
-      const a = await textOf(fs, dir, c.old, c.path, false);
+      const was = c.from ?? c.path;
+      const a = await textOf(fs, dir, c.old, was, false);
       const b = c.status === 'D' ? '' : await textOf(fs, dir, c.new, c.path, !!c.newWork);
-      out += `diff --git a/${c.path} b/${c.path}\n`;
-      if (c.status === 'A') out += `new file mode 100644\nindex ${short()}..${short(c.new)}\n`;
+      out += `diff --git a/${was} b/${c.path}\n`;
+      if (c.status === 'R') {
+        out += `similarity index ${scorePercent(c.score!)}%\nrename from ${was}\nrename to ${c.path}\n`;
+        if (c.old === c.new) continue; // (the name alone changed)
+        out += `index ${short(c.old)}..${short(c.new)} 100644\n`;
+      }
+      else if (c.status === 'A') out += `new file mode 100644\nindex ${short()}..${short(c.new)}\n`;
       else if (c.status === 'D') out += `deleted file mode 100644\nindex ${short(c.old)}..${short()}\n`;
       else out += `index ${short(c.old)}..${short(c.new)} 100644\n`;
       if (a === null || b === null) {
-        out += `Binary files ${c.status === 'A' ? '/dev/null' : `a/${c.path}`} and ${c.status === 'D' ? '/dev/null' : `b/${c.path}`} differ\n`;
+        out += `Binary files ${c.status === 'A' ? '/dev/null' : `a/${was}`} and ${c.status === 'D' ? '/dev/null' : `b/${c.path}`} differ\n`;
         continue;
       }
       const hunks = unifiedDiff(diffLines(a ?? ''), diffLines(b ?? ''), { context });
       if (!hunks) continue; // (an empty file added or removed: no hunk, as git)
       // (a name with a space gets a tab after it, as git writes it)
       const tab = c.path.includes(' ') ? '\t' : '';
-      out += `--- ${c.status === 'A' ? '/dev/null' : `a/${c.path}${tab}`}\n+++ ${c.status === 'D' ? '/dev/null' : `b/${c.path}${tab}`}\n`;
+      out += `--- ${c.status === 'A' ? '/dev/null' : `a/${was}${was.includes(' ') ? '\t' : ''}`}\n+++ ${c.status === 'D' ? '/dev/null' : `b/${c.path}${tab}`}\n`;
       out += hunks;
     }
   }

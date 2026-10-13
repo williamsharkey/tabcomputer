@@ -1,18 +1,20 @@
 /**
  * git blame: each line of a file with the commit that last changed it,
  * following first parents back from the revision (the work tree's own
- * changes, without one, are "Not Committed Yet"). The default format,
+ * changes, without one, are "Not Committed Yet"), and the file through its
+ * renames: a line that came from the file under another name is shown with
+ * that name, as git shows it. The default format,
  * -s, -e, -l, -L a,b / a,+n, and --porcelain / --line-porcelain.
  */
 import git from './git-cached';
 import type { CommandContext } from './index';
 import { diffEdits, diffLines } from './git-utils';
-import { resolveSpec, repoPath, gitDate } from './git-plumbing';
+import { resolveSpec, repoPath, gitDate, renamedFrom } from './git-plumbing';
 
 type Fs = any;
 const ZERO = '0'.repeat(40);
 
-interface Origin { oid: string; line: number }
+interface Origin { oid: string; line: number; path: string }
 
 /** For each line of `cur`, its line in `prev` (or -1: new in cur) */
 function lineMap(prev: string[], cur: string[]): number[] {
@@ -81,37 +83,47 @@ export async function gitBlame(ctx: CommandContext, fs: Fs, dir: string, workDir
     const map = lineMap(diffLines(headText), finalLines);
     const next: typeof pending = [];
     for (const p of pending) {
-      if (map[p.idx] < 0) origin[p.finalIdx] = { oid: ZERO, line: p.idx + 1 };
+      if (map[p.idx] < 0) origin[p.finalIdx] = { oid: ZERO, line: p.idx + 1, path };
       else next.push({ finalIdx: p.finalIdx, idx: map[p.idx] });
     }
     pending = next;
   } else if (!rev && headText === null) {
-    pending.forEach((p) => { origin[p.finalIdx] = { oid: ZERO, line: p.idx + 1 }; });
+    pending.forEach((p) => { origin[p.finalIdx] = { oid: ZERO, line: p.idx + 1, path }; });
     pending = [];
   }
   const commits = new Map<string, any>();
+  /** commit → the parent it was compared with, and the file's path there */
   const previous = new Map<string, string>();
   const boundary = new Set<string>();
   let oid = start, text = headText ?? '';
+  // the file's name in the commit being looked at: it changes where a commit renamed it
+  let at = path;
   while (pending.length) {
     const { commit } = await git.readCommit({ fs, dir, oid });
     commits.set(oid, commit);
     const parent = commit.parent[0];
-    const parentText = parent ? await blobText(fs, dir, parent, path) : null;
+    let parentPath = at;
+    let parentText = parent ? await blobText(fs, dir, parent, at) : null;
+    if (parent && parentText === null) {
+      const from = await renamedFrom(fs, dir, parent, oid, at).catch(() => null);
+      if (from) { parentPath = from; parentText = await blobText(fs, dir, parent, from); }
+    }
     if (!parent || parentText === null) {
       if (!parent) boundary.add(oid);
-      pending.forEach((p) => { origin[p.finalIdx] = { oid, line: p.idx + 1 }; });
+      const here = at;
+      pending.forEach((p) => { origin[p.finalIdx] = { oid, line: p.idx + 1, path: here }; });
       break;
     }
     const map = lineMap(diffLines(parentText), diffLines(text));
     const next: typeof pending = [];
     for (const p of pending) {
-      if (map[p.idx] < 0) origin[p.finalIdx] = { oid, line: p.idx + 1 };
+      if (map[p.idx] < 0) origin[p.finalIdx] = { oid, line: p.idx + 1, path: at };
       else next.push({ finalIdx: p.finalIdx, idx: map[p.idx] });
     }
-    if (next.length < pending.length) previous.set(oid, parent);
+    if (next.length < pending.length) previous.set(oid, `${parent} ${parentPath}`);
     pending = next;
     oid = parent;
+    at = parentPath;
     text = parentText;
   }
 
@@ -150,9 +162,9 @@ export async function gitBlame(ctx: CommandContext, fs: Fs, dir: string, workDir
         out += `committer ${cm.name}\ncommitter-mail <${cm.email}>\ncommitter-time ${cm.timestamp}\ncommitter-tz ${tz(cm)}\n`;
         out += `summary ${c ? c.message.split('\n')[0] : `Version of ${path} from ${path}`}\n`;
         if (boundary.has(o.oid)) out += 'boundary\n';
-        const prev = o.oid === ZERO ? start : previous.get(o.oid);
-        if (prev && !boundary.has(o.oid)) out += `previous ${prev} ${path}\n`;
-        out += `filename ${path}\n`;
+        const prev = o.oid === ZERO ? `${start} ${path}` : previous.get(o.oid);
+        if (prev && !boundary.has(o.oid)) out += `previous ${prev}\n`;
+        out += `filename ${o.path}\n`;
       }
       out += `\t${text1(finalLines[k])}\n`;
     }
@@ -162,11 +174,14 @@ export async function gitBlame(ctx: CommandContext, fs: Fs, dir: string, workDir
   const nameOf = (o: Origin) => (email ? `<${who(o).email}>` : who(o).name);
   const nameWidth = Math.max(...shown.map((o) => nameOf(o!).length));
   const numWidth = String(to).length;
+  // the file's name there, on every line, once any line came from another name
+  const named = shown.some((o) => o!.path !== path);
+  const pathWidth = named ? Math.max(...shown.map((o) => o!.path.length)) : 0;
   let out = '';
   for (let k = from - 1; k < to; k++) {
     const o = origin[k]!;
     // eight columns: the root commit's lines marked ^ (and seven of its hash)
-    const hash = longHash ? (boundary.has(o.oid) ? '^' + o.oid.slice(0, 39) : o.oid) : boundary.has(o.oid) ? '^' + o.oid.slice(0, 7) : o.oid.slice(0, 8);
+    const hash = (longHash ? (boundary.has(o.oid) ? '^' + o.oid.slice(0, 39) : o.oid) : boundary.has(o.oid) ? '^' + o.oid.slice(0, 7) : o.oid.slice(0, 8)) + (named ? ' ' + o.path.padEnd(pathWidth) : '');
     const date = gitDate(who(o), 'iso');
     out += noName
       ? `${hash} ${String(k + 1).padStart(numWidth)}) ${text1(finalLines[k])}\n`

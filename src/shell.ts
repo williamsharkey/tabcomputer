@@ -2766,6 +2766,24 @@ export class Shell {
         continue;
       }
 
+      // A pipeline with an element that only waits (`sleep 2 | sh -c 'echo started'`):
+      // its elements run at once, as bash's do, so the rest doesn't wait for the
+      // sleep (tabcomputer#72). Other pipelines of plain commands keep the string path.
+      if (WAITING_ELEMENT.test(trimmedCmd) && !trimmedCmd.includes('<<') && !trimmedCmd.includes('|&') &&
+        // (only where runHeadedPipeline streams; its other way is for compound heads)
+        !this.shoptopts.has('lastpipe') && this.env.TABCOMPUTER_STREAM_PIPES !== '0' && this.injectedStdin === null && !this.env.__PIPE_STDIN) {
+        const parts = splitTopLevelPipes(trimmedCmd);
+        const word = (p: string) => /^\s*([^\s;&|<>()]+)/.exec(p)?.[1] ?? '';
+        // (read and mapfile at the end set this shell's variables; a function or alias may do anything)
+        if (parts.length > 1 && parts.slice(0, -1).some((p) => word(p) === 'sleep') &&
+          parts.every((p) => { const w = word(p); return !!w && !STREAM_KEEPS_SHELL.has(w) && !this.functions[w] && !this.aliases.has(w) && !w.includes('='); })) {
+          exitCode = await this.runHeadedPipeline(parts, pipeIn || heredocStdin ? heredocStdin : null, writeStdout, stderrWriter, terminalOverride);
+          this.lastExitCode = exitCode;
+          this.env['?'] = String(exitCode);
+          continue;
+        }
+      }
+
       // [[ … ]] (and ! [[ … ]]): parsed from the raw text
       {
         const neg = /^!\s+\[\[/.test(trimmedCmd);
@@ -9899,6 +9917,11 @@ export class Shell {
  * commands (for/while/until/select … done, if … fi, case … esac), so the pipe
  * after `done` or a subshell is found but pipes inside the body are not.
  */
+/** A pipeline text that may have `sleep` as an element before the last (checked properly once split) */
+const WAITING_ELEMENT = /(?:^|\|)\s*sleep\s[^|]*\|/;
+/** Last elements that act on this shell, so the pipeline isn't run as processes */
+const STREAM_KEEPS_SHELL = new Set(['read', 'mapfile', 'readarray']);
+
 export function splitTopLevelPipes(cmd: string): string[] {
   const parts: string[] = [];
   let current = '';

@@ -426,6 +426,12 @@ async function main() {
     () => import('./commands/finder').then(m => m.finderCmd)), 'src/commands/finder.ts');
   registerCommand(commands, lazyCommand('code', 'Rich code editor (CodeMirror)',
     () => import('./commands/code-editor').then(m => m.codeEditorCmd)), 'src/commands/code-editor.ts');
+  registerCommand(commands, lazyCommand('jupyter', 'Notebooks: open one in the Notebook app, or run one here',
+    () => import('./commands/jupyter').then(m => m.jupyterCmd)), 'src/commands/jupyter.ts');
+  for (const sub of ['notebook', 'lab']) {
+    registerCommand(commands, lazyCommand(`jupyter-${sub}`, `The same as jupyter ${sub}`,
+      () => import('./commands/jupyter').then(m => m.jupyterAlias(`jupyter-${sub}`, sub))), 'src/commands/jupyter.ts');
+  }
   registerCommand(commands, lazyCommand('lab', 'Class repositories: open one, run it, test it, submit it',
     () => import('./commands/lab').then(m => m.labCmd)), 'src/commands/lab.ts');
   registerCommand(commands, lazyCommand('signout', 'Sign out of a shared computer: remove the sign-ins and every file from this browser',

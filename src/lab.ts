@@ -17,7 +17,7 @@ import { DECEPTIVE, originRepo, shq } from './run-url';
 /** The config file, in the repository (beside `.tabcomputer/run.sh`, a run link's script) */
 export const LAB_CONFIG_PATH = '.tabcomputer/lab.json';
 export const LAB_FORMAT = 1;
-const KNOWN_KEYS = ['lab', 'name', 'toolchains', 'run', 'test'];
+const KNOWN_KEYS = ['lab', 'name', 'toolchains', 'run', 'test', 'notebook'];
 const TOOLCHAIN_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const COMMAND_MAX = 500;
 
@@ -29,6 +29,8 @@ export interface LabConfig {
   /** Shell lines, run in the lab's folder in a Terminal: '' when the file names none */
   run: string;
   test: string;
+  /** A notebook in the repository (a path from the config's folder) that opens with the lab: '' when the file names none */
+  notebook: string;
 }
 
 /** A lab.json's text as a config, or every problem with it (each names its key, like app.json's) */
@@ -57,7 +59,15 @@ export function parseLabConfig(text: string): { config: LabConfig | null; proble
       else if (!toolchains.includes(t)) toolchains.push(t);
     }
   }
-  const config: LabConfig = { name: line('name', 60), toolchains, run: line('run', COMMAND_MAX), test: line('test', COMMAND_MAX) };
+  let notebook = '';
+  if (o.notebook !== undefined) {
+    const v = o.notebook;
+    if (typeof v !== 'string' || !v.trim() || v.length > 200 || DECEPTIVE.test(v) || /[\n\t]/.test(v)) bad('notebook must be the path of a notebook in the repository, like "lab3.ipynb"');
+    else if (v.startsWith('/') || v.startsWith('~') || v.split('/').includes('..')) bad('notebook must be a path inside the repository (no leading /, no ..)');
+    else if (!/\.ipynb$/i.test(v.trim())) bad('notebook must name a .ipynb file');
+    else notebook = v.trim().replace(/^\.\//, '');
+  }
+  const config: LabConfig = { name: line('name', 60), toolchains, run: line('run', COMMAND_MAX), test: line('test', COMMAND_MAX), notebook };
   return problems.length ? { config: null, problems } : { config, problems };
 }
 

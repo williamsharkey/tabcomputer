@@ -57,7 +57,8 @@ function prepareSpare(): void {
   spareTimer = setTimeout(dropSpare, SPARE_IDLE_MS);
 }
 
-function takeWorker(): GuestWorker {
+/** A worker with Pyodide loading or loaded, for one process (the notebook kernel takes one too: src/notebook/kernel.ts) */
+export function takeWorker(): GuestWorker {
   const w = spare ?? createWorker();
   spare = null;
   if (spareTimer) clearTimeout(spareTimer);

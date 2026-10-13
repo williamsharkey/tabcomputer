@@ -10,12 +10,18 @@ import { connectGuest, isStartMessage, ChannelClosed, type GuestStartMessage, ty
 import { TERMIOS_SIZE } from '../kernel/pty';
 import type { KfsSys } from './kfs';
 import { installSupport, mountTab, runProgram, SLOW_MS, type PyRun } from './runtime';
+import { runNotebookKernel, type NotebookStart } from './notebook-guest';
 
 /** The page's first message to a new worker: where Pyodide is served from */
 export interface PyodideBootMessage { type: 'pyodide-boot'; indexURL: string }
 
 /** The kernel's start message, with what host.ts adds */
-type PyodideStart = GuestStartMessage & { pyodide: PyRun; interrupt?: SharedArrayBuffer };
+type PyodideStart = GuestStartMessage & {
+  pyodide: PyRun;
+  interrupt?: SharedArrayBuffer;
+  /** A notebook's kernel instead of a program (notebook-guest.ts): it talks to the page over fd 3 */
+  notebook?: NotebookStart;
+};
 
 /** kfs.ts's calls, on the kernel's channel */
 export function kfsSys(sys: GuestSys): KfsSys {
@@ -93,6 +99,18 @@ async function runGuest(py: any, start: PyodideStart, post: (m: unknown) => void
       sys.sigaction(A.SIGINT, { handler: 2, flags: A.SA_NODEFER }); // (a second ^C must reach the page too)
     }
     mountTab(py, kfsSys(sys));
+    if (start.notebook) {
+      const flag = start.interrupt ? new Uint8Array(start.interrupt) : null;
+      const rc = await runNotebookKernel(py, start.notebook, start.cwd, { ...start.env, TABCOMPUTER_PID: String(start.pid) }, {
+        ctlRead: (buf) => sys.read(3, buf),
+        ctlWrite: (data) => { sys.write(3, data); },
+        write: (fd, data) => { sys.write(fd, data); },
+        interrupted: () => !!flag && Atomics.load(flag, 0) === 2,
+        clearInterrupt: () => { if (flag) Atomics.store(flag, 0, 0); },
+      });
+      sys.exit(rc);
+      return;
+    }
     const rc = await runProgram(py, start.pyodide, start.cwd, { ...start.env, TABCOMPUTER_PID: String(start.pid) }, {
       read: (buf) => sys.read(0, buf),
       write: (fd, data) => { sys.write(fd, data); },

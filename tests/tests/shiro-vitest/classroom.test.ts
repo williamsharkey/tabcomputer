@@ -172,14 +172,14 @@ describe('the lab: form of a run link', () => {
 describe('.tabcomputer/lab.json', () => {
   it('reads the toolchains and the two commands', () => {
     expect(parseLabConfig('{"lab":1,"name":"Lab 3","toolchains":["python","c","c"],"run":" python3 main.py ","test":"python3 -m unittest"}'))
-      .toEqual({ config: { name: 'Lab 3', toolchains: ['python', 'c'], run: 'python3 main.py', test: 'python3 -m unittest' }, problems: [] });
+      .toEqual({ config: { name: 'Lab 3', toolchains: ['python', 'c'], run: 'python3 main.py', test: 'python3 -m unittest', notebook: '' }, problems: [] });
     expect(parseLabConfig('{"lab":1}').config).toEqual({ name: '', toolchains: [], run: '', test: '' });
   });
 
   it('reports every problem by key and gives no config', () => {
     const r = parseLabConfig(JSON.stringify({ lab: 2, toolchain: 'python', toolchains: ['Py thon'], run: 'a\nb', test: 7 }));
     expect(r.config).toBeNull();
-    expect(r.problems.join('\n')).toMatch(/unknown key toolchain \(known: lab, name, toolchains, run, test\)/);
+    expect(r.problems.join('\n')).toMatch(/unknown key toolchain \(known: lab, name, toolchains, run, test, notebook\)/);
     expect(r.problems.join('\n')).toMatch(/lab is 2: this build reads format 1/);
     expect(r.problems.join('\n')).toMatch(/toolchains has a name that is not a toolchain id/);
     expect(r.problems.join('\n')).toMatch(/run must be one line/);

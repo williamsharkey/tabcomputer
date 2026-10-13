@@ -30,9 +30,13 @@ import { setClaudeSignInUI } from '../claude-signin-ui';
 import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
 import { flushStorage, reloadAfterFlush } from '../storage';
+import { fragmentAtLoad } from '../link-capture';
 
-/** The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts) */
-const ASKED_FOR_APP = typeof location !== 'undefined' && new URLSearchParams(location.search).has('app');
+/**
+ * The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts),
+ * or carried a link after its `#` (src/link-capture.ts): the person came for that, not for the Welcome card
+ */
+const ASKED_FOR_APP = typeof location !== 'undefined' && (new URLSearchParams(location.search).has('app') || fragmentAtLoad());
 
 export interface DesktopDeps {
   fs: FileSystem;

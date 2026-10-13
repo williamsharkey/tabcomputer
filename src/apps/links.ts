@@ -9,6 +9,7 @@
  *   examples/<id>              an example this site keeps (apps/examples/), installed like its own apps
  *   https://…/x.zip | .tar.gz  an archive holding the app
  *   link  (+ #app=<files>)     the app's own files, carried by the address (share.ts, `app share`)
+ *   #run=…&name=…              a one-file app written in the address: app.json's keys as key=value (src/link-fragment.ts)
  *
  * Trust is the run links' (src/run-url.ts): an app of this site, whose every
  * file matches the sha256 the site's own list gives, installs at once.
@@ -19,10 +20,11 @@
  *
  * No DOM and no filesystem here: the callers pass `fetch`, and get files back.
  */
-import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest, type ManifestHint } from './manifest';
+import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, validateManifest, APP_ID, RESERVED_IDS, type AppManifest, type ManifestHint } from './manifest';
 import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX, pageBeside } from './registry';
 import { LINK_APP, unpackLink } from './share';
 import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
+import { FragmentError, appFragment, manifestFromPairs, parseFragment } from '../link-fragment';
 
 export type AppTarget =
   | { kind: 'site'; id: string }
@@ -31,7 +33,9 @@ export type AppTarget =
   | { kind: 'gist'; user: string; id: string }
   | { kind: 'url'; url: string }
   /** `?app=link#app=<payload>`: the files are in the address itself (share.ts) */
-  | { kind: 'link'; payload: string };
+  | { kind: 'link'; payload: string }
+  /** `#run=…&name=…`: a one-file app as the pairs written after the `#` (src/link-fragment.ts) */
+  | { kind: 'keys'; pairs: [string, string][] };
 
 /** A refused app link or install, and why (a sentence; no text from the link) */
 export class AppLinkError extends RunLinkError {}
@@ -82,7 +86,7 @@ export interface ParsedAppLink {
  */
 export function parseAppUrl(search: string, hash = ''): ParsedAppLink | null {
   const q = new URLSearchParams(search);
-  if (!q.has('app')) return null;
+  if (!q.has('app')) return parseAppFragment(hash);
   if (q.get('app') === LINK_APP) {
     const m = /^#app=([A-Za-z0-9_-]+)$/.exec(hash);
     if (!m) throw new AppLinkError('this app link is incomplete: the part after # is missing (it may have been cut short when it was copied)');
@@ -93,8 +97,27 @@ export function parseAppUrl(search: string, hash = ''): ParsedAppLink | null {
   return { target, become: q.has('become') && q.get('become') !== '0' };
 }
 
+/**
+ * The app link in the part of an address after `#`, with nothing in the
+ * query: a one-file app written as `key=value` pairs, or `#app=<files>`.
+ * Null for anything else there (commands, a gist, nothing).
+ */
+export function parseAppFragment(hash: string): ParsedAppLink | null {
+  try {
+    const link = hash ? parseFragment(hash) : null;
+    if (link?.kind === 'app') return { target: { kind: 'keys', pairs: link.pairs }, become: false };
+    if (link?.kind === 'packed-app') return { target: { kind: 'link', payload: link.payload }, become: false };
+    return null;
+  } catch (e) {
+    if (e instanceof FragmentError) throw new AppLinkError(e.message);
+    throw e;
+  }
+}
+
 /** `?app=…` for a target, with the parameters that go along (guest, become) */
 export function appLinkQuery(target: AppTarget, extra: Record<string, string> = {}): string {
+  // (an app written after the `#` has no query: the whole link is that part)
+  if (target.kind === 'keys') return `#${appFragment(target.pairs)}`;
   const spec = target.kind === 'site' ? target.id : target.kind === 'gh' ? `gh:${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`
     : target.kind === 'gist' ? `gist:${target.user ? target.user + '/' : ''}${target.id}` : target.kind === 'link' ? LINK_APP : target.url;
   const q = new URLSearchParams({ app: spec });
@@ -323,6 +346,33 @@ export async function linkApp(payload: string): Promise<FetchedApp> {
   };
 }
 
+const notValid = (problems: string[]): string => `the app in the link is not valid:\n${problems.map((p) => `  ${p}`).join('\n')}`;
+
+/**
+ * The one-file app a link spells after its `#` (`#run=…&name=…`). Never
+ * curated: the person who opens the link is shown it first. Its app.json is
+ * written here from the pairs, and that text is what the prompt shows and
+ * what is installed. Its `source` is a hash of that text, so the same link
+ * opened again finds the app it installed. Every problem names its key.
+ */
+export async function keysApp(pairs: [string, string][]): Promise<FetchedApp> {
+  const { raw, problems } = manifestFromPairs(pairs);
+  if (problems.length) throw new AppLinkError(notValid(problems));
+  let manifest: AppManifest;
+  try { manifest = validateManifest(raw); } catch (e) {
+    if (e instanceof ManifestError) throw new AppLinkError(notValid(e.problems));
+    throw e;
+  }
+  const text = JSON.stringify(raw, null, 2) + '\n';
+  if (text.length > MANIFEST_MAX) throw new AppLinkError('the app in the link is too large');
+  const id = (await sha256Hex(new TextEncoder().encode(text))).slice(0, 16);
+  return {
+    manifest, manifestText: text, curated: false, source: `link:${id}`,
+    from: 'the link itself, which holds the whole app',
+    files: async () => new Map([[MANIFEST_FILE, new TextEncoder().encode(text)]]),
+  };
+}
+
 /** The bytes of an archive at an address: no cookies, no redirect to somewhere else, not a web page */
 export function fetchArchive(url: string, fetchFn: Fetch): Promise<Uint8Array> {
   let shown = url;
@@ -373,13 +423,16 @@ export type AppLinkOutcome = 'none' | 'opened' | 'installed' | 'guest' | 'cancel
 export async function handleAppLink(deps: AppLinkDeps): Promise<AppLinkOutcome> {
   let parsed: ParsedAppLink | null;
   try {
-    try { parsed = parseAppUrl(deps.search, deps.hash ?? ''); } finally { if (new URLSearchParams(deps.search).has('app')) deps.cleanUrl(); }
+    const inQuery = new URLSearchParams(deps.search).has('app');
+    // (without `app` in the query the link is the part after `#`: it leaves the address too)
+    try { parsed = parseAppUrl(deps.search, deps.hash ?? ''); } finally { if (inQuery || deps.hash) deps.cleanUrl(); }
     await deps.ready?.();
     if (!parsed) return 'none';
     if (deps.framed) throw new AppLinkError('app links are ignored inside a frame; open the link in its own tab');
     const t = parsed.target;
     const app = t.kind === 'site' ? await fetchSiteApp(t.id, deps.origin, deps.fetch)
       : t.kind === 'link' ? await linkApp(t.payload)
+      : t.kind === 'keys' ? await keysApp(t.pairs)
       : t.kind === 'gist' ? await (deps.github ?? ((_action, run) => run(null)))(`gist:${t.id}`, (token) => fetchGistApp(t, deps.fetch, token))
       : await (deps.github ?? ((_action, run) => run(null)))(`gh:${(t as { owner: string }).owner}/${(t as { repo: string }).repo}`,
         (token) => fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch, token));

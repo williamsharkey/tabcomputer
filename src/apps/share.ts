@@ -5,8 +5,13 @@
  *   an app this site ships       ?app=<id>
  *   an app from GitHub           ?app=gh:<owner>/<repo>[/<path>]
  *   an app from a gist           ?app=gist:<id>
+ *   an app that is one app.json  #name=…&run=…   (its keys as words, src/link-fragment.ts)
  *   any other app (a folder, an archive, a link)
  *                                ?app=link#app=<the app's files>
+ *
+ * The form before the last is used when the app is one file and its link is
+ * at most READABLE_MAX characters: a person can read what it runs, and write
+ * one like it by hand.
  *
  * The last form carries the files themselves, gzipped, after the `#`: a
  * browser never sends that part of an address to a server, so nothing is
@@ -20,7 +25,8 @@
  *
  * No DOM and no filesystem of its own here: the callers pass both.
  */
-import { MANIFEST_FILE } from './manifest';
+import { MANIFEST_FILE, MANIFEST_VERSION, idFromName, validateManifest, type AppManifest } from './manifest';
+import { READABLE_MAX, appFragment, manifestFromPairs, pairsFromManifest } from '../link-fragment';
 import { AppError, FETCHED_FILES_MAX, type InstalledApp, type RegistryFs } from './registry';
 
 /** `?app=link`: the app's files are in the address, after `#app=` */
@@ -152,10 +158,40 @@ export interface AppShare {
   /** For 'files': how many the link carries and their size before packing */
   files?: number;
   bytes?: number;
+  /** For 'files': the link is the one app.json written out after the `#`, key by key, not packed */
+  readable?: boolean;
   /** For 'gh': github.com/<owner>/<repo>[, <path>]; for 'gist': gist.github.com/<id> */
   repo?: string;
   /** Does tabcomputer ask the person who opens the link before it installs? (No only for an app the site ships.) */
   asks: boolean;
+}
+
+/**
+ * A one-file app as an address a person can read: `#name=…&run=…`, the keys
+ * of its app.json. Null when the app has something those keys cannot say,
+ * when the pairs would not read back as the same app, or when the address
+ * would be longer than READABLE_MAX. `id`: the id the copy must get.
+ */
+export function readableAppUrl(manifestBytes: Uint8Array, id: string, origin: string): string | null {
+  let raw: Record<string, unknown>;
+  let want: AppManifest;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes).replace(/^﻿/, ''));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    raw = { ...(parsed as Record<string, unknown>) };
+    want = validateManifest(raw, { id });
+  } catch { return null; }
+  if (want.kind === 'page') return null;
+  // The format's own number says nothing a reader needs; the id is named only where the name would give another
+  if (raw.manifest === MANIFEST_VERSION) delete raw.manifest;
+  if (raw.id === undefined && idFromName(want.name) !== id) raw.id = id;
+  const pairs = pairsFromManifest(raw);
+  if (!pairs) return null;
+  const back = manifestFromPairs(pairs);
+  if (back.problems.length) return null;
+  try { if (JSON.stringify(validateManifest(back.raw)) !== JSON.stringify(want)) return null; } catch { return null; }
+  const url = `${origin}/#${appFragment(pairs)}`;
+  return url.length <= READABLE_MAX ? url : null;
 }
 
 /** The link for an installed app. `origin` is the site's (not a guest's). */
@@ -173,6 +209,8 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
   if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE} in ${app.dir}`);
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
+  const readable = files.size === 1 ? readableAppUrl(files.get(MANIFEST_FILE)!, app.id, origin) : null;
+  if (readable) return { ...base, kind: 'files', url: readable, files: 1, bytes, readable: true, asks: true };
   let named = false;
   try { named = typeof JSON.parse(new TextDecoder().decode(files.get(MANIFEST_FILE)!)).id === 'string'; } catch { /* not valid: the person who opens the link is told */ }
   const payload = await packApp(files, named ? undefined : app.id);
@@ -196,7 +234,10 @@ export function shareStatement(s: AppShare): { promise: string[]; details: strin
     'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.',
   ];
   const details: string[] = [];
-  if (s.kind === 'files') {
+  if (s.kind === 'files' && s.readable) {
+    details.push(`The link is ${s.name} itself: its app.json is written after the #, key by key. The link is not stored on a server.`);
+    details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
+  } else if (s.kind === 'files') {
     details.push(`The link holds the app's files (${s.files} ${s.files === 1 ? 'file' : 'files'}, ${size(s.bytes ?? 0)}). The files are in the link itself and are not stored on a server.`);
     details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
   } else if (s.kind === 'gh' || s.kind === 'gist') {

@@ -28,9 +28,16 @@
  * A `gh:` script is fetched as a visitor; `deps.github` (src/github-needed.ts)
  * fetches it again with the tab's GitHub sign-in when a visitor is refused.
  *
- * This module has no DOM and no imports: main.ts loads it only when the
- * address has `run`, and the tests drive it with stand-ins.
+ * The part of an address after `#` can be a run link too (src/link-fragment.ts,
+ * docs/RUN_LINKS.md "After the #"): commands written there are shown whole in
+ * the same window, then run in a new Terminal in the home folder, in that
+ * Terminal's own shell, as if they were typed. `#gist:` is `?run=gist:` or
+ * `?app=gist:`, by what the gist holds.
+ *
+ * This module has no DOM: main.ts loads it only when the address has a link,
+ * and the tests drive it with stand-ins.
  */
+import { FragmentError, parseFragment, unpackCommands, type FragmentLink } from './link-fragment';
 
 /** Query parameters that are the page's own: never arguments, and left in the address */
 export const PAGE_PARAMS = new Set(['run', 'app', 'become', 'safe', 'ui', 'profile', 'reload', 'hotswap', 'watchdog', 'demo', 'unbecome', 'apps', 'guest', 'nonet']);
@@ -68,6 +75,11 @@ export interface ParsedRun {
   target: RunTarget;
   /** Every other parameter that isn't the page's own, lower-cased name → value (first wins) */
   params: Record<string, string>;
+  /**
+   * Commands from the part after `#`: they run in the home folder, in the
+   * Terminal's own shell (a `cd` or an `export` stays), as if they were typed.
+   */
+  lines?: boolean;
 }
 
 /** A link that must not run, and why (shown to the person, so no text from the link) */
@@ -160,6 +172,65 @@ export function parseRunUrl(search: string): ParsedRun | null {
     params[key] = v;
   }
   return { target, params };
+}
+
+/**
+ * The run link in the part of an address after `#`: commands, or a gzipped
+ * script (`#gz:`). Null for anything else there (an app, a gist, nothing).
+ */
+export async function parseRunFragment(hash: string): Promise<ParsedRun | null> {
+  try {
+    const link = parseFragment(hash);
+    if (!link || (link.kind !== 'commands' && link.kind !== 'packed-commands')) return null;
+    const bytes = link.kind === 'commands' ? new TextEncoder().encode(link.text) : await unpackCommands(link.payload, SCRIPT_MAX);
+    if (bytes.length > SCRIPT_MAX) throw new RunLinkError('the commands are too long for a link');
+    return { target: { kind: 'sh', name: 'sh', bytes }, params: {}, lines: true };
+  } catch (e) {
+    if (e instanceof FragmentError) throw new RunLinkError(e.message);
+    throw e;
+  }
+}
+
+/** A fetch that asks for `url` once: a later call gets a copy of the first answer (a gist's listing says what the link is, and is then read) */
+export function fetchOnce(fetchFn: Fetch, url: string): Fetch {
+  const kept = new Map<string, Promise<Response>>();
+  return (u, init) => {
+    if (u !== url) return fetchFn(u, init);
+    const key = (init?.headers as Record<string, string> | undefined)?.authorization ? 'signed in' : 'visitor';
+    let first = kept.get(key);
+    if (!first) {
+      first = fetchFn(u, init);
+      kept.set(key, first);
+      first.catch(() => kept.delete(key));
+    }
+    return first.then((r) => r.clone());
+  };
+}
+
+/**
+ * What `#gist:ID` opens, as the query of the link it stands for: an app when
+ * the gist holds an `app.json` (`?app=gist:…`), else its first script
+ * (`?run=gist:…`: the first file named `.sh`, else the first file). One
+ * request to GitHub's API; only names are taken from its answer.
+ */
+export async function gistFragmentQuery(g: Extract<FragmentLink, { kind: 'gist' }>, fetchFn: Fetch): Promise<{ app: string } | { run: string }> {
+  if (!GIST_ID.test(g.id) || (g.user && !GH_OWNER.test(g.user))) throw new RunLinkError('a gist link is #gist:ID or #gist:USER/ID');
+  const spec = `${g.user ? g.user + '/' : ''}${g.id}`;
+  // (a file named in the link: that file is the script, whatever else the gist holds)
+  if (g.file) return { run: `?run=gist:${spec}/${g.file}` };
+  const where = `gist.github.com/${spec}`;
+  const bytes = await fetchRaw(`https://api.github.com/gists/${g.id}`, fetchFn, 16 << 20, where, `${where} does not exist`);
+  let gist: { owner?: { login?: unknown }; files?: unknown };
+  try { gist = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new RunLinkError(`could not read ${where}`); }
+  const names = gist?.files && typeof gist.files === 'object' && !Array.isArray(gist.files) ? Object.keys(gist.files) : [];
+  if (!names.length) throw new RunLinkError(`${where} holds no files`);
+  const login = typeof gist.owner?.login === 'string' && GH_OWNER.test(gist.owner.login) ? gist.owner.login : '';
+  if (g.user && login.toLowerCase() !== g.user.toLowerCase()) throw new RunLinkError(`${where} is not a gist of that account`);
+  if (names.includes('app.json')) return { app: `?app=gist:${spec}` };
+  const file = names.find((n) => /\.(sh|bash)$/.test(n)) ?? names[0];
+  if (!login) throw new RunLinkError(`${where} has no owner to fetch it from`);
+  if (!GH_SEGMENT.test(file) || file === '.' || file === '..') throw new RunLinkError(`${where} holds no app.json, and the name of its first file is not one a link can use`);
+  return { run: `?run=gist:${login}/${g.id}/${file}` };
 }
 
 /** The address without the link: `run`, `app` (and its `become`) and every parameter that isn't the page's own. */
@@ -386,6 +457,8 @@ export interface StartOptions {
   /** The script already finished here: only its on-open line runs */
   done: boolean;
   ignored: string[];
+  /** Commands from the part after `#`: sourced in the Terminal's own shell, where the Terminal is (the home folder) */
+  lines?: boolean;
 }
 
 /** The marker a finished script leaves in its directory */
@@ -398,6 +471,26 @@ export const doneMarker = (sha256: string): string => `.done-${sha256.slice(0, 1
  * then the on-open line in the Terminal's own shell (its `cd` stays).
  */
 export function startScript(o: StartOptions): string {
+  if (o.lines) {
+    const store = `~/run/${o.name}`;
+    const lines = ['# Written by a link (docs/RUN_LINKS.md "After the #"); the Terminal it opened sources this file.'];
+    if (o.done) lines.push(`echo ${shq(`The commands of this link already ran here. To run them again: . ${store}/${SCRIPT_FILE}`)}`);
+    else {
+      lines.push(
+        `. ${store}/${SCRIPT_FILE}`,
+        '__run_status=$?',
+        'if [ "$__run_status" -ne 0 ]; then',
+        `  echo "link: the last command stopped with status $__run_status. To run the commands again: . ${store}/${SCRIPT_FILE}"`,
+        '  unset __run_status',
+        '  return 1',
+        'fi',
+        'unset __run_status',
+        `touch ${store}/${doneMarker(o.sha256)}`,
+      );
+    }
+    if (o.onOpen) lines.push(o.onOpen);
+    return lines.join('\n') + '\n';
+  }
   const what = `${o.curated ? 'recipe' : 'script'} ${o.name} (${plain(o.from)})`;
   const lines = ['# Written by a run link (docs/RUN_LINKS.md); the Terminal it opened sources this file.', `cd ~/run/${o.name} || return 1`];
   lines.push(`echo ${shq(o.done ? `${what} is already set up here` : `running ${what}`)}`);
@@ -447,6 +540,8 @@ export interface RunPromptWording {
 
 export interface RunLinkDeps {
   search: string;
+  /** The part of the address after `#`, when the link is written there (src/link-fragment.ts) */
+  hash?: string;
   origin: string;
   home: string;
   /** The page is inside another page's frame */
@@ -541,32 +636,52 @@ async function handleLabLink(target: Extract<RunTarget, { kind: 'lab' }>, params
   return cloned ? 'on-open' : 'ran';
 }
 
+/** The prompt's words for commands written in the address */
+const LINES_WORDING: RunPromptWording = {
+  window: 'Run link',
+  title: 'Run these commands?',
+  warn: 'They run as you, in this tab: they can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run them only if you trust whoever sent the link.',
+  where: 'They run in a new Terminal, in your home folder.',
+  box: 'The commands',
+  action: 'Run',
+};
+
 /** Handle the page's run link, if it has one. Never throws. */
 export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
   let parsed: ParsedRun | null;
   try {
-    try { parsed = parseRunUrl(deps.search); } finally { if (new URLSearchParams(deps.search).has('run')) deps.cleanUrl(); }
+    // The link leaves the address before anything else happens
+    try { parsed = parseRunUrl(deps.search); } finally { if (new URLSearchParams(deps.search).has('run') || deps.hash) deps.cleanUrl(); }
+    if (!parsed && deps.hash) parsed = await parseRunFragment(deps.hash);
     await deps.ready?.();
     if (!parsed) return 'none';
     if (deps.framed) throw new RunLinkError('run links are ignored inside a frame; open the link in its own tab');
     if (parsed.target.kind === 'lab') return await handleLabLink(parsed.target, parsed.params, deps);
     const target = parsed.target;
+    const lines = !!parsed.lines;
     const script = target.kind === 'gh' && deps.github
       ? await deps.github(`gh:${target.owner}/${target.repo}`, (token) => loadScript(target, deps.origin, deps.fetch, token))
       : await loadScript(target, deps.origin, deps.fetch);
     const { env, ignored } = runEnv(parsed.params, script.header);
+    // Where the script and its marker are kept. Commands from the address run in the home folder
     const dir = `${deps.home}/run/${script.name}`;
+    const cwd = lines ? deps.home : dir;
     const done = await deps.fs.exists(`${dir}/${doneMarker(script.sha256)}`);
     const onOpen = script.header['on-open'];
-    if (!script.curated) {
-      const ok = await deps.confirm({ name: script.name, from: script.from, script: script.text, env, ignored, dir, onOpenOnly: done ? onOpen ?? '' : undefined });
+    // Commands that already ran here and have no on-open line: nothing runs now, so there is nothing to ask
+    const nothingRuns = lines && done && !onOpen;
+    if (!script.curated && !nothingRuns) {
+      const ok = await deps.confirm({
+        name: script.name, from: script.from, script: script.text, env, ignored, dir: cwd, onOpenOnly: done ? onOpen ?? '' : undefined,
+        ...(lines ? { wording: { ...LINES_WORDING, ...(done ? { where: `They already ran here. Run only does their on-open line: ${plain(onOpen ?? '', 200)}` } : {}) } } : {}),
+      });
       if (!ok) return 'cancelled';
     }
     await deps.fs.mkdir(dir, { recursive: true });
     await deps.fs.writeFile(`${dir}/${SCRIPT_FILE}`, script.text);
-    await deps.fs.writeFile(`${dir}/${START_FILE}`, startScript({ name: script.name, curated: script.curated, from: script.from, sha256: script.sha256, onOpen, done, ignored }));
+    await deps.fs.writeFile(`${dir}/${START_FILE}`, startScript({ name: script.name, curated: script.curated, from: script.from, sha256: script.sha256, onOpen, done, ignored, lines }));
     // The name is [a-z0-9-] (parseRunUrl, loadScript), so this line needs no quoting
-    deps.openTerminal({ cwd: dir, command: `. ~/run/${script.name}/${START_FILE}`, env, title: script.curated ? plain(script.header.title ?? script.name, 60) : script.name });
+    deps.openTerminal({ cwd, command: `. ~/run/${script.name}/${START_FILE}`, env, title: lines ? 'From a link' : script.curated ? plain(script.header.title ?? script.name, 60) : script.name });
     return done ? 'on-open' : 'ran';
   } catch (e) {
     await deps.ready?.().catch(() => {});

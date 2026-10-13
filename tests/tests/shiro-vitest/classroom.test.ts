@@ -172,14 +172,14 @@ describe('the lab: form of a run link', () => {
 describe('.tabcomputer/lab.json', () => {
   it('reads the toolchains and the two commands', () => {
     expect(parseLabConfig('{"lab":1,"name":"Lab 3","toolchains":["python","c","c"],"run":" python3 main.py ","test":"python3 -m unittest"}'))
-      .toEqual({ config: { name: 'Lab 3', toolchains: ['python', 'c'], run: 'python3 main.py', test: 'python3 -m unittest' }, problems: [] });
-    expect(parseLabConfig('{"lab":1}').config).toEqual({ name: '', toolchains: [], run: '', test: '' });
+      .toEqual({ config: { name: 'Lab 3', toolchains: ['python', 'c'], run: 'python3 main.py', test: 'python3 -m unittest', notebook: '' }, problems: [] });
+    expect(parseLabConfig('{"lab":1}').config).toEqual({ name: '', toolchains: [], run: '', test: '', notebook: '' });
   });
 
   it('reports every problem by key and gives no config', () => {
     const r = parseLabConfig(JSON.stringify({ lab: 2, toolchain: 'python', toolchains: ['Py thon'], run: 'a\nb', test: 7 }));
     expect(r.config).toBeNull();
-    expect(r.problems.join('\n')).toMatch(/unknown key toolchain \(known: lab, name, toolchains, run, test\)/);
+    expect(r.problems.join('\n')).toMatch(/unknown key toolchain \(known: lab, name, toolchains, run, test, notebook\)/);
     expect(r.problems.join('\n')).toMatch(/lab is 2: this build reads format 1/);
     expect(r.problems.join('\n')).toMatch(/toolchains has a name that is not a toolchain id/);
     expect(r.problems.join('\n')).toMatch(/run must be one line/);
@@ -209,6 +209,33 @@ describe('lab open', () => {
     expect((await run(shell, 'lab open ann/pub')).exitCode).toBe(0);
     expect(gh.calls.length).toBe(before);
     expect(shell.cwd).toBe(`${HOME}/src/pub`);
+  });
+
+  it('opens the notebook the config names, in the Notebook app', async () => {
+    const { jupyterCmd } = await import('@shiro/commands/jupyter');
+    shell.commands.register(jupyterCmd);
+    const opened: [string, unknown][] = [];
+    const g = globalThis as { __shiroDesktop?: unknown };
+    g.__shiroDesktop = { windows: () => [], apps: () => [{ id: 'notebook' }], openApp: async (id: string, args: unknown) => { opened.push([id, args]); return null; } };
+    try {
+      gh = fakeGitHub('ann', 'nb');
+      await publish(gh, { 'labs/lab3.ipynb': '{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}\n', [LAB_CONFIG_PATH]: JSON.stringify({ lab: 1, notebook: 'labs/lab3.ipynb' }) });
+      globalThis.fetch = gh.fetch;
+      const r = await run(shell, 'lab open ann/nb');
+      expect(r.exitCode, r.output).toBe(0);
+      expect(opened).toEqual([['notebook', { path: `${HOME}/src/nb/labs/lab3.ipynb` }]]);
+      expect(r.output).toContain('The notebook labs/lab3.ipynb is open in the Notebook app.');
+      // A config that names a notebook the repository does not have says so, and the lab still opens
+      gh = fakeGitHub('ann', 'nb2');
+      await publish(gh, { 'main.py': '\n', [LAB_CONFIG_PATH]: JSON.stringify({ lab: 1, notebook: 'gone.ipynb' }) });
+      globalThis.fetch = gh.fetch;
+      const r2 = await run(shell, 'lab open ann/nb2');
+      expect(r2.exitCode, r2.output).toBe(0);
+      expect(r2.output).toContain('lab.json names the notebook gone.ipynb, which is not in the repository.');
+      expect(opened).toHaveLength(1);
+    } finally {
+      delete g.__shiroDesktop;
+    }
   });
 
   it('signs in for a private repository, then clones it', async () => {

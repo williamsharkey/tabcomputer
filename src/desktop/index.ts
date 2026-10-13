@@ -274,7 +274,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   })();
 
   // ── Apps ──
-  const lazy = (load: () => Promise<{ open: (ctx: AppContext, args?: Record<string, unknown>) => DesktopWindow | null }>) =>
+  const lazy = (load: () => Promise<{ open: (ctx: AppContext, args?: Record<string, unknown>) => DesktopWindow | null | Promise<DesktopWindow | null> }>) =>
     async (args?: Record<string, unknown>) => (await load()).open(ctx, args);
   const focusOrLaunch = (appId: string, launch: (args?: Record<string, unknown>) => Promise<DesktopWindow | null> | DesktopWindow | null) =>
     (args?: Record<string, unknown>) => {
@@ -287,6 +287,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'files', name: 'Files', icon: ICONS.files, order: 1, launch: lazy(() => import('./apps/files')) },
     { id: 'settings', name: 'Settings', icon: ICONS.settings, order: 2, group: 'system', launch: focusOrLaunch('settings', lazy(() => import('./apps/settings'))) },
     { id: 'browser', name: 'Browser', icon: ICONS.browser, order: 4, launch: focusOrLaunch('browser', lazy(() => import('./apps/browser'))) },
+    // Jupyter notebooks (docs/NOTEBOOK.md): `jupyter notebook`, a .ipynb opened in Files or Code, a lab's notebook
+    { id: 'notebook', name: 'Notebook', icon: ICONS.notebook, glyph: 'M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7zM7 3.5v17M4.5 8h2.5M4.5 12h2.5M4.5 16h2.5M10.5 9h4.5M10.5 13h4.5', order: 5, launch: lazy(() => import('./apps/notebook')) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network

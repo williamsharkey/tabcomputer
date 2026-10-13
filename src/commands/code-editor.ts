@@ -306,6 +306,8 @@ window.__lab.saveAll = () => {
 };
 
 async function openFile(path) {
+  // A notebook opens in the Notebook app, not as its JSON
+  if (path.slice(-6).toLowerCase() === '.ipynb') { window.parent.postMessage({ type: 'shiro-editor-open-notebook', path: path }, '*'); return; }
   if (!openFiles.has(path)) {
     const f = FILES.find(f => f.path === path);
     if (!f) return;
@@ -447,6 +449,13 @@ export const codeEditorCmd: Command = {
     const target = ctx.args[0] || '.';
     const resolved = ctx.fs.resolvePath(target, ctx.cwd);
 
+    // A notebook opens in the Notebook app (docs/NOTEBOOK.md)
+    const notebooks = (globalThis as { __shiroDesktop?: { openApp?(id: string, args?: Record<string, unknown>): Promise<unknown>; apps?(): { id: string }[] } }).__shiroDesktop;
+    if (/\.ipynb$/i.test(resolved) && notebooks?.openApp && notebooks.apps?.().some((a) => a.id === 'notebook')) {
+      await notebooks.openApp('notebook', { path: resolved });
+      return 0;
+    }
+
     // Collect files to open
     const files: { path: string; content: string; language: string }[] = [];
 
@@ -533,6 +542,8 @@ export const codeEditorCmd: Command = {
           saving = saving.then(async () => {
             try { await ctx.fs.writeFile(await savePathFor(path), content); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
           });
+        } else if (e.data.type === 'shiro-editor-open-notebook' && typeof e.data.path === 'string') {
+          void savePathFor(e.data.path).then((p) => notebooks?.openApp?.('notebook', { path: p }));
         } else lab?.message(e.data);
       };
       window.addEventListener('message', onMessage);

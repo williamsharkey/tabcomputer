@@ -231,6 +231,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   async function openFile(path: string): Promise<void> {
     const ext = path.split('.').pop()?.toLowerCase() ?? '';
     const name = path.split('/').pop() || path;
+    // A notebook opens in the Notebook app
+    if (ext === 'ipynb') { await wm.openApp('notebook', { path }); return; }
     if (IMAGE_EXT[ext]) {
       const data = await fs.readFile(path) as Uint8Array;
       const url = URL.createObjectURL(new Blob([data.slice()], { type: IMAGE_EXT[ext] }));

@@ -102,7 +102,16 @@ export const labCmd: Command = {
         const opened = desk?.windows().find((w) => w.appId === 'code' && w.codeDir === dir);
         if (desk && !desk.compact && mine && opened) { opened.snap?.('left'); mine.snap?.('right'); }
       }
-      out(`${full} is open in ${tilde(dir)}.${lab?.config ? ' Run, Test and Submit are at the top of the Code app. Submit sends the work to GitHub.' : ''}\n`);
+      // The lab's notebook, in the Notebook app (docs/NOTEBOOK.md), in front of the editor
+      let notebookNote = '';
+      const notebook = lab?.config?.notebook;
+      if (notebook && lab) {
+        const path = `${lab.dir}/${notebook}`;
+        if (!(await ctx.fs.exists(path).catch(() => false))) err(`lab: ${LAB_CONFIG_PATH} names the notebook ${notebook}, which is not in the repository.\n`);
+        else if (desk && await sh(`jupyter notebook ${shq(path)}`) === 0) notebookNote = ` The notebook ${notebook} is open in the Notebook app.`;
+        else if (!desk) notebookNote = ` Run the notebook with: jupyter execute ${notebook}`;
+      }
+      out(`${full} is open in ${tilde(dir)}.${lab?.config ? ' Run, Test and Submit are at the top of the Code app. Submit sends the work to GitHub.' : ''}${notebookNote}\n`);
       return 0;
     }
 

@@ -37,6 +37,11 @@ export const ICONS: Record<string, string> = {
     `<rect x="13" y="19" width="30" height="5" rx="2.5" fill="#5be08e"/>` +
     `<rect x="13" y="29" width="38" height="5" rx="2.5" fill="#ffd25e"/>` +
     `<rect x="13" y="39" width="20" height="5" rx="2.5" fill="#ff7a7a"/>`),
+  notebook: tile('nb', '#ffb057', '#e0662a',
+    `<rect x="17" y="13" width="31" height="38" rx="4" fill="#fff8ee"/>` +
+    `<path d="M24 13v38" stroke="#f0c9a0" stroke-width="2.5"/>` +
+    `<path d="M29.5 23h12M29.5 30h12M29.5 37h7" stroke="#d9732e" stroke-width="3" stroke-linecap="round"/>` +
+    `<path d="M13.5 21h6M13.5 32h6M13.5 43h6" stroke="#fff8ee" stroke-width="3" stroke-linecap="round"/>`),
   python3: tile('py', '#3d7ccf', '#21497f', mono('py', 22, '#ffe27a', 40)),
   emacs: tile('emacs', '#8d5fd3', '#4c2b8a', mono('e', 30, '#fff', 42)),
   neovim: tile('nvim', '#5fae54', '#2a6b3e', mono('nv', 22, '#e9fff0', 40)),

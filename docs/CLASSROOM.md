@@ -18,6 +18,7 @@ It is a [run link](RUN_LINKS.md) and follows their rules: the address is cleaned
 2. It clones into `~/src/REPO` (`~/src/OWNER/REPO` when that name holds something else).
 3. It installs the toolchains the config names that are missing (`toolchain install`).
 4. It opens the Code app on the folder, beside the Terminal, and leaves the Terminal in the folder.
+5. If the config names a notebook, it opens that notebook in the Notebook app.
 
 The first time, a window asks first ("Open OWNER/REPO?", with what opening does, Open and Cancel). Nothing from the repository runs by opening it; its `run` and `test` commands run when the student presses the buttons. A folder that is already a clone of that repository opens without the question: nothing is fetched. `lab open` does every step only if it is needed, so the same link is how a student comes back.
 
@@ -31,7 +32,8 @@ The first time, a window asks first ("Open OWNER/REPO?", with what opening does,
   "name": "Lab 3: loops",
   "toolchains": ["python"],
   "run": "python3 main.py",
-  "test": "python3 -m unittest -q"
+  "test": "python3 -m unittest -q",
+  "notebook": "lab3.ipynb"
 }
 ```
 
@@ -42,6 +44,7 @@ The first time, a window asks first ("Open OWNER/REPO?", with what opening does,
 | `toolchains` | Sets `toolchain install` applies when the lab opens (`toolchain list` shows the ids). At most 8. The built-in `python3` and `node` need none. |
 | `run` | A shell line, run in the config's folder in a Terminal. |
 | `test` | The same, for the teacher's tests. |
+| `notebook` | A Jupyter notebook in the repository (a path from the config's folder, ending in `.ipynb`). The lab link opens it in the Notebook app ([NOTEBOOK.md](NOTEBOOK.md)), in front of the Code app. It needs no toolchain. A notebook the repository does not have is said in the Terminal, and the lab still opens. |
 
 Validation is strict, like `app.json`'s: an unknown key, a wrong type, a command with a line break or an invisible character is an error, each reported by its key (`lab check` prints them). A file with a problem gives no buttons and the Code app shows the problem.
 

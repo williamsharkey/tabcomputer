@@ -282,7 +282,8 @@ describe('app command', () => {
     const dir = await makeApp('tools', { toolchains: ['c', 'python'], files: ['~/ToolsOut/'] });
     const r = await app(`install ${dir}`);
     expect(r.exitCode, r.output).toBe(0);
-    expect(r.output).toContain('Installing c…');
+    // the stage is a sentence for the person (src/apps/progress.ts); the installer's lines follow
+    expect(r.output).toContain('TOOLS needs some programs. They are being downloaded. This happens once.');
     expect(r.output).toContain('unpacking python');
     expect(installed).toEqual(['c', 'python']);
     expect(await fs.exists(`${HOME}/ToolsOut`)).toBe(true);

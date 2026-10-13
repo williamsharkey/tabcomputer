@@ -21,6 +21,7 @@
  * No DOM here. The desktop supplies `HostDeps`; tests supply stand-ins.
  */
 import type { AppManifest } from './manifest';
+import { firstInstallText, plainInstallLine } from './progress';
 import { expandHome } from './manifest';
 import { AccessError, pagePath, resolveAllowed, safeRelPath, type AccessRoot } from './access';
 
@@ -290,8 +291,10 @@ export class AppHost {
         const installed: string[] = [];
         for (const set of sets) {
           if (have[set]) continue;
-          send('progress', { set, line: `Installing ${set}…` });
-          const code = await this.deps.toolchains.install(set, (line) => send('progress', { set, line }));
+          // `text` is the sentence for a person (progress.ts); `line` is the installer's own output
+          let text = firstInstallText(manifest.name);
+          send('progress', { set, line: `Installing ${set}…`, text });
+          const code = await this.deps.toolchains.install(set, (line) => { text = plainInstallLine(line) ?? text; send('progress', { set, line, text }); });
           if (code !== 0) throw new AccessError('EIO', `toolchain install ${set} failed (exit ${code})`);
           installed.push(set);
         }

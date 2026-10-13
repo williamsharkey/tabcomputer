@@ -17,6 +17,7 @@ import type { Shell } from '../shell';
 import { ShiroTerminal } from '../terminal';
 import type { Kernel } from '../kernel/kernel';
 import { WindowManager, compactViewport, isDesktopShortcut, type DockGroup, type AppDescriptor, type DesktopWindow, type MenuSpec, type MenuItem, type Geometry } from './wm';
+import { registerShippedApps } from '../apps/shipped';
 import { ICONS, GLYPHS, appIcon } from './icons';
 import { TerminalView, takeParkedMain, hasParkedMain, applyTerminalTheme, useMonoFont, allTerminalViews, terminalTheme, TERMINAL_FONT } from './terminal-app';
 import { initNetwork } from './network';
@@ -355,12 +356,21 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   hold(refreshTools());
   // Installed apps (docs/APPS.md): their dock entries come from the registry's names and icons.
   // The toolkit (src/apps/) loads only when something is installed.
-  hold(deps.fs.exists('/var/lib/tabcomputer/apps.json').then(async (any) => {
-    if (!any) return;
-    const [runtime, win] = await Promise.all([import('../apps/runtime'), import('../apps/window')]);
+  const appsCore = async () => {
+    const runtime = await import('../apps/runtime');
     try { runtime.appsDeps(); } catch { runtime.configureApps({ fs: deps.fs, shell: deps.shell }); }
-    await win.registerInstalledApps();
-  }));
+  };
+  hold(deps.fs.exists('/var/lib/tabcomputer/apps.json').then(async (any) => {
+    if (any) {
+      await appsCore();
+      await (await import('../apps/window')).registerInstalledApps();
+    }
+    // The apps this site ships (shipped.ts) have an entry before they are installed: the first click installs
+    registerShippedApps(wm, async (app, launch) => {
+      await appsCore();
+      return (await import('../apps/install')).openShipped(app.id, launch);
+    });
+  }).catch((e) => console.warn('[apps] dock entries', e)));
   // pkg, npm -g and the install scripts write executables into TOOL_PATH (debounced: an install writes many files)
   let toolTimer: ReturnType<typeof setTimeout> | null = null;
   deps.fs.onChange((_ev, path) => {

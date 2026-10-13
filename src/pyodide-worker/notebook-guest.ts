@@ -155,6 +155,12 @@ export async function runNotebookKernel(py: any, start: NotebookStart, cwd: stri
     } else if (m?.t === 'exec') {
       await load(m.packages, m.code);
       let result = { status: 'error', count: 0 };
+      // A cell that waits in an await runs no Python, so Python does not see an interrupt: cancel its task
+      const watch = setInterval(() => {
+        if (!io.interrupted()) return;
+        io.clearInterrupt();
+        try { nb.cancel_current(); } catch { /* the cell ended meanwhile */ }
+      }, 100);
       try {
         // (Stop pressed while the packages were loading: the cell does not start)
         if (io.interrupted()) throw new Error('KeyboardInterrupt');
@@ -164,6 +170,7 @@ export async function runNotebookKernel(py: any, start: NotebookStart, cwd: stri
         const text = String(e?.message ?? e).trimEnd();
         send({ t: 'error', ename: 'KernelError', evalue: text.split('\n').pop() ?? '', traceback: text.split('\n') });
       }
+      clearInterval(watch);
       io.clearInterrupt();
       send({ t: 'done', id: m.id, ...result });
     }

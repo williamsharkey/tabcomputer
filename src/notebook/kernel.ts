@@ -158,6 +158,16 @@ export function kernelUnavailable(): string {
   return pyodideWorkerMode() ? '' : 'Cells cannot run on this page: the browser did not give it shared memory. The notebook can be read and edited.';
 }
 
+/**
+ * Every Python that is up. They end when the page goes away: a reload with one
+ * still waiting in a syscall crashed the tab in Chrome (tests/browser/notebook.mjs
+ * reloads with a notebook open).
+ */
+const live = new Set<NotebookKernel>();
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pagehide', () => { for (const k of [...live]) k.shutdown(); });
+}
+
 export class NotebookKernel {
   state: KernelState = 'dead';
   /** What it is waiting for, as a short sentence ('' when nothing) */
@@ -228,9 +238,11 @@ export class NotebookKernel {
         fds: { 0: new BufferFile('', A.O_RDONLY), 1: stream('stdout'), 2: stream('stderr'), 3: ctl },
       });
       this.proc = proc;
+      live.add(this);
       void proc.wait().then(() => {
         void kernel.waitpid(proc.pid, A.WNOHANG).catch(() => {});
         if (this.proc !== proc) return;
+        live.delete(this);
         this.proc = null;
         this.ctl = null;
         failed(new Error(this.lastError.trim() || 'The Python process stopped.'));
@@ -378,6 +390,7 @@ export class NotebookKernel {
     this.ctl = null;
     this.current = null;
     this.generation++;
+    live.delete(this);
     this.fail?.(new Error('The Python process was stopped.'));
     this.fail = null;
     cur?.abort.abort();

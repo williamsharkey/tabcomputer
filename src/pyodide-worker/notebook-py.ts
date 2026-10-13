@@ -850,6 +850,9 @@ def _format_error(e, seen):
         lines += _format_error(context, seen) + ["\nDuring handling of the above exception, another exception occurred:\n\n"]
     # (the frames of this file are the kernel's, not the notebook's)
     frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename != __file__]
+    if isinstance(e, SyntaxError) and not any(f.filename.startswith("<") for f in frames):
+        # (the cell did not compile: the compiler's own frames say nothing about it)
+        frames = []
     if frames:
         lines += ["Traceback (most recent call last):\n"] + traceback.format_list(frames)
     return lines + traceback.format_exception_only(type(e), e)
@@ -860,8 +863,22 @@ def _error(e):
     _send({"t": "error", "ename": type(e).__name__, "evalue": str(e), "traceback": text.split("\n")})
 
 
+_task = None
+
+
+def cancel_current():
+    """Stop pressed while the cell waits in an await: Python is not running, so nothing sees the interrupt."""
+    if _task is not None and not _task.done():
+        _task.cancel()
+
+
 async def run_cell(source):
-    global _count
+    global _count, _task
+    import asyncio
+    try:
+        _task = asyncio.current_task()
+    except RuntimeError:
+        _task = None
     _count += 1
     n = _count
     _shell.execution_count = n
@@ -885,6 +902,9 @@ async def run_cell(source):
         except UsageError as e:
             _flush()
             print("UsageError: %s" % e, file=sys.stderr)
+            status = "error"
+        except asyncio.CancelledError as e:
+            _error(KeyboardInterrupt().with_traceback(e.__traceback__))
             status = "error"
         except BaseException as e:
             _error(e)

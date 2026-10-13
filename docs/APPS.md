@@ -88,13 +88,17 @@ A **files** app (it has `run` with `{in}`):
 | Key | Meaning | Default |
 | --- | --- | --- |
 | `run` | The command. `{in}` is the input file, `{out}` the result file, `{name}` the input's name without its extension, `{ext}` its extension, `{dir}` the folder the result goes to, and `{option}` each of `options`. Without `{out}` the command's standard output is the result. | required |
-| `out` | The result's name, from `{name}` and `{ext}`. | the input's name |
+| `out` | The result's name, from `{name}` and `{ext}`. | the input's name; when the result is another kind of file than the input, with the extension of what it is (below) |
 | `accept` | Extensions taken (`".pdf"`). The picker offers them; another file gets a row that says why it was skipped. | every file |
 | `options` | Named choices and switches shown above the files: `"quality": { "label": "Quality", "choices": { "Small": "/ebook", "Print": "/printer" } }` fills `{quality}` with the choice's value; `"gray": { "label": "Gray", "on": "-g" }` is a box that fills `{gray}` with `-g` when ticked. | none |
 | `each` | `false`: the command runs once, and `{in}` is every file (merge these PDFs). `out` is then required. | `true` |
 | `shell` | `true`: `run` is a shell line (pipes, redirects). | `false` |
 
-The page: "Drop files or a folder here" with "Choose files" and "Choose a folder"; on a touch screen only "Choose files", since there is nothing to drag and a phone's browser picks no folders. One row per file with its state (waiting, working, done, failed, skipped), and on failure the program's own last line. "Download all" is a zip; each result downloads alone. A dropped folder's structure is kept in the results. Two inputs that would get one name get two (`page.pdf`, `page (2).pdf`, tabcomputer#140). Two files run at a time. Inputs and results live in the app's data folder (`in/`, `out/`) until the page is next opened. The page says "Your files stay on this computer.": the page uploads nothing, and what the program does with them is the program's.
+The page: "Drop files or a folder here" with "Choose files" and "Choose a folder"; on a touch screen only "Choose files", since there is nothing to drag and a phone's browser picks no folders. One row per file with its state (waiting, working, done, failed, stopped, skipped). While a file is worked on its row shows the program's own last line, as it writes them, and on failure that line stays. A program whose result is its standard output says its progress on stderr; the tab sends that to a file of its own and reads it at most four times a second, and once more after the last change, so one line followed by a minute of work is shown for that minute (`job` in `src/apps/host.ts`). A program that is part of the page (`sed`, `jq`, a `sh -c` loop) gives its stderr when it ends unless the command names `{out}`. The line above the rows counts ("3 of 12 done."), and so does the window's title ("Make scans searchable — 3 of 12"), for when the window is behind another. Stop is there while anything is left: it ends the files being worked on and starts no more. Each result downloads alone; two or more also get "Download all (.zip)". A dropped folder's structure is kept in the results. Two inputs that would get one name get two (`page.pdf`, `page (2).pdf`, tabcomputer#140). Two files run at a time. Inputs and results live in the app's data folder (`in/`, `out/`) until the page is next opened.
+
+**A result without `out` is named for what it is.** An author who writes `"run": "tesseract {in} stdout pdf"` and no `out` would get a PDF named `p.png`, which does not open. So the tab looks at the first bytes of the result and of the input (`sniffKind` in `declare.ts`: PDF, PNG, JPEG, GIF, zip and the office files that are zips, gzip, and for text JSON, HTML, SVG or plain text). When the result is another kind of file than the input, it gets that kind's extension: `p.pdf`, and the row says "Saved as p.pdf". When it is the same kind, it keeps the input's name whatever its extension (`list.csv` through `sed` stays `list.csv`). With `out` the author's name stands.
+
+**What the page says about the files.** The page uploads nothing, but the program in `run` is an ordinary program. So the page of an app this site ships says "Your files stay on this computer.", which the site can answer for, and the page of any other app says only what is true of every program: "Your files are worked on in this tab." (`tab.app.reviewed`). The install prompt says what the program can touch.
 
 A **form** app (it has `fields`):
 
@@ -107,7 +111,11 @@ A **form** app (it has `fields`):
 | `live` | `true`: it runs when it opens and again as the person types, a quarter of a second after the last key. | `false` |
 | `shell` | As above. | `false` |
 
-The page: the fields, Run and Stop, a line that says Running, Done, Stopped or the exit status, and the output. Ctrl+Enter runs from any field.
+The page: the fields, Run, a line that says Running, Done, Stopped or the exit status, and the output. Stop shows while the program runs. Ctrl+Enter runs from any field. Every kind of output shows as the program writes it: `html` and `markdown` are drawn again at most four times a second (an `html` document loads behind the one that shows and takes its place when it is whole, so nothing blinks).
+
+A `live` form has no Run, no Stop and no "Done.": the result follows the typing. It says one thing, when there is one: the program's own last line when it refuses what was typed (`jq: error: syntax error …`). The result before it stays, dimmed, until the typing is something the program takes.
+
+`markdown` output: headings, lists, quotes, code, bold, italic, tables (a line of names, a line of dashes, the rows; a colon in the dashes says which side a column leans to), images and links. An image is shown when it is written into the output (`data:`) or is a file of the app's own data folder, which is where the command runs (`![plot](plot.png)`); another site's image is its words. A link opens in a new browser tab when the app may reach other sites (`access.network`); an app that is its manifest may not, so there a link is its words and its address. Text only ever goes in as text.
 
 A **table** app (it has `table`):
 
@@ -116,7 +124,11 @@ A **table** app (it has `table`):
 | `table` | A `.csv` or `.sqlite` file's name, kept in the app's data folder. |
 | `columns` | A name, or `{ "name", "type", "choices" }`. `type` is `text`, `number`, `date`, `choice` or `checkbox`. |
 
-The page: add a row, edit any cell in place, delete (with Undo), sort by a column, filter, a total for each number column, "Download CSV". Every edit is saved, and a change another program makes to the file shows at once. A CSV file's first line is the column names; a column only the file has is kept and shown as text. A SQLite file holds one table named after the file; the page reads and writes it with `sqlite3`. On a narrow screen each row is a card.
+The page: add a row, edit any cell in place, delete (with Undo), sort by a column, filter, a total for each number column, "Download CSV". Every edit is saved, and a change another program makes to the file shows at once. A CSV file's first line is the column names; a column only the file has is kept and shown as text. A SQLite file holds one table named after the file; the page reads and writes it with `sqlite3`. On a narrow screen each row is a card. The file is made with the first row, so an app that was only opened holds no data.
+
+Every edit writes the whole table. The page says so only once that is slow enough to feel (a save that took half a second or more), with the time it took: "Each change saves all 20,000 rows, which took 0.9 seconds: a table this large is slow to edit here." It appends nothing and has no row limit: the sentence is the limit, said when it is true.
+
+Measured by `tests/browser/app-declarative.mjs --only polish` (headless Chrome 155 on an 8 GB Mac, a local build, four runs: two widths, two appearances): 1,000 rows show in 0.06 to 0.2 s and one edit is saved in 0.06 to 0.2 s; 5,000 rows show in about 1 s and one edit is saved in 0.2 s; 20,000 rows show in 4 to 11 s and one edit takes 1.2 to 5.8 s from the keystroke to "Saved", up to 1.3 s of it the write the sentence names. The sentence showed in three of the four runs at 20,000 rows and in none below.
 
 Rules, checked in `src/apps/declare.ts`:
 
@@ -126,13 +138,13 @@ Rules, checked in `src/apps/declare.ts`:
 - **What the app may do is read from `run`.** `access.commands` is its first word; with `"shell": true` it is `access.shell`. A `.sqlite` table adds `sqlite3`. `access.network` is false and `access.fs` is empty: the page may use only the app's data folder. `entry`, `backend`, `files` and `access` do not go with these keys.
 - The page calls `tab.job`, and the tab builds the command from the manifest: the page never sends one.
 
-The supplied pages work at 360 px, by keyboard and with a screen reader (every control is labelled, the state line is a live region, focus is visible), and follow the desktop's light or dark appearance. `tests/browser/app-declarative.mjs` checks each.
+The supplied pages work at 360 px, by keyboard and with a screen reader (every control is labelled, the state line is a live region, focus is visible), and follow the desktop's light or dark appearance. Nothing is white for a moment in the dark one: the document is written in the appearance of the moment (`suppliedPage` in `runtime.ts`), the frame around it is painted in the page's color before the page paints (`frame.ts`), and the document of the app's origin that holds the page has no background of its own (`server.mjs`). `tests/browser/app-declarative.mjs` checks each.
 
 `apps/converter` is not one of these. It picks one of twelve programs by the file's extension, runs two or three in a row for some outputs (to HTML, then pandoc or LibreOffice), falls back to a second program when the first refuses a file, makes several results from one input (a database's tables), rewrites one program's output in JavaScript (Publisher's SVG) and builds HTML from CSV, keeps results in `~/Converted` and shows them in the page. A files app has one command, one result per input, and its own data folder.
 
 ## The manifest of an app with its own page
 
-`app.json`, format 1. Only `name` and one of `entry` or `backend` are required; `entry` may be left out when `index.html` is beside `app.json` or in `public/`.
+`app.json`, format 1. Only `name` and one of `entry` or `backend` are required; `entry` may be left out when `index.html` is beside `app.json` or in `public/`, wherever the app comes from: a folder, a gist, an archive, a shared link or a repository (`?app=gh:`, which lists the commit's files once to find the page).
 
 ```json
 {
@@ -201,6 +213,8 @@ app dev [DIR] [--no-open]
 app install [DIR | ID | examples/ID | gh:OWNER/REPO[/PATH] | gist:[USER/]ID | URL] [--guest[=NAME]] [--open]
 app open ID [--become] [--new]
 app share ID [--print]
+app export ID [FILE]
+app import FILE [--open]
 app list [-l]
 app stop ID
 app remove ID [--data]
@@ -215,6 +229,7 @@ Exit status 0 when it did what was asked, 1 when it could not (the reason on std
 - **`app install`** copies the app to `~/Apps/<id>/` (replacing an earlier install of that id; `~/.local/share/apps/<id>/`, its data, is kept), lists it in `/var/lib/tabcomputer/apps.json` and puts it in the dock. Then its `toolchains` and `needs` are installed, with the desktop's launch feedback: the dock entry is marked as starting and a placeholder window shows the installer's output. A folder installs at once. An app from GitHub, a gist or an archive is shown first ("Installing" below).
 - **`app open ID`** opens its window (or focuses the one that is open; `--new` for another when the manifest allows several). `--become` makes the tab the app.
 - **`app share ID`** makes a link to it and shows the share screen ("Sharing" below). `--print` prints only the link.
+- **`app export ID [FILE]`** saves the app with its data as one file, and **`app import FILE`** brings it back ("Export and import" below).
 - **`app stop ID`** closes its windows and stops its backend. **`app remove ID`** uninstalls it and keeps its data unless `--data`.
 - **`app check [DIR]`** validates `app.json` and the files it names, and prints what the app asks for in the words the install prompt uses. An app that is its manifest is printed as sentences:
 
@@ -245,13 +260,13 @@ Each is a small working app in `apps/templates/<name>/` and runs as created: non
 Code: `src/apps/runtime.ts` (`AppInstance`), `src/apps/supervisor.ts`, `src/apps/window.ts`.
 
 - **One instance per app** while it is open. It owns the backend, answers the page's requests and serves its `tab.js` channel.
-- **Before the first start** the manifest's `toolchains` and `needs` are installed (once: `~/.local/share/apps/<id>/.toolchains` records it) and its `files` are checked. `needs` goes through `Packages` (`src/apps/runtime.ts`): `installed(names)` and `install(names, onLine)`. `install` asks the server for the layer of the set (`src/debian/package-sets.ts`, DEBIAN.md "Package layers"): a set someone needed before is applied in about a second; a set nobody needed yet is built on the server, and the placeholder shows what the server reports ("The server is installing package 12 of 71 for tesseract-ocr. This build happens once: the next person gets these programs in seconds."). When the server has no layer and cannot build one, one sentence says why and `apt-get install` runs in the tab. A failure leaves the launch's placeholder showing the reason, with Retry. While it installs, the placeholder shows a sentence for the person (`src/apps/progress.ts`: "NAME needs some programs. They are being downloaded. This happens once.", then one per step the installer reports); the installer's own lines are under "Show details". No fraction and no time left are shown: the installer measures neither (the server's "package N of M" is its own count). The installer is the `toolchain` builtin called with stream writers, so its lines arrive as it writes them.
+- **Before the first start** the manifest's `toolchains` and `needs` are installed (once: `~/.local/share/apps/<id>/.toolchains` records it) and its `files` are checked. `needs` goes through `Packages` (`src/apps/runtime.ts`): `installed(names)` and `install(names, onLine)`. `install` asks the server for the layer of the set (`src/debian/package-sets.ts`, DEBIAN.md "Package layers"): a set someone needed before is applied in about a second; a set nobody needed yet is built on the server, and the placeholder shows what the server reports ("The server is installing package 12 of 71 for tesseract-ocr. This build happens once: the next person gets these programs in seconds."). When the server has no layer and cannot build one, one sentence says why and `apt-get install` runs in the tab. A failure leaves the launch's placeholder showing the reason, with Retry. While it installs, the placeholder shows the app's name whole (it wraps) and a sentence for the person (`src/apps/progress.ts`: "NAME needs some programs. They are being downloaded. This happens once.", then one per step the installer reports); the installer's own lines are under "Show details". No fraction and no time left are shown: the installer measures neither. What it does count is said: the server's "package 12 of 71", and for apt its own count ("Package 3 of 5 is being unpacked.": apt says how many it adds and names each as it downloads, unpacks and sets it up, `installProgress`). The installer is the `toolchain` builtin called with stream writers, so its lines arrive as it writes them. An app link opened on a phone installs what the app needs as the app: the tab is the app at once, with "Starting NAME…" over the same sentences, and no desktop frame around it.
 - **The backend belongs to the app, not to a terminal.** It starts when the app opens (with `backend.lazy`, on the page's first request that is not a file of the page), in the app's folder, with `PORT`, `APP_ID`, `APP_DIR` and `APP_DATA` set. "Running" means the port is open and, with `backend.health`, that the path answered 2xx.
 - **It is restarted when it dies.** A start that never becomes ready, or a backend that dies within 10 s of becoming ready, is a failure: the next start waits 0.5 s, then 1, 2, 4, 8 s. After 5 failures in a row the supervisor stops trying; the window covers the page with the error and the backend's last output, and Retry starts over. A backend that ran for 10 s is started again at once when it dies. While it is down the window says "Restarting NAME…".
 - **It stops when the last window closes**, unless `backend.keepAlive`; then `app stop ID` (or closing the tab) stops it.
-- **The window is the app's own:** its name and icon in the title bar and the dock, no toolbar, no `localhost:PORT`, the manifest's size and minimum size. One per app unless `window.multiple`. A click on its dock entry while it starts goes to its placeholder; nothing starts twice.
-- **A reload brings it back.** The window's restore command is `app open ID` (`app dev DIR` for a dev window), so the desktop's session restore reopens it where it was, and opening starts the backend again. Measured on a local build (tests/browser/app-toolkit.mjs): an app with a node backend is interactive 0.24 s after a reload.
-- **App mode** (`app open ID --become`, `?app=ID&become`, and any app link opened on a phone): the tab is the app, at `/<id>`, with the app's name as the tab's title. A reload comes back to it (0.08 s for the converter, 0.24 s for an app with a node backend, local build). `unbecome` in a shell, or `?unbecome` on the address, returns to the desktop. It reuses `become`'s state (`BecomeConfig.app`, src/commands/become.ts); the page and the backend come back through the toolkit instead of `serve`.
+- **The window is the app's own:** its name and icon in the title bar and the dock, no toolbar, no `localhost:PORT`, the manifest's size and minimum size. One per app unless `window.multiple`. A click on its dock entry while it starts goes to its placeholder; nothing starts twice. The title bar of an installed app has one button, Share ("Sharing" below), and the menu bar has an App menu with "Share as a Link…" and "Export with Its Data". Under the page a slim line shows only when the app's data is in no file ("Export and import" below).
+- **A reload brings it back.** The window's restore command is `app open ID` (`app dev DIR` for a dev window), so the desktop's session restore reopens it where it was, and opening starts the backend again. On a phone the desktop restores nothing else of a session, but the apps that were open do come back. Measured on a local build (tests/browser/app-toolkit.mjs): an app with a node backend is interactive 0.24 s after a reload.
+- **App mode** (`app open ID --become`, `?app=ID&become`, and any app link opened on a phone): the tab is the app, at `/<id>`, with the app's name as the tab's title. A reload comes back to it (0.08 s for the converter, 0.24 s for an app with a node backend, local build). `unbecome` in a shell, or `?unbecome` on the address, returns to the desktop. It reuses `become`'s state (`BecomeConfig.app`, src/commands/become.ts); the page and the backend come back through the toolkit instead of `serve`. The bar above an app opened by a link on a phone ("‹ tabcomputer" on the left, Share on the right) follows the appearance the page has, and so does what covers the page while it starts (`surface.ts`). The tab's title is the app's window title: a files run puts its count there.
 
 ## tab.js
 
@@ -266,7 +281,7 @@ It defines `tab`. Every call is a message to the tab over one `MessagePort`; the
 | Call | What it does |
 | --- | --- |
 | `await tab.ready` | Resolves to `tab.app` once the tab has answered. |
-| `tab.app` | `{ id, name, version, manifest, dir, dataDir, home, confined, theme }`. `dataDir` is `~/.local/share/apps/<id>`, always the app's to read and write. `confined` is true when the page is on an origin of its own. `theme` is the desktop's appearance, `'light'` or `'dark'`. |
+| `tab.app` | `{ id, name, version, manifest, dir, dataDir, home, confined, reviewed, theme }`. `dataDir` is `~/.local/share/apps/<id>`, always the app's to read and write. `confined` is true when the page is on an origin of its own. `reviewed` is true for an app this site ships. `theme` is the desktop's appearance, `'light'` or `'dark'`. |
 | `tab.onTheme(cb)` | `cb('light' \| 'dark')` when the desktop's appearance changes. Returns `{ close() }`. |
 | `tab.job({ files, values }, opts)` | For an app that is its manifest: run the manifest's `run`. `files` is `[{ path, rel }]` (one, or all of them with `"each": false`), `values` what the fields or options hold. The tab builds the command. `opts.onStdout`, `opts.onStderr`. Resolves to `{ code, out, name, size, said, stdout, stderr }`: `out` is the result file, or null. The promise has `kill()`. `tab.job.start()` resolves to `{ in, out }`, the folders this page's inputs and results go to. |
 | `tab.run(cmd, opts)` | Run a program. `cmd` is `[program, ...arguments]`: the program must be in `access.commands`, and each argument is one word (no shell reads them). With `access.shell`, `cmd` may be a shell line. `opts`: `cwd` (a folder the app may read; default its data folder), `env`, `stdin` (text), `stdout` / `stderr` (a file the app may write, to send that stream to), `onStdout(text)`, `onStderr(text)` (called as output is produced). Resolves to `{ code, stdout, stderr }` (the text is collected unless the callback took it). The promise has `kill()`. The command gets `APP_ID`, `APP_DIR`, `APP_DATA`. |
@@ -336,7 +351,19 @@ So: an app that is only a page, with no commands or with commands that are safe 
 | `?app=link#app=…` | The app's own files, carried by the address (`app share`, "Sharing" below) | **Yes.** |
 | `#run=…&name=…` | A one-file app written in the address, key by key ("An app in the address" below) | **Yes.** |
 
-For an app that is its manifest the prompt shows `app check`'s sentences: what it does, the exact command, what it installs. For an app with a page of its own, the prompt shows the app's name, where it comes from (for GitHub, the commit; for a gist, the revision), what it will run (`backend.start`), what it installs (`toolchains`), which commands and folders its page may use, whether it may reach other sites, and the manifest itself. It says which of that is enforced. Its rules are the run link prompt's: everything from the app goes in as text, Cancel has the focus, closing the window is Cancel, Install is off for the first moment, and a click made by script does nothing.
+The prompt says the fewest things a careful person needs (`promptWords` in `src/apps/prompt.ts`), and has two buttons, Cancel and Install:
+
+> **Install Make scans searchable?**
+> From this link. Not reviewed by tabcomputer.
+> Make scans searchable runs this command once for each file you give it: `tesseract {in} stdout pdf`
+> Before its first start it installs the Debian package tesseract-ocr.
+> tesseract is an ordinary program in this tab: it can read and change every file here.
+
+That is: the name as a question, where it comes from (for GitHub, the commit; for a gist, the revision), the app's own `about`, the exact command, what it installs, and one sentence on what it can touch that is true of this app. For a table kept as CSV that sentence is "It runs no program, and its page may use only its own data folder."; where the server gives app pages no origin of their own it is that. For an app with a page of its own, the lines that ask for something are listed (what it runs, what it installs, the commands and folders its page may use, other sites), then the one sentence: "What it runs are ordinary programs in this tab: they can read and change every file here and use its sign-ins (Claude, GitHub).", or, for an app that is only a page, that its page cannot read this tab's files or sign-ins.
+
+The rest is one click away, under two disclosures. "What it can reach" has every line (how results are named, what the page may use, that the page is on an address of its own) and, where the server has guests, a link in a sentence: "To keep it away from your files and sign-ins, open it in a guest". A guest is not a button beside Install: it adds a step and has none of the tab's sign-ins. "app.json, as it will be installed" is the manifest itself.
+
+Its rules are the run link prompt's: everything from the app goes in as text, Cancel has the focus, closing the window is Cancel, Install is off for the first moment, and a click made by script does nothing. On a phone the prompt fills the screen, with nothing of the desktop around it (`overlay` in `src/apps/surface.ts`), as an app does in app mode.
 
 What is shown is what is installed. A gist's revision and files come in one answer. A repository is read at one commit (its default branch's head when asked): the manifest in the prompt and every file come from that commit, and the manifest is written from the bytes that were shown, not fetched again. Links (mode 120000), submodules and `.git*` are left out; at most 400 files and 32 MB. An archive is downloaded and unpacked in a scratch folder first, and installed from those files. An app whose id belongs to a built-in app is refused.
 
@@ -350,11 +377,13 @@ Each has an entry in the dock of every profile before it is installed (`src/apps
 
 ## Sharing
 
-`app share ID` makes a link to an installed app (`src/apps/share.ts`) and shows the share screen (`src/apps/share-ui.ts`; in a terminal without a desktop, the same sentences are printed):
+`app share ID`, the Share button in an app's title bar, "Share as a Link…" in its App menu and Share in the bar of app mode all make a link to an installed app (`src/apps/share.ts`) and show the share screen (`src/apps/share-ui.ts`; in a terminal without a desktop, the same sentences are printed). The screen is the app's name, the link with Copy link, and:
 
-> Each person who opens this link gets their own copy of NAME. Each copy keeps its own data on that person's computer. Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.
+> Each person who opens this link gets their own copy of NAME, with their own data. Nobody sees your data, and you do not see theirs.
 
-A link shares the app, never its data: `~/.local/share/apps/<id>/` is not read.
+Under the link, what the link is: "The link is the app itself, written after the #. No server stores it." (or that it holds its files, or names a repository, or that this site ships NAME), "A later change here does not reach copies already made. Share a new link for that.", and "Each person sees what it does before it is installed." The name is written once in the title and once in the promise: a long name in every sentence is a wall of it. An app too large for a link gets the sentence that says what to do instead, in the same screen.
+
+A link shares the app, never its data: `~/.local/share/apps/<id>/` is not read. The data moves with "Export and import" below.
 
 | The app was installed from | The link | Asked first? |
 | --- | --- | --- |
@@ -370,7 +399,40 @@ The last two forms need no server. A browser never sends the part of an address 
 
 Opening one is an app link like any other (below): the address is cleaned first, a framed page ignores it, `?safe=1` skips it. It is never curated, so the install prompt is shown, in a main profile and in a guest alike, with "Open in a guest" where the server has guests (the whole link goes there). Its `source` is `link:<hash of the payload>`: the same link opened again opens the copy it installed without asking; a link with other files asks again. `app install link` is refused: the files come only from the address.
 
-Not built: a share button in the app's window or the dock (sharing is the one command), a hosted store for apps too large for a link, and updates to copies already installed.
+Not built: a hosted store for apps too large for a link, and updates to copies already installed.
+
+## Export and import
+
+`src/apps/export.ts` (the file, what an import would replace, the mark; no DOM), `importApp` and `exportInstalled` in `src/apps/install.ts`, the question in `src/apps/prompt.ts`, `src/apps/drop.ts` (a file dropped on the page). tabcomputer#138.
+
+A tab keeps an app's data in one browser. One file carries the app and its data to another machine, and past the browser clearing its storage:
+
+```
+app export expenses                 to your downloads, as expenses-2026-10-13.app.zip
+app export expenses backups/mine    to ~/backups/mine.app.zip, in this tab
+app import backups/mine.app.zip     install the app and restore its data
+```
+
+The App menu's "Export with Its Data" and the Export button of the mark (below) do the first. Dropping a file named `….app.zip` anywhere on the desktop does the last, and opens the app.
+
+**The file** is a zip: `tabcomputer-app.json` (a header: the format, the app's id, name, version and `source`, and when it was exported), `app/…` (the files of `~/Apps/<id>`), `data/…` (its data folder). Not in it: the record of which programs are installed (`.toolchains`), and the inputs and results a supplied page keeps until it is next opened (`in/`, `out/`). At most 10,000 data files and 512 MB.
+
+**An import asks before it changes anything.** In order:
+
+1. *The app.* The copy already installed, when its files are the file's byte for byte, stays, and nothing is asked. An app this site ships (`source` `site`) is installed from the site, never from the file's word for it. Any other app is shown in the install prompt, "From the file NAME.app.zip. Not reviewed by tabcomputer.", with Cancel and Install; its `source` becomes `file:<hash of its files>`.
+2. *The data.* When the app has data here that differs from the file's, a question names each file that would be replaced and when it last changed:
+
+   > **Replace the data Expenses has here?**
+   > The file holds 1 file of data, exported on 3 October. Importing it replaces what Expenses has here:
+   > - expenses.csv, changed today at 14:05
+
+   Cancel (focused) changes nothing. Replace makes the data folder what the file holds: a data file only this computer had is removed too.
+
+Every name in the file is checked before anything is written (a plain relative path under `app/` or `data/`), since the file can come from anyone.
+
+**The mark.** An app's window says nothing about backups until there is something to say. When the app has data that is in no file it shows a slim line under its page: "Not backed up", and after a first export "Not backed up since Tuesday" (the day of the last export; a time for today, a date beyond a week), with Export beside it. Export, or an import, takes the line away until the data changes again. The times of exports are in `/var/lib/tabcomputer/app-backups.json`, outside the data folders. An app that was only opened has no data and no line.
+
+Not built: "Save to my GitHub" (the export kept as a private repository or gist of the signed-in person).
 
 ## Links
 
@@ -439,7 +501,9 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 | `src/apps/manifest.ts` | `parseManifest`, `validateManifest` (every problem, by key), `manifestText`, `describeManifest` and `manifestSentences` (the prompt's lines and sentences). A manifest editor validates as it is typed with these. |
 | `src/apps/declare.ts` | The kinds: `validateKind`, `splitRun`, `argvFor`, `shellLineFor`, `outputName`, `inputValue`, `kindSentences`. |
 | `src/apps/templates.ts` | `TEMPLATES`, `scaffold(fs, dir, id, { template, name, script })`. |
-| `src/apps/share.ts` | `shareApp(fs, app, origin)` → the link and what kind it is; `shareStatement` (the share screen's sentences); `packApp` / `unpackApp`. A Share button would call these. |
+| `src/apps/share.ts` | `shareApp(fs, app, origin)` → the link and what kind it is; `shareStatement` (the share screen's sentences); `packApp` / `unpackApp`. `shareInstalled(id)` in `window.ts` shows the screen. |
+| `src/apps/export.ts` | `exportApp`, `readExport`, `replacePlan`, `restoreData`, `backupMark`: an app with its data as one file. |
+| `src/apps/surface.ts` (DOM) | `surface(el)` and `overlay(content)`: the toolkit's colors and prompts where the desktop's are not in scope (app mode, a phone), in the appearance apps follow (`appTheme`). |
 | `src/apps/registry.ts` | `loadManifest`, `installFromDir`, `installFromFiles`, `listInstalled`, `removeInstalled`. |
 | `src/apps/runtime.ts` | `instanceFor({ manifest, dir, source, dev })` → `AppInstance`: `prepare`, `startBackend`, `fetch`, `supervisor` (state, `restart`, `tail`), `on('state' \| 'log' \| 'views' \| 'reload')`, `setManifest`, `reload`, `attach(view)` / `detach(view)`. |
 | `src/apps/frame.ts` (DOM) | `createAppFrame(instance)` → `{ element, confined, reload, dispose }`: the app's page as an element for any container. A pane in the Code app mounts this and attaches a view of kind `'pane'`. |
@@ -455,9 +519,10 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 - `app-command.test.ts`: the command, the templates (each runs as created), installing, what a page is served, the backend's life with its views.
 - `app-links.test.ts`: `?app=` parsing, curated and GitHub apps and the attacks on each, apps from a gist, the trust decision, the site's app list and the examples.
 - `app-origins.test.ts`: what an app host serves and who may frame it.
-- `app-share.test.ts`: a shared link (round trip, refused payloads and names, the size limits, that it always asks, Cancel, the same link again, a frame), `app share`, the sentences.
+- `app-share.test.ts`: a shared link (round trip, refused payloads and names, the size limits, that it always asks, Cancel, the same link again, a frame), `app share`, the sentences, the share screen.
+- `app-export.test.ts`: what an export holds and that it reads back, `app export` and `app import`, what an import asks and in which order, the words of the replace question, refused files, the mark, a dropped file. `tests/browser/app-export.mjs`: the same from the window at 1280 px and on a 390 x 844 touch screen: the mark, Export, the file's contents, an import on a computer without the app, the file dropped over other data.
 - `app-shipped.test.ts`: the shipped apps' dock entries and their removal, the first start's sentences.
 - `run-links-gist.test.ts`: `?run=gist:`.
 - `link-fragment.test.ts`: links written after the `#`: an app from `key=value` pairs (each kind, the short forms, every mistake by its key), what tells an app from commands, `#gist:`, the readable link `app share` gives a one-file app, and that the `/link` page writes what the app reads. `tests/browser/link-is-computer.mjs` opens each form from a fresh profile at 1280 px and on a 390 x 844 touch screen.
 - `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; `app share`, its screen, the link opened in another profile and in a guest; 360 px. `tests/browser/app-converter.mjs`: the converter, and its dock entry from a fresh profile: the first click, the first-run sentences, the window, removal.
-- `tests/browser/app-declarative.mjs`: each kind at 1280 px and on a 390 x 844 touch screen: `app new`, install, open, the job (three files with two of one name and one the program refuses; Run, streamed output, Stop, live; add, edit, sort, filter, a reload, another program's change, SQLite), downloads, the keyboard alone, the appearance; an app link on the phone; the Welcome card; the key row; a gist; share link lengths; 360 px. It prints the times.
+- `tests/browser/app-declarative.mjs` (`--theme light|dark`): each kind at 1280 px and on a 390 x 844 touch screen: `app new`, install, open, the job (three files with two of one name and one the program refuses; Run, streamed output, Stop, live; add, edit, sort, filter, a reload, another program's change, SQLite), downloads, the keyboard alone, the appearance; under `polish`: nothing white in the dark appearance, a files run's Stop, last line and title, a result named for what it is, Markdown and HTML drawn while the program writes (a table, images, links), the Share button and menu, the placeholder's sentences with the installer as a stand-in, app mode's bar, a large table, an app in a repository without `entry`; under `progress`: a real program (gawk, from the server's own `/pkg`) whose result is its standard output, its lines shown while it runs; an app link on the phone; the Welcome card; the key row; a gist; share link lengths; 360 px. It prints the times.

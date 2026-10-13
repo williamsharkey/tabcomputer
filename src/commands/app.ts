@@ -7,6 +7,7 @@
  *   app install [DIR | ID | gh:OWNER/REPO[/PATH] | gist:ID | URL]
  *   app open ID [--become]
  *   app share ID                                  a link that gives each person their own copy
+ *   app export ID [FILE] | app import FILE        the app with its data, as one file
  *   app list | stop ID | remove ID | check [DIR] | templates
  */
 import type { Command, CommandContext } from './index';
@@ -28,6 +29,8 @@ const USAGE = `Usage: app new NAME [--template files|form|table] [--name "Shown 
        app open ID [--become] [--new]    open an installed app; --become: the tab is the app
        app share ID [--print]            a link to it: each person who opens the link gets their own copy
                                          and their own data (--print: only print the link)
+       app export ID [FILE]              the app and its data as one file: to FILE here, or to your downloads
+       app import FILE                   install the app in that file and restore its data (asks before replacing data)
        app list [-l]                     installed apps and whether they run
        app stop ID                       close its windows and stop its backend
        app remove ID [--data]            uninstall it; --data deletes what it stored too
@@ -242,6 +245,36 @@ export const appCmd: Command = {
             out('');
             out('The Share window has a Copy link button.');
           }
+          return 0;
+        }
+
+        case 'export': {
+          if (!known()) return 2;
+          if (rest.length < 1 || rest.length > 2) { err('export needs an app\'s id (app list), and may name the file'); return 2; }
+          await core(ctx);
+          const { exportInstalled } = await import('../apps/install');
+          // A file in this tab when one is named; else the person's real disk
+          const exp = await exportInstalled(rest[0], rest[1] === undefined ? undefined : ctx.fs.resolvePath(rest[1], ctx.cwd));
+          const n = (count: number, what: string) => `${count} ${what}${count === 1 ? '' : 's'}`;
+          out(`Exported ${exp.header.name} with its data to ${exp.path ? tilde(exp.path) : `your downloads, as ${exp.name}`}: ${n(exp.appFiles, 'file')} of the app, ${n(exp.dataFiles, 'file')} of data, ${Math.max(1, Math.ceil(exp.bytes.length / 1000))} KB.`);
+          out(`To bring it back, here or on another computer: app import ${exp.path ? tilde(exp.path) : exp.name}, or drop the file on the desktop.`);
+          return 0;
+        }
+
+        case 'import': {
+          if (!known('--open')) return 2;
+          if (rest.length !== 1) { err('import needs the file app export made'); return 2; }
+          await core(ctx);
+          const file = ctx.fs.resolvePath(rest[0], ctx.cwd);
+          let bytes: Uint8Array;
+          try { bytes = (await ctx.fs.readFile(file)) as Uint8Array; } catch { err(`${rest[0]}: no such file`); return 1; }
+          const { importApp } = await import('../apps/install');
+          const done = await importApp(bytes, file.slice(file.lastIndexOf('/') + 1));
+          if (!done) { live('Cancelled: nothing was changed.'); return 1; }
+          const data = done.dataFiles ? `its data (${done.dataFiles} ${done.dataFiles === 1 ? 'file' : 'files'})` : 'no data: the file held none';
+          live(`${done.installed ? 'Installed' : 'Kept'} ${done.app.name} (${done.app.id}) and restored ${data}.`);
+          live(hasDesktop() ? `It is in the dock. Open it: app open ${done.app.id}` : `Open it: app open ${done.app.id}`);
+          if (flags.has('--open')) await openById(ctx, done.app.id, false, false, out);
           return 0;
         }
 

@@ -23,10 +23,11 @@ import { AppInstance, appsDeps, homeDir, instanceFor, instanceOf, type AppRef, t
 import { AppError, findInstalled, listInstalled, loadManifest, type InstalledApp } from './registry';
 import { ManifestError } from './manifest';
 import { isShipped, shippedGlyph } from './shipped';
+import { surface } from './surface';
 
 const STYLE_ID = 'tc-app-style';
 const CSS = `
-.tc-app { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; background: #fff; }
+.tc-app { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--sd-window, #1b1d29); }
 .tc-app-body { position: relative; flex: 1; min-height: 0; }
 .tc-app-cover { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; text-align: center; overflow: auto;
   font: 13px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text, #e6e6f0);
@@ -41,13 +42,98 @@ const CSS = `
   background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
 .tc-app-titleicon { width: 16px; height: 16px; flex: none; z-index: 1; pointer-events: none; object-fit: contain; border-radius: 3px; }
 .tc-app-note { flex: none; padding: 3px 10px; font: 11px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text-2, #a4a8b8); background: var(--sd-window, #1b1d29); border-top: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
-#become-container .tc-app-cover { position: fixed; background: #14151d; color: #e6e6f0; }
-#become-container.tc-app-backed { display: flex; flex-direction: column; }
-#become-container.tc-app-backed iframe { flex: 1; min-height: 0; height: auto !important; }
-.tc-app-back { flex: none; display: flex; align-items: center; min-height: 36px; padding: 0 6px; background: #14151d; border-bottom: 1px solid rgba(255, 255, 255, .12); }
-.tc-app-back a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; font: 13px/1 system-ui, sans-serif; color: #c9cbd8; text-decoration: none; border-radius: 6px; }
-.tc-app-back a:focus-visible { outline: 2px solid #8fa8ff; outline-offset: -2px; }
+.tc-app-backup { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 6px 3px 12px; font: 12px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text-2, #a4a8b8); background: var(--sd-window, #1b1d29); border-top: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
+.tc-app-backup[hidden] { display: none; }
+.tc-app-backup button { font: inherit; min-height: 26px; padding: 2px 10px; color: var(--sd-text, #e6e6f0); background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); border-radius: 6px; cursor: pointer; }
+.tc-app-backup button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
+@media (pointer: coarse) { .tc-app-backup button { min-height: 36px; padding: 2px 14px; } }
+.sd-compact .sd-win:has(.tc-app-tb) .sd-title { right: 44px; }
+#become-container.tc-app-mode { display: flex; flex-direction: column; background: var(--sd-window); }
+#become-container.tc-app-mode iframe { flex: 1; min-height: 0; height: auto !important; }
+#become-container .tc-app-cover { position: fixed; background: var(--sd-window); }
+#become-container.tc-app-backed .tc-app-cover { top: 41px; }
+.tc-app-back { flex: none; display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 6px; background: var(--sd-window); border-bottom: 1px solid var(--sd-sep); }
+.tc-app-back a, .tc-app-back button { display: inline-flex; align-items: center; min-height: 40px; padding: 0 10px; font: 13px/1 system-ui, sans-serif; color: var(--sd-text-2); text-decoration: none; background: none; border: 0; border-radius: 6px; cursor: pointer; }
+.tc-app-back a:focus-visible, .tc-app-back button:focus-visible { outline: 2px solid var(--sd-accent); outline-offset: -2px; }
 `;
+
+const SHARE_GLYPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3.5M7.5 7.5 12 3l4.5 4.5M5 12v7.5h14V12"/></svg>';
+
+/** The tab is an app now (app mode): the desktop's windows are under it */
+const inAppMode = (): boolean => document.body.classList.contains('become-active');
+
+/**
+ * The share screen of an installed app: the link, Copy, and what a person who
+ * opens the link gets (`app share ID` prints the same sentences). An app too
+ * large for a link gets the sentence that says what to do instead.
+ */
+export async function shareInstalled(id: string): Promise<void> {
+  const { fs } = appsDeps();
+  const [{ shareApp, siteOriginOf }, { showShareScreen }, { writeClipboard }, { guestInfo }] = await Promise.all([import('./share'), import('./share-ui'), import('../utils/clipboard'), import('../guest')]);
+  const app = await findInstalled(fs, id);
+  let shown: import('./share-ui').ShareShown;
+  try {
+    if (!app) throw new AppError(`${id} is not installed any more.`);
+    shown = await shareApp(fs, app, siteOriginOf(location, !!guestInfo()));
+  } catch (e) {
+    const why = (e as Error)?.message ?? String(e);
+    shown = { name: app?.name ?? id, problem: /[.!?]$/.test(why) ? why : `${why}.` };
+  }
+  showShareScreen(shown, inAppMode() ? null : desktop(), (text) => writeClipboard(text).catch(() => false));
+}
+
+/** Export an installed app with its data to the person's disk (the menu, the mark's button). A failure is said in a window. */
+export async function exportFromWindow(id: string, name: string): Promise<void> {
+  try { await (await import('./install')).exportInstalled(id); } catch (e) {
+    const why = (e as Error)?.message ?? String(e);
+    (await import('./share-ui')).showShareScreen({ name, title: `Export ${name}`, problem: `${why.charAt(0).toUpperCase()}${why.slice(1)}${/[.!?]$/.test(why) ? '' : '.'}` }, inAppMode() ? null : desktop(), async () => false);
+  }
+}
+
+/**
+ * The mark an app shows when its data is in no file (export.ts `backupMark`):
+ * a slim line under its page, "Not backed up since Tuesday", with Export
+ * beside it. Nothing shows while there is nothing to say.
+ */
+function backupNote(inst: AppInstance): { el: HTMLElement; dispose(): void } {
+  const el = document.createElement('div');
+  el.className = 'tc-app-backup';
+  el.hidden = true;
+  const text = document.createElement('span');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Export';
+  btn.title = 'Save the app and its data as one file';
+  btn.addEventListener('click', () => { void exportFromWindow(inst.id, inst.manifest.name); });
+  el.append(text, btn);
+  const { fs } = appsDeps();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let gone = false;
+  const paint = async () => {
+    const { backupMark } = await import('./export');
+    const mark = await backupMark(fs, homeDir(), inst.id, inst.manifest.kind !== 'page').catch(() => '');
+    if (gone) return;
+    text.textContent = mark;
+    el.hidden = !mark;
+  };
+  // A change in the data folder while nothing is shown: look again, once the writing has settled
+  const offFs = fs.onChange((_ev, path) => {
+    if (!el.hidden || timer || !path.startsWith(inst.dataDir + '/')) return;
+    timer = setTimeout(() => { timer = null; void paint(); }, 1200);
+  });
+  const onExport = (id: string) => { if (id === inst.id) void paint(); };
+  void import('./export').then((x) => { if (!gone) x.exportListeners.add(onExport); });
+  void paint();
+  return {
+    el,
+    dispose() {
+      gone = true;
+      offFs();
+      if (timer) clearTimeout(timer);
+      void import('./export').then((x) => x.exportListeners.delete(onExport));
+    },
+  };
+}
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -169,6 +255,17 @@ async function buildWindow(wm: WindowManager, inst: AppInstance, icon: string, r
     img.src = icon;
     win.element.querySelector('.sd-titlebar .sd-lights')?.after(img);
   }
+  if (!inst.dev && win.titlebarExtra) {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'sd-tb-btn tc-app-tb';
+    share.title = 'Share';
+    share.setAttribute('aria-label', `Share ${m.name}`);
+    share.innerHTML = SHARE_GLYPH;
+    share.addEventListener('pointerdown', (e) => e.stopPropagation());
+    share.addEventListener('click', (e) => { e.stopPropagation(); void shareInstalled(m.id); });
+    win.titlebarExtra.append(share);
+  }
   // Session restore opens it again; its backend comes back with it
   (win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: restore, cwd: homeDir() };
 
@@ -182,12 +279,15 @@ async function buildWindow(wm: WindowManager, inst: AppInstance, icon: string, r
   inst.attach(view);
   inst.window = { setTitle: (t) => win.setTitle(t || m.name), resize: (w, h) => win.resize(w, h), close: () => { win.close(); } };
   const offBackend = watchBackend(inst, cover, () => frame, () => win.close(true));
+  const backup = inst.dev ? null : backupNote(inst);
+  if (backup) root.append(backup.el);
   // A click inside the frame goes to the frame's document: the window still has to come forward
   const onBlur = () => { if (frame && document.activeElement === frame.element && !win.focused) win.focus(); };
   window.addEventListener('blur', onBlur);
   win.on('close', () => {
     window.removeEventListener('blur', onBlur);
     offBackend();
+    backup?.dispose();
     frame?.dispose();
     inst.detach(view);
   });
@@ -285,6 +385,10 @@ export function registerInstalledApp(app: InstalledApp): void {
     id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), order: 40, dock: true,
     // (the site's own copy of a shipped app keeps the glyph its entry had before it was installed)
     glyph: app.source === 'site' ? shippedGlyph(app.id) : undefined,
+    menus: () => [{ title: 'App', items: [
+      { label: 'Share as a Link…', action: () => void shareInstalled(app.id) },
+      { label: 'Export with Its Data', action: () => void exportFromWindow(app.id, app.name) },
+    ] }],
     launch: (args) => {
       const open = windowsOf(wm, app.id);
       const newWindow = !!args?.newWindow;
@@ -360,7 +464,11 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
   (container as { _navCleanup?: () => void })._navCleanup?.();
   container.textContent = '';
   const cover = makeCover();
+  // The bar, the cover and the frame's edge follow the appearance the page has
+  container.classList.add('tc-app-mode');
+  // (with the bar, what covers the page while it starts leaves the bar and its way back in sight)
   container.classList.toggle('tc-app-backed', !!opts.back);
+  const offTheme = surface(container);
   if (opts.back) {
     const bar = document.createElement('nav');
     bar.className = 'tc-app-back';
@@ -369,10 +477,15 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     a.href = '/?unbecome';
     a.textContent = '\u2039 tabcomputer';
     a.title = 'Leave the app and open the tabcomputer desktop';
-    bar.append(a);
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.textContent = 'Share';
+    share.addEventListener('click', () => { void shareInstalled(m.id); });
+    bar.append(a, ...(inst.dev ? [] : [share]));
     container.append(bar);
   }
-  container.append(cover.el);
+  const backup = inst.dev ? null : backupNote(inst);
+  container.append(cover.el, ...(backup ? [backup.el] : []));
   const leave = () => { location.href = '/?unbecome'; };
   cover.show(`Starting ${m.name}…`);
   let frame: AppFrame | null = null;
@@ -382,7 +495,9 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     reload: () => frame?.reload(),
   };
   const offBackend = { off: () => {} };
-  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); frame?.dispose(); inst.detach(view); };
+  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); offTheme(); backup?.dispose(); container!.classList.remove('tc-app-mode', 'tc-app-backed', 'tc-surface'); frame?.dispose(); inst.detach(view); };
+  // (the tab's title is the app's window title: a files run puts "3 of 12" there)
+  inst.window = { setTitle: (t) => { document.title = t || m.name; }, resize: () => {}, close: () => {} };
   try {
     // (the slug is the id; `app` says the toolkit brings it back, not `serve`)
     localStorage.setItem(BECOME_KEY, JSON.stringify({ directory: inst.dir, port: 0, slug: m.id, title: m.name, app: m.id, ...(opts.back ? { back: true } : {}) }));
@@ -398,7 +513,6 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     }
     frame = await createAppFrame(inst, { onError: (msg) => cover.show(`${m.name} could not be shown`, msg, [], [['Back to the desktop', leave]]) });
     container.insertBefore(frame.element, cover.el);
-    frame.element.style.cssText = 'width:100%;height:100%;border:none;display:block;background:#fff';
     cover.hide();
     offBackend.off = watchBackend(inst, cover, () => frame, leave);
   } catch (e) {

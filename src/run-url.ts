@@ -352,6 +352,30 @@ export function githubMissing(where: string, signedIn: boolean): string {
     : `${where} does not exist, or it is private: a private repository needs a GitHub sign-in`;
 }
 
+/**
+ * A visitor got a 404 for something in `owner/repo`. GitHub answers a visitor
+ * the same for a private repository and for one that does not exist, but two
+ * things it does tell: a public repository answers for itself (then only the
+ * file is missing), and an account that does not exist has no repositories at
+ * all. Either is said at once; a sign-in would change nothing, so none is
+ * asked for. Null when it may be a private repository (or GitHub did not say).
+ * `file`: the file that was asked for, when the 404 was the file's.
+ */
+export async function githubNotThere(owner: string, repo: string, fetchFn: Fetch, file = ''): Promise<string | null> {
+  const status = async (url: string): Promise<number> => {
+    try {
+      const res = await fetchFn(url, { redirect: 'error', credentials: 'omit', cache: 'no-cache', referrerPolicy: 'no-referrer' });
+      return githubRateLimited(res) ? 0 : res.status;
+    } catch { return 0; }
+  };
+  if (file) {
+    const there = await status(`https://api.github.com/repos/${owner}/${repo}`);
+    if (there === 200) return `github.com/${owner}/${repo} has no ${file}`;
+    if (there !== 404) return null;
+  }
+  return await status(`https://api.github.com/users/${owner}`) === 404 ? `github.com/${owner}/${repo} does not exist: GitHub has no account named ${owner}` : null;
+}
+
 const RAW_FILE = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/;
 
 /**
@@ -433,7 +457,12 @@ export async function loadScript(target: RunTarget, origin: string, fetchFn: Fet
     const url = `https://raw.githubusercontent.com/${target.owner}/${target.repo}/HEAD/${target.path}`;
     from = `github.com/${target.owner}/${target.repo}, ${target.path}`;
     // (a private repository: with the tab's GitHub sign-in, once the person gave it; handleRunLink)
-    bytes = await fetchRaw(url, githubToken ? githubTokenFetch(fetchFn, githubToken) : fetchFn, SCRIPT_MAX, from, githubMissing(from, !!githubToken));
+    const missing = githubMissing(from, !!githubToken);
+    try { bytes = await fetchRaw(url, githubToken ? githubTokenFetch(fetchFn, githubToken) : fetchFn, SCRIPT_MAX, from, missing); } catch (e) {
+      // A visitor's 404 that no sign-in would change (a typo in the account, a public repository without the script) is said as that
+      const sure = !githubToken && e instanceof RunLinkError && e.message === missing ? await githubNotThere(target.owner, target.repo, fetchFn, target.path) : null;
+      throw sure ? new RunLinkError(sure) : e;
+    }
   } else if (target.kind === 'gist') {
     // (parseRunUrl made these; checked again because the URLs are built from them)
     if (!GIST_ID.test(target.id) || (target.user && !GH_OWNER.test(target.user)) || (target.file && (!GH_SEGMENT.test(target.file) || target.file === '.' || target.file === '..'))) throw new RunLinkError('no such gist');
@@ -443,7 +472,7 @@ export async function loadScript(target: RunTarget, origin: string, fetchFn: Fet
     bytes = await fetchRaw(`https://gist.githubusercontent.com/${user}/${target.id}/raw${target.file ? `/${target.file}` : ''}`, fetchFn, SCRIPT_MAX, from, `${from} does not exist (or the gist is secret and the link has no user)`);
   } else {
     bytes = target.bytes;
-    from = 'the link itself';
+    from = 'this link';
   }
   const text = scriptText(bytes);
   const sha256 = await sha256Hex(bytes);
@@ -532,7 +561,7 @@ export interface RunPromptWording {
   window: string; title: string;
   /** What is at stake, in place of the script's warning */
   warn: string;
-  /** Under the box, in place of where the script runs */
+  /** Under the box, when there is more a person needs before choosing ('' for nothing) */
   where: string;
   /** The box's label and the button that agrees */
   box: string; action: string;
@@ -640,8 +669,8 @@ async function handleLabLink(target: Extract<RunTarget, { kind: 'lab' }>, params
 const LINES_WORDING: RunPromptWording = {
   window: 'Run link',
   title: 'Run these commands?',
-  warn: 'They run as you, in this tab: they can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run them only if you trust whoever sent the link.',
-  where: 'They run in a new Terminal, in your home folder.',
+  warn: 'They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).',
+  where: '',
   box: 'The commands',
   action: 'Run',
 };

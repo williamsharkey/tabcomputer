@@ -52,6 +52,8 @@ export interface TrimInput {
   files: Map<string, FileNow>;
   /** The commands of a link this tab was opened with, by their folder's name under ~/run */
   linked?: Map<string, string>;
+  /** Files that came from the person's own computer (a drop, an upload) and are still there, with their size */
+  arrived?: { path: string; size: number }[];
 }
 
 export interface Trimmed {
@@ -201,6 +203,7 @@ const why = (line: string): string => {
   const has = (re: RegExp) => names.some(([n, s]) => re.test(`${n} ${s}`));
   if (has(/^git clone|^gh repo clone|^(curl|wget) /)) return 'fetched files';
   if (has(/^(pip3?|npm|pnpm|yarn|bun|apt|apt-get|pkg|toolchain|debian|app|cargo|gem|go|brew) (install|i|add|get|ci)\b|^(npm|pnpm) ci\b|^toolchain |^debian install/)) return 'installed something';
+  if (has(/^(pip3?|npm|pnpm|yarn|bun|apt|apt-get|pkg|toolchain|app|gem|brew) (uninstall|remove|rm|un|purge)\b/)) return 'removed something';
   if (has(/^(make|cmake|ninja|cc|gcc|g\+\+|clang|javac|tsc|rustc|mvn|gradle) |^(cargo|go|npm|pnpm|yarn) (build|run)\b|^(npm|pnpm|yarn) run /)) return 'built something';
   return 'changed files';
 };
@@ -275,6 +278,85 @@ export function secretIn(line: string): string {
   return '';
 }
 
+/**
+ * One thing a line made, or the thing a line took away again: a file, a
+ * folder, or packages of an installer. Two lines cancel out when the second
+ * takes away exactly what the first made and nothing between them needed it.
+ * Only a line that is one simple command is read this way.
+ */
+type Thing = { kind: 'path'; path: string; folder: boolean } | { kind: 'packages'; installer: string; names: string[]; cwd: string };
+
+const INSTALLERS: Record<string, { name: string; local: boolean }> = {
+  pip: { name: 'pip', local: false }, pip3: { name: 'pip', local: false }, apt: { name: 'apt', local: false }, 'apt-get': { name: 'apt', local: false },
+  pkg: { name: 'pkg', local: false }, toolchain: { name: 'toolchain', local: false }, app: { name: 'app', local: false }, gem: { name: 'gem', local: false }, brew: { name: 'brew', local: false },
+  // (these install into the folder they are run in, unless told -g)
+  npm: { name: 'npm', local: true }, pnpm: { name: 'pnpm', local: true }, yarn: { name: 'yarn', local: true }, bun: { name: 'bun', local: true },
+};
+const INSTALL = new Set(['install', 'i', 'add']);
+const UNINSTALL = new Set(['uninstall', 'remove', 'rm', 'un', 'purge']);
+
+function absolute(arg: string, cwd: string, home: string): string {
+  const p = arg === '~' ? home : arg.startsWith('~/') ? home + arg.slice(1) : arg.startsWith('/') ? arg : `${cwd}/${arg}`;
+  const parts: string[] = [];
+  for (const s of p.split('/')) { if (s === '..') parts.pop(); else if (s && s !== '.') parts.push(s); }
+  return '/' + parts.join('/');
+}
+
+function oneCommand(e: TrimEntry): { name: string; args: string[]; plain: string[] } | null {
+  const cmds = simpleCommands(e.line);
+  if (cmds.length !== 1) return null;
+  const p = program(cmds[0].words);
+  return { ...p, plain: p.args.filter((a) => !a.startsWith('-')) };
+}
+
+function packages(e: TrimEntry, subs: Set<string>): Thing | null {
+  const c = oneCommand(e);
+  const inst = c && INSTALLERS[c.name];
+  if (!c || !inst || !subs.has(c.plain[0] ?? '') || c.plain.length < 2) return null;
+  const global = c.args.some((a) => a === '-g' || a === '--global');
+  return { kind: 'packages', installer: inst.name, names: c.plain.slice(1).sort(), cwd: inst.local && !global ? e.cwd : '' };
+}
+
+/** What a line made, when it made one thing: a folder (`mkdir D`), the one file it changed, or what it installed */
+function does(e: TrimEntry, home: string): Thing | null {
+  const c = oneCommand(e);
+  if (!c) return null;
+  if (c.name === 'mkdir' && c.plain.length === 1) {
+    const path = absolute(c.plain[0], e.cwd, home);
+    return e.changed.every((p) => p === path) && !(e.more ?? 0) ? { kind: 'path', path, folder: true } : null;
+  }
+  const pk = packages(e, INSTALL);
+  if (pk) return pk;
+  if (c.name === 'rm' || c.name === 'rmdir' || c.name === 'mv') return null;
+  return e.changed.length === 1 && !(e.more ?? 0) ? { kind: 'path', path: e.changed[0], folder: false } : null;
+}
+
+/** What a line took away: `rm F`, `rmdir D`, `rm -r D`, or an uninstall */
+function undoes(e: TrimEntry, home: string): Thing | null {
+  const c = oneCommand(e);
+  if (!c) return null;
+  if ((c.name === 'rm' || c.name === 'rmdir') && c.plain.length === 1) {
+    const folder = c.name === 'rmdir' || c.args.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === '--recursive');
+    return { kind: 'path', path: absolute(c.plain[0], e.cwd, home), folder };
+  }
+  return packages(e, UNINSTALL);
+}
+
+const sameThing = (made: Thing | null, undone: Thing): boolean => {
+  if (!made || made.kind !== undone.kind) return false;
+  if (made.kind === 'path' && undone.kind === 'path') return made.path === undone.path && (made.folder === undone.folder || (undone.folder && !made.folder));
+  if (made.kind === 'packages' && undone.kind === 'packages') return made.installer === undone.installer && made.cwd === undone.cwd && made.names.join(' ') === undone.names.join(' ');
+  return false;
+};
+
+/** Did a line between the two name the thing, or work in or under it? */
+function touches(line: { text: string; cwd: string; paths: string[] }, t: Thing): boolean {
+  if (t.kind === 'packages') return t.names.some((n) => line.text.includes(n));
+  const base = t.path.slice(t.path.lastIndexOf('/') + 1);
+  const under = (p: string) => p === t.path || p.startsWith(t.path + '/');
+  return line.text.includes(base) || under(line.cwd) || line.paths.some(under);
+}
+
 /** The script for a session, and what was kept, dropped and left out, with the reason for each */
 export function trimSession(input: TrimInput): Trimmed {
   const { home } = input;
@@ -307,6 +389,8 @@ export function trimSession(input: TrimInput): Trimmed {
       else { drop(e, 'a link this tab opened with'); if (!text) notInLink.push(`The setup began with a run link (${linked[1]}). Its script is not in this link: open that link first.`); }
       continue;
     }
+    // Files picked from the person's own computer: no command can pick them again (they are named below)
+    if (simpleCommands(line).length === 1 && program(simpleCommands(line)[0].words).name === 'upload') { drop(e, 'files chosen from this computer: a link cannot carry them'); continue; }
     if (kind === 'editor') {
       const wrote = editorFiles(e);
       if (e.status === 0 || e.status === null) { for (const p of wrote) file(p, e.at, e.cwd); drop(e, wrote.length ? 'an editor: the files it wrote are recorded as they are now' : 'an editor that wrote nothing'); } else drop(e, `it failed (status ${e.status})`);
@@ -327,9 +411,9 @@ export function trimSession(input: TrimInput): Trimmed {
     if (kind === 'look') { drop(e, 'looking around'); continue; }
     if (kind === 'cd') { drop(e, 'a change of folder: each kept line is given its folder'); continue; }
     if (kind === 'state') { items.push({ at: e.at, kind: 'cmd', entry: e, text: line, why: 'set the shell up' }); continue; }
-    // (an install is kept by its name too: what it wrote may be outside what was recorded, src/session-log.ts sessionBackground)
+    // (an install is kept by its name too, and so is an uninstall: what it wrote may be outside what was recorded, src/session-log.ts sessionBackground)
     const reason = why(line);
-    if (!e.changed.length && !(e.more ?? 0) && reason !== 'installed something') { drop(e, 'it changed nothing'); continue; }
+    if (!e.changed.length && !(e.more ?? 0) && reason !== 'installed something' && reason !== 'removed something') { drop(e, 'it changed nothing'); continue; }
     items.push({ at: e.at, kind: 'cmd', entry: e, text: line, why: reason });
   }
   for (const e of input.edits ?? []) file(e.path, e.at);
@@ -342,6 +426,26 @@ export function trimSession(input: TrimInput): Trimmed {
     drop(it.entry, 'entered again later');
     return false;
   }).sort((a, b) => a.at - b.at);
+
+  // Two lines that cancel out (a file made and then removed, a folder, an install and its uninstall): neither stays
+  const gone = new Set<Item>();
+  for (let b = 0; b < ordered.length; b++) {
+    const B = ordered[b];
+    const undone = B.kind === 'cmd' && !gone.has(B) ? undoes(B.entry, home) : null;
+    if (!undone || B.kind !== 'cmd') continue;
+    for (let a = b - 1; a >= 0; a--) {
+      const A = ordered[a];
+      if (A.kind !== 'cmd' || gone.has(A) || !sameThing(does(A.entry, home), undone)) continue;
+      // (something in between that names it, or works under it, may have needed it: then both stay)
+      const between = ordered.slice(a + 1, b).filter((it) => !gone.has(it));
+      if (!between.some((it) => touches(it.kind === 'cmd' ? { text: it.text, cwd: it.entry.cwd, paths: it.entry.changed } : { text: '', cwd: '', paths: [it.path] }, undone))) {
+        gone.add(A).add(B);
+        drop(A.entry, `undone later (${B.text})`);
+        drop(B.entry, `it only undid an earlier line (${A.text})`);
+      }
+      break;
+    }
+  }
 
   const lines: string[] = [];
   let at = home;
@@ -365,6 +469,7 @@ export function trimSession(input: TrimInput): Trimmed {
     kept.push({ line: it.entry.line, why: it.why });
   };
   for (const it of ordered) {
+    if (gone.has(it)) continue;
     if (it.kind === 'cmd') { run(it); continue; }
     const now = input.files.get(it.path);
     const shown = scriptPath(it.path, home);
@@ -386,5 +491,10 @@ export function trimSession(input: TrimInput): Trimmed {
   }
   if (program_ && program_.kind === 'cmd') run(program_);
   else go(input.cwd);
+  // What was dropped into the tab or uploaded: the script has no line that makes it (unless an editor's file above is the same file)
+  for (const a of input.arrived ?? []) {
+    if (files.includes(a.path)) continue;
+    notInLink.push(`${scriptPath(a.path, home)} (${sizeText(a.size)}, from your computer) is not in the link. Put it where the link's commands can fetch it, and add the line that fetches it.`);
+  }
   return { script: lines.length ? lines.join('\n') + '\n' : '', kept, dropped, files, notInLink };
 }

@@ -198,7 +198,7 @@ describe('a one-file app from the keys of a link', () => {
     const pairs = splitPairs('run=tesseract {in} stdout pdf&accept=.png,.jpg&name=Make scans searchable&needs=tesseract-ocr');
     const fetched = await keysApp(pairs);
     expect(fetched.curated).toBe(false);
-    expect(fetched.from).toBe('the link itself, which holds the whole app');
+    expect(fetched.from).toBe('this link');
     expect(fetched.source).toMatch(/^link:[0-9a-f]{16}$/);
     expect(JSON.parse(fetched.manifestText)).toEqual({ run: 'tesseract {in} stdout pdf', accept: ['.png', '.jpg'], name: 'Make scans searchable', needs: ['tesseract-ocr'] });
     const files = await fetched.files();
@@ -433,9 +433,9 @@ describe('opening commands written after the #', () => {
     expect(h.log.prompts).toHaveLength(1);
     const p = h.log.prompts[0];
     expect(p.script).toBe('pip install flask && python3 app.py\n');
-    expect(p.from).toBe('the link itself');
-    expect(p.wording).toMatchObject({ title: 'Run these commands?', action: 'Run', where: 'They run in a new Terminal, in your home folder.' });
-    expect(p.wording!.warn).toMatch(/can read and change the files here and use any account this tab is signed in to/);
+    expect(p.from).toBe('this link');
+    expect(p.wording).toMatchObject({ title: 'Run these commands?', action: 'Run', where: '' });
+    expect(p.wording!.warn).toBe('They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).');
     expect(h.files.size).toBe(0);
     expect(h.log.terminals).toEqual([]);
     expect(h.log.fetched).toEqual([]);
@@ -705,9 +705,12 @@ describe('app share for a one-file app', () => {
     expect(share).toMatchObject({ kind: 'files', files: 1, readable: true, asks: true });
     expect(share.url.startsWith(`${ORIGIN}/#name=Expenses&`)).toBe(true);
     const said = shareStatement(share);
-    expect(said.promise).toHaveLength(3);
-    expect(said.details[0]).toBe('The link is Expenses itself: its app.json is written after the #, key by key. The link is not stored on a server.');
-    expect(said.details.join(' ')).toMatch(/installs it only when they choose Install/);
+    expect(said.promise).toHaveLength(2);
+    expect(said.details).toEqual([
+      'The link is the app itself, written after the #. No server stores it.',
+      'A later change here does not reach copies already made. Share a new link for that.',
+      'Each person sees what it does before it is installed.',
+    ]);
     // the copy made from the link is the same app
     const copy = await keysApp((parseFragment(new URL(share.url).hash) as { pairs: [string, string][] }).pairs);
     expect(copy.manifest).toEqual(validateManifest(JSON.parse(dec(example('expenses'))), { id: 'expenses' }));

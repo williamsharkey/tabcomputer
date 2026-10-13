@@ -5,6 +5,7 @@
 
 import { Command } from './index';
 import { readdirEntries, DirEntry } from './flags';
+import { noteArrived } from '../session-log';
 import { createServerWindow, commandLine } from '../server-window';
 import {
   injectFinderStyles, renderBreadcrumb, renderFileGrid,
@@ -228,6 +229,7 @@ export const finderCmd: Command = {
       for (const file of Array.from(files)) {
         const buf = new Uint8Array(await file.arrayBuffer());
         await fs.writeFile(joinPath(currentPath, file.name), buf);
+        noteArrived(joinPath(currentPath, file.name)); // (link names it: no command can make this file again)
       }
       await navigateTo(currentPath);
     }

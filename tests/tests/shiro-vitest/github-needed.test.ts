@@ -3,8 +3,8 @@
  * sign-in and runs again (src/github-needed.ts).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { githubSignInWanted, retrySignedIn, fetchSignedIn, setGitHubNeedHandler, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
-import { GITHUB_RATE_LIMITED, githubMissing, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
+import { githubSignInWanted, missingScopes, retrySignedIn, fetchSignedIn, scopesSentence, setGitHubNeedHandler, setTokenScopesReader, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
+import { GITHUB_RATE_LIMITED, githubMissing, githubNotThere, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
 import { fetchGhApp, handleAppLink } from '@shiro/apps/links';
 import { hotswapCmd } from '@shiro/commands/hotswap';
 import { createTestShell } from './helpers';
@@ -147,6 +147,85 @@ describe('github-needed: ask, then run again', () => {
   });
 });
 
+describe('github-needed: a token that lacks scopes (tabcomputer#153)', () => {
+  const STUDENT = 'gh-student: your github.com token (source: GH_TOKEN) is missing scopes gh student needs (admin:org, read:org, repo, workflow); it wasn\'t set by `gh auth login`, so re-running won\'t fix it. Re-issue the token with those scopes, or unset it and run `gh student login`\n';
+  let asked: GitHubNeed[] = [];
+  let answer: string | null = 'gho_more';
+  let off = () => {};
+  beforeEach(() => {
+    asked = []; answer = 'gho_more';
+    localStorage.setItem(KEY, 'gho_saved');
+    resetGitHubNeedDecline();
+    setTokenScopesReader(async () => ['gist', 'read:org', 'repo', 'user:email', 'workflow']);
+    off = setGitHubNeedHandler(async (need) => { asked.push(need); if (answer) localStorage.setItem(KEY, answer); return answer; });
+  });
+  afterEach(() => { off(); setTokenScopesReader(null); });
+
+  it('reads the scopes a failure names, in the forms gh and its extensions use', () => {
+    expect(missingScopes(STUDENT)).toEqual(['admin:org', 'read:org', 'repo', 'workflow']);
+    expect(missingScopes('error: your authentication token is missing required scopes [read:project]\nTo request it, run:  gh auth refresh -s read:project\n')).toEqual(['read:project']);
+    expect(missingScopes('This API operation needs the "codespace" scope. To request it, run:  gh auth refresh -h github.com -s codespace\n')).toEqual(['codespace']);
+    expect(missingScopes('your token is missing the required scopes (delete_repo)')).toEqual(['delete_repo']);
+    // not a list of scopes: other failures, markup, a made-up name
+    for (const text of ['', 'fatal: repository not found', 'HTTP 403: Resource not accessible by integration', 'missing scopes (<script>alert(1)</script>)', 'error: missing scope']) expect(missingScopes(text), text).toBeNull();
+    expect(scopesSentence(['admin:org'])).toBe('This adds permission to manage your organizations, their teams and their members (admin:org).');
+    expect(scopesSentence(['project', 'delete_repo', 'made_up'])).toBe('This adds 3 permissions: to read and change projects (project); to delete repositories (delete_repo); and to do what GitHub calls made_up.');
+  });
+
+  it('at a terminal: asks for exactly the scopes the sign-in lacks, then runs the command again', async () => {
+    const { ctx, written } = fakeCtx({ args: ['student', 'whoami'] });
+    let runs = 0;
+    const run = async () => {
+      runs++;
+      // (a gh extension writes to the terminal itself: gh keeps the end of it in stderrSeen)
+      if (localStorage.getItem(KEY) !== 'gho_more') { ctx.stderrSeen = STUDENT; return 1; }
+      ctx.stdout += 'you are octocat\n';
+      return 0;
+    };
+    expect(await retrySignedIn(ctx, 'gh student whoami', run)).toBe(0);
+    expect(runs).toBe(2);
+    // admin:org is the one it lacks; the request keeps what the sign-in has
+    expect(asked).toEqual([{ action: 'gh student whoami', kind: 'scopes', add: ['admin:org'], scopes: ['repo', 'read:org', 'gist', 'workflow', 'user:email', 'admin:org'] }]);
+    expect(ctx.stdout).toBe('you are octocat\n');
+    expect(written.join('')).toContain('gh student whoami needs a permission the GitHub sign-in here does not have (admin:org). A window opened to add it.');
+    expect(written.join('')).toContain('GitHub added it. Running gh student whoami again.');
+  });
+
+  it('"Not now" leaves the failure; a scope the token holds inside another is not asked for', async () => {
+    answer = null;
+    const { ctx } = fakeCtx();
+    expect(await retrySignedIn(ctx, 'gh student whoami', async () => { ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toHaveLength(1);
+    expect(ctx.stderr).toBe(STUDENT);
+    // read:org and public_repo are inside admin:org and repo: nothing is lacking, so the failure is about something else
+    asked = []; resetGitHubNeedDecline();
+    setTokenScopesReader(async () => ['admin:org', 'repo', 'workflow']);
+    const held = fakeCtx();
+    expect(await retrySignedIn(held.ctx, 'gh x', async () => { held.ctx.stderr = 'missing scopes (read:org, public_repo, workflow)\n'; return 1; })).toBe(1);
+    expect(asked).toEqual([]);
+  });
+
+  it('a token the person exported themselves is theirs to re-issue; without a terminal the question opens beside the failure', async () => {
+    const own = fakeCtx({ env: { GH_TOKEN: 'ghp_their_own' } });
+    expect(await retrySignedIn(own.ctx, 'gh student whoami', async () => { own.ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toEqual([]);
+    // the tab's own token in the environment (gh auth login puts it there) is the tab's
+    const tabs = fakeCtx({ env: { GITHUB_TOKEN: 'gho_saved' } });
+    let n = 0;
+    expect(await retrySignedIn(tabs.ctx, 'gh student whoami', async () => { if (n++) return 0; tabs.ctx.stderr = STUDENT; return 1; })).toBe(0);
+    expect(tabs.ctx.env.GITHUB_TOKEN).toBe('gho_more');
+    asked = []; resetGitHubNeedDecline();
+    localStorage.setItem(KEY, 'gho_saved');
+    const quiet = fakeCtx({ terminal: undefined });
+    let release!: (t: string | null) => void;
+    off(); off = setGitHubNeedHandler((need) => { asked.push(need); return new Promise((r) => { release = r; }); });
+    expect(await retrySignedIn(quiet.ctx, 'gh student whoami', async () => { quiet.ctx.stderr = STUDENT; return 1; })).toBe(1);
+    expect(asked).toMatchObject([{ kind: 'scopes', add: ['admin:org'], afterFailure: true }]);
+    expect(quiet.ctx.stderr).toContain('(A window opened to give the GitHub sign-in here that permission. Approve there, then run gh student whoami again.)');
+    release(null);
+  });
+});
+
 describe('github-needed: gh and git', () => {
   let off = () => {};
   let asked: GitHubNeed[] = [];
@@ -212,13 +291,16 @@ describe('github-needed: links and installs from GitHub', () => {
       [`https://raw.githubusercontent.com/a/b/${COMMIT}/app.json`]: MANIFEST,
       'https://api.github.com/repos/a/b/contents/.tabcomputer/run.sh?ref=HEAD': SCRIPT,
       'https://raw.githubusercontent.com/a/b/HEAD/.tabcomputer/run.sh': SCRIPT,
+      // (the account is there for anyone to see, and so is its public repository `open`, which has no script)
+      'https://api.github.com/users/a': '{"login":"a"}',
+      'https://api.github.com/repos/a/open': '{"full_name":"a/open","private":false}',
     };
     const fetchFn = async (url: string, init?: RequestInit) => {
       const auth = (init?.headers as Record<string, string> | undefined)?.authorization;
       calls.push({ url, auth });
       const api = url.startsWith('https://api.github.com/');
       if (!auth && opts.limited && api) return new Response('{"message":"API rate limit exceeded"}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
-      if (!auth && opts.isPrivate) return new Response('Not Found', { status: 404 });
+      if (!auth && opts.isPrivate && !url.startsWith('https://api.github.com/users/')) return new Response('Not Found', { status: 404 });
       if (auth && !api) return new Response('preflight refused', { status: 403 }); // the raw host takes no token from a page
       return files[url] === undefined ? new Response('Not Found', { status: 404 }) : new Response(files[url], { status: 200, headers: { 'content-type': api ? 'application/vnd.github.raw+json' : 'text/plain' } });
     };
@@ -297,7 +379,38 @@ describe('github-needed: links and installs from GitHub', () => {
     const none = github({});
     await expect(fetchSignedIn('gh:a/zzz', (token) => fetchGhApp({ owner: 'a', repo: 'zzz', path: '' }, none.fetchFn, token)))
       .rejects.toThrow('github.com/a/zzz does not exist (or this GitHub account cannot read it)');
-    expect(none.calls).toHaveLength(2);
+    // (the visitor's try, whether the account exists, the try with the token)
+    expect(none.calls.map((c) => [c.url.replace('https://api.github.com/', ''), !!c.auth])).toEqual([['repos/a/zzz/commits/HEAD', false], ['users/a', false], ['repos/a/zzz/commits/HEAD', true]]);
+  });
+
+  it('a 404 that no sign-in would change is said at once, and nobody is asked', async () => {
+    const { fetchFn, calls } = github({});
+    const reports: string[] = [];
+    const link = (search: string) => handleRunLink({
+      search, origin: 'https://tab.example', home: '/home/user', framed: false, fetch: fetchFn, github: fetchSignedIn,
+      fs: { mkdir: async () => {}, writeFile: async () => {}, exists: async () => false },
+      cleanUrl: () => {}, confirm: async () => true, openTerminal: () => {}, report: (m) => { reports.push(m); },
+    });
+    // a typo in the account's name: GitHub has no such account, so it has no private repository either
+    expect(await link('?run=gh:nobody/missing')).toBe('refused');
+    expect(reports.pop()).toBe('github.com/nobody/missing does not exist: GitHub has no account named nobody');
+    // a public repository without the script: the repository answers a visitor for itself
+    expect(await link('?run=gh:a/open')).toBe('refused');
+    expect(reports.pop()).toBe('github.com/a/open has no .tabcomputer/run.sh');
+    expect(asked).toEqual([]);
+    // the same for an app in a repository
+    await expect(fetchSignedIn('gh:nobody/tool', (token) => fetchGhApp({ owner: 'nobody', repo: 'tool', path: '' }, fetchFn, token))).rejects.toThrow('github.com/nobody/tool does not exist: GitHub has no account named nobody');
+    expect(asked).toEqual([]);
+    // an account that exists and a repository GitHub does not show a visitor: it may be private, so the sign-in is offered
+    answer = null;
+    expect(await link('?run=gh:a/secret')).toBe('refused');
+    expect(asked).toEqual([{ action: 'gh:a/secret', kind: 'private' }]);
+    expect(reports.pop()).toBe('github.com/a/secret, .tabcomputer/run.sh does not exist, or it is private: a private repository needs a GitHub sign-in');
+    // GitHub's limit reached while asking: nothing is known, so the visitor's message stands
+    expect(await githubNotThere('a', 'b', async () => new Response('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }), 'x.sh')).toBeNull();
+    expect(await githubNotThere('a', 'b', async () => { throw new Error('offline'); })).toBeNull();
+    // every question went to GitHub's API, as a visitor
+    expect(calls.filter((c) => c.auth).length).toBe(0);
   });
 
   it('the token goes to GitHub only, and a redirected answer stays a redirect', async () => {

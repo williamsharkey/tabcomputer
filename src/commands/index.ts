@@ -32,6 +32,12 @@ export interface CommandContext {
   /** false when stderr goes to a file or pipe (2> file, 2>&1 with stdout redirected) */
   stderrIsTTY?: boolean;
   /**
+   * The end of what a program this command ran wrote straight to the terminal
+   * as its stderr (a gh extension), which `stderr` then does not hold: read by
+   * whoever decides what to do about the failure (src/github-needed.ts).
+   */
+  stderrSeen?: string;
+  /**
    * The command's stdin is fd 0 of the kernel process ctx.shell runs as, not
    * ctx.stdin: read it with ctx.shell.kernelStdio (src/shell-stdio.ts).
    * Reading ctx.stdin instead still works (the command then runs twice).

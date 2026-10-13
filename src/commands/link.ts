@@ -70,6 +70,7 @@ export interface LinkInput {
   cwd?: string;
   files?: Map<string, FileNow>;
   linked?: Map<string, string>;
+  arrived?: { path: string; size: number }[];
 }
 
 export interface MadeLink {
@@ -99,7 +100,7 @@ export async function buildLink(input: LinkInput): Promise<MadeLink> {
   let script = input.script;
   let rows: TallyRow[] = [];
   if (script === undefined) {
-    trimmed = trimSession({ entries: input.entries ?? [], edits: input.edits, home: input.home ?? '/home/user', cwd: input.cwd ?? input.home ?? '/home/user', files: input.files ?? new Map(), linked: input.linked });
+    trimmed = trimSession({ entries: input.entries ?? [], edits: input.edits, home: input.home ?? '/home/user', cwd: input.cwd ?? input.home ?? '/home/user', files: input.files ?? new Map(), linked: input.linked, arrived: input.arrived });
     script = trimmed.script;
     // What the kept lines downloaded: every time one of them ran and did not fail (the first `pip install` is the one that fetched)
     const keptLines = new Set(trimmed.kept.map((k) => k.line));
@@ -110,7 +111,7 @@ export async function buildLink(input: LinkInput): Promise<MadeLink> {
 }
 
 /** This tab's session, with what its edited files hold now */
-export async function gatherSession(fs: Pick<FileSystem, 'stat' | 'readFile'>, home: string, cwd: string): Promise<Required<Pick<LinkInput, 'entries' | 'edits' | 'home' | 'cwd' | 'files' | 'linked'>>> {
+export async function gatherSession(fs: Pick<FileSystem, 'stat' | 'readFile'>, home: string, cwd: string): Promise<Required<Pick<LinkInput, 'entries' | 'edits' | 'home' | 'cwd' | 'files' | 'linked' | 'arrived'>>> {
   const log = sessionLog();
   const files = new Map<string, FileNow>();
   for (const p of editedPaths(log)) files.set(p, await fileNow(fs, p));
@@ -122,7 +123,13 @@ export async function gatherSession(fs: Pick<FileSystem, 'stat' | 'readFile'>, h
     const text = await fs.readFile(`${home}/run/${m[1]}/.recipe.sh`, 'utf8').catch(() => null);
     if (typeof text === 'string') linked.set(m[1], text);
   }
-  return { entries: log.entries, edits: log.edits, home, cwd, files, linked };
+  // What came from the person's own computer and is still here
+  const arrived: { path: string; size: number }[] = [];
+  for (const a of log.arrivals) {
+    const st = await fs.stat(a.path).catch(() => null);
+    if (st && st.type === 'file') arrived.push({ path: a.path, size: st.size });
+  }
+  return { entries: log.entries, edits: log.edits, home, cwd, files, linked, arrived };
 }
 
 /** The site's origin for links made here (a guest's page shares the site's link, not its own host's) */

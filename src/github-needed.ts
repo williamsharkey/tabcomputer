@@ -21,7 +21,7 @@
 import type { CommandContext } from './commands/index';
 import { networkCredential, setNetworkStatus } from './net-signin';
 
-export type GitHubNeedKind = 'private' | 'rate-limit' | 'account';
+export type GitHubNeedKind = 'private' | 'rate-limit' | 'account' | 'scopes';
 
 export interface GitHubNeed {
   /** What the user was doing, as they typed it: "git clone", "gh issue list" */
@@ -29,6 +29,10 @@ export interface GitHubNeed {
   kind: GitHubNeedKind;
   /** Nothing is waiting for the answer: the command has already failed */
   afterFailure?: boolean;
+  /** kind 'scopes': the permissions the sign-in here lacks, which are being added */
+  add?: string[];
+  /** kind 'scopes': every permission to ask GitHub for (what the sign-in has, and `add`) */
+  scopes?: string[];
 }
 
 /** Why GitHub wants the sign-in, one sentence per kind */
@@ -36,7 +40,63 @@ export const GITHUB_NEED_REASON: Record<GitHubNeedKind, string> = {
   private: 'GitHub did not give this repository to a visitor who is not signed in. The repository is private, or its name is wrong.',
   'rate-limit': 'GitHub allows 60 requests an hour from one network address without a sign-in, and they are used up. A signed-in account gets 5,000.',
   account: 'GitHub only does this for a signed-in account.',
+  scopes: 'The GitHub sign-in on this computer does not allow it yet.',
 };
+
+/** What each permission GitHub calls a scope lets a program do, in plain words (after "to …") */
+const SCOPE_WORDS: Record<string, string> = {
+  repo: 'read and change your repositories, the private ones too',
+  public_repo: 'read and change your public repositories',
+  'repo:status': 'read and set commit statuses',
+  delete_repo: 'delete repositories',
+  workflow: 'change GitHub Actions workflow files',
+  gist: 'create and change gists',
+  user: 'read and change your profile',
+  'read:user': 'read your profile',
+  'user:email': 'see your email addresses',
+  'user:follow': 'follow and unfollow people',
+  'read:org': 'see which organizations and teams you belong to',
+  'write:org': 'change who belongs to your organizations and their teams',
+  'admin:org': 'manage your organizations, their teams and their members',
+  project: 'read and change projects',
+  'read:project': 'read projects',
+  codespace: 'create and manage codespaces',
+  notifications: 'read your notifications',
+  'read:packages': 'download packages',
+  'write:packages': 'publish packages',
+  'delete:packages': 'delete packages',
+  'admin:public_key': 'manage the SSH keys of your account',
+  'admin:repo_hook': 'manage the webhooks of your repositories',
+  'admin:org_hook': 'manage the webhooks of your organizations',
+  'admin:gpg_key': 'manage the GPG keys of your account',
+  security_events: 'read and change security alerts',
+  'read:discussion': 'read team discussions',
+  'write:discussion': 'read and write team discussions',
+};
+const SCOPE_NAME = /^[a-z][a-z_]*(:[a-z_]+)?$/;
+
+/** The permissions being added, as a sentence: "This adds permission to manage your organizations, their teams and their members (admin:org)." */
+export function scopesSentence(add: string[]): string {
+  const said = add.map((s) => (SCOPE_WORDS[s] ? `${SCOPE_WORDS[s]} (${s})` : `do what GitHub calls ${s}`));
+  if (said.length === 1) return `This adds permission to ${said[0]}.`;
+  return `This adds ${said.length} permissions: to ${said.slice(0, -1).join('; to ')}; and to ${said[said.length - 1]}.`;
+}
+
+/**
+ * The scopes a failed command's stderr says its token lacks, or null. gh and
+ * its extensions name them in a few forms:
+ *   … is missing scopes gh student needs (admin:org, read:org, repo, workflow) …
+ *   error: your authentication token is missing required scopes [read:project]
+ *   This API operation needs the "read:project" scope. To request it, run:  gh auth refresh -s read:project
+ */
+export function missingScopes(stderr: string): string[] | null {
+  const found = new Set<string>();
+  const take = (list: string) => { for (const s of list.split(/[\s,]+/)) { const name = s.replace(/^["'`]+|["'`.]+$/g, ''); if (SCOPE_NAME.test(name)) found.add(name); } };
+  for (const m of stderr.matchAll(/missing (?:the )?(?:required |necessary )?scopes?[^\n([]*[([]([^)\]\n]+)[)\]]/gi)) take(m[1]);
+  for (const m of stderr.matchAll(/needs? the ["'`]([a-z_:]+)["'`] scope/gi)) take(m[1]);
+  for (const m of stderr.matchAll(/gh auth refresh(?:\s+(?:-h|--hostname)\s+\S+)?\s+(?:-s|--scopes)[ =]([a-z_:,]+)/gi)) take(m[1]);
+  return found.size && found.size <= 20 ? [...found] : null;
+}
 
 /** What a failed command's stderr says about a missing sign-in, or null */
 export function githubSignInWanted(stderr: string): GitHubNeedKind | null {
@@ -64,10 +124,14 @@ export function resetGitHubNeedDecline(): void {
   declinedUntil = 0;
 }
 
-/** Ask for the sign-in. The token, or null: no UI, "not now", cancelled, or asked and declined in the last minute. */
+/**
+ * Ask for the sign-in (kind 'scopes': for more permissions on the sign-in
+ * that is there). The token, or null: no UI, "not now", cancelled, or asked
+ * and declined in the last minute.
+ */
 export function askGitHubSignIn(need: GitHubNeed): Promise<string | null> {
   const saved = networkCredential();
-  if (saved) return Promise.resolve(saved);
+  if (saved && need.kind !== 'scopes') return Promise.resolve(saved);
   if (pending) return pending;
   if (!asker || Date.now() < declinedUntil) return Promise.resolve(null);
   pending = asker(need).then((tok) => {
@@ -79,10 +143,10 @@ export function askGitHubSignIn(need: GitHubNeed): Promise<string | null> {
 }
 
 /** The terminal UI has no sheet: open the one-time-code panel directly */
-export async function deviceFlowAsker(): Promise<string | null> {
+export async function deviceFlowAsker(need?: GitHubNeed): Promise<string | null> {
   const gh = await import('./github-auth');
   try {
-    const code = await gh.requestDeviceCode(gh.DEFAULT_GITHUB_SCOPES);
+    const code = await gh.requestDeviceCode(need?.scopes ?? gh.DEFAULT_GITHUB_SCOPES);
     const panel = gh.openGitHubLoginPanel(code);
     try {
       const token = await gh.pollForToken(code, { signal: panel.signal, onStatus: (s) => panel.setStatus(s === 'slow_down' ? 'Still waiting…' : 'Waiting for you to approve on GitHub…') });
@@ -131,6 +195,59 @@ export async function fetchSignedIn<T>(action: string, run: (token: string | nul
   }
 }
 
+/** A scope that has others inside it: a token with the first can do what the others allow */
+const HOLDS: Record<string, string[]> = {
+  repo: ['public_repo', 'repo:status', 'repo_deployment', 'security_events'],
+  user: ['read:user', 'user:email', 'user:follow'],
+  'admin:org': ['write:org', 'read:org'], 'write:org': ['read:org'],
+  project: ['read:project'],
+  'write:packages': ['read:packages'],
+  'write:discussion': ['read:discussion'],
+};
+
+let scopesReader: ((token: string) => Promise<string[]>) | null = null;
+/** Tests: say what scopes a token has without asking GitHub */
+export function setTokenScopesReader(fn: ((token: string) => Promise<string[]>) | null): void { scopesReader = fn; }
+
+/**
+ * A signed-in command failed, and what it printed names scopes its token
+ * lacks (tabcomputer#153: `gh student` needs admin:org). The tab's sign-in can
+ * be given them: ask for exactly those, and run the command again. A token
+ * the person exported themselves is theirs to re-issue, so nothing is asked.
+ */
+async function retryWithScopes(ctx: CommandContext, action: string, run: () => Promise<number>, args: string[], code: number): Promise<number> {
+  const named = missingScopes(ctx.stderr + (ctx.stderrSeen ?? ''));
+  const saved = networkCredential();
+  const own = ctx.env['GH_TOKEN'] || ctx.env['GITHUB_TOKEN'];
+  if (!named || !asker || !saved || (own && own !== saved)) return code;
+  let have: string[];
+  try { have = await (scopesReader ?? (async (t) => (await import('./github-auth')).tokenScopes(t)))(saved); } catch { return code; }
+  const held = new Set([...have, ...have.flatMap((s) => HOLDS[s] ?? [])]);
+  const add = named.filter((s) => !held.has(s));
+  // (it has them all: the failure is about something else)
+  if (!add.length) return code;
+  const { DEFAULT_GITHUB_SCOPES } = await import('./github-auth');
+  const need: GitHubNeed = { action, kind: 'scopes', add, scopes: [...new Set([...DEFAULT_GITHUB_SCOPES, ...have, ...add])] };
+  if (!interactive(ctx)) {
+    if (Date.now() >= declinedUntil && !pending) {
+      void askGitHubSignIn({ ...need, afterFailure: true });
+      ctx.stderr += `(A window opened to give the GitHub sign-in here ${add.length === 1 ? 'that permission' : 'those permissions'}. Approve there, then run ${action} again.)\n`;
+    }
+    return code;
+  }
+  const say = (s: string) => ctx.terminal!.writeOutput(s.replace(/\n/g, '\r\n'));
+  say(`${action} needs ${add.length === 1 ? 'a permission' : 'permissions'} the GitHub sign-in here does not have (${add.join(', ')}). A window opened to add ${add.length === 1 ? 'it' : 'them'}.\n`);
+  const token = await askGitHubSignIn(need);
+  if (!token) return code; // the first run's message stands
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN']) if (ctx.env[name]) ctx.env[name] = token;
+  say(`GitHub added ${add.length === 1 ? 'it' : 'them'}. Running ${action} again.\n`);
+  ctx.args = args;
+  ctx.stdout = '';
+  ctx.stderr = '';
+  ctx.stderrSeen = '';
+  return run();
+}
+
 /** A person is at this command (`fetchSignedIn`'s `wait`) */
 export function atTerminal(ctx: CommandContext): boolean {
   return interactive(ctx) && ctx.env['TABCOMPUTER_GITHUB_PROMPT'] !== '0';
@@ -144,7 +261,8 @@ export function atTerminal(ctx: CommandContext): boolean {
 export async function retrySignedIn(ctx: CommandContext, action: string, run: () => Promise<number>): Promise<number> {
   const args = [...ctx.args];
   const code = await run();
-  if (code === 0 || hasToken(ctx) || ctx.env['TABCOMPUTER_GITHUB_PROMPT'] === '0') return code;
+  if (code === 0 || ctx.env['TABCOMPUTER_GITHUB_PROMPT'] === '0') return code;
+  if (hasToken(ctx)) return retryWithScopes(ctx, action, run, args, code);
   const kind = githubSignInWanted(ctx.stderr);
   if (!kind || !asker) return code;
   if (!interactive(ctx)) {

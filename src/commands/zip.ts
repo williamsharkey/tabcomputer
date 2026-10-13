@@ -180,6 +180,41 @@ function writeZip(members: Member[]): Uint8Array {
   return out;
 }
 
+/** A zip of these files, each deflated (stored where that is not smaller). For callers that hold the bytes: an app's export. */
+export async function zipFiles(files: { name: string; bytes: Uint8Array; mtime?: number }[]): Promise<Uint8Array> {
+  const members: Member[] = [];
+  for (const f of files) {
+    const packed = f.bytes.length ? await deflateRaw(f.bytes) : f.bytes;
+    const stored = packed.length >= f.bytes.length;
+    members.push({
+      name: f.name, method: stored ? 0 : 8, crc: crc32(f.bytes), csize: stored ? f.bytes.length : packed.length, usize: f.bytes.length,
+      ...toDos(f.mtime ?? Date.now()), mode: 0o100644, data: stored ? f.bytes : packed,
+    });
+  }
+  return writeZip(members);
+}
+
+/**
+ * A zip's files by name, folder entries left out. Null: not a zip. Throws an
+ * Error (its message says which) for a member whose data does not check out,
+ * and when the files pass `max` (how many, and their size unpacked).
+ */
+export async function unzipFiles(data: Uint8Array, max: { files: number; bytes: number }): Promise<Map<string, Uint8Array> | null> {
+  const members = readZip(data);
+  if (!members) return null;
+  const out = new Map<string, Uint8Array>();
+  let total = 0;
+  for (const m of members) {
+    if (m.name.endsWith('/')) continue;
+    total += m.usize;
+    if (out.size >= max.files || total > max.bytes) throw new Error('it holds more than this tab takes from one file');
+    const bytes = await memberBytes(m);
+    if (!bytes) throw new Error(`${m.name.slice(0, 80)} in it is damaged`);
+    out.set(m.name, bytes);
+  }
+  return out;
+}
+
 async function fileBytes(ctx: CommandContext, path: string): Promise<Uint8Array> {
   const data = await ctx.fs.readFile(path);
   return data instanceof Uint8Array ? data : new TextEncoder().encode(data as unknown as string);

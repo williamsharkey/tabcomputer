@@ -14,7 +14,10 @@ import type { FileSystem } from '@shiro/filesystem';
 import type { Shell } from '@shiro/shell';
 import { appCmd } from '@shiro/commands/app';
 import { validateManifest, parseManifest, manifestSentences, describeManifest, ManifestError, MANIFEST_VERSION, type AppManifest } from '@shiro/apps/manifest';
-import { argvFor, inputValue, outputName, placeholders, rulesOf, shellLineFor, splitRun, type RunRules } from '@shiro/apps/declare';
+import { argvFor, inputValue, outputName, placeholders, rulesOf, shellLineFor, sniffKind, splitRun, type RunRules } from '@shiro/apps/declare';
+import { buildInstallPrompt, promptWords } from '@shiro/apps/prompt';
+import { installProgress } from '@shiro/apps/progress';
+import type { InstallPromptInfo } from '@shiro/apps/links';
 import { configureApps, instanceFor, resetApps, setTabJsSource, suppliedPage, PAGE_JS_PATH, type AppInstance } from '@shiro/apps/runtime';
 import { loadManifest } from '@shiro/apps/registry';
 
@@ -260,13 +263,112 @@ describe('what a person reads before installing', () => {
     expect(shell).toContain('Tidy runs this shell line once, with all the files you give it: jq . {in} | sort');
     expect(shell).toContain('A shell line can do everything a terminal here can: it can read and change every file in this tab.');
     expect(shell).toContain('The result is named all.txt.');
-    expect(shell).toContain('Before its first start it installs the toolchain python, and the Debian packages jq and moreutils.');
+    expect(shell).toContain('Before its first start it installs the Python 3 toolchain, and the Debian packages jq and moreutils.');
+    // a set named in `needs` is said by its title, not as a Debian package
+    expect(manifestSentences(validateManifest({ ...FILES, needs: ['c'] }))).toContain('Before its first start it installs the C and C++ toolchain.');
     expect(validateManifest({ ...FILES, shell: true }).access).toMatchObject({ shell: true, commands: [] });
     expect(manifestSentences(validateManifest({ ...TABLE, table: 'p.sqlite' }))).toContain('It runs the program sqlite3 on that file, and no other program.');
     // the same sentences where a list is wanted (app list -l); an app with its own page keeps its labelled lines
     expect(describeManifest(m).map((l) => l.text)).toEqual(manifestSentences(m).slice(1));
     expect(manifestSentences(validateManifest({ manifest: 1, id: 'demo', name: 'Demo', entry: 'public' }))).toEqual([]);
     expect(describeManifest(validateManifest({ manifest: 1, id: 'demo', name: 'Demo', entry: 'public', needs: ['jq'] })).find((l) => l.label === 'Installs')!.text).toMatch(/^jq \(Debian packages/);
+    // without `out` a result is named after its file (and for what its bytes are: "results" above)
+    expect(manifestSentences(validateManifest(FILES))).toContain('Each result is named after the file it came from.');
+  });
+
+  it('the install prompt says the fewest things: the question, where from, the command, what it installs, one sentence on what it can touch', () => {
+    const info = (raw: unknown, over: Partial<InstallPromptInfo> = {}): InstallPromptInfo => ({ manifest: validateManifest(raw, { id: 'x' }), manifestText: JSON.stringify(raw), from: 'this link', guests: false, confined: true, ...over });
+    const scans = promptWords(info({ run: 'tesseract {in} stdout pdf', accept: ['.png', '.jpg'], name: 'Make scans searchable', needs: ['tesseract-ocr'] }));
+    expect(scans.title).toBe('Install Make scans searchable?');
+    expect(scans.from).toBe('From this link. Not reviewed by tabcomputer.');
+    expect(scans.shown).toEqual([
+      { text: 'Make scans searchable runs this command once for each file you give it:', code: 'tesseract {in} stdout pdf' },
+      { text: 'Before its first start it installs the Debian package tesseract-ocr.' },
+      { text: 'tesseract is an ordinary program in this tab: it can read and change every file here.' },
+    ]);
+    // the rest is one click away
+    expect(scans.more.map((x) => x.text)).toEqual([
+      'Each result is named after the file it came from.',
+      'Its page may use only its own data folder, and is kept from other sites.',
+      'Its page runs on an address of its own: it cannot read this tab\'s files or sign-ins.',
+    ]);
+    // a table kept as CSV runs no program: the one sentence is about its page, and is true where pages are not confined
+    const table = { name: 'Expenses', about: 'A list of what was spent.', table: 'expenses.csv', columns: ['What'] };
+    expect(promptWords(info(table)).shown.map((x) => x.text)).toEqual([
+      'A list of what was spent.', 'Expenses keeps a table in expenses.csv, in its own data folder.', 'It runs no program, and its page may use only its own data folder.',
+    ]);
+    expect(promptWords(info(table, { confined: false })).shown.at(-1)!.text).toBe('This server gives app pages no address of their own: its page runs with this tab\'s own access.');
+    expect(promptWords(info({ ...FILES, shell: true, run: 'jq . {in} | sort' })).shown.at(-1)!.text).toBe('A shell line can do everything a terminal here can: it can read and change every file in this tab.');
+    expect(promptWords(info(FILES, { replaces: 'dir:/x' })).shown.at(-1)!.text).toBe('It replaces the Tidy installed here.');
+
+    // an app with a page of its own: only the lines that ask for something, then one sentence
+    const page = promptWords(info({ manifest: 1, id: 'demo', name: 'Demo', entry: 'public' }));
+    expect(page.shown).toEqual([{ text: 'Its page runs on an address of its own: it cannot read this tab\'s files or sign-ins.' }]);
+    expect(page.more[0].rows!.map((r) => r[0])).toEqual(['App', 'Runs', 'Commands', 'Files', 'Network']);
+    const backed = promptWords(info({ manifest: 1, id: 'demo', name: 'Demo', entry: 'public', backend: { start: 'node server.js' }, access: { fs: ['~/Documents'], network: true } }));
+    expect(backed.shown[0].rows!.map((r) => r[0])).toEqual(['Runs', 'Files', 'Network']);
+    expect(backed.shown[1].text).toBe('What it runs are ordinary programs in this tab: they can read and change every file here and use its sign-ins (Claude, GitHub).');
+    expect(backed.more.at(-1)!.text).toMatch(/except through what is listed here\. The list is what the app says it does, not a limit on those programs\.$/);
+  });
+
+  it('the prompt has two buttons, Cancel and Install; a guest is a link under "What it can reach"', () => {
+    const raw = { name: 'Tidy', about: 'Tidies <b>x</b>', run: 'jq . {in}' };
+    const choices: string[] = [];
+    const root = buildInstallPrompt({ manifest: validateManifest(raw, { id: 'tidy' }), manifestText: JSON.stringify(raw), from: 'this link', guests: true, confined: true }, (c) => choices.push(c));
+    expect(root.querySelector('h3')!.textContent).toBe('Install Tidy?');
+    expect(root.textContent).toContain('Tidies <b>x</b>');
+    expect(root.querySelectorAll('b')).toHaveLength(0);
+    expect(root.querySelector('code')!.textContent).toBe('jq . {in}');
+    const actions = [...root.querySelectorAll('.tc-app-prompt-actions button')];
+    expect(actions.map((b) => [(b as HTMLElement).dataset.act, b.textContent])).toEqual([['cancel', 'Cancel'], ['install', 'Install']]);
+    expect([...root.querySelectorAll('summary')].map((s) => s.textContent)).toEqual(['What it can reach', 'app.json, as it will be installed']);
+    const guest = root.querySelector('details [data-act=guest]') as HTMLButtonElement;
+    expect(guest.textContent).toBe('open it in a guest');
+    // off for the first moment, like Install
+    expect(guest.disabled).toBe(true);
+    (actions[1] as HTMLButtonElement).click();
+    expect(choices).toEqual([]);
+    (actions[0] as HTMLButtonElement).click();
+    expect(choices).toEqual(['cancel']);
+    const none = buildInstallPrompt({ manifest: validateManifest(raw, { id: 'tidy' }), manifestText: '{}', from: 'this link', guests: false, confined: true }, () => {});
+    expect(none.querySelector('[data-act=guest]')).toBeNull();
+  });
+});
+
+describe('what a result is, from its first bytes', () => {
+  const bytes = (...b: number[]) => new Uint8Array(b);
+  const text = (s: string) => new TextEncoder().encode(s);
+  it('names the kinds a program is likely to write', () => {
+    expect(sniffKind(text('%PDF-1.7\n%âãÏÓ'))).toBe('pdf');
+    expect(sniffKind(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0))).toBe('png');
+    expect(sniffKind(bytes(0xff, 0xd8, 0xff, 0xe0, 0, 16))).toBe('jpg');
+    expect(sniffKind(text('GIF89a....'))).toBe('gif');
+    expect(sniffKind(bytes(0x1f, 0x8b, 8, 0))).toBe('gz');
+    const zip = (first: string, body = '') => { const n = text(first), b = text(body); const h = new Uint8Array(30 + n.length + b.length); h.set([0x50, 0x4b, 3, 4]); h[26] = n.length; h.set(n, 30); h.set(b, 30 + n.length); return h; };
+    expect(sniffKind(zip('hello.txt', 'hi'))).toBe('zip');
+    expect(sniffKind(zip('mimetype', 'application/vnd.oasis.opendocument.text'))).toBe('odt');
+    expect(sniffKind(zip('mimetype', 'application/vnd.oasis.opendocument.spreadsheet'))).toBe('ods');
+    expect(sniffKind(zip('mimetype', 'application/epub+zip'))).toBe('epub');
+    expect(sniffKind(zip('[Content_Types].xml', '<Types/>PK\x03\x04..word/document.xml'))).toBe('docx');
+    expect(sniffKind(zip('[Content_Types].xml', '<Types/>PK\x03\x04..xl/workbook.xml'))).toBe('xlsx');
+    expect(sniffKind(zip('[Content_Types].xml', '<Types/>PK\x03\x04..ppt/presentation.xml'))).toBe('pptx');
+  });
+  it('text is json, html, svg or txt; what it cannot tell is nothing', () => {
+    expect(sniffKind(text('{\n  "n": 1\n}\n'))).toBe('json');
+    expect(sniffKind(text('[1, 2, 3]'))).toBe('json');
+    expect(sniffKind(text('[1] 42\n'))).toBe('txt');
+    expect(sniffKind(text('{"a":1}\n{"a":2}\n'))).toBe('txt');
+    expect(sniffKind(text('{"a": [1, 2'), false)).toBe('json');
+    expect(sniffKind(text('<!DOCTYPE html><title>x</title>'))).toBe('html');
+    expect(sniffKind(text('﻿  <html lang="en">'))).toBe('html');
+    expect(sniffKind(text('<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBe('svg');
+    expect(sniffKind(text('Name,Email\nAda,ada@example.com\n'))).toBe('txt');
+    expect(sniffKind(text('naïve café'))).toBe('txt');
+    // a part of a file that ends inside a character is still text
+    expect(sniffKind(text('price: 3 €').subarray(0, 11), false)).toBe('txt');
+    expect(sniffKind(bytes())).toBe('');
+    expect(sniffKind(bytes(0, 1, 2, 3, 0xff, 0xfe))).toBe('');
+    expect(sniffKind(text('   \n'))).toBe('');
   });
 });
 
@@ -342,6 +444,55 @@ describe('a declared app, run through the tab', () => {
     // a new page: what the last one left is gone
     await inst.host.call('job.start', { session: 't' }, () => {}, () => {});
     expect(await fs.exists(`${inst.dataDir}/out/s`)).toBe(false);
+  });
+
+  it('files: without out, a result that is another kind of file than its input is named for what it is', async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    await fs.writeFile('/tmp/pdf-head', '%PDF-1.4\n');
+    // a program that writes a PDF to standard output, in an app whose author gave no `out`
+    const scans = await open('scans', { name: 'Scans', run: 'cat /tmp/pdf-head {in}' });
+    const first = await job(scans, { files: [await put(scans, 1, 'p.png', png as unknown as string)] });
+    expect(first).toMatchObject({ code: 0, name: 'p.pdf', out: `${scans.dataDir}/out/s/p.pdf` });
+    expect(((await fs.readFile(first.out!)) as Uint8Array).subarray(0, 5)).toEqual(new TextEncoder().encode('%PDF-'));
+    expect(await fs.exists(`${scans.dataDir}/out/s/p.png`)).toBe(false);
+    // a second p.png, and one in a folder: no two results share a name
+    expect((await job(scans, { files: [await put(scans, 2, 'p.png', png as unknown as string)] })).name).toBe('p (2).pdf');
+    expect((await job(scans, { files: [await put(scans, 3, 'old/p.png', png as unknown as string)] })).name).toBe('old/p.pdf');
+    // the same kind of file as the input keeps the input's name, whatever its extension is
+    const same = await open('same', { name: 'Same', run: 'cat {in}' });
+    expect((await job(same, { files: [await put(same, 1, 'list.csv', 'a,b\n1,2\n')] })).name).toBe('list.csv');
+    expect((await job(same, { files: [await put(same, 2, 'notes.md', '# Notes\n')] })).name).toBe('notes.md');
+    expect((await job(same, { files: [await put(same, 3, 'data.json', '{"n":1}')] })).name).toBe('data.json');
+    expect((await job(same, { files: [await put(same, 4, 'photo.PNG', png as unknown as string)] })).name).toBe('photo.PNG');
+    // text made from a picture is .txt; JSON made from text is .json
+    const count = await open('count-bytes', { name: 'Count', run: 'wc -c {in}' });
+    expect((await job(count, { files: [await put(count, 1, 'p.png', png as unknown as string)] })).name).toBe('p.txt');
+    await fs.writeFile('/tmp/json-head', '{"from": "');
+    await fs.writeFile('/tmp/json-tail', '"}');
+    const wrap = await open('wrap', { name: 'Wrap', run: 'cat /tmp/json-head {in} /tmp/json-tail' });
+    expect((await job(wrap, { files: [await put(wrap, 1, 'word.txt', 'hello')] })).name).toBe('word.json');
+    // with `out` the author's name stands
+    const named = await open('named', { name: 'Named', run: 'cat /tmp/pdf-head {in}', out: '{name}.out' });
+    expect((await job(named, { files: [await put(named, 1, 'p.png', png as unknown as string)] })).name).toBe('p.out');
+  });
+
+  it('needs: apt\'s own count is said as it goes: which package of how many', () => {
+    const said = installProgress();
+    expect(said('Reading package lists...')).toBeNull();
+    expect(said('Get:1 http://deb.debian.org/debian trixie/main amd64 libfoo amd64 1.0 [12 kB]')).toBe('The programs are being installed. This takes a few minutes.');
+    const counted = installProgress();
+    expect(counted('0 upgraded, 3 newly installed, 0 to remove and 0 not upgraded.')).toBeNull();
+    expect(counted('Get:1 http://deb.debian.org/debian trixie/main amd64 libfoo amd64 1.0 [12 kB]')).toBe('Package 1 of 3 is being downloaded.');
+    expect(counted('Get:2 http://deb.debian.org/debian trixie/main amd64 libbar amd64 1.0 [9 kB]')).toBe('Package 2 of 3 is being downloaded.');
+    expect(counted('Fetched 31 kB in 1s (25 kB/s)')).toBeNull();
+    expect(counted('Selecting previously unselected package libfoo.')).toBeNull();
+    expect(counted('Preparing to unpack .../libfoo_1.0_amd64.deb ...')).toBeNull();
+    expect(counted('Unpacking libfoo (1.0) ...')).toBe('Package 1 of 3 is being unpacked.');
+    expect(counted('Setting up libfoo (1.0) ...')).toBe('Package 1 of 3 is being set up.');
+    for (let i = 0; i < 5; i++) counted('Setting up more (1.0) ...');
+    expect(counted('Setting up tesseract-ocr (5.5) ...')).toBe('Package 3 of 3 is being set up.');
+    // the server's own sentences pass through as before
+    expect(counted('The server is installing package 12 of 71 for tesseract-ocr.')).toMatch(/^The server is installing package 12 of 71 for tesseract-ocr\. This build happens once/);
   });
 
   it('files: a file\'s name is never shell text or an option, here in a real run', async () => {
@@ -438,7 +589,10 @@ describe('a declared app, run through the tab', () => {
   it('the page is tabcomputer\'s: one script for every such app, and nothing of the app\'s folder is served', async () => {
     const inst = await open('tidy', { name: 'Tidy & "x"', run: 'jq . {in}' });
     const page = await inst.fetch({ method: 'GET', path: '/' });
-    expect(page.body).toBe(suppliedPage(inst.manifest));
+    expect(page.body).toBe(suppliedPage(inst.manifest, "dark"));
+    // (written in the appearance of the moment, so the dark one shows no white first)
+    expect(String(page.body)).toContain(`<html lang="en" data-theme="dark">`);
+    expect(String(page.body)).toContain("html { background: #1b1d29; color-scheme: dark; }");
     expect(String(page.body)).toContain('<title>Tidy &#38; &#34;x&#34;</title>');
     expect(String(page.body)).toContain(`<script src="${PAGE_JS_PATH}"></script>`);
     expect((await inst.fetch({ method: 'GET', path: PAGE_JS_PATH })).body).toBe('// page.js');

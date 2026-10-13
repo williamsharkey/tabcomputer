@@ -2485,7 +2485,8 @@ async function handleAppHost(req, res, cfg) {
   if (pathname === '/__tabcomputer/frame.html') {
     const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
     const html = `<!doctype html><html><head><meta charset="utf-8"><title></title>`
-      + `<style>html,body{margin:0;height:100%;overflow:hidden;background:#fff;font:14px system-ui,sans-serif}iframe{display:block;width:100%;height:100%;border:0}</style></head>`
+      // (no background of its own: the tab paints the frame in the app page's color, so nothing is white for a moment in the dark appearance)
+      + `<style>html,body{margin:0;height:100%;overflow:hidden;font:14px system-ui,sans-serif}iframe{display:block;width:100%;height:100%;border:0}</style></head>`
       + `<body><script src="/__tabcomputer/frame.js" data-apps="${esc(framers.join(' '))}" data-zone="${esc(cfg.suffix)}"></script></body></html>`;
     res.writeHead(200, {
       ...headers, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',

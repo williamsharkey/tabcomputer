@@ -12,7 +12,7 @@ import { createTestShell, run } from './helpers';
 import { SESSIONS, HOME } from './fixtures/link-sessions';
 import { FILE_TEXT_MAX, editedPaths, editorFiles, lineKind, scriptPath, secretIn, simpleCommands, trimSession, type TrimEntry } from '@shiro/link-trim';
 import { NOISE, noteEdited, resetSessionLog, sessionEnd, sessionLog, sessionStart, watchSessionFs } from '@shiro/session-log';
-import { RELAY_WARN_BYTES, classifyUrl, downloadSentences, sumTally, tallySince } from '@shiro/net-tally';
+import { RELAY_WARN_BYTES, classifyUrl, downloadSentences, received, sumTally, tallySince } from '@shiro/net-tally';
 import { parseFragment, scriptLink } from '@shiro/link-fragment';
 import { buildLink, fileNow, linkCmd } from '@shiro/commands/link';
 import { handleRunLink, type RunLinkDeps } from '@shiro/run-url';
@@ -62,6 +62,9 @@ describe('link: six recorded sessions', () => {
       'git comit -m first': 'it failed (status 1)',
       'history': 'looking around',
       'clear': 'looking around',
+      // made and then removed: together they changed nothing
+      'touch main.py': 'undone later (rm main.py)',
+      'rm main.py': 'it only undid an earlier line (touch main.py)',
     });
     // `pip install requests` twice: an install is kept by its name, and one of the two stays
     expect(t.dropped.filter((d) => d.line === 'pip install requests').map((d) => d.why)).toEqual(['entered again later']);
@@ -121,6 +124,63 @@ describe('link: the rules, one at a time', () => {
     ], { cwd: `${HOME}/b` });
     expect(r.script).toBe('cd ~/a\ntouch stamp\nmake\ncd ~/b\nmake\n');
     expect(r.dropped).toEqual([{ line: 'make', why: 'entered again later' }]);
+  });
+
+  it('two lines that cancel out are both left out: a file, a folder, an install and its uninstall', () => {
+    const made = (path: string) => ({ changed: [`${HOME}/${path}`] });
+    const r = trim([
+      e('touch notes.txt', HOME, 0, made('notes.txt')),
+      e('rm notes.txt', HOME, 0, made('notes.txt')),
+      e('mkdir scratch', HOME, 0, made('scratch')),
+      e('rmdir scratch', HOME, 0, made('scratch')),
+      e('pip install requests', HOME, 0, { changed: [`${HOME}/.local/lib/python3.13/site-packages/requests/__init__.py`], more: 60 }),
+      e('pip3 uninstall -y requests', HOME, 0, { changed: [`${HOME}/.local/lib/python3.13/site-packages/requests/__init__.py`], more: 60 }),
+      e('echo keep > kept.txt', HOME, 0, made('kept.txt')),
+    ]);
+    expect(r.script).toBe('echo keep > kept.txt\n');
+    expect(Object.fromEntries(r.dropped.map((d) => [d.line, d.why]))).toEqual({
+      'touch notes.txt': 'undone later (rm notes.txt)', 'rm notes.txt': 'it only undid an earlier line (touch notes.txt)',
+      'mkdir scratch': 'undone later (rmdir scratch)', 'rmdir scratch': 'it only undid an earlier line (mkdir scratch)',
+      'pip install requests': 'undone later (pip3 uninstall -y requests)', 'pip3 uninstall -y requests': 'it only undid an earlier line (pip install requests)',
+    });
+    // the same thing by other words: a path from another folder, rm -r of a folder, npm in the same project
+    expect(trim([
+      e('mkdir -p build', `${HOME}/p`, 0, made('p/build')), e('rm -rf ~/p/build', HOME, 0, made('p/build')),
+      e('npm install left-pad', `${HOME}/p`, 0, made('p/node_modules/left-pad/index.js')), e('npm uninstall left-pad', `${HOME}/p`, 0, made('p/node_modules/left-pad/index.js')),
+      e('app install expenses', HOME, 0), e('app remove expenses', HOME, 0),
+    ]).script).toBe('');
+
+    // what does not cancel: both lines stay
+    const stays = (entries: TrimEntry[], cwd = HOME) => trim(entries, { cwd }).kept.map((k) => k.line);
+    // something in between used it
+    expect(stays([e('touch main.py', HOME, 0, made('main.py')), e('python3 main.py > out.txt', HOME, 0, made('out.txt')), e('rm main.py', HOME, 0, made('main.py'))])).toEqual(['touch main.py', 'python3 main.py > out.txt', 'rm main.py']);
+    expect(stays([e('mkdir tmp1', HOME, 0, made('tmp1')), e('make', `${HOME}/tmp1`, 0, made('out.bin')), e('rmdir tmp1', HOME, 0, made('tmp1'))])).toEqual(['mkdir tmp1', 'make', 'rmdir tmp1']);
+    expect(stays([e('pip install flask', HOME, 0), e('flask --app x routes > routes.txt', HOME, 0, made('routes.txt')), e('pip uninstall -y flask', HOME, 0)])).toHaveLength(3);
+    // not the same thing: another file, another package, another project, a global install
+    expect(stays([e('touch a.txt', HOME, 0, made('a.txt')), e('rm b.txt', HOME, 0, made('b.txt'))])).toHaveLength(2);
+    expect(stays([e('pip install flask', HOME, 0), e('pip uninstall -y requests', HOME, 0, made('x'))])).toHaveLength(2);
+    expect(stays([e('npm install left-pad', `${HOME}/a`, 0, made('a/node_modules/x')), e('npm uninstall left-pad', `${HOME}/b`, 0, made('b/node_modules/x'))], `${HOME}/b`)).toHaveLength(2);
+    expect(stays([e('npm install -g left-pad', `${HOME}/a`, 0, made('x')), e('npm uninstall left-pad', `${HOME}/a`, 0, made('a/node_modules/x'))], `${HOME}/a`)).toHaveLength(2);
+    // a line that did more than make the one thing (it changed two files), or that is more than one command
+    expect(stays([e('cp -r src copy', HOME, 0, { changed: [`${HOME}/copy`, `${HOME}/copy/a`] }), e('rm -r copy', HOME, 0, made('copy'))])).toHaveLength(2);
+    expect(stays([e('touch a.txt && echo done', HOME, 0, made('a.txt')), e('rm a.txt', HOME, 0, made('a.txt'))])).toHaveLength(2);
+    // a file that was there before: removing it is a change of its own
+    expect(stays([e('rm old.txt', HOME, 0, made('old.txt'))])).toEqual(['rm old.txt']);
+    // made, removed, and made again: the first two go, the last stays
+    expect(trim([e('touch main.py', HOME, 0, made('main.py')), e('rm main.py', HOME, 0, made('main.py')), e('echo x > main.py', HOME, 0, made('main.py'))]).script).toBe('echo x > main.py\n');
+  });
+
+  it('a file that came from the person\'s computer is named under "not in the link"', () => {
+    const r = trimSession({
+      entries: [e('upload', HOME, 0, { changed: [`${HOME}/data.csv`] }), e('wc -l data.csv > count.txt', HOME, 0, { changed: [`${HOME}/count.txt`] })],
+      home: HOME, cwd: HOME, files: new Map(), arrived: [{ path: `${HOME}/data.csv`, size: 12_400 }, { path: `${HOME}/my photos/cat.png`, size: 2_300_000 }],
+    });
+    expect(r.script).toBe('wc -l data.csv > count.txt\n');
+    expect(r.dropped).toEqual([{ line: 'upload', why: 'files chosen from this computer: a link cannot carry them' }]);
+    expect(r.notInLink).toEqual([
+      '~/data.csv (13 KB, from your computer) is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
+      '~/\'my photos/cat.png\' (2.3 MB, from your computer) is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
+    ]);
   });
 
   it('cd is folded into the lines that follow, and a cd that nets out leaves nothing', () => {
@@ -316,6 +376,17 @@ describe('link: what the setup downloaded, by the path it took', () => {
     expect(classifyUrl('https://tabcomputer.com/pkg/jq/jq.wasm', 'http://localhost:6871')).toEqual({ path: 'site', label: 'tabcomputer packages' });
     // the page itself, an app's own origin, and what is no request
     for (const u of [`${o}/assets/index-abc.js`, `${o}/`, `${o}/api/anthropic/v1/messages`, 'https://app--x--0123.web.tabcomputer.com/__tabcomputer/frame.html', 'http://app--x--0123.localhost:6871/a', 'blob:https://tabcomputer.com/1', 'data:text/plain,x']) expect(classifyUrl(u, o), u).toBeNull();
+  });
+
+  it('does not count a fetch the browser refused', () => {
+    // What Chrome records (tests/browser/link-is-computer.mjs `relay`, and a fetch of each kind by hand):
+    // refused for CORS, allowed by CORS, and a browser that records no status
+    expect(received({ initiatorType: 'fetch', responseStatus: 0 })).toBe(false);
+    expect(received({ initiatorType: 'xmlhttprequest', responseStatus: 0 })).toBe(false);
+    expect(received({ initiatorType: 'fetch', responseStatus: 200 })).toBe(true);
+    expect(received({ initiatorType: 'fetch' })).toBe(true);
+    // (a script or an image from another site has status 0 and did arrive)
+    expect(received({ initiatorType: 'script', responseStatus: 0 })).toBe(true);
   });
 
   it('says it in a sentence for each path, and warns when the relay carried a lot', () => {

@@ -10,6 +10,8 @@
  */
 import type { DesktopAPI, DesktopWindow } from './desktop/wm';
 import { buildLink, makeGist, type MadeLink } from './commands/link';
+import { QR_MAX_BYTES, qrCode, qrSvg } from './qr';
+import { overlay } from './apps/surface';
 
 const STYLE_ID = 'tc-link-style';
 
@@ -37,8 +39,10 @@ const CSS = `
   background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
 .tc-link-actions button[data-act=copy] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 .tc-link-actions button:disabled { opacity: .5; cursor: default; }
-.tc-link-overlay { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; padding: 12px; background: rgba(0, 0, 0, .5); }
-.tc-link-overlay .tc-link { width: min(620px, 100%); height: min(600px, 100%); border: 1px solid #3d3d5c; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.tc-link-qr { flex: none; display: flex; justify-content: center; }
+.tc-link-qr[hidden] { display: none; }
+.tc-link-qr svg { max-width: 100%; height: auto; border-radius: 6px; }
+.tc-surface.tc-overlay > .tc-link { height: min(600px, 100%); }
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {
@@ -116,13 +120,37 @@ export function buildLinkWindow(made: MadeLink, o: LinkWindowOptions, close: () 
   const copy = el('button', 'Copy link');
   copy.type = 'button';
   copy.dataset.act = 'copy';
+  // The link as a QR code, for a phone's camera: offered when the link fits one
+  const qr = el('button', 'QR code');
+  qr.type = 'button';
+  qr.dataset.act = 'qr';
+  qr.setAttribute('aria-expanded', 'false');
+  const picture = el('div', '', 'tc-link-qr');
+  picture.dataset.part = 'qr';
+  picture.hidden = true;
+  root.append(picture);
   let url = made.link.url;
   let form = made.link.form;
+  const draw = () => {
+    const code = picture.hidden ? null : qrCode(url);
+    // (the markup is this module's own: modules as a path)
+    picture.innerHTML = code ? qrSvg(code, code.size > 77 ? 3 : 4) : '';
+    if (code) picture.firstElementChild!.setAttribute('aria-label', 'The link as a QR code');
+  };
   const show = () => {
     link.value = url;
     copy.disabled = !url;
     gist.hidden = form !== 'gist' || !script.value.trim();
+    qr.hidden = !url || new TextEncoder().encode(url).length > QR_MAX_BYTES;
+    if (qr.hidden) { picture.hidden = true; qr.setAttribute('aria-expanded', 'false'); }
+    draw();
   };
+  qr.addEventListener('click', () => {
+    picture.hidden = !picture.hidden;
+    qr.setAttribute('aria-expanded', String(!picture.hidden));
+    draw();
+    if (!picture.hidden) picture.scrollIntoView?.({ block: 'nearest' });
+  });
   show();
   // The link follows the box, a moment after the last key
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -159,7 +187,7 @@ export function buildLinkWindow(made: MadeLink, o: LinkWindowOptions, close: () 
       show();
     }, (e: unknown) => { status.textContent = (e as Error)?.message ?? 'No gist was made.'; }).finally(() => { gist.disabled = false; });
   });
-  actions.append(status, done, gist, copy);
+  actions.append(status, done, qr, gist, copy);
   root.append(actions);
   root.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } });
   return root;
@@ -184,12 +212,7 @@ export function showLinkWindow(made: MadeLink, o: LinkWindowOptions): DesktopWin
     });
     close = () => { w.close(true); };
     w.focus();
-  } else {
-    const overlay = el('div', '', 'tc-link-overlay');
-    overlay.append(content);
-    document.body.appendChild(overlay);
-    close = () => overlay.remove();
-  }
+  } else close = overlay(content);
   content.querySelector<HTMLButtonElement>('[data-act=copy]')?.focus();
   return win;
 }

@@ -147,6 +147,26 @@ describe('app links: which apps are curated', () => {
     expect((await fetchGhApp({ owner: 'someone', repo: 'tool', path: '' }, ghSite({ ...FILES, 'app.json': MANIFEST.replace('"demo"', '"converter"') }).fetchFn)).curated).toBe(false);
   });
 
+  it('gh: an app with a page of its own may leave entry out, as in a folder or a gist: the page is the index.html beside app.json or in public/', async () => {
+    const bare = JSON.stringify({ name: 'Demo' });
+    // index.html in public/: the file list is read once, for the page and again for the install
+    const inPublic = ghSite({ ...FILES, 'app.json': bare });
+    const a = await fetchGhApp({ owner: 'someone', repo: 'tool', path: '' }, inPublic.fetchFn);
+    expect(a.manifest).toMatchObject({ id: 'tool', kind: 'page', entry: 'public' });
+    expect(a.manifestText).toBe(bare);
+    expect([...(await a.files()).keys()].sort()).toEqual(['app.json', 'public/app.js', 'public/index.html']);
+    expect(inPublic.calls.filter((c) => c.url.includes('/git/trees/'))).toHaveLength(1);
+    // index.html beside app.json
+    const beside = await fetchGhApp({ owner: 'someone', repo: 'tool', path: '' }, ghSite({ 'app.json': bare, 'index.html': '<h1>x</h1>' }).fetchFn);
+    expect(beside.manifest.entry).toBe('.');
+    // no page anywhere: the manifest's own mistake is named, as before
+    await expect(fetchGhApp({ owner: 'someone', repo: 'tool', path: '' }, ghSite({ 'app.json': bare, 'notes.txt': 'x' }).fetchFn)).rejects.toThrow(/entry is missing/);
+    // an app.json that names its page, or is the whole app, asks for no file list before the prompt
+    const whole = ghSite({ 'app.json': JSON.stringify({ name: 'Tidy', run: 'jq . {in}' }) });
+    expect((await fetchGhApp({ owner: 'someone', repo: 'tool', path: '' }, whole.fetchFn)).manifest.kind).toBe('files');
+    expect(whole.calls.some((c) => c.url.includes('/git/trees/'))).toBe(false);
+  });
+
   it('gh: a subfolder is the app; links, submodules and the repository\'s own metadata are left out', async () => {
     const tree = [
       { path: 'README.md', type: 'blob', mode: '100644', size: 3 }, { path: 'apps', type: 'tree', mode: '040000' },
@@ -167,7 +187,8 @@ describe('app links: which apps are curated', () => {
   });
 
   const ghCases: [string, Record<string, string | (() => Response)>, unknown[] | undefined, RegExp][] = [
-    ['a repository that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /does not exist, or it is private: a private repository needs a GitHub sign-in/],
+    ['a repository GitHub shows no visitor (it does not exist, or is private)', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }), 'https://api.github.com/users/someone': '{"login":"someone"}' }, undefined, /does not exist, or it is private: a private repository needs a GitHub sign-in/],
+    ['a repository of an account that does not exist', { 'https://api.github.com/repos/someone/tool/commits/HEAD': () => new Response('{}', { status: 404 }) }, undefined, /^github\.com\/someone\/tool does not exist: GitHub has no account named someone$/],
     ['a head that is not a commit', { 'https://api.github.com/repos/someone/tool/commits/HEAD': 'main; rm -rf ~' }, undefined, /could not read the head commit/],
     ['a head that is a branch name', { 'https://api.github.com/repos/someone/tool/commits/HEAD': '../../other/repo/main' }, undefined, /could not read the head commit/],
     ['a folder without app.json', { [`https://raw.githubusercontent.com/someone/tool/${COMMIT}/app.json`]: () => new Response('404', { status: 404 }) }, undefined, /has no app\.json: it is not an app/],

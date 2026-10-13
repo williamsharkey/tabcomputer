@@ -23,7 +23,7 @@ const GLOBE = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="1
 let root: HTMLElement;
 let fsRef: FileSystem;
 let wmRef: WindowManager;
-import { setGitHubNeedHandler, GITHUB_NEED_REASON, type GitHubNeed } from '../github-needed';
+import { setGitHubNeedHandler, scopesSentence, GITHUB_NEED_REASON, type GitHubNeed } from '../github-needed';
 
 /** What the sheet is asked for: a network sign-in, or a GitHub sign-in a command needs (github-needed.ts) */
 type SheetNeed = NetworkNeed & { github?: GitHubNeed };
@@ -182,6 +182,23 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
 
   const what = need.host ? `${esc(need.reason ?? 'A program wants to connect')} (${esc(need.host)}${need.port ? ':' + need.port : ''}).` : esc(need.reason ?? 'A program wants to connect to the internet.');
   const ask = () => {
+    // A command needs permissions the sign-in here lacks (tabcomputer#153): what is added, in plain words, and one button
+    if (gh?.kind === 'scopes') {
+      const add = gh.add ?? [];
+      sheet.innerHTML = `
+      <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLYPHS.key}</div><div>
+        <h3>${add.length === 1 ? 'One more permission from GitHub' : 'More permissions from GitHub'}</h3>
+        <p><code>${esc(gh.action)}</code> needs ${add.length === 1 ? 'a permission' : 'permissions'} the GitHub sign-in on this computer does not have. ${esc(scopesSentence(add))}</p>
+        <p class="sd-small sd-muted">${gh.afterFailure ? `Approve on GitHub, then run <code>${esc(gh.action)}</code> again.` : `<code>${esc(gh.action)}</code> runs again by itself once GitHub has your approval.`}</p>
+      </div></div>
+      <div class="sd-sheet-actions">
+        <span class="sd-grow"></span>
+        <button class="sd-btn" data-act="later" type="button">Not now</button>
+        <button class="sd-btn sd-primary" data-act="github" type="button">Approve on GitHub</button>
+      </div>`;
+      sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();
+      return;
+    }
     // A command needs GitHub: the sign-in is the one prominent button, the rest is behind "Other ways"
     if (gh) {
       sheet.innerHTML = `
@@ -263,7 +280,7 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
   const deviceFlow = async () => {
     sheet.innerHTML = `
       <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLYPHS.key}</div><div>
-        <h3>Sign in with GitHub</h3><p>Asking GitHub for a one-time code…</p></div></div>
+        <h3>${gh?.kind === 'scopes' ? 'Approve on GitHub' : 'Sign in with GitHub'}</h3><p>Asking GitHub for a one-time code…</p></div></div>
       <div class="sd-status-line"></div>
       <div class="sd-sheet-actions"><span class="sd-grow"></span><button class="sd-btn" data-act="cancel" type="button">Cancel</button></div>`;
     const status = (text: string, cls = '') => {
@@ -272,7 +289,8 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
     };
     try {
       const gha = await import('../github-auth');
-      const code = await gha.requestDeviceCode(gha.DEFAULT_GITHUB_SCOPES);
+      // (for more permissions: what the sign-in has and what is added, as `gh auth refresh -s` asks)
+      const code = await gha.requestDeviceCode(gh?.kind === 'scopes' && gh.scopes?.length ? gh.scopes : gha.DEFAULT_GITHUB_SCOPES);
       if (abort.signal.aborted) return;
       sheet.innerHTML = `
         <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLYPHS.key}</div><div>
@@ -292,7 +310,8 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
       gha.saveGitHubToken(token);
       setNetworkStatus('signed-in');
       void gha.ensureGitIdentity(fsRef, token).catch(() => {});
-      status(gh ? (gh.afterFailure ? `Signed in. Run ${gh.action} again.` : `Signed in. ${gh.action} is running again.`) : 'Connected. Programs can reach the internet now.', 'ok');
+      const did = gh?.kind === 'scopes' ? 'Approved.' : 'Signed in.';
+      status(gh ? (gh.afterFailure ? `${did} Run ${gh.action} again.` : `${did} ${gh.action} is running again.`) : 'Connected. Programs can reach the internet now.', 'ok');
       setTimeout(() => done(token), 1200);
     } catch (e) {
       if (abort.signal.aborted) return;

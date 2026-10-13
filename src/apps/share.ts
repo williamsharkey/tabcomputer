@@ -224,29 +224,26 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
 const size = (n: number) => (n < 1000 ? `${n} bytes` : n < 1e6 ? `${Math.ceil(n / 1000)} KB` : `${(n / 1e6).toFixed(1)} MB`);
 
 /**
- * What the share screen says, one sentence per fact. The first three are the
- * promise (own copy, own data, nothing shared) and are the same for every app.
+ * What the share screen says, one sentence per fact, the app named once (a
+ * long name five times over is a wall of it). The first two are the
+ * promise (own copy, own data, nobody sees another's) and are the same for
+ * every app; the rest say what the link is and what opening it does.
  */
 export function shareStatement(s: AppShare): { promise: string[]; details: string[] } {
   const promise = [
-    `Each person who opens this link gets their own copy of ${s.name}.`,
-    'Each copy keeps its own data on that person\'s computer.',
-    'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.',
+    `Each person who opens this link gets their own copy of ${s.name}, with their own data.`,
+    'Nobody sees your data, and you do not see theirs.',
   ];
   const details: string[] = [];
-  if (s.kind === 'files' && s.readable) {
-    details.push(`The link is ${s.name} itself: its app.json is written after the #, key by key. The link is not stored on a server.`);
-    details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
-  } else if (s.kind === 'files') {
-    details.push(`The link holds the app's files (${s.files} ${s.files === 1 ? 'file' : 'files'}, ${size(s.bytes ?? 0)}). The files are in the link itself and are not stored on a server.`);
-    details.push(`A change you make to ${s.name} later does not reach copies made from this link. Share a new link for that.`);
+  if (s.kind === 'files') {
+    details.push(s.readable
+      ? 'The link is the app itself, written after the #. No server stores it.'
+      : `The link holds its ${s.files === 1 ? 'file' : `${s.files} files`} (${size(s.bytes ?? 0)}). No server stores ${s.files === 1 ? 'it' : 'them'}.`);
+    details.push('A later change here does not reach copies already made. Share a new link for that.');
   } else if (s.kind === 'gh' || s.kind === 'gist') {
-    details.push(`The link names ${s.repo}. Each person gets the files that ${s.kind === 'gist' ? 'gist' : 'repository'} holds when they open the link.`);
-  } else details.push(`This site ships ${s.name}. Each person gets the site's copy.`);
-  details.push(`The link does not hold the data you stored in ${s.name}.`);
-  details.push(s.asks
-    ? `tabcomputer shows each person what ${s.name} asks for and installs it only when they choose Install.`
-    : `tabcomputer installs ${s.name} without asking, because this site ships it.`);
+    details.push(`The link names ${s.repo}. Each person gets what that ${s.kind === 'gist' ? 'gist' : 'repository'} holds when they open the link.`);
+  } else details.push(`This site ships ${s.name}, so it installs without a question.`);
+  if (s.asks) details.push('Each person sees what it does before it is installed.');
   return { promise, details };
 }
 

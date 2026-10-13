@@ -73,10 +73,30 @@ describe('session restore: the pieces', () => {
     expect(screenText(`$ ls\na.txt\n${note}\nuser@tab:~$ `, true)).toBe('$ ls\na.txt');
     // notes stacked by earlier builds, and a note of two lines
     expect(screenText(`$ ls\na.txt\n${note}\n${note}\n${note}\n# resuming Claude Code\nuser@tab:~$ `, true)).toBe('$ ls\na.txt');
-    // something ran since: that note marks where the reload was, and stays
-    expect(screenText(`$ ls\n${note}\nuser@tab:~$ pwd\n/home/user\nuser@tab:~$ `, true)).toBe(`$ ls\n${note}\nuser@tab:~$ pwd\n/home/user`);
+    // something ran since: the earlier note goes too, since the next restore prints one under everything
+    expect(screenText(`$ ls\n${note}\nuser@tab:~$ pwd\n/home/user\nuser@tab:~$ `, true)).toBe('$ ls\nuser@tab:~$ pwd\n/home/user');
+    expect(screenText(`$ ls\n${note}\n# started again: serve .\nuser@tab:~$ serve .\nserving\n${note}\nrun link: no such recipe\nuser@tab:~$ `, true)).toBe('$ ls\nuser@tab:~$ serve .\nserving\nrun link: no such recipe');
     // a comment the user's own output ends with is not a note
     expect(screenText('$ cat a.sh\n# the end\nuser@tab:~$ ', true)).toBe('$ cat a.sh\n# the end');
+    // across reloads on a real terminal where each load prints a line (a refused link): still one note
+    {
+      const { createTestOS } = await import('./helpers');
+      const { bufferToString } = await import('@shiro/utils/copy-utils');
+      const t: any = (await createTestOS()).terminal;
+      let saved = 'user@tab:~$ ls\na.txt';
+      for (let i = 0; i < 4; i++) {
+        t.restoreScreen(saved, RESTORED_NOTE);
+        // (what a refused link does: a line of the page's own, with the prompt drawn again under it)
+        t.notice(`run link: no such recipe ${i}`);
+        await new Promise<void>((r) => t.term.write('', r));
+        saved = screenText(bufferToString(t.term), true);
+      }
+      t.restoreScreen(saved, RESTORED_NOTE);
+      await new Promise<void>((r) => t.term.write('', r));
+      const lines = bufferToString(t.term).split('\n').filter((l: string) => l.trim());
+      expect(lines.filter((l: string) => l.includes(RESTORED_NOTE))).toHaveLength(1);
+      expect(lines.filter((l: string) => /run link: no such recipe/.test(l))).toHaveLength(4);
+    }
     // across reloads on a real terminal: one note, one prompt
     const { createTestOS } = await import('./helpers');
     const { bufferToString } = await import('@shiro/utils/copy-utils');

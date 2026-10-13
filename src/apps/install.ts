@@ -8,15 +8,18 @@ import type { Launch } from '../desktop/launch-state';
 import type { DesktopWindow, WindowManager } from '../desktop/wm';
 import { appsConfig } from './frame';
 import {
-  archiveApp, fetchArchive, fetchGhApp, fetchGistApp, fetchSiteApp, handleAppLink, keysApp, linkApp,
+  archiveApp, fetchArchive, fetchGhApp, fetchGistApp, fetchSiteApp, fileApp, handleAppLink, keysApp, linkApp,
   type AppLinkOutcome, type AppTarget, type FetchedApp, type InstallChoice, type InstallPromptInfo,
 } from './links';
-import { AppError, findInstalled, installFromDir, installFromFiles, type InstalledApp } from './registry';
-import { appsDeps, homeDir, instanceFor, instanceOf, runLine } from './runtime';
+import { AppError, findInstalled, installFromDir, installFromFiles, loadManifest, type InstalledApp } from './registry';
+import { appsDeps, browserDownload, homeDir, instanceFor, instanceOf, runLine } from './runtime';
+import { EXPORT_SUFFIX, exportApp, noteExported, readExport, replacePlan, restoreData, sameApp, type AppExport } from './export';
+import type { ReplaceInfo } from './prompt';
 import { becomeApp, idTaken, installedRef, monogramIcon, openInstalled, registerInstalledApp, stopApp } from './window';
 import type { AppManifest } from './manifest';
 import { cleanRunUrl } from '../run-url';
 import { setShippedHidden } from './shipped';
+import { phoneScreen } from './surface';
 
 const desktop = (): WindowManager | null => ((globalThis as { __shiroDesktop?: WindowManager }).__shiroDesktop ?? null);
 
@@ -31,19 +34,87 @@ async function hasGuests(): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Show an app that isn't curated and wait for the person's choice */
-export async function confirmInstall(app: FetchedApp): Promise<InstallChoice> {
+/** Show an app that isn't curated and wait for the person's choice. `guests: false`: what is installed cannot go to a guest (a file of this tab). */
+export async function confirmInstall(app: FetchedApp, opts: { guests?: boolean } = {}): Promise<InstallChoice> {
   const had = await findInstalled(appsDeps().fs, app.manifest.id);
   const info: InstallPromptInfo = {
     manifest: app.manifest, manifestText: app.manifestText, from: app.from,
     replaces: had ? had.source : undefined,
-    guests: await hasGuests(),
+    guests: opts.guests !== false && await hasGuests(),
     confined: !!(await appsConfig().catch(() => ({ origin: null }))).origin,
   };
   if (confirmOverride) return confirmOverride(info);
   if (typeof document === 'undefined') return 'cancel';
   const { showInstallPrompt } = await import('./prompt');
   return showInstallPrompt(info, desktop());
+}
+
+// ── export and import: an app with its data as one file (export.ts) ──
+
+let replaceOverride: ((info: ReplaceInfo) => Promise<boolean>) | null = null;
+/** Tests: answer the question before data is replaced without a person */
+export function setReplaceConfirm(fn: ((info: ReplaceInfo) => Promise<boolean>) | null): void { replaceOverride = fn; }
+
+/**
+ * Export an installed app with its data: to `file` in this tab when one is
+ * named, else to the person's real disk (the browser's download). From then
+ * on its window says nothing about a backup until the data changes again.
+ */
+export async function exportInstalled(id: string, to?: string): Promise<AppExport & { path: string | null }> {
+  const { fs, download } = appsDeps();
+  const app = await findInstalled(fs, id);
+  if (!app) throw new AppError(`no app named ${id} is installed (app list)`);
+  const declared = (await loadManifest(fs, app.dir)).kind !== 'page';
+  const exp = await exportApp(fs, app, homeDir(), declared);
+  let path: string | null = null;
+  if (to !== undefined) {
+    // (a folder: the export's own name inside it; a name without .zip gets the export's ending)
+    const folder = await fs.stat(to).then((s) => s.isDirectory(), () => false);
+    path = folder ? `${to}/${exp.name}` : /\.zip$/i.test(to) ? to : to + EXPORT_SUFFIX;
+    await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
+    await fs.writeFile(path, exp.bytes);
+  } else (download ?? browserDownload)(exp.name, exp.bytes, 'application/zip');
+  await noteExported(fs, id, Date.now());
+  return { ...exp, path };
+}
+
+export interface Imported { app: InstalledApp; installed: boolean; dataFiles: number }
+
+/**
+ * Import an exported app: install it and restore its data. Everything is
+ * asked before anything changes: the install prompt when the app is not this
+ * site's own (and is not the one already installed), then what data would be
+ * replaced, when the app has other data here. Null: the person said no.
+ */
+export async function importApp(bytes: Uint8Array, fileName: string): Promise<Imported | null> {
+  const { fs } = appsDeps();
+  const home = homeDir();
+  const exp = await readExport(bytes);
+  const id = exp.header.id;
+  if (idTaken(id)) throw new AppError(`the id ${id} belongs to an app that is built in`);
+  const had = await findInstalled(fs, id);
+  let fetched: FetchedApp | null = null;
+  if (!(had && await sameApp(fs, had.dir, exp.app))) {
+    // An app this site ships is installed from the site, not from the file's word for it
+    if (exp.header.source === 'site') fetched = await fetchApp({ kind: 'site', id }).catch(() => null);
+    fetched ??= await fileApp(exp.app, id, fileName);
+    if (fetched.manifest.id !== id) throw new AppError('the file names one app and holds another');
+    if (!fetched.curated && await confirmInstall(fetched, { guests: false }) !== 'install') return null;
+  }
+  const manifest = fetched?.manifest ?? await loadManifest(fs, had!.dir);
+  const declared = manifest.kind !== 'page';
+  const plan = await replacePlan(fs, home, id, declared, exp.data);
+  if (plan.replaced.length) {
+    const info: ReplaceInfo = { name: manifest.name, replaced: plan.replaced, files: exp.data.size, exportedAt: exp.exportedAt };
+    const yes = replaceOverride ? await replaceOverride(info) : typeof document === 'undefined' ? false : await (await import('./prompt')).showReplacePrompt(info, desktop());
+    if (!yes) return null;
+  }
+  // (a running copy would write its own state over what is restored)
+  let app = had;
+  if (fetched) app = (await installFetched(fetched)).app; else stopApp(id);
+  await restoreData(fs, home, id, declared, exp.data);
+  await noteExported(fs, id, Date.now());
+  return { app: app!, installed: !!fetched, dataFiles: exp.data.size };
 }
 
 /** The app a target names, fetched (its manifest read; its other files on demand) */
@@ -180,15 +251,13 @@ export async function startAppLink(o: {
     github: async (action, run) => (await import('../github-needed')).fetchSignedIn(action, run),
     installedSource: async (id) => (await findInstalled(appsDeps().fs, id))?.source ?? null,
     confirm: confirmInstall,
-    install: async (app, files) => {
-      await installFetched(app, files);
-      await prepareInstalled(app.manifest.id).catch((e) => o.report((e as Error).message));
-    },
+    // (what the app needs is installed when it opens, below: in its window's placeholder, or,
+    // where the tab becomes the app, under the app's own name, never in a desktop frame on a phone)
+    install: async (app, files) => { await installFetched(app, files); },
     open: async (id, become) => {
       // A phone has no room for a desktop around the app that was asked for: the tab is the app,
       // with a way back to the desktop (tabcomputer#139)
-      const { compactViewport } = await import('../desktop/wm');
-      const small = !become && compactViewport() && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      const small = !become && phoneScreen();
       if (become || small) await becomeApp((await installedRef(id)).ref, { back: small });
       else {
         const wm = desktop();

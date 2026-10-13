@@ -70,7 +70,8 @@ export function runLine(req: RunRequest): RunHandle {
   return { done: p.catch(() => 1), kill: () => own.abort() };
 }
 
-function browserDownload(name: string, bytes: Uint8Array, type: string): void {
+/** Hand bytes to the person's real disk: the browser's download */
+export function browserDownload(name: string, bytes: Uint8Array, type: string): void {
   // An anchor that is never in the document: nothing else sees the click
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));

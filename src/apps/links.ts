@@ -348,6 +348,22 @@ export function archiveApp(files: Map<string, Uint8Array>, url: string): Fetched
 }
 
 /**
+ * The app an exported file holds (`app export`, export.ts). Never curated:
+ * a file comes from anywhere. Its `source` is a hash of its files, so the
+ * same app from another export is the app that is installed. `id`: the id
+ * the file's header names, which an app.json without one takes.
+ */
+export async function fileApp(files: Map<string, Uint8Array>, id: string, fileName: string): Promise<FetchedApp> {
+  for (const rel of files.keys()) if (!relOk(rel)) throw new AppLinkError(`the app in the file has a file whose name is not a plain path (${plain(rel, 60)})`);
+  if (!files.has(MANIFEST_FILE)) throw new AppLinkError(`the file holds no ${MANIFEST_FILE}: it is not an app`);
+  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!, { id: APP_ID.test(id) ? id : undefined, page: pageBeside((rel) => files.has(rel)) });
+  const parts: string[] = [];
+  for (const [rel, bytes] of [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) parts.push(`${rel}\n${await sha256Hex(bytes)}`);
+  const hash = (await sha256Hex(new TextEncoder().encode(parts.join('\n')))).slice(0, 16);
+  return { manifest, manifestText: text, curated: false, source: `file:${hash}`, from: `the file ${plain(fileName, 80)}`, files: async () => files };
+}
+
+/**
  * The app a shared link carries (`app share`, share.ts). Never curated: the
  * person who opens the link is shown it first. Its `source` is a hash of the
  * link's payload, so the same link opened again finds the app it installed.

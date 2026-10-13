@@ -42,6 +42,11 @@ const CSS = `
   background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
 .tc-app-titleicon { width: 16px; height: 16px; flex: none; z-index: 1; pointer-events: none; object-fit: contain; border-radius: 3px; }
 .tc-app-note { flex: none; padding: 3px 10px; font: 11px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text-2, #a4a8b8); background: var(--sd-window, #1b1d29); border-top: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
+.tc-app-backup { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 6px 3px 12px; font: 12px/1.5 var(--sd-font, system-ui, sans-serif); color: var(--sd-text-2, #a4a8b8); background: var(--sd-window, #1b1d29); border-top: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
+.tc-app-backup[hidden] { display: none; }
+.tc-app-backup button { font: inherit; min-height: 26px; padding: 2px 10px; color: var(--sd-text, #e6e6f0); background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); border-radius: 6px; cursor: pointer; }
+.tc-app-backup button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
+@media (pointer: coarse) { .tc-app-backup button { min-height: 36px; padding: 2px 14px; } }
 .sd-compact .sd-win:has(.tc-app-tb) .sd-title { right: 44px; }
 #become-container.tc-app-mode { display: flex; flex-direction: column; background: var(--sd-window); }
 #become-container.tc-app-mode iframe { flex: 1; min-height: 0; height: auto !important; }
@@ -74,6 +79,59 @@ export async function shareInstalled(id: string): Promise<void> {
     shown = { name: app?.name ?? id, problem: /[.!?]$/.test(why) ? why : `${why}.` };
   }
   showShareScreen(shown, inAppMode() ? null : desktop(), (text) => writeClipboard(text).catch(() => false));
+}
+
+/** Export an installed app with its data to the person's disk (the menu, the mark's button). A failure is said in a window. */
+export async function exportFromWindow(id: string, name: string): Promise<void> {
+  try { await (await import('./install')).exportInstalled(id); } catch (e) {
+    const why = (e as Error)?.message ?? String(e);
+    (await import('./share-ui')).showShareScreen({ name, title: `Export ${name}`, problem: `${why.charAt(0).toUpperCase()}${why.slice(1)}${/[.!?]$/.test(why) ? '' : '.'}` }, inAppMode() ? null : desktop(), async () => false);
+  }
+}
+
+/**
+ * The mark an app shows when its data is in no file (export.ts `backupMark`):
+ * a slim line under its page, "Not backed up since Tuesday", with Export
+ * beside it. Nothing shows while there is nothing to say.
+ */
+function backupNote(inst: AppInstance): { el: HTMLElement; dispose(): void } {
+  const el = document.createElement('div');
+  el.className = 'tc-app-backup';
+  el.hidden = true;
+  const text = document.createElement('span');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Export';
+  btn.title = 'Save the app and its data as one file';
+  btn.addEventListener('click', () => { void exportFromWindow(inst.id, inst.manifest.name); });
+  el.append(text, btn);
+  const { fs } = appsDeps();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let gone = false;
+  const paint = async () => {
+    const { backupMark } = await import('./export');
+    const mark = await backupMark(fs, homeDir(), inst.id, inst.manifest.kind !== 'page').catch(() => '');
+    if (gone) return;
+    text.textContent = mark;
+    el.hidden = !mark;
+  };
+  // A change in the data folder while nothing is shown: look again, once the writing has settled
+  const offFs = fs.onChange((_ev, path) => {
+    if (!el.hidden || timer || !path.startsWith(inst.dataDir + '/')) return;
+    timer = setTimeout(() => { timer = null; void paint(); }, 1200);
+  });
+  const onExport = (id: string) => { if (id === inst.id) void paint(); };
+  void import('./export').then((x) => { if (!gone) x.exportListeners.add(onExport); });
+  void paint();
+  return {
+    el,
+    dispose() {
+      gone = true;
+      offFs();
+      if (timer) clearTimeout(timer);
+      void import('./export').then((x) => x.exportListeners.delete(onExport));
+    },
+  };
 }
 
 function ensureStyle(): void {
@@ -220,12 +278,15 @@ async function buildWindow(wm: WindowManager, inst: AppInstance, icon: string, r
   inst.attach(view);
   inst.window = { setTitle: (t) => win.setTitle(t || m.name), resize: (w, h) => win.resize(w, h), close: () => { win.close(); } };
   const offBackend = watchBackend(inst, cover, () => frame, () => win.close(true));
+  const backup = inst.dev ? null : backupNote(inst);
+  if (backup) root.append(backup.el);
   // A click inside the frame goes to the frame's document: the window still has to come forward
   const onBlur = () => { if (frame && document.activeElement === frame.element && !win.focused) win.focus(); };
   window.addEventListener('blur', onBlur);
   win.on('close', () => {
     window.removeEventListener('blur', onBlur);
     offBackend();
+    backup?.dispose();
     frame?.dispose();
     inst.detach(view);
   });
@@ -323,7 +384,10 @@ export function registerInstalledApp(app: InstalledApp): void {
     id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), order: 40, dock: true,
     // (the site's own copy of a shipped app keeps the glyph its entry had before it was installed)
     glyph: app.source === 'site' ? shippedGlyph(app.id) : undefined,
-    menus: () => [{ title: 'App', items: [{ label: 'Share as a Link…', action: () => void shareInstalled(app.id) }] }],
+    menus: () => [{ title: 'App', items: [
+      { label: 'Share as a Link…', action: () => void shareInstalled(app.id) },
+      { label: 'Export with Its Data', action: () => void exportFromWindow(app.id, app.name) },
+    ] }],
     launch: (args) => {
       const open = windowsOf(wm, app.id);
       const newWindow = !!args?.newWindow;
@@ -417,7 +481,8 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     bar.append(a, ...(inst.dev ? [] : [share]));
     container.append(bar);
   }
-  container.append(cover.el);
+  const backup = inst.dev ? null : backupNote(inst);
+  container.append(cover.el, ...(backup ? [backup.el] : []));
   const leave = () => { location.href = '/?unbecome'; };
   cover.show(`Starting ${m.name}…`);
   let frame: AppFrame | null = null;
@@ -427,7 +492,7 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     reload: () => frame?.reload(),
   };
   const offBackend = { off: () => {} };
-  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); offTheme(); container!.classList.remove('tc-app-mode', 'tc-surface'); frame?.dispose(); inst.detach(view); };
+  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); offTheme(); backup?.dispose(); container!.classList.remove('tc-app-mode', 'tc-surface'); frame?.dispose(); inst.detach(view); };
   // (the tab's title is the app's window title: a files run puts "3 of 12" there)
   inst.window = { setTitle: (t) => { document.title = t || m.name; }, resize: () => {}, close: () => {} };
   try {

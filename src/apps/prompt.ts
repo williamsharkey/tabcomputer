@@ -15,6 +15,7 @@
 import type { InstallChoice, InstallPromptInfo } from './links';
 import { describeManifest, type AppManifest } from './manifest';
 import { kindSaid } from './declare';
+import { whenText } from './export';
 import { overlay, phoneScreen } from './surface';
 import type { DesktopAPI, DesktopWindow } from '../desktop/wm';
 
@@ -32,6 +33,7 @@ const CSS = `
   border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); border-radius: 8px; user-select: text; -webkit-user-select: text; }
 .tc-app-prompt code { display: block; margin-top: 4px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tc-app-prompt dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.tc-app-prompt ul { margin: 0; padding: 0 0 0 18px; display: grid; gap: 2px; overflow-wrap: anywhere; }
 .tc-app-prompt dd { margin: 0; overflow-wrap: anywhere; }
 .tc-app-prompt dd.tc-app-flag { font-weight: 600; }
 .tc-app-prompt details { flex: none; }
@@ -156,39 +158,101 @@ export function buildInstallPrompt(info: InstallPromptInfo, done: (choice: Insta
   return root;
 }
 
-/** Ask before installing an app that isn't curated. Closing the window is Cancel. */
-export function showInstallPrompt(info: InstallPromptInfo, wm: DesktopAPI | null): Promise<InstallChoice> {
+/** `content` as a question: a window on the desktop, the whole screen on a phone, a card where there is no desktop. Closing it is `no`. */
+function ask<T>(wm: DesktopAPI | null, title: string, height: number, no: T, build: (done: (answer: T) => void) => HTMLElement): Promise<T> {
   if (!document.getElementById(STYLE_ID)) {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = CSS;
     document.head.appendChild(style);
   }
-  return new Promise<InstallChoice>((resolve) => {
+  return new Promise<T>((resolve) => {
     let settled = false;
     let close = () => {};
-    const done = (choice: InstallChoice) => {
+    const done = (answer: T) => {
       if (settled) return;
       settled = true;
       close();
-      resolve(choice);
+      resolve(answer);
     };
-    const content = buildInstallPrompt(info, done);
+    const content = build(done);
     let win: DesktopWindow | null = null;
     // A phone has no room for a desktop around a question: the prompt is the screen
     const full = phoneScreen();
     if (wm && !full) {
       const wa = wm.workArea();
       const w = win = wm.createWindow({
-        appId: 'run-link', title: 'Install app', alwaysOnTop: true, content: { kind: 'dom', element: content },
-        width: Math.min(560, Math.max(280, wa.width - 40)), height: Math.min(440, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
+        appId: 'run-link', title, alwaysOnTop: true, content: { kind: 'dom', element: content },
+        width: Math.min(560, Math.max(280, wa.width - 40)), height: Math.min(height, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
       });
       close = () => { w.close(true); };
-      w.on('close', () => done('cancel'));
+      w.on('close', () => done(no));
     } else close = overlay(content, { full });
     const cancel = content.querySelector<HTMLButtonElement>('[data-act=cancel]');
     const focus = () => { if (!settled) { win?.focus(); cancel?.focus(); } };
     focus();
     setTimeout(focus, ARMS_AFTER_MS);
   });
+}
+
+/** Ask before installing an app that isn't curated. Closing the window is Cancel. */
+export function showInstallPrompt(info: InstallPromptInfo, wm: DesktopAPI | null): Promise<InstallChoice> {
+  return ask<InstallChoice>(wm, 'Install app', 440, 'cancel', (done) => buildInstallPrompt(info, done));
+}
+
+/** What importing an app's export would replace (src/apps/export.ts `replacePlan`) */
+export interface ReplaceInfo {
+  name: string;
+  /** The data files here that would change or go, newest first */
+  replaced: { rel: string; mtime: number }[];
+  /** How many data files the export holds, and when it was made (0: it does not say) */
+  files: number;
+  exportedAt: number;
+  now?: number;
+}
+
+/** What the question says: `lines` are the files that would be replaced, each with when it last changed */
+export function replaceWords(info: ReplaceInfo): { title: string; says: string; lines: string[]; more: string } {
+  const now = info.now ?? Date.now();
+  const SHOWN = 6;
+  const made = info.exportedAt ? `, exported ${whenText(info.exportedAt, now)}` : '';
+  return {
+    title: `Replace the data ${info.name} has here?`,
+    says: `The file holds ${info.files ? `${info.files} ${info.files === 1 ? 'file' : 'files'} of data${made}` : `no data${made}`}. Importing it replaces what ${info.name} has here:`,
+    lines: info.replaced.slice(0, SHOWN).map((f) => `${f.rel}, changed ${whenText(f.mtime, now)}`),
+    more: info.replaced.length > SHOWN ? `and ${info.replaced.length - SHOWN} more ${info.replaced.length - SHOWN === 1 ? 'file' : 'files'}` : '',
+  };
+}
+
+/** The question before an import replaces data: Cancel (focused) or Replace. `done(true)` only from a person's click on Replace. */
+export function buildReplacePrompt(info: ReplaceInfo, done: (replace: boolean) => void): HTMLElement {
+  const words = replaceWords(info);
+  const root = el('div', '', 'tc-app-prompt');
+  root.setAttribute('role', 'dialog');
+  root.setAttribute('aria-label', 'Replace an app\'s data');
+  root.append(el('h3', words.title), el('p', words.says));
+  const list = el('ul');
+  for (const line of words.lines) list.append(el('li', line));
+  if (words.more) list.append(el('li', words.more));
+  root.append(list);
+  const actions = el('div', '', 'tc-app-prompt-actions');
+  const cancel = el('button', 'Cancel');
+  cancel.type = 'button';
+  cancel.dataset.act = 'cancel';
+  const replace = el('button', 'Replace');
+  replace.type = 'button';
+  replace.dataset.act = 'install';
+  replace.disabled = true;
+  setTimeout(() => { replace.disabled = false; }, ARMS_AFTER_MS);
+  cancel.addEventListener('click', () => done(false));
+  replace.addEventListener('click', (e) => { if (e.isTrusted !== false && !replace.disabled) done(true); });
+  root.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } });
+  actions.append(cancel, replace);
+  root.append(actions);
+  return root;
+}
+
+/** Ask before an import replaces the data an app has here. Closing the window is Cancel. */
+export function showReplacePrompt(info: ReplaceInfo, wm: DesktopAPI | null): Promise<boolean> {
+  return ask<boolean>(wm, 'Import app', 320, false, (done) => buildReplacePrompt(info, done));
 }

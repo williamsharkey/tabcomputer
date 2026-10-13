@@ -92,6 +92,7 @@ import { ShiroTerminal } from './terminal';
 import { initFaviconUpdater, initTitle } from './favicon';
 import { initMobileInput } from './mobile-input';
 import { initDropHandler } from './drop-handler';
+import { initAppDrop } from './apps/drop';
 import { closeSplitView } from './split-view';
 import { initFileAssociations } from './file-associations';
 import { setActiveTerminal } from './active-terminal';
@@ -1063,6 +1064,15 @@ async function main() {
 
   // Initialize drag-and-drop seed GIF import
   initDropHandler(terminal, fs);
+  // An exported app (NAME.app.zip) dropped anywhere on the page: installed, its data restored, opened (docs/APPS.md "Export and import")
+  initAppDrop({
+    import: async (bytes, name) => { await appsCore(); return (await (await import('./apps/install')).importApp(bytes, name))?.app.id ?? null; },
+    open: async (id) => {
+      const wm = (globalThis as { __shiroDesktop?: { openApp(id: string): Promise<unknown>; apps(): { id: string }[] } }).__shiroDesktop;
+      if (wm?.apps().some((a) => a.id === id)) await wm.openApp(id); else await (await import('./apps/window')).openInstalled(id);
+    },
+    report: (message) => terminal.term.writeln(`\r\n\x1b[33mapp import: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
+  });
 
   // Initialize mobile virtual keys and voice input (the desktop has its own: src/desktop/mobile.ts)
   if (!desktop) initMobileInput(terminal);

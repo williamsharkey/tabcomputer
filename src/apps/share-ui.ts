@@ -40,14 +40,15 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''):
 }
 
 /** What the screen shows: a link, or why this app has none */
-export type ShareShown = AppShare | { name: string; problem: string };
+export type ShareShown = AppShare | { name: string; problem: string; title?: string };
 
 /** The screen's content. `copy` puts the link on the clipboard and says whether it did. */
 export function buildShareScreen(share: ShareShown, copy: (text: string) => Promise<boolean>, close: () => void): HTMLElement {
   const root = el('div', '', 'tc-app-share');
   root.setAttribute('role', 'dialog');
-  root.setAttribute('aria-label', `Share ${share.name}`);
-  root.append(el('h3', `Share ${share.name}`));
+  const title = ('problem' in share && share.title) || `Share ${share.name}`;
+  root.setAttribute('aria-label', title);
+  root.append(el('h3', title));
   const actions = el('div', '', 'tc-app-share-actions');
   const done = el('button', 'Close');
   done.type = 'button';
@@ -97,7 +98,7 @@ export function showShareScreen(share: ShareShown, wm: DesktopAPI | null, copy: 
   if (wm) {
     const wa = wm.workArea();
     const w = win = wm.createWindow({
-      appId: 'app-share', title: `Share ${share.name}`, content: { kind: 'dom', element: content },
+      appId: 'app-share', title: ('problem' in share && share.title) || `Share ${share.name}`, content: { kind: 'dom', element: content },
       width: Math.min(520, Math.max(280, wa.width - 40)), height: Math.min(330, Math.max(240, wa.height - 80)), minWidth: 280, minHeight: 220,
     });
     close = () => { w.close(true); };

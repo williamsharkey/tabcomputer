@@ -506,8 +506,8 @@ tfoot td.num { text-align: right; }
     let own = null;
     return {
       async read() {
-        if (!await tab.fs.exists(file)) await tab.fs.write(file, own = formatCsv([m.columns.map((c) => c.name)]));
-        const text = await tab.fs.readText(file);
+        // (no file until the first row is added: an app that was only opened holds no data)
+        const text = await tab.fs.exists(file) ? await tab.fs.readText(file) : formatCsv([m.columns.map((c) => c.name)]);
         if (text === own && state.loads) return null;
         own = text;
         const [names = [], ...rows] = parseCsv(text);
@@ -539,7 +539,7 @@ tfoot td.num { text-align: right; }
     return {
       busy: () => busy > 0,
       read: mine(async () => {
-        const d = await dump();
+        const d = await tab.fs.exists(file) ? await dump() : { names: m.columns.map((c) => c.name), rows: [] };
         const text = JSON.stringify(d);
         if (text === own && state.loads) return null;
         own = text;

@@ -1,8 +1,8 @@
 // What a Python class installs, on the built-in Python (tabcomputer#125,
 // #112), typed into the real terminal from a fresh profile:
 // `pip install flask` and a hello-world app answering a request, PyYAML and
-// tornado without their extensions, and what numpy, check50 and JupyterLab
-// say instead of installing. Packages come from pypi.org.
+// tornado without their extensions, what check50 and JupyterLab say instead
+// of installing, and numpy through Pyodide. Packages come from pypi.org.
 //
 //   npx vite build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/python-wheels.mjs [URL] [--shots DIR]
@@ -74,11 +74,11 @@ const STEPS = [
   ['pip install pyyaml tornado', /Successfully installed .*PyYAML-.*tornado-/],
   [`python3 -c 'import yaml, tornado.web; print(yaml.safe_load("a: [1, 2]"), yaml.__with_libyaml__, tornado.version)'`, /\{'a': \[1, 2\]\} False \d/],
   ['pip install "termcolor<2"', /Successfully installed termcolor-1\.1\.0/],
-  refused('numpy'),
   refused('check50 submit50'),
   refused('jupyterlab'),
-  // numpy today: Pyodide fetches what the program imports (from its CDN)
-  [`pyodide -c "import numpy; print('sum', numpy.arange(10).sum())"`, /sum 45/],
+  // numpy comes from Pyodide (tests/browser/pyodide-numpy.mjs has the rest): pip records it, python3 runs it there
+  ['pip install numpy', /Provided by Pyodide/],
+  [`python3 -c "import numpy; print('sum', numpy.arange(10).sum())"`, /sum 45/],
 ];
 
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });

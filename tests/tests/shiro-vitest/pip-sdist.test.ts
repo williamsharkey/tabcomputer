@@ -177,14 +177,14 @@ describe.skipIf(!process.env.TABCOMPUTER_PIP_NET)('pip install from pypi.org (TA
     }, 120_000);
   }
 
-  for (const spec of ['numpy', 'check50', 'jupyterlab']) {
+  // (numpy is no longer refused: Pyodide provides it, python-pyodide-route.test.ts)
+  for (const spec of ['check50', 'jupyterlab']) {
     it(`pip install ${spec} says why not`, async () => {
       const r = await pip(['install', spec], real);
       console.log(`pip install ${spec}: ${r.err}`);
       expect(r.code).toBe(1);
       expect(r.err).toMatch(/has a compiled extension/);
       expect(r.err).toContain('toolchain install python');
-      expect(r.err.includes('pyodide FILE.py')).toBe(spec === 'numpy');
       expect((await tree(SITE)).length).toBe(0);
     }, 120_000);
   }

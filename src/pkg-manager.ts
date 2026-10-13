@@ -837,6 +837,14 @@ export async function runPackageBinary(binPath: string, argv0: string, args: str
     const { runPythonFrontend } = await import('./commands/python-wasi');
     return runPythonFrontend(ctx, args, invokedPath ?? binPath);
   }
+  // A program whose imports need a compiled package pip recorded (numpy): Pyodide runs it (src/python/route.ts)
+  if (name === 'python3') {
+    const { routePython } = await import('./python/route');
+    const { pyodideWorkerMode } = await import('./pyodide-worker/boot');
+    const route = await routePython(ctx.fs, args, { cwd: ctx.cwd, env: ctx.env, invokedPath, canPyodide: pyodideWorkerMode(), stdinIsTTY: !!ctx.terminal && !ctx.stdin });
+    if (route.engine === 'pyodide' && pyodideWorkerMode()) return (await import('./pyodide-worker/host')).runPyodide(ctx, route.run, argv0);
+    args = route.args;
+  }
   // (`import tkinter` and `import turtle` say what to do)
   if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(ctx.fs);
   if (bin?.argv0 === 'path' && invokedPath) argv0 = invokedPath;
@@ -886,6 +894,8 @@ export async function runPackageBinary(binPath: string, argv0: string, args: str
  */
 export async function packageKernelProgram(
   fs: FileSystem, binPath: string, argv0: string, args: string[], invokedPath?: string,
+  /** The shell's directory and environment: what decides which Python runs a python3 program */
+  where?: { cwd: string; env: Record<string, string | undefined> },
 ): Promise<{ argv: string[]; run: import('./kernel/kernel').Runner; env?: Record<string, string> } | null> {
   const name = packageOfPath(binPath);
   const entry = name ? (await readStatus(fs))[name]?.entry : undefined;
@@ -894,6 +904,13 @@ export async function packageKernelProgram(
   if ((mode === 'none' && entry.abi !== 'x86_64-linux') || missingFeatures(entry).length) return null;
   // `python -m pip/venv` are Shiro's (runPackageBinary)
   if (name === 'python3' && pythonFrontend(args)) return null;
+  if (name === 'python3' && where) {
+    const { routePython } = await import('./python/route');
+    const { pyodideWorkerMode } = await import('./pyodide-worker/boot');
+    const route = await routePython(fs, args, { ...where, invokedPath, canPyodide: pyodideWorkerMode() });
+    if (route.engine === 'pyodide' && pyodideWorkerMode()) return (await import('./pyodide-worker/host')).pyodideKernelProgram(route.run, argv0);
+    args = route.args;
+  }
   if (name === 'python3') await (await import('./python-hints')).ensurePythonHints(fs);
   const rel =binPath.slice(PKG_ROOT.length + entry.name.length + 2);
   const bin = entry.bin[argv0]?.file === rel ? entry.bin[argv0] : Object.values(entry.bin).find(b => b.file === rel);

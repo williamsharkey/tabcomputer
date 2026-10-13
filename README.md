@@ -15,7 +15,7 @@ internet.
   ([docs/DEBIAN_SCORE.md](docs/DEBIAN_SCORE.md)).
 - **GUI apps.** Debian's X11 apps open as desktop windows: 37 of the 38 in the scoreboard,
   among them GIMP, Inkscape, LibreOffice Writer, VLC and Firefox ([docs/GUI_SCORE.md](docs/GUI_SCORE.md)).
-- **Coding agents.** Claude Code, native or npm, runs in the tab. Codex, Grok Build, Gemini
+- **Coding agents.** Claude Code (Anthropic's current build or the pinned npm one) runs in the tab. Codex, Grok Build, Gemini
   CLI and aider reach their APIs too ([docs/COMPAT.md](docs/COMPAT.md#agent-clis-unixagent-clis)).
 
 **Live:** [tabcomputer.com](https://tabcomputer.com). Nothing to install. Your files stay in
@@ -176,17 +176,20 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
 
 ## Claude Code and other agents
 
-Claude Code comes in two builds:
+Claude Code runs three ways:
 
-- **Native** (the default on tabcomputer). `claude install` downloads Anthropic's
-  linux-x64-musl binary (about 240 MB) and plain `claude` runs it in the x86-64 engine.
-  `claude update` fetches a newer one. It is slow: in [docs/COMPAT.md](docs/COMPAT.md), its first screen
-  took 52 s and a `claude -p` request about 100 s to reach the API.
-- **npm** (`claude --npm`). The pinned pure-JavaScript release, `@anthropic-ai/claude-code@2.1.112`,
-  on tabcomputer's Node.js runtime. It is installed in the background at first boot and starts
+- **`claude`** (the default on tabcomputer, also `claude --vm`). `claude install` downloads
+  Anthropic's current linux-x64-musl build (about 240 MB), and plain `claude` runs that build's
+  own JavaScript on tabcomputer's Node.js runtime, in the page's JavaScript engine: a few
+  seconds to its prompt ([docs/CLAUDE_VM.md](docs/CLAUDE_VM.md)). `claude update` fetches a newer one.
+- **`claude --x86`** (or `--native`). The same binary in the x86-64 emulator. Much slower
+  (most of a minute to its prompt, [docs/BENCHMARKS.md](docs/BENCHMARKS.md)); for comparing, and for the
+  few things `--vm` doesn't run.
+- **`claude --npm`**. The pinned pure-JavaScript release, `@anthropic-ai/claude-code@2.1.112`,
+  on the same Node.js runtime. It is installed in the background at first boot and starts
   quickly. `claude-window` runs it in a new window.
 
-Both builds sign themselves in. Signed out, Claude Code opens the sign-in page in a new browser
+All three sign themselves in. Signed out, Claude Code opens the sign-in page in a new browser
 tab; paste the code it shows at the "Paste code here" prompt. `claude login` signs in again.
 
 Codex, Grok Build, Gemini CLI and aider also reach their APIs from tabcomputer. Antigravity

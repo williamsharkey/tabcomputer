@@ -17,7 +17,7 @@ import tabcomputer from '../profiles/tabcomputer/profile.json';
 export interface Brand { name: string; domain: string; tagline: string; description: string }
 
 export interface ProfileShims {
-  /** What plain `claude` runs: the pinned npm build, or the native binary (`claude --native`) */
+  /** What plain `claude` runs: the pinned npm build, or Anthropic's native build (as `claude --vm`; `--x86` is its binary in the emulator) */
   claude: 'npm' | 'native';
   /** curl/fetch of claude.ai/install.sh returns a stand-in that npm-installs the pinned build */
   claudeInstallSh: boolean;

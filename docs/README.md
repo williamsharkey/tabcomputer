@@ -56,6 +56,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
 - [research/TLS_IN_TAB.md](research/TLS_IN_TAB.md): a design note: why the model, GitHub and git proxies end TLS at the server, and what it would take to do TLS in the tab over the relay instead (not implemented).
+- [research/APP_AUTHORING.md](research/APP_AUTHORING.md): the Studio and the Code app's app mode compared on the three example apps made from nothing, at a desk and on a phone; which to lead with.
 - [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and the app layer it proposed, built since as [APPS.md](APPS.md) and re-measured (2026-10-12).
 - [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md): snapshots of started GUI apps (a process's image, its descriptors and its X client restored in a later page load): the design, what is built behind a setting, measurements, open problems (2026-10-12).
 - [research/JAVA_SPEED.md](research/JAVA_SPEED.md): Java: where `javac`'s minute went, why JVM flags crashed (#122), the routes measured (JVM options, a warm compiler, ECJ, the Zero VM), what shipped, and the WebAssembly routes assessed (2026-10-13).

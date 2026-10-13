@@ -18,14 +18,12 @@
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import os from 'node:os';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
-let chromium;
-for (const name of [process.env.PLAYWRIGHT, 'playwright', 'playwright-core', '/opt/node-tools/node_modules/playwright'].filter(Boolean)) {
-  try { ({ chromium } = require(name)); break; } catch { /* the next one */ }
-}
+const { chromium } = loadPlaywright();
 
 const url = process.argv[2] ?? 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const build = ['native', 'npm'].includes(process.env.CLAUDE_BUILD) ? process.env.CLAUDE_BUILD : 'vm';
 const flag = build === 'native' ? 'x86' : build;
 const START_MS = build === 'native' ? 240_000 : build === 'vm' ? 150_000 : 60_000; // (vm: the first start extracts)

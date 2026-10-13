@@ -1,0 +1,14 @@
+{
+  "manifest": 1,
+  "id": "table",
+  "name": "Table",
+  "description": "A table over a CSV file: edit cells, add rows, save.",
+  "version": "0.1.0",
+  "icon": "icon.svg",
+  "window": { "width": 640, "height": 480, "minWidth": 300, "minHeight": 260 },
+  "entry": "public",
+  "access": {
+    "fs": [],
+    "network": false
+  }
+}

@@ -42,9 +42,11 @@ export function walk(dir, base = dir, out = []) {
   }
   return out;
 }
-/** Copy the app (server.js, public/) into the tab's filesystem */
+/** The first design: a node server in the tab and a page with plain fetch (kept for the comparison) */
+export const LEGACY = join(HERE, 'legacy');
+/** Copy the first design (legacy/server.js, legacy/public/) into the tab's filesystem */
 export async function putApp(page, tabDir = '/home/user/apps/converter') {
-  const files = walk(APP).filter((rel) => rel === 'server.js' || rel === 'app.json' || rel === 'package.json' || rel.startsWith('public/')).map((rel) => ({ rel, b64: readFileSync(join(APP, rel)).toString('base64') }));
+  const files = walk(LEGACY).filter((rel) => rel === 'server.js' || rel === 'package.json' || rel.startsWith('public/')).map((rel) => ({ rel, b64: readFileSync(join(LEGACY, rel)).toString('base64') }));
   await page.evaluate(async ([files, tabDir]) => {
     const fs = window.__tabcomputer.fs;
     for (const f of files) {
@@ -70,9 +72,28 @@ export const memMB = (page) => page.evaluate(async () => {
     ]);
   } catch { return heap(); }
 });
-/** The hardwired window's module (src/desktop/apps/converter.ts) as a script that defines __hwConverter */
+/** The hardwired window's module (legacy/hardwired.ts) as a script that defines __hwConverter */
 export function hardwiredBundle() {
   const esbuild = require(join(REPO, 'node_modules/esbuild'));
-  const r = esbuild.buildSync({ entryPoints: [join(REPO, 'src/desktop/apps/converter.ts')], bundle: true, format: 'iife', globalName: '__hwConverter', write: false });
+  const r = esbuild.buildSync({ entryPoints: [join(LEGACY, 'hardwired.ts')], bundle: true, format: 'iife', globalName: '__hwConverter', write: false });
   return r.outputFiles[0].text + '; globalThis.__hwConverter = __hwConverter;';
+}
+/** Copy the toolkit app (app.json, public/) into the tab's filesystem, for `app install` */
+export async function putToolkitApp(page, tabDir = '/home/user/src/converter') {
+  const files = walk(APP).filter((rel) => rel === 'app.json' || rel.startsWith('public/')).map((rel) => ({ rel, b64: readFileSync(join(APP, rel)).toString('base64') }));
+  await page.evaluate(async ([files, tabDir]) => {
+    const fs = window.__tabcomputer.fs;
+    for (const f of files) {
+      const p = `${tabDir}/${f.rel}`;
+      await fs.mkdir(p.replace(/\/[^/]+$/, ''), { recursive: true });
+      await fs.writeFile(p, Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0)));
+    }
+  }, [files, tabDir]);
+  return files.length;
+}
+/** The app's page inside its window or the tab in app mode: the frame within the frame of its own origin */
+export async function appFrame(page, sel) {
+  const outer = await (await page.$(sel))?.contentFrame();
+  if (!outer) return null;
+  return /\/__tabcomputer\/frame\.html/.test(outer.url()) ? outer.childFrames()[0] ?? null : outer;
 }

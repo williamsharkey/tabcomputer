@@ -24,6 +24,8 @@ export interface BecomeConfig {
   /** The command that starts the app's server, and where to run it (a reload runs it again) */
   start?: string;
   cwd?: string;
+  /** An installed app (docs/APPS.md): src/apps/window.ts brings it back, with its backend, from its id */
+  app?: string;
 }
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;

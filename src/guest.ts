@@ -84,7 +84,7 @@ export function guestRequest(search: string): GuestRequest | null {
 }
 
 /** Paths main.ts never reads as /<user>/<repo> */
-export const RESERVED_PATHS = ['api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases'];
+export const RESERVED_PATHS = ['api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
 
 /**
  * A page address that makes boot import or run someone else's code: a shared

@@ -14,6 +14,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
+| [APPS.md](APPS.md) | Apps: the `app.json` manifest, the `app` command and its templates, the supervised backend, `tab.js`, app origins and what is confined, `?app=` links |
 | [PROFILES.md](PROFILES.md) | Product profiles (`tabcomputer`, `shiro`), the engine/product boundary, the rename |
 | [RELEASES.md](RELEASES.md) | Each build shipped to tabcomputer.com: its commit, date and what changed |
 
@@ -51,7 +52,7 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/GUEST_PROFILE.md](research/GUEST_PROFILE.md): guests, a clean tabcomputer on its own origin for untrusted work: threat model, design, what is built.
 - [research/SANDBOXES.md](research/SANDBOXES.md): code sandboxes compared, and what tabcomputer offers.
 - [research/TLS_IN_TAB.md](research/TLS_IN_TAB.md): a design note: why the model, GitHub and git proxies end TLS at the server, and what it would take to do TLS in the tab over the relay instead (not implemented).
-- [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and a proposed app layer (2026-10-12).
+- [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and the app layer it proposed, built since as [APPS.md](APPS.md) and re-measured (2026-10-12).
 - [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md): snapshots of started GUI apps (a process's image, its descriptors and its X client restored in a later page load): the design, what is built behind a setting, measurements, open problems (2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

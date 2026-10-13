@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{name}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>{{name}}</h1>
+    <div class="row">
+      <button id="add" class="btn" type="button">Add row</button>
+      <button id="download" class="btn" type="button">Download CSV</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+  </header>
+  <div class="scroll"><table id="table"><thead></thead><tbody></tbody></table></div>
+  <p id="where" class="sub"></p>
+</main>
+<script src="/__tabcomputer/tab.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

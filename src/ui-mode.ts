@@ -25,7 +25,8 @@ export function uiMode(loc: Pick<Location, 'search' | 'hostname'> = location, em
     return asked;
   }
   if (q.get('demo') === '1' || embedded) return 'terminal';
-  try { if (localStorage.getItem('tabcomputer-become')) return 'terminal'; } catch {}
+  // (`?unbecome` is leaving app mode on this very load: back to whatever the UI was)
+  try { if (localStorage.getItem('tabcomputer-become') && !q.has('unbecome')) return 'terminal'; } catch {}
   try {
     const saved = localStorage.getItem(UI_MODE_KEY);
     if (saved === 'desktop' || saved === 'terminal') return saved;

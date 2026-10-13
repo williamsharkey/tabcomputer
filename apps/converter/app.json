@@ -1,13 +1,17 @@
 {
-  "about": "A proposed app manifest (docs/research/APP_MAKER.md, 'Manifest'). Nothing in tabcomputer reads this file yet; README.md has the commands it stands for.",
+  "manifest": 1,
   "id": "converter",
   "name": "Converter",
   "description": "Convert Publisher, WordPerfect, Works, Lotus 1-2-3, ClarisWorks and Access files on this computer.",
+  "version": "0.2.0",
   "icon": "public/icon.svg",
   "window": { "width": 620, "height": 640, "minWidth": 320, "minHeight": 320 },
-  "backend": { "start": "node server.js $PORT", "port": 4780 },
-  "entry": "/",
+  "entry": "public",
   "toolchains": ["rescue"],
-  "packages": ["libwpd-tools", "libmspub-tools", "libwps-tools", "libmwaw-tools", "mdbtools"],
-  "access": { "fs": ["/tmp/converter", "~/Converted"], "network": false, "commands": ["wpd2html", "pub2xhtml", "wps2html", "wks2csv", "wdb2csv", "mwaw2html", "mwaw2csv", "mdb-tables", "mdb-export", "mdb-schema", "zip", "pandoc"] }
+  "files": ["~/Converted/"],
+  "access": {
+    "fs": ["~/Converted"],
+    "network": false,
+    "commands": ["wpd2html", "pub2xhtml", "wps2html", "wks2csv", "wdb2csv", "mwaw2html", "mwaw2csv", "mdb-tables", "mdb-export", "mdb-schema", "pandoc", "soffice"]
+  }
 }

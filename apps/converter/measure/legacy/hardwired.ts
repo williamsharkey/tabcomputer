@@ -1,17 +1,17 @@
 /**
- * Converter, hardwired: the thinnest built-in version of apps/converter, kept
- * to compare the two ways of making an app (docs/research/APP_MAKER.md). A
- * window that takes dropped files, writes them with the filesystem object and
- * runs Debian's converter programs in a forked shell: no server, no bridge.
- * Not in the dock (`desktop open converter`). It installs nothing: the
- * programs must be there already.
+ * Converter, hardwired: the thinnest built-in version of the converter, kept
+ * only for the comparison in docs/research/APP_MAKER.md. It was a desktop
+ * window (`desktop open converter`) until the app toolkit's version replaced
+ * it; the measurement scripts still bundle this one file and load it into a
+ * tab (lib.mjs `hardwiredBundle`), handing it the desktop's own AppContext.
+ * A window that takes dropped files, writes them with the filesystem object
+ * and runs Debian's converter programs in a forked shell: no server, no bridge.
  *
- * Only type imports, so the measurement scripts can also load this one file
- * into a production tab and hand it the desktop's own AppContext.
+ * Only type imports.
  */
 
-import type { AppContext } from '../index';
-import type { DesktopWindow } from '../wm';
+import type { AppContext } from '../../../../src/desktop/index';
+import type { DesktopWindow } from '../../../../src/desktop/wm';
 
 /** extension → [program that writes HTML to stdout, program that writes CSV] */
 const TOOLS: Record<string, { html?: string; csv?: string }> = {

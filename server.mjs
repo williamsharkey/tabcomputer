@@ -1823,6 +1823,7 @@ export function browseKeyOf(hostHeader, cfg) {
   if (!host.endsWith('.' + cfg.suffix)) return null;
   const key = host.slice(0, -cfg.suffix.length - 1);
   if (/^guest--/.test(key)) return null; // a guest's host (localhost shares the zone)
+  if (APP_LABEL.test(key)) return null;  // an app's host (below)
   // Keys are one label with at least one dash (a dot of the real host): never "www" or "api"
   return /^[a-z0-9-]{1,63}$/.test(key) && key.includes('-') && !key.startsWith('-') && !key.endsWith('-') ? key : null;
 }
@@ -1867,6 +1868,77 @@ async function handleBrowseHost(req, res, cfg) {
     + `<script src="/__tc/boot.js" data-apps="${esc(cfg.apps.join(' '))}"></script></head><body></body></html>`;
   res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(req.method === 'HEAD' ? undefined : html);
+}
+
+// --- Apps: app origins (docs/APPS.md "The page's origin") ---
+// An installed app's page lives on an origin of its own, one label in the
+// browse zone: app--<id>--<16 hex>.<zone> (src/apps/frame.ts makes the label).
+// Its `--` runs can't be a browse key's, so the two never meet. Such a host
+// serves only /__tabcomputer/: the frame that holds the port to the tab, the
+// origin's service worker, and tab.js. The app's own files and its backend
+// are answered by the tab, through that worker. Never the app shell, /api,
+// /tcp or anything else: script on an app origin must find nothing here.
+// Where there are no browse origins there are no app origins, and the tab
+// shows an app's page on its own origin instead (and says so).
+const APP_LABEL = /^app--[a-z0-9]{1,24}--[a-f0-9]{16}$/;
+const APP_HOST_SCRIPTS = new Set(['frame.js', 'sw.js', 'tab.js']);
+
+/** The app label when `hostHeader` is an app host of `cfg` (browseConfigFor), else null. */
+export function appLabelOf(hostHeader, cfg) {
+  if (!cfg || !hostHeader) return null;
+  const host = String(hostHeader).toLowerCase();
+  if (!host.endsWith('.' + cfg.suffix)) return null;
+  const label = host.slice(0, -cfg.suffix.length - 1);
+  return APP_LABEL.test(label) ? label : null;
+}
+
+/** Origins (with *. wildcards) whose tab may frame an app host: the Browser's, and on localhost its guests and other names */
+export function appFramers(cfg) {
+  const local = /^localhost(:\d+)?$/.test(cfg.suffix);
+  return [...new Set([...cfg.apps, ...(local ? [`${cfg.scheme}://*.${cfg.suffix}`] : [])])];
+}
+
+const APP_HOST_HEADERS = {
+  'cross-origin-embedder-policy': 'credentialless',
+  'cross-origin-resource-policy': 'cross-origin',
+  'origin-agent-cluster': '?1',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-robots-tag': 'noindex',
+};
+
+async function handleAppHost(req, res, cfg) {
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const headers = APP_HOST_HEADERS;
+  const framers = appFramers(cfg);
+  const plain = (status, text) => { res.writeHead(status, { ...headers, 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }); res.end(text); };
+  if (req.method !== 'GET' && req.method !== 'HEAD') return plain(405, 'Method not allowed');
+  if (pathname === '/__tabcomputer/frame.html') {
+    const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title></title>`
+      + `<style>html,body{margin:0;height:100%;overflow:hidden;background:#fff;font:14px system-ui,sans-serif}iframe{display:block;width:100%;height:100%;border:0}</style></head>`
+      + `<body><script src="/__tabcomputer/frame.js" data-apps="${esc(framers.join(' '))}" data-zone="${esc(cfg.suffix)}"></script></body></html>`;
+    res.writeHead(200, {
+      ...headers, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      // The frame's own page: its script and the app's page under it, nothing from anywhere else
+      'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; frame-src 'self'; frame-ancestors ${framers.join(' ')}`,
+    });
+    return res.end(req.method === 'HEAD' ? undefined : html);
+  }
+  if (pathname.startsWith('/__tabcomputer/')) {
+    const name = pathname.slice('/__tabcomputer/'.length);
+    if (!APP_HOST_SCRIPTS.has(name)) return plain(404, 'Not found');
+    try {
+      const data = await readFile(join(STATIC_DIR, 'apphost', name));
+      res.writeHead(200, {
+        ...headers, 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache',
+        ...(name === 'sw.js' ? { 'service-worker-allowed': '/' } : {}),
+      });
+      return res.end(req.method === 'HEAD' ? undefined : data);
+    } catch { return plain(404, 'Not found'); }
+  }
+  // Everything else is the app's, answered by its tab through the service worker
+  return plain(503, 'This address is an app of tabcomputer. It shows when the app is opened from the desktop.');
 }
 
 // --- Browser app: server-side fetch, for local measurement only ---
@@ -2077,6 +2149,7 @@ const server = createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
 
   const browse = browseConfigFor(req.headers.host);
+  if (appLabelOf(req.headers.host, browse)) return handleAppHost(req, res, browse);
   if (browseKeyOf(req.headers.host, browse)) return handleBrowseHost(req, res, browse);
   // Guests (docs/research/GUEST_PROFILE.md): what a guest may not ask of this server
   const guests = guestConfigFor(req.headers.host);
@@ -2092,6 +2165,12 @@ const server = createServer(async (req, res) => {
   if (refusal) {
     res.writeHead(403, { 'content-type': 'application/json', ...corsHeaders(req.headers['origin'], req.headers['access-control-request-headers']), ...guestHeaders(guest) });
     return res.end(JSON.stringify({ error: 'guest', reason: refusal }));
+  }
+  if (pathname === '/apps/config.json') {
+    // Where app pages live (src/apps/frame.ts). None for a guest without network: its
+    // Content-Security-Policy allows no frame of another origin, and it holds nothing to protect
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', ...guestHeaders(guest?.via === 'host' ? guest : null) });
+    return res.end(JSON.stringify({ origin: browse && !guest?.noNetwork ? `${browse.scheme}://{app}.${browse.suffix}` : null }));
   }
   if (pathname === '/browse/config.json') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -2169,6 +2248,7 @@ const CHANNEL_PATH = /^\/channel\/[a-f0-9]{1,64}$/;
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
+  if (appLabelOf(req.headers.host, browseConfigFor(req.headers.host))) return rejectUpgrade(socket, 404, 'Not found');
   if (browseKeyOf(req.headers.host, browseConfigFor(req.headers.host))) return rejectUpgrade(socket, 404, 'Not found');
   if (guestOfRequest(req)?.noNetwork) return rejectUpgrade(socket, 403, 'This guest has no network');
   if (CHANNEL_PATH.test(pathname)) {

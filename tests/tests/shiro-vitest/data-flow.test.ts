@@ -112,12 +112,12 @@ describe('data flow: what each flow says', () => {
     expect(flow({ github: false, siteRelaySignin: true }, 'tcp').carries).toEqual([]);
     // and to a relay of the user's own only when they allowed it
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').carries).toEqual([]);
-    expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').detail).toContain('Your GitHub token is not sent to it');
+    expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp' }, 'tcp').detail).toContain('Your GitHub token is not sent to your relay');
     expect(flow({ github: true, ownRelayUrl: 'wss://r.example/tcp', ownRelaySignin: true }, 'tcp').carries).toEqual(['GitHub token']);
     // a shared seed leaves them out (src/seed-state.ts, #117)
     expect(flow({ github: true, claude: true, apiKeys: ['OpenAI'] }, 'shared').carries).toEqual([]);
-    expect(flow({}, 'shared').readsText).toContain('without the sign-ins saved here');
-    expect(flow({}, 'shared').readsText).toContain('on a server that keeps shared seeds');
+    expect(flow({}, 'shared').detail).toContain('without saved sign-ins');
+    expect(flow({}, 'shared').detail).toContain('only on a server set to keep shared seeds');
   });
 
   it('a relay of the user\'s own takes programs\' connections off this site\'s server, and nothing else', () => {

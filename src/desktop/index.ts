@@ -287,8 +287,6 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
     { id: 'dataflow', name: 'How Your Data Flows', icon: ICONS.about, glyph: 'M2.5 8.5h5.5v7H2.5zM16 8.5h5.5v7H16zM8 12h8M13.5 9.5 16 12l-2.5 2.5', order: 92, dock: false, launch: focusOrLaunch('dataflow', lazy(() => import('./apps/dataflow'))) },
-    // The hardwired half of the app-maker comparison (docs/research/APP_MAKER.md): not in the dock
-    { id: 'converter', name: 'Converter', icon: ICONS.files, order: 91, dock: false, launch: focusOrLaunch('converter', lazy(() => import('./apps/converter'))) },
   ];
   for (const a of apps) wm.registerApp(a);
 
@@ -355,6 +353,14 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     wm.registerApp({ id: t.id, name: t.name, icon, order: t.order, group: t.group, launch: t.id === 'git' ? openGit : () => launchTool(t) });
   }
   hold(refreshTools());
+  // Installed apps (docs/APPS.md): their dock entries come from the registry's names and icons.
+  // The toolkit (src/apps/) loads only when something is installed.
+  hold(deps.fs.exists('/var/lib/tabcomputer/apps.json').then(async (any) => {
+    if (!any) return;
+    const [runtime, win] = await Promise.all([import('../apps/runtime'), import('../apps/window')]);
+    try { runtime.appsDeps(); } catch { runtime.configureApps({ fs: deps.fs, shell: deps.shell }); }
+    await win.registerInstalledApps();
+  }));
   // pkg, npm -g and the install scripts write executables into TOOL_PATH (debounced: an install writes many files)
   let toolTimer: ReturnType<typeof setTimeout> | null = null;
   deps.fs.onChange((_ev, path) => {

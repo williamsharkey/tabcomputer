@@ -29,6 +29,13 @@ droplet are not involved.
   plus at most 2 downloads in flight (`TABCOMPUTER_CLAUDE_DOWNLOADS`), about
   250 MB each, so 1.25 GB at most. `TABCOMPUTER_CLAUDE_RELEASES=0` turns the
   route off; clients then download through the TCP relay.
+  `/debian/mirror/` and `/debian/pool/` (server.mjs, apt in a tab and the GUI
+  apps) keep Debian's files in `/opt/tabcomputer/debian-cache`
+  (`TABCOMPUTER_DEBIAN_CACHE` in `profiles/tabcomputer/server.env`; the server
+  makes the directory): never more than `TABCOMPUTER_DEBIAN_CACHE_MAX_MB`
+  (2048), the copies used longest ago removed first, plus at most 4 files in
+  flight of at most 768 MB each. Deleting the directory is safe: files are
+  fetched again.
   `/pyodide/` (server.mjs, numpy and the other compiled Python packages)
   keeps the files of the pinned Pyodide version that browsers ask for in
   `/opt/tabcomputer/pyodide` (`TABCOMPUTER_PYODIDE_CACHE` in

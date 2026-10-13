@@ -105,12 +105,28 @@ Debian's apt and dpkg run unmodified. What tabcomputer provides around them:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `TABCOMPUTER_DEBIAN_MIRRORS` | `deb.debian.org=https://deb.debian.org,security.debian.org=https://security.debian.org` | archive host names apt uses → upstream base URL. Only these hosts and only `…/dists/…` and `…/pool/…` paths are served (not an open proxy). Point a host at a local mirror or `https://snapshot.debian.org/archive/debian/<ts>` to pin. |
-| `TABCOMPUTER_DEBIAN_CACHE` | `$TMPDIR/shiro-debian` | disk cache (`TABCOMPUTER_DEB_CACHE` is the old name). `pool/` and `by-hash/` files are immutable and kept forever; other index files for `TABCOMPUTER_DEBIAN_INDEX_TTL` seconds (600). |
+| `TABCOMPUTER_DEBIAN_CACHE` | `$TMPDIR/shiro-debian` (tabcomputer.com: `/opt/tabcomputer/debian-cache`) | disk cache (`TABCOMPUTER_DEB_CACHE` is the old name). The server makes the directory, and it must be the mirror's alone: the mirror removes files in it. `pool/` and `by-hash/` files are immutable; other index files are kept for `TABCOMPUTER_DEBIAN_INDEX_TTL` seconds (600). |
+| `TABCOMPUTER_DEBIAN_CACHE_MAX_MB` | 2048 | all copies together. Past it the copies used longest ago are removed, until a tenth is free. |
+| `TABCOMPUTER_DEBIAN_FILE_MAX_MB` | 768 | the largest file fetched; a larger one is answered 502 and never read to its end. |
+| `TABCOMPUTER_DEBIAN_FETCHES` | 4 | upstream fetches at a time. The others wait their turn; with 256 files waiting, a request is answered 503 with `Retry-After`. |
 | `TABCOMPUTER_DEBIAN_SNAPSHOT` | `https://snapshot.debian.org/archive/debian/20260712T000000Z/` | where a `deb.debian.org` pool file the mirror no longer has (removed by a point release) is fetched from instead |
 
 The GUI apps (src/gui/apps.ts, docs/GUI.md) fetch their pinned .debs as
 `/debian/pool/PATH`, which is the same mirror (`/debian/mirror/deb.debian.org/debian/pool/PATH`)
 and the same cache; they check each file's sha256 themselves.
+
+**What a request can cost.** A file goes from the upstream to a temporary
+file in the cache directory and from that file to the tab: the server holds
+no file in memory, whatever its size. Requests for one file at the same time
+share one fetch. The file limit comes from what tabs need (measured against
+the snapshot's `Packages` index, 68,820 packages): the largest file in the
+closure of a toolchain set is `texlive-fonts-extra`, 624 MB (`tex-full`
+installed through apt); the next is `openjdk-21-jdk-headless`, 83 MB; the
+largest a GUI app fetches is `firefox-esr`, 76 MB; no package set built ahead
+needs one over 27 MB. 768 MB leaves a quarter of headroom, and 11 packages of
+main are larger (debug symbols, game data, API documentation). So the disk
+holds at most the cache's size plus the files in flight (4 of 768 MB).
+Tests: `debian-mirror.test.ts`.
 
 Responses are same-origin, so no CORS or COEP issues. Traffic per user is
 what apt fetches: `apt update` is ≈10 MB (trixie's Packages.xz, plus the

@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { realpathSync, readFileSync, readdirSync, createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream';
 import net from 'node:net';
 import dns from 'node:dns/promises';
 import https from 'node:https';
@@ -979,103 +980,233 @@ const packageLayers = createPackageLayers();
 // default deb.debian.org and security.debian.org from their own CDNs), and
 // only archive paths (dists/, pool/). apt verifies everything against the
 // signed InRelease, so the mirror needs no trust (the GUI apps check each
-// .deb's sha256 themselves). Files under pool/ and by-hash/ are immutable and
-// kept in TABCOMPUTER_DEBIAN_CACHE (default: $TMPDIR/shiro-debian) forever; other
-// index files for TABCOMPUTER_DEBIAN_INDEX_TTL seconds (default 600). A deb.debian.org
-// pool file the mirror no longer has comes from TABCOMPUTER_DEBIAN_SNAPSHOT.
+// .deb's sha256 themselves). Files under pool/ and by-hash/ are immutable;
+// other index files are kept for TABCOMPUTER_DEBIAN_INDEX_TTL seconds (default
+// 600). A deb.debian.org pool file the mirror no longer has comes from
+// TABCOMPUTER_DEBIAN_SNAPSHOT.
 // /debian/pool/PATH (the GUI apps' URL) is /debian/mirror/deb.debian.org/debian/pool/PATH.
-function debianMirrorConfig() {
+//
+// A file goes from the upstream to a temporary file and from the file to the
+// tab: the server never holds one in memory. What a request can cost is capped:
+//   TABCOMPUTER_DEBIAN_CACHE            the copies (default $TMPDIR/shiro-debian, which a reboot
+//                                       empties). The server makes it; the directory is the mirror's alone
+//   TABCOMPUTER_DEBIAN_CACHE_MAX_MB     2048   all copies together; past it the ones used longest ago are removed
+//   TABCOMPUTER_DEBIAN_FILE_MAX_MB      768    the largest file fetched. The largest one a toolchain set, a
+//                                       package set or a GUI app needs is texlive-fonts-extra, 624 MB (tex-full
+//                                       through apt); 11 of the 68,820 packages of trixie's main are larger
+//   TABCOMPUTER_DEBIAN_FETCHES          4      upstream fetches at a time; the others wait their turn
+export function debianMirrorConfig(env = process.env) {
   const upstreams = new Map([['deb.debian.org', 'https://deb.debian.org'], ['security.debian.org', 'https://security.debian.org']]);
-  if (process.env.TABCOMPUTER_DEBIAN_MIRRORS) {
+  if (env.TABCOMPUTER_DEBIAN_MIRRORS) {
     upstreams.clear();
-    for (const part of process.env.TABCOMPUTER_DEBIAN_MIRRORS.split(',')) {
+    for (const part of env.TABCOMPUTER_DEBIAN_MIRRORS.split(',')) {
       const i = part.indexOf('=');
       if (i > 0) upstreams.set(part.slice(0, i).trim(), part.slice(i + 1).trim().replace(/\/+$/, ''));
     }
   }
+  const num = (v, d) => (String(v ?? '').trim() !== '' && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d);
   return {
     upstreams,
     // Pool files a point release removed from deb.debian.org (the GUI apps pin
     // versions): fetched from snapshot.debian.org instead
-    snapshot: (process.env.TABCOMPUTER_DEBIAN_SNAPSHOT || 'https://snapshot.debian.org/archive/debian/20260712T000000Z/').replace(/\/+$/, ''),
-    cacheDir: process.env.TABCOMPUTER_DEBIAN_CACHE || process.env.TABCOMPUTER_DEB_CACHE || join(tmpdir(), 'shiro-debian'),
-    indexTtl: Number(process.env.TABCOMPUTER_DEBIAN_INDEX_TTL || 600) * 1000,
+    snapshot: (env.TABCOMPUTER_DEBIAN_SNAPSHOT || 'https://snapshot.debian.org/archive/debian/20260712T000000Z/').replace(/\/+$/, ''),
+    cacheDir: env.TABCOMPUTER_DEBIAN_CACHE || env.TABCOMPUTER_DEB_CACHE || join(tmpdir(), 'shiro-debian'),
+    indexTtl: num(env.TABCOMPUTER_DEBIAN_INDEX_TTL, 600) * 1000,
+    maxBytes: num(env.TABCOMPUTER_DEBIAN_CACHE_MAX_MB, 2048) * 1024 * 1024,
+    maxFileBytes: num(env.TABCOMPUTER_DEBIAN_FILE_MAX_MB, 768) * 1024 * 1024,
+    fetches: Math.max(1, Math.floor(num(env.TABCOMPUTER_DEBIAN_FETCHES, 4))),
   };
 }
-const DEBIAN_MIRROR = debianMirrorConfig();
 const DEBIAN_PATH = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._+~%-]+)*\/(?:dists|pool)\/[A-Za-z0-9._+~%/-]+$/;
-const debianInflight = new Map();
+/** Files that may wait for a fetch's turn; past it a request is told to come back */
+const DEBIAN_WAITING_MAX = 256;
+/** One upstream fetch may take this long */
+const DEBIAN_FETCH_MS = 15 * 60_000;
 
-async function debianFetch(upstreamUrl, cacheFile, immutable) {
-  if (cacheFile) {
+export function createDebianMirror(cfg = debianMirrorConfig(), { fetchFn = (url, init) => upstreamFetch(url, init), log = console.warn, now = () => Date.now() } = {}) {
+  const inflight = new Map(); // upstream URL → the one fetch every request for that file waits for
+  let fetching = 0;           // upstream fetches in flight
+  const waiting = [];
+  let counted = null;         // the one scan of the cache directory
+  let used = 0;               // bytes on disk, once counted
+  let trimming = Promise.resolve();
+
+  /** Every file under the cache directory: [{ file, size, mtimeMs }] */
+  async function scan() {
+    const out = [];
+    const walk = async (dir) => {
+      for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) await walk(p);
+        else if (e.isFile()) { const st = await stat(p).catch(() => null); if (st) out.push({ file: p, size: st.size, mtimeMs: st.mtimeMs }); }
+      }
+    };
+    await walk(cfg.cacheDir);
+    return out;
+  }
+  const diskUsed = async () => {
+    await (counted ??= (async () => {
+      for (const f of await scan()) {
+        // (a download that a server which stopped left half-written)
+        if (f.file.endsWith('.tmp')) { if (now() - f.mtimeMs > 3600_000) await unlink(f.file).catch(() => {}); continue; }
+        used += f.size;
+      }
+    })());
+    return used;
+  };
+  /** Over the cap: the copies used longest ago go until a tenth of the cap is free. `keep` (the file just written) stays. */
+  const trim = (keep) => (trimming = trimming.then(async () => {
+    if (used <= cfg.maxBytes) return;
+    const files = (await scan()).filter((f) => !f.file.endsWith('.tmp'));
+    used = files.reduce((n, f) => n + f.size, 0);
+    let removed = 0;
+    for (const f of files.filter((x) => !x.file.endsWith('.lm') && x.file !== keep).sort((x, y) => x.mtimeMs - y.mtimeMs)) {
+      if (used <= cfg.maxBytes * 0.9) break;
+      await unlink(f.file).catch(() => {});
+      await unlink(f.file + '.lm').catch(() => {});
+      used -= f.size;
+      removed++;
+    }
+    if (removed) log(`[debian-mirror] cache over ${Math.round(cfg.maxBytes / 1048576)} MB: removed the ${removed} files used longest ago`);
+  }).catch((e) => log(`[debian-mirror] cache trim failed: ${e.message}`)));
+
+  const turn = async () => { if (fetching >= cfg.fetches) await new Promise((r) => waiting.push(r)); else fetching++; };
+  const done = () => { const next = waiting.shift(); if (next) next(); else fetching--; };
+
+  /** The copy on disk, when it may be served: { status: 200, file, lastModified } */
+  async function kept(cacheFile, immutable, stale = false) {
     try {
       const st = await stat(cacheFile);
-      if (immutable || Date.now() - st.mtimeMs < DEBIAN_MIRROR.indexTtl) {
-        return { status: 200, body: await readFile(cacheFile), lastModified: await readFile(cacheFile + '.lm', 'utf8').catch(() => '') };
-      }
-    } catch { /* not cached */ }
+      if (!st.isFile() || !(stale || immutable || now() - st.mtimeMs < cfg.indexTtl)) return null;
+      // Used now: the copies used longest ago are the first removed. (An index's time is its age, so it is left alone.)
+      if (immutable && now() - st.mtimeMs > 60_000) { const t = new Date(now()); await utimes(cacheFile, t, t).catch(() => {}); }
+      return { status: 200, file: cacheFile, lastModified: stale ? '' : await readFile(cacheFile + '.lm', 'utf8').catch(() => '') };
+    } catch { return null; }
   }
-  let r;
-  try {
-    r = await upstreamFetch(upstreamUrl, { redirect: 'follow' });
-  } catch (e) {
-    // Upstream down: a stale index beats none
-    if (cacheFile) {
-      try { return { status: 200, body: await readFile(cacheFile), lastModified: '' }; } catch {}
-    }
-    return { status: 502, body: Buffer.from(`upstream: ${e.message}\n`) };
-  }
-  if (!r.ok) return { status: r.status, body: Buffer.from(`upstream: ${r.status} ${r.statusText}\n`) };
-  const body = Buffer.from(await r.arrayBuffer());
-  const lastModified = r.headers.get('last-modified') || '';
-  if (cacheFile) {
+
+  /** `url` on disk as `cacheFile`: { status: 200, file, lastModified }, or { status, body } when there is no file to send */
+  async function fetched(url, cacheFile, immutable) {
+    const hit = await kept(cacheFile, immutable);
+    if (hit) return hit;
+    if (waiting.length >= DEBIAN_WAITING_MAX) return { status: 503, body: Buffer.from('busy: many files are being fetched; try again\n'), retryAfter: 5 };
+    await turn();
+    const tmp = `${cacheFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    const tooLarge = () => {
+      log(`[debian-mirror] ${url}: larger than ${Math.round(cfg.maxFileBytes / 1048576)} MB (TABCOMPUTER_DEBIAN_FILE_MAX_MB); not fetched`);
+      return { status: 502, body: Buffer.from(`upstream: the file is larger than ${Math.round(cfg.maxFileBytes / 1048576)} MB\n`) };
+    };
+    let fh = null;
+    let upstream = true; // whether a failure now is the upstream's (else the cache's)
     try {
+      // (counted before anything is written, so no file is counted twice)
+      await diskUsed();
+      const r = await fetchFn(url, { redirect: 'follow', signal: AbortSignal.timeout(DEBIAN_FETCH_MS) });
+      if (!r.ok) { await r.body?.cancel().catch(() => {}); return { status: r.status, body: Buffer.from(`upstream: ${r.status} ${r.statusText}\n`) }; }
+      if (Number(r.headers.get('content-length')) > cfg.maxFileBytes) { await r.body?.cancel().catch(() => {}); return tooLarge(); }
+      const lastModified = r.headers.get('last-modified') || '';
+      upstream = false;
       await mkdir(cacheFile.slice(0, cacheFile.lastIndexOf('/')), { recursive: true });
-      const tmp = `${cacheFile}.${process.pid}.${randomBytes(4).toString('hex')}`;
-      await writeFile(tmp, body);
+      fh = await open(tmp, 'w');
+      let n = 0;
+      if (r.body) {
+        const body = r.body[Symbol.asyncIterator]();
+        for (;;) {
+          upstream = true;
+          const { value, done: end } = await body.next();
+          upstream = false;
+          if (end) break;
+          n += value.length;
+          if (n > cfg.maxFileBytes) { await body.return?.().catch(() => {}); return tooLarge(); }
+          await fh.write(value);
+        }
+      }
+      await fh.close();
+      fh = null;
+      const old = await stat(cacheFile).then((st) => st.size, () => 0);
       await writeFile(cacheFile + '.lm', lastModified);
       await rename(tmp, cacheFile);
-    } catch (e) { console.warn('[debian-mirror] cache write failed:', e.message); }
+      used += n - old;
+      if (used > cfg.maxBytes) await trim(cacheFile);
+      return { status: 200, file: cacheFile, lastModified };
+    } catch (e) {
+      if (!upstream) {
+        log(`[debian-mirror] cache write failed: ${e.message}`);
+        return { status: 502, body: Buffer.from('mirror: the file could not be kept on disk\n') };
+      }
+      // Upstream down: a stale index beats none
+      return await kept(cacheFile, immutable, true) ?? { status: 502, body: Buffer.from(`upstream: ${e.message}\n`) };
+    } finally {
+      done();
+      await fh?.close().catch(() => {});
+      await unlink(tmp).catch(() => {});
+    }
   }
-  return { status: 200, body, lastModified };
-}
 
-async function handleDebianMirror(req, res, rest) {
-  const slash = rest.indexOf('/');
-  const host = slash > 0 ? rest.slice(0, slash) : '';
-  const path = slash > 0 ? rest.slice(slash) : '';
-  const upstream = DEBIAN_MIRROR.upstreams.get(host);
-  if (!upstream || !DEBIAN_PATH.test(path) || path.includes('..') || (req.method !== 'GET' && req.method !== 'HEAD')) {
-    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-    return res.end('not a mirrored Debian archive path\n');
+  /** The file a request names, fetched once however many ask at the same time */
+  function resolve(host, path, upstream, immutable) {
+    const cacheFile = join(cfg.cacheDir, host, path);
+    const key = upstream + path;
+    let p = inflight.get(key);
+    if (!p) {
+      p = fetched(upstream + path, cacheFile, immutable).then((r) =>
+        r.status === 404 && host === 'deb.debian.org' && path.startsWith('/debian/pool/')
+          ? fetched(cfg.snapshot + path.slice('/debian'.length), cacheFile, true) : r,
+      ).finally(() => inflight.delete(key));
+      inflight.set(key, p);
+    }
+    return p;
   }
-  const immutable = path.includes('/pool/') || path.includes('/by-hash/');
-  const cacheFile = DEBIAN_MIRROR.cacheDir ? join(DEBIAN_MIRROR.cacheDir, host, path) : '';
-  const key = upstream + path;
-  let p = debianInflight.get(key);
-  if (!p) {
-    p = debianFetch(upstream + path, cacheFile, immutable).then((r) =>
-      r.status === 404 && host === 'deb.debian.org' && path.startsWith('/debian/pool/')
-        ? debianFetch(DEBIAN_MIRROR.snapshot + path.slice('/debian'.length), cacheFile, true) : r,
-    ).finally(() => debianInflight.delete(key));
-    debianInflight.set(key, p);
+
+  async function handle(req, res, rest) {
+    const slash = rest.indexOf('/');
+    const host = slash > 0 ? rest.slice(0, slash) : '';
+    const path = slash > 0 ? rest.slice(slash) : '';
+    const upstream = cfg.upstreams.get(host);
+    if (!upstream || !DEBIAN_PATH.test(path) || path.includes('..') || (req.method !== 'GET' && req.method !== 'HEAD')) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('not a mirrored Debian archive path\n');
+    }
+    const immutable = path.includes('/pool/') || path.includes('/by-hash/');
+    let r, fh = null;
+    // (a copy removed between the answer and its opening, when the cache was trimmed, is fetched again)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      r = await resolve(host, path, upstream, immutable);
+      if (!r.file) break;
+      try { fh = await open(r.file, 'r'); break; } catch (e) { r = { status: 502, body: Buffer.from(`mirror: ${e.code || e.message}\n`) }; }
+    }
+    const headers = {
+      'content-type': r.status === 200 ? 'application/octet-stream' : 'text/plain; charset=utf-8',
+      'cache-control': r.status === 200 && immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'cross-origin-resource-policy': 'same-origin',
+    };
+    if (r.lastModified) headers['last-modified'] = r.lastModified;
+    if (r.retryAfter) headers['retry-after'] = String(r.retryAfter);
+    const ims = req.headers['if-modified-since'];
+    if (r.status === 200 && ims && r.lastModified && Date.parse(ims) >= Date.parse(r.lastModified)) {
+      await fh?.close().catch(() => {});
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    if (!fh) {
+      headers['content-length'] = r.body.length;
+      res.writeHead(r.status, headers);
+      return res.end(req.method === 'HEAD' ? undefined : r.body);
+    }
+    try { headers['content-length'] = (await fh.stat()).size; } catch (e) {
+      await fh.close().catch(() => {});
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' });
+      return res.end(`mirror: ${e.code || e.message}\n`);
+    }
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') { await fh.close().catch(() => {}); return res.end(); }
+    // (pipeline closes the file when the tab goes away part-way)
+    pipeline(fh.createReadStream(), res, () => {});
   }
-  const r = await p;
-  const headers = {
-    'content-type': r.status === 200 ? 'application/octet-stream' : 'text/plain; charset=utf-8',
-    'cache-control': r.status === 200 && immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
-    'cross-origin-resource-policy': 'same-origin',
-  };
-  if (r.lastModified) headers['last-modified'] = r.lastModified;
-  const ims = req.headers['if-modified-since'];
-  if (r.status === 200 && ims && r.lastModified && Date.parse(ims) >= Date.parse(r.lastModified)) {
-    res.writeHead(304, headers);
-    return res.end();
-  }
-  headers['content-length'] = r.body.length;
-  res.writeHead(r.status, headers);
-  res.end(req.method === 'HEAD' ? undefined : r.body);
+
+  return { handle, config: cfg, stats: () => ({ fetching, waiting: waiting.length, used }) };
 }
+const debianMirror = createDebianMirror();
+const handleDebianMirror = (req, res, rest) => debianMirror.handle(req, res, rest);
 
 // --- Claude Code releases (tabcomputer#40) ---
 // `claude install` fetched Anthropic's 250 MB native build from inside the

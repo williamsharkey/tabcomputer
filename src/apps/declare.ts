@@ -14,6 +14,7 @@
  * called. `"shell": true` makes `run` a shell line; the values then go in
  * quoted.
  */
+import toolchainSpec from '../debian/toolchains.json';
 
 export type AppKind = 'page' | 'files' | 'form' | 'table';
 export type InputType = 'text' | 'long text' | 'number' | 'choice' | 'checkbox' | 'file';
@@ -53,6 +54,9 @@ export interface KindKeys {
   table: string;
   columns: AppColumn[];
 }
+
+/** The toolchain sets by id (src/debian/toolchains.json): their titles, for the sentences */
+const TOOLCHAIN_SETS = (toolchainSpec as { layers: Record<string, { title?: string }> }).layers;
 
 export const NO_KIND: KindKeys = {
   kind: 'page', run: '', shell: false, accept: [], out: '', each: true, options: [], fields: [],
@@ -440,9 +444,12 @@ export function kindSaid(m: KindKeys & { name: string; description: string; need
       ? 'A shell line can do everything a terminal here can: it can read and change every file in this tab.'
       : `${m.run.split(/\s+/)[0]} is an ordinary program in this tab: it can read and change every file here.`;
   }
+  // A name in `needs` that is a toolchain set (`needs: ["c"]`) is installed as that set (runtime.ts): say its title, not "the Debian package c"
+  const sets = [...m.toolchains, ...m.needs.filter((n) => n in TOOLCHAIN_SETS)];
+  const packages = m.needs.filter((n) => !(n in TOOLCHAIN_SETS));
   const installs = [
-    m.toolchains.length ? `the ${m.toolchains.length > 1 ? 'toolchains' : 'toolchain'} ${list(m.toolchains)}` : '',
-    m.needs.length ? `the Debian ${m.needs.length > 1 ? 'packages' : 'package'} ${list(m.needs)}` : '',
+    sets.length ? `the ${list(sets.map((n) => TOOLCHAIN_SETS[n]?.title ?? n))} ${sets.length > 1 ? 'toolchains' : 'toolchain'}` : '',
+    packages.length ? `the Debian ${packages.length > 1 ? 'packages' : 'package'} ${list(packages)}` : '',
   ].filter(Boolean);
   if (installs.length) s.installs = `Before its first start it installs ${installs.join(', and ')}.`;
   return s;

@@ -695,8 +695,8 @@ if (wants('times')) {
     const page = await open(ctx, links['A C hello']);
     await page.waitForSelector(APP, { timeout: 90_000 }).catch(() => null);
     const p = await promptOf(page, APP);
-    check(`${D} times: the C hello's prompt shows its shell line and what it installs (not installed here: it needs Debian)`, !!p && p.text.includes('C hello runs this shell line when you choose Run: cat > hello.c && gcc -o hello hello.c && ./hello')
-      && p.text.includes('Before its first start it installs the Debian package c.'), p?.text.replace(/\n+/g, ' | ').slice(0, 400));
+    check(`${D} times: the C hello's prompt shows its shell line and what it installs (not installed here: it needs Debian)`, !!p && p.text.replace(/\s+/g, ' ').includes('C hello runs this shell line when you choose Run: cat > hello.c && gcc -o hello hello.c && ./hello')
+      && p.text.includes('Before its first start it installs the C and C++ toolchain.'), p?.text.replace(/\n+/g, ' | ').slice(0, 400));
     await ctx.close();
   }
 }

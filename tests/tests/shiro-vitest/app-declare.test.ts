@@ -263,7 +263,9 @@ describe('what a person reads before installing', () => {
     expect(shell).toContain('Tidy runs this shell line once, with all the files you give it: jq . {in} | sort');
     expect(shell).toContain('A shell line can do everything a terminal here can: it can read and change every file in this tab.');
     expect(shell).toContain('The result is named all.txt.');
-    expect(shell).toContain('Before its first start it installs the toolchain python, and the Debian packages jq and moreutils.');
+    expect(shell).toContain('Before its first start it installs the Python 3 toolchain, and the Debian packages jq and moreutils.');
+    // a set named in `needs` is said by its title, not as a Debian package
+    expect(manifestSentences(validateManifest({ ...FILES, needs: ['c'] }))).toContain('Before its first start it installs the C and C++ toolchain.');
     expect(validateManifest({ ...FILES, shell: true }).access).toMatchObject({ shell: true, commands: [] });
     expect(manifestSentences(validateManifest({ ...TABLE, table: 'p.sqlite' }))).toContain('It runs the program sqlite3 on that file, and no other program.');
     // the same sentences where a list is wanted (app list -l); an app with its own page keeps its labelled lines

@@ -257,6 +257,8 @@ const RUN_LINK = /^\.\s+~\/run\/([a-z0-9][a-z0-9-]*)\/\.run-link$/;
 
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL)/i;
 const SECRET_SHAPE = /(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})/;
+/** The same shapes in a file's text, where they must start a word (`task-list-container-wrapper` is no key) */
+const FILE_SECRET = new RegExp('(?<![A-Za-z0-9_-])' + SECRET_SHAPE.source);
 
 /**
  * What a line may give away: the name it sets a secret under
@@ -476,6 +478,12 @@ export function trimSession(input: TrimInput): Trimmed {
     if (!now || 'missing' in now) continue;
     if ('skip' in now) {
       if (now.skip !== 'folder') notInLink.push(`${shown} (${sizeText(now.size)}, ${now.skip === 'binary' ? 'not text' : 'too large for a link'}) is not in the link. Put it where the link's commands can fetch it, and add the line that fetches it.`);
+      continue;
+    }
+    // A file that holds text shaped like a token stays out, as a typed line that holds one does:
+    // its whole text would otherwise be in a link made for other people
+    if (FILE_SECRET.test(now.text)) {
+      notInLink.push(`${shown} is not in the link: it holds text shaped like a token, and a link is for other people. Add it by hand if it holds none.`);
       continue;
     }
     // Where the editor was started, when the file is under it: the path then reads as it was typed

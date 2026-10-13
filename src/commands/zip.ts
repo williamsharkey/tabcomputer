@@ -35,8 +35,9 @@ async function deflateRaw(data: Uint8Array): Promise<Uint8Array> {
   return pipeBytes(data, new CompressionStream('deflate-raw'));
 }
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  return pipeBytes(data, new DecompressionStream('deflate-raw'));
+/** `max`: the size the archive gives for the member. Data that inflates to more is not that member, and is not inflated further. */
+async function inflateRaw(data: Uint8Array, max = Infinity): Promise<Uint8Array> {
+  return pipeBytes(data, new DecompressionStream('deflate-raw'), max);
 }
 
 /** One member: its header fields and its (compressed) bytes */
@@ -223,7 +224,8 @@ async function fileBytes(ctx: CommandContext, path: string): Promise<Uint8Array>
 /** The member's contents, or null when its data doesn't check out */
 async function memberBytes(m: Member): Promise<Uint8Array | null> {
   try {
-    const bytes = m.method === 0 ? m.data : m.method === 8 ? await inflateRaw(m.data) : null;
+    // (bounded by the size the archive states: a member that says 10 bytes and inflates to gigabytes stops at 10)
+    const bytes = m.method === 0 ? m.data : m.method === 8 ? await inflateRaw(m.data, m.usize) : null;
     return bytes && bytes.length === m.usize && crc32(bytes) === m.crc ? bytes : null;
   } catch { return null; }
 }

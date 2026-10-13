@@ -371,9 +371,22 @@ async function unpackSdist(filename: string, data: Uint8Array): Promise<Map<stri
   return stripTopDir(files);
 }
 
+/**
+ * A name inside a wheel (or built from an sdist) that stays where it is put:
+ * relative, and with no `..` part. Anything else would be written outside
+ * site-packages (a file named `../../.profile`), so such a wheel is refused
+ * whole, as pip refuses it.
+ */
+export function wheelPathOk(name: string): boolean {
+  return typeof name === 'string' && !!name && !name.startsWith('/') && !name.split('/').some((s) => s === '..');
+}
+
 /** Install one wheel: its bytes, or the entries built from an sdist. Returns the dist-info directory. */
 export async function installWheel(fs: FileSystem, wheel: Uint8Array | ZipEntry[], target: PipTarget, opts: { requested?: boolean } = {}): Promise<string> {
   const entries = wheel instanceof Uint8Array ? readZip(wheel) : wheel;
+  // Checked before anything is written: a refused wheel leaves nothing behind
+  const outside = entries.find((e) => !wheelPathOk(e.name));
+  if (outside) throw new Error(`the wheel has a file whose name leaves its folder (${JSON.stringify(String(outside.name).slice(0, 80))}): not installed`);
   const di = entries.find(e => /^[^/]+\.dist-info\/WHEEL$/.test(e.name));
   if (!di) throw new Error('wheel has no .dist-info/WHEEL');
   const distInfo = di.name.split('/')[0];
@@ -410,6 +423,8 @@ export async function installWheel(fs: FileSystem, wheel: Uint8Array | ZipEntry[
     const eps = parseEntryPoints(dec.decode(await epEntry.data()));
     for (const group of ['console_scripts', 'gui_scripts']) {
       for (const [name, spec] of Object.entries(eps[group] ?? {})) {
+        // (a script is one name in the scripts folder, never a path out of it)
+        if (!name || name === '.' || name === '..' || name.includes('/')) continue;
         const dest = `${target.scripts}/${name}`;
         await writeFile(fs, dest, consoleScript(target.python, spec), 0o755);
         record.push(`${relPath(site, dest)},,`);

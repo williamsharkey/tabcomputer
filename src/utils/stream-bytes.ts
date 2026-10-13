@@ -6,7 +6,15 @@
  */
 const FEED = 1 << 20;
 
-export async function pipeBytes(data: Uint8Array, stream: { writable: WritableStream<BufferSource>; readable: ReadableStream<Uint8Array> }): Promise<Uint8Array> {
+/** What `pipeBytes` throws when more comes out than `max` allows */
+export class TooMuchOutput extends Error {}
+
+/**
+ * `max`: the most bytes that may come out. A stream that gives more is
+ * stopped there and TooMuchOutput is thrown, so a small archive that unpacks
+ * to gigabytes never fills the tab's memory.
+ */
+export async function pipeBytes(data: Uint8Array, stream: { writable: WritableStream<BufferSource>; readable: ReadableStream<Uint8Array> }, max = Infinity): Promise<Uint8Array> {
   const writer = stream.writable.getWriter();
   const fed = (async () => {
     for (let off = 0; off < data.byteLength; off += FEED) {
@@ -24,6 +32,11 @@ export async function pipeBytes(data: Uint8Array, stream: { writable: WritableSt
     if (done) break;
     chunks.push(value);
     total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      await writer.abort().catch(() => {});
+      throw new TooMuchOutput(`it unpacks to more than ${max} bytes`);
+    }
   }
   await fed;
   if (chunks.length === 1) return chunks[0];

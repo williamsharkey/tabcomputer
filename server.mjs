@@ -268,6 +268,18 @@ async function handleProxy(req, res, pathAfterApi) {
 }
 
 // --- OAuth callback ---
+/**
+ * JSON as it may stand inside an inline <script>: `<`, `>` and `&` are written
+ * as \u escapes, so text from the address can never end the element
+ * ("</script>") or open a comment ("<!--"), and U+2028/U+2029 never read as
+ * line ends. The value is the same once the script runs.
+ */
+export function scriptJson(value) {
+  return JSON.stringify(value).replace(SCRIPT_UNSAFE, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+// (the two line separators by their numbers: written out they would end this line)
+const SCRIPT_UNSAFE = new RegExp('[<>&' + String.fromCharCode(0x2028, 0x2029) + ']', 'g');
+
 function handleOAuthCallback(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const params = Object.fromEntries(url.searchParams.entries());
@@ -277,7 +289,7 @@ function handleOAuthCallback(req, res) {
 <body><p>Authenticating...</p>
 <script>
 (function() {
-  var params = ${JSON.stringify(params)};
+  var params = ${scriptJson(params)};
   var msg = {
     type: 'shiro-oauth-callback',
     code: params.code || '', state: params.state || '',

@@ -16,6 +16,12 @@
  * is none) and `run(token)`.
  * The question is the desktop's sheet (src/desktop/network.ts registers it); the
  * terminal UI goes straight to the one-time code (`deviceFlowAsker`).
+ *
+ * More permissions for the sign-in that is there (`retryWithScopes`) are asked
+ * for only where the failure is GitHub's own word: `gh` and its extensions,
+ * and `git` when the remote it talked to is github.com. And only for the
+ * scopes of `SCOPES_ASKED`; for any other the command's failure stands, with
+ * one line naming `gh auth refresh -s`.
  */
 
 import type { CommandContext } from './commands/index';
@@ -75,6 +81,31 @@ const SCOPE_WORDS: Record<string, string> = {
 };
 const SCOPE_NAME = /^[a-z][a-z_]*(:[a-z_]+)?$/;
 
+/**
+ * The scopes a failing command may get the sheet for: what a classroom or
+ * developer tool needs to read and write repositories, gists, projects and
+ * organization membership (`gh student`, Classroom 50's extension, needs
+ * admin:org, tabcomputer#153). Deleting repositories, keys, webhooks,
+ * enterprises, packages to publish or delete, and the profile itself are not
+ * here: a person who wants one of those types `gh auth refresh -s` themselves.
+ */
+export const SCOPES_ASKED: ReadonlySet<string> = new Set([
+  'repo', 'public_repo', 'repo:status', 'workflow', 'gist',
+  'read:org', 'write:org', 'admin:org',
+  'read:user', 'user:email',
+  'read:project', 'project',
+  'read:packages', 'read:discussion', 'notifications', 'codespace',
+]);
+
+/** Longest `action` a sheet shows: a command's first words are enough to know it by */
+export const ACTION_MAX = 60;
+
+/** What the person was doing, as the sheets show it: one line, at most ACTION_MAX characters and an ellipsis */
+export function actionText(action: string): string {
+  const line = String(action).replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2028\u2029\u2060-\u2069\ufeff]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return line.length > ACTION_MAX ? line.slice(0, ACTION_MAX).trimEnd() + '…' : line;
+}
+
 /** The permissions being added, as a sentence: "This adds permission to manage your organizations, their teams and their members (admin:org)." */
 export function scopesSentence(add: string[]): string {
   const said = add.map((s) => (SCOPE_WORDS[s] ? `${SCOPE_WORDS[s]} (${s})` : `do what GitHub calls ${s}`));
@@ -130,6 +161,8 @@ export function resetGitHubNeedDecline(): void {
  * and declined in the last minute.
  */
 export function askGitHubSignIn(need: GitHubNeed): Promise<string | null> {
+  // (the sheet shows the action: a command line of any length, cut to its first words)
+  need = { ...need, action: actionText(need.action) };
   const saved = networkCredential();
   if (saved && need.kind !== 'scopes') return Promise.resolve(saved);
   if (pending) return pending;
@@ -215,17 +248,26 @@ export function setTokenScopesReader(fn: ((token: string) => Promise<string[]>) 
  * be given them: ask for exactly those, and run the command again. A token
  * the person exported themselves is theirs to re-issue, so nothing is asked.
  */
-async function retryWithScopes(ctx: CommandContext, action: string, run: () => Promise<number>, args: string[], code: number): Promise<number> {
+async function retryWithScopes(ctx: CommandContext, action: string, run: () => Promise<number>, args: string[], code: number, opts: RetryOptions): Promise<number> {
   const named = missingScopes(ctx.stderr + (ctx.stderrSeen ?? ''));
   const saved = networkCredential();
   const own = ctx.env['GH_TOKEN'] || ctx.env['GITHUB_TOKEN'];
   if (!named || !asker || !saved || (own && own !== saved)) return code;
+  // Only where the text that names the scopes is GitHub's or gh's: gh and its extensions, and git on a github.com remote
+  const fromGitHub = /^gh(\s|$)/.test(action) || (/^git\s/.test(action) && !!(await Promise.resolve(opts.githubRemote?.()).catch(() => false)));
+  if (!fromGitHub) return code;
   let have: string[];
   try { have = await (scopesReader ?? (async (t) => (await import('./github-auth')).tokenScopes(t)))(saved); } catch { return code; }
   const held = new Set([...have, ...have.flatMap((s) => HOLDS[s] ?? [])]);
   const add = named.filter((s) => !held.has(s));
   // (it has them all: the failure is about something else)
   if (!add.length) return code;
+  // A permission outside the list is never asked for on a command's word: the failure stands, and one line says how to add it
+  const refused = add.filter((s) => !SCOPES_ASKED.has(s));
+  if (refused.length) {
+    ctx.stderr += `tabcomputer does not add ${refused.join(', ')} to the GitHub sign-in because a command asked. To add ${add.length === 1 ? 'it' : 'what this command named'} yourself: gh auth refresh -s ${add.join(',')}\n`;
+    return code;
+  }
   const { DEFAULT_GITHUB_SCOPES } = await import('./github-auth');
   const need: GitHubNeed = { action, kind: 'scopes', add, scopes: [...new Set([...DEFAULT_GITHUB_SCOPES, ...have, ...add])] };
   if (!interactive(ctx)) {
@@ -248,6 +290,11 @@ async function retryWithScopes(ctx: CommandContext, action: string, run: () => P
   return run();
 }
 
+export interface RetryOptions {
+  /** For `git`: whether the remote the command talked to is on github.com (asked only when a failure names scopes) */
+  githubRemote?: () => boolean | Promise<boolean>;
+}
+
 /** A person is at this command (`fetchSignedIn`'s `wait`) */
 export function atTerminal(ctx: CommandContext): boolean {
   return interactive(ctx) && ctx.env['TABCOMPUTER_GITHUB_PROMPT'] !== '0';
@@ -258,11 +305,11 @@ export function atTerminal(ctx: CommandContext): boolean {
  * run it again. `run` must be safe to call twice (the first call failed before
  * it changed anything: no token, or GitHub refused the first request).
  */
-export async function retrySignedIn(ctx: CommandContext, action: string, run: () => Promise<number>): Promise<number> {
+export async function retrySignedIn(ctx: CommandContext, action: string, run: () => Promise<number>, opts: RetryOptions = {}): Promise<number> {
   const args = [...ctx.args];
   const code = await run();
   if (code === 0 || ctx.env['TABCOMPUTER_GITHUB_PROMPT'] === '0') return code;
-  if (hasToken(ctx)) return retryWithScopes(ctx, action, run, args, code);
+  if (hasToken(ctx)) return retryWithScopes(ctx, action, run, args, code, opts);
   const kind = githubSignInWanted(ctx.stderr);
   if (!kind || !asker) return code;
   if (!interactive(ctx)) {

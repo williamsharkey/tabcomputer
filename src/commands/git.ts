@@ -42,7 +42,8 @@ export const gitCmd: Command = {
       return code;
     });
     const sub = ctx.args.find((a) => GITHUB_SUBCOMMANDS.has(a));
-    return sub ? retrySignedIn(ctx, `git ${sub}`, once) : once();
+    const args = [...ctx.args];
+    return sub ? retrySignedIn(ctx, `git ${sub}`, once, { githubRemote: () => gitRemoteIsGitHub(ctx, args) }) : once();
   },
   keepOverPackage: builtinCloneHandles,
 };
@@ -1189,6 +1190,32 @@ async function gitConfigCommand(ctx: CommandContext, fs: any, dir: string, overr
   await git.setConfig({ fs, dir, path: key, value: unset ? undefined : value });
   return 0;
 }
+
+/**
+ * Whether a clone, fetch, pull, push or ls-remote talked to github.com: every
+ * address among its words is GitHub's, or it names none and the remote it
+ * used (the first word after the subcommand that is a remote, else origin)
+ * is. False when that cannot be told.
+ */
+export async function gitRemoteIsGitHub(ctx: CommandContext, args: string[] = ctx.args): Promise<boolean> {
+  const at = args.findIndex((a) => GITHUB_SUBCOMMANDS.has(a));
+  if (at < 0) return false;
+  const words = args.slice(at + 1).filter((a) => !a.startsWith('-'));
+  const urls = words.filter((a) => /^[a-z][a-z0-9+.-]*:\/\//i.test(a) || /^[^/\s]+@[^/\s]+:/.test(a));
+  if (urls.length) return urls.every((u) => GITHUB_REMOTE.test(u));
+  // (`git -C DIR ...` works there)
+  const c = args.indexOf('-C');
+  let root: string | null = c >= 0 && c < at && args[c + 1] ? ctx.fs.resolvePath(args[c + 1], ctx.cwd) : ctx.cwd;
+  while (root && !(await ctx.fs.exists(root === '/' ? '/.git' : `${root}/.git`).catch(() => false))) {
+    root = root === '/' ? null : root.slice(0, root.lastIndexOf('/')) || '/';
+  }
+  if (!root) return false;
+  const fs = ctx.fs.toIsomorphicGitFS();
+  const named = words[0] ? await remoteUrl(fs, root, words[0]) : undefined;
+  return GITHUB_REMOTE.test(named ?? await remoteUrl(fs, root, 'origin') ?? '');
+}
+/** An https address on github.com (the only remotes that are sent the token: `githubAuth`) */
+const GITHUB_REMOTE = /^https?:\/\/([^/@]+@)?github\.com\//;
 
 /**
  * Credentials for GitHub remotes, sent on the first request. Left to the usual

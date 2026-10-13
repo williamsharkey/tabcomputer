@@ -747,6 +747,26 @@ if (!token) return -ENETUNREACH;   // the user said "Not now"
   hook returns `null` for 60 s instead of asking again.
 - **In the classic UI** no handler is registered, so the hook returns `null`
   (or the saved token).
+- **A command that needs GitHub** opens the same sheet (`src/github-needed.ts`):
+  "Sign in with GitHub to finish" when the tab is not signed in, and "One
+  more permission from GitHub" when the sign-in lacks a scope the command
+  named. Both open with the focus on "Not now", so a key already on its way
+  declines and never starts a sign-in; the terminal gets the focus back when
+  the sheet goes. A sheet opened on purpose (Settings, the menu bar) has the
+  focus on the sign-in. The command the sheet names is shown as one line of
+  at most 60 characters.
+- **More permissions are asked for only on GitHub's word.** The sheet opens
+  for `gh` and its extensions, and for `git` only when the remote the
+  command talked to is an https address on github.com (`gitRemoteIsGitHub`).
+  It opens only for the scopes in `SCOPES_ASKED`: `repo`, `public_repo`,
+  `repo:status`, `workflow`, `gist`, `read:org`, `write:org`, `admin:org`
+  (Classroom 50's `gh student` needs it), `read:user`, `user:email`,
+  `read:project`, `project`, `read:packages`, `read:discussion`,
+  `notifications`, `codespace`. A failure that names any other scope
+  (`delete_repo`, `admin:enterprise`, a key or webhook scope, …) stays a
+  failure, with one line: "tabcomputer does not add delete_repo to the GitHub
+  sign-in because a command asked. To add it yourself: gh auth refresh -s
+  delete_repo".
 - **Same-origin requests never call it.** That covers package downloads and
   `/api/*`. `needsSignIn(url)` tells them apart.
 

@@ -161,6 +161,11 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+/** The button a sheet opens with the focus on: "Not now" when a command asked for GitHub, the sign-in when a person opened it; none otherwise */
+export function sheetFocus(forCommand: boolean, manual: boolean): string {
+  return manual ? '[data-act=github]' : forCommand ? '[data-act=later]' : '';
+}
+
 function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null> {
   if (current) return current.promise;
   const sheet = el('div', 'sd-sheet');
@@ -170,12 +175,15 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
   let resolveFn!: (tok: string | null) => void;
   const promise = new Promise<string | null>((r) => { resolveFn = r; });
   const abort = new AbortController();
+  // What had the focus (the terminal a command waits in) gets it back when the sheet goes
+  const before = document.activeElement as HTMLElement | null;
   const done = (tok: string | null) => {
     if (!current || current.el !== sheet) return;
     current = null;
     abort.abort();
     sheet.classList.add('sd-leaving');
     setTimeout(() => sheet.remove(), 220);
+    if (sheet.contains(document.activeElement) && before?.isConnected) before.focus?.();
     resolveFn(tok);
   };
   current = { el: sheet, done, promise };
@@ -196,7 +204,6 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
         <button class="sd-btn" data-act="later" type="button">Not now</button>
         <button class="sd-btn sd-primary" data-act="github" type="button">Approve on GitHub</button>
       </div>`;
-      sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();
       return;
     }
     // A command needs GitHub: the sign-in is the one prominent button, the rest is behind "Other ways"
@@ -223,7 +230,6 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
         ${gh.kind === 'private' ? '<div>A public repository clones without a sign-in. Check the name if this one should be public.</div>' : ''}
         <div>In a terminal: <code>gh auth login</code>, or <code>gh auth login --with-token</code>.</div>
       </div>`;
-      sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();
       return;
     }
     sheet.innerHTML = `
@@ -243,7 +249,6 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
         your GitHub sign-in is not sent to it unless you say so there. Downloads from this site
         (like <code>apt install</code>) never need a sign-in.
       </div>`;
-    sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();
   };
   sheet.addEventListener('click', (e) => {
     const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
@@ -327,6 +332,11 @@ function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null
 
   ask();
   root.appendChild(sheet);
+  // A sheet a command opened has the focus on "Not now": Enter or Space already on its way
+  // declines, and never starts a sign-in or an approval. One opened on purpose (Settings, the
+  // menu bar) has it on the sign-in. (Focus needs the sheet in the page, so it comes last.)
+  const first = sheetFocus(!!gh, manual);
+  if (first) sheet.querySelector<HTMLElement>(first)?.focus();
   return promise;
 }
 

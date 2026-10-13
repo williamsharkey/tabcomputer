@@ -3,7 +3,9 @@
  * sign-in and runs again (src/github-needed.ts).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { githubSignInWanted, missingScopes, retrySignedIn, fetchSignedIn, scopesSentence, setGitHubNeedHandler, setTokenScopesReader, resetGitHubNeedDecline, askGitHubSignIn, type GitHubNeed } from '@shiro/github-needed';
+import { githubSignInWanted, missingScopes, retrySignedIn, fetchSignedIn, scopesSentence, setGitHubNeedHandler, setTokenScopesReader, resetGitHubNeedDecline, askGitHubSignIn, actionText, ACTION_MAX, SCOPES_ASKED, type GitHubNeed } from '@shiro/github-needed';
+import { gitRemoteIsGitHub } from '@shiro/commands/git';
+import { sheetFocus } from '@shiro/desktop/network';
 import { GITHUB_RATE_LIMITED, githubMissing, githubNotThere, githubRateLimited, githubTokenFetch, handleRunLink, loadScript, parseRunUrl } from '@shiro/run-url';
 import { fetchGhApp, handleAppLink } from '@shiro/apps/links';
 import { hotswapCmd } from '@shiro/commands/hotswap';
@@ -223,6 +225,163 @@ describe('github-needed: a token that lacks scopes (tabcomputer#153)', () => {
     expect(asked).toMatchObject([{ kind: 'scopes', add: ['admin:org'], afterFailure: true }]);
     expect(quiet.ctx.stderr).toContain('(A window opened to give the GitHub sign-in here that permission. Approve there, then run gh student whoami again.)');
     release(null);
+  });
+});
+
+describe('github-needed: which commands and which scopes get the sheet', () => {
+  const lacks = (...scopes: string[]) => `error: your authentication token is missing required scopes [${scopes.join(', ')}]\n`;
+  let asked: GitHubNeed[] = [];
+  let off = () => {};
+  beforeEach(() => {
+    asked = [];
+    localStorage.setItem(KEY, 'gho_saved');
+    resetGitHubNeedDecline();
+    setTokenScopesReader(async () => ['gist', 'read:org', 'repo', 'user:email', 'workflow']);
+    off = setGitHubNeedHandler(async (need) => { asked.push(need); return null; });
+  });
+  afterEach(() => { off(); setTokenScopesReader(null); });
+  const fail = async (action: string, stderr: string, opts?: Parameters<typeof retrySignedIn>[3]) => {
+    const { ctx } = fakeCtx();
+    const code = await retrySignedIn(ctx, action, async () => { ctx.stderr = stderr; return 1; }, opts);
+    resetGitHubNeedDecline();
+    return { code, stderr: ctx.stderr as string };
+  };
+
+  it('the list is short, and has nothing that deletes or administers', () => {
+    expect([...SCOPES_ASKED].sort()).toEqual(['admin:org', 'codespace', 'gist', 'notifications', 'project', 'public_repo', 'read:discussion', 'read:org', 'read:packages', 'read:project', 'read:user', 'repo', 'repo:status', 'user:email', 'workflow', 'write:org']);
+    for (const s of ['delete_repo', 'admin:enterprise', 'admin:public_key', 'admin:repo_hook', 'admin:org_hook', 'admin:gpg_key', 'delete:packages', 'write:packages', 'user', 'site_admin']) expect(SCOPES_ASKED.has(s), s).toBe(false);
+  });
+
+  it('a scope outside the list is never asked for: the failure stands, with a line naming gh auth refresh -s', async () => {
+    for (const scope of ['delete_repo', 'admin:enterprise', 'admin:public_key', 'user', 'made_up']) {
+      const r = await fail('gh x', lacks(scope));
+      expect(r.code).toBe(1);
+      expect(asked, scope).toEqual([]);
+      expect(r.stderr).toBe(`${lacks(scope)}tabcomputer does not add ${scope} to the GitHub sign-in because a command asked. To add it yourself: gh auth refresh -s ${scope}\n`);
+    }
+    // one scope outside the list among ones inside it: nothing is asked, and the line names the lot
+    const mixed = await fail('gh student x', lacks('admin:org', 'delete_repo', 'repo'));
+    expect(asked).toEqual([]);
+    expect(mixed.stderr).toContain('tabcomputer does not add delete_repo to the GitHub sign-in because a command asked. To add what this command named yourself: gh auth refresh -s admin:org,delete_repo\n');
+    // without a terminal too: no window opens beside the failure
+    const quiet = fakeCtx({ terminal: undefined });
+    await retrySignedIn(quiet.ctx, 'gh x', async () => { quiet.ctx.stderr = lacks('delete_repo'); return 1; });
+    expect(asked).toEqual([]);
+    expect(quiet.ctx.stderr).toContain('gh auth refresh -s delete_repo');
+    expect(quiet.ctx.stderr).not.toContain('A window opened');
+    // a scope inside the list is asked for as before
+    await fail('gh project list', lacks('read:project'));
+    expect(asked).toMatchObject([{ action: 'gh project list', kind: 'scopes', add: ['read:project'] }]);
+  });
+
+  it('only gh and its extensions, and git on a github.com remote', async () => {
+    const text = lacks('read:project');
+    // another command that goes through the same wrapper, and a program that only prints the words
+    for (const action of ['hotswap push', 'ghost x', 'npm run gh', 'link']) {
+      const r = await fail(action, text);
+      expect(asked, action).toEqual([]);
+      expect(r.stderr, action).toBe(text);   // no sheet, and no line either: nothing was GitHub's word
+    }
+    // git: what the remote said is GitHub's only when the remote is github.com
+    await fail('git push', text);
+    await fail('git push', text, { githubRemote: () => false });
+    await fail('git push', text, { githubRemote: async () => { throw new Error('no repository'); } });
+    expect(asked).toEqual([]);
+    await fail('git push', text, { githubRemote: async () => true });
+    expect(asked).toMatchObject([{ action: 'git push', kind: 'scopes', add: ['read:project'] }]);
+    asked = [];
+    for (const action of ['gh', 'gh student whoami', 'gh api']) await fail(action, text);
+    expect(asked.map((n) => n.action)).toEqual(['gh', 'gh student whoami', 'gh api']);
+  });
+
+  it('git knows the remote it talked to', async () => {
+    const { shell, fs } = await createTestShell();
+    const w = () => {};
+    await shell.execute('mkdir -p /tmp/hub /tmp/other /tmp/none && cd /tmp/hub && git init -q && git remote add origin https://github.com/a/b && git remote add mirror https://git.example.com/a/b', w, w);
+    await shell.execute('cd /tmp/other && git init -q && git remote add origin https://git.example.com/a/b && mkdir -p deep/er', w, w);
+    const at = (cwd: string, ...args: string[]) => gitRemoteIsGitHub({ fs, cwd, args } as any);
+    expect(await at('/tmp/hub', 'push')).toBe(true);
+    expect(await at('/tmp/hub', 'push', 'origin', 'main')).toBe(true);
+    expect(await at('/tmp/hub', 'push', 'mirror', 'main')).toBe(false);
+    expect(await at('/tmp/hub', 'pull', '--rebase')).toBe(true);
+    expect(await at('/tmp/other', 'fetch')).toBe(false);
+    expect(await at('/tmp/other/deep/er', 'fetch')).toBe(false);
+    expect(await at('/tmp/none', 'push')).toBe(false);
+    expect(await at('/tmp', '-C', '/tmp/hub', 'push')).toBe(true);
+    expect(await at('/tmp/hub', '-C', '/tmp/other', 'push')).toBe(false);
+    // an address among the words decides, wherever the command runs
+    expect(await at('/tmp/other', 'clone', 'https://github.com/a/b')).toBe(true);
+    expect(await at('/tmp/hub', 'clone', 'https://git.example.com/a/b')).toBe(false);
+    expect(await at('/tmp/hub', 'ls-remote', 'https://github.com.evil.example/a/b')).toBe(false);
+    expect(await at('/tmp/hub', 'push', 'https://user@github.com/a/b', 'main')).toBe(true);
+    expect(await at('/tmp/hub', 'clone', 'git@github.com:a/b.git')).toBe(false);   // ssh is not sent the token
+    expect(await at('/tmp/hub', 'status')).toBe(false);
+  });
+
+  it('the action a sheet shows is one line of at most 60 characters', async () => {
+    expect(ACTION_MAX).toBe(60);
+    expect(actionText('gh repo list')).toBe('gh repo list');
+    const long = `gh api ${'x'.repeat(200)}`;
+    expect(actionText(long)).toBe(long.slice(0, 60) + '…');
+    expect(actionText(long)).toHaveLength(61);
+    expect(actionText('gh x\nYour session ended.\u202e Sign in again')).toBe('gh x Your session ended. Sign in again');
+    // what reaches the sheet is the short text, for a sign-in and for more permissions
+    localStorage.removeItem(KEY);
+    await askGitHubSignIn({ action: long, kind: 'account' });
+    resetGitHubNeedDecline();
+    localStorage.setItem(KEY, 'gho_saved');
+    await fail(long, lacks('read:project'));
+    expect(asked.map((n) => n.action)).toEqual([long.slice(0, 60) + '…', long.slice(0, 60) + '…']);
+  });
+
+  it('a sheet a command opened has the focus on "Not now"; one opened on purpose, on the sign-in', () => {
+    expect(sheetFocus(true, false)).toBe('[data-act=later]');
+    expect(sheetFocus(true, true)).toBe('[data-act=github]');
+    expect(sheetFocus(false, true)).toBe('[data-act=github]');
+    expect(sheetFocus(false, false)).toBe('');
+  });
+
+  it('in the page: both sheets are put in the page first and then focus "Not now", with the action cut short', async () => {
+    const { initNetwork } = await import('@shiro/desktop/network');
+    const page = document.createElement('div');
+    document.body.appendChild(page);
+    // (the test DOM has no focus of its own: record what is focused, and whether it was in the page by then)
+    const focused: string[] = [];
+    let proto: any = Object.getPrototypeOf(document.createElement('button'));
+    while (proto && proto.constructor?.name !== 'HTMLElement' && Object.getPrototypeOf(proto)?.constructor?.name !== 'Object') proto = Object.getPrototypeOf(proto);
+    const had = Object.getOwnPropertyDescriptor(proto, 'focus');
+    proto.focus = function (this: HTMLElement) { focused.push(`${this.dataset?.act ?? this.tagName}:${page.contains(this)}`); };
+    try {
+      off();
+      initNetwork({ root: page, openApp: async () => {} } as any, {} as any, document.createElement('button'));
+      const long = `gh api ${'y'.repeat(100)}`;
+      // the sign-in sheet
+      localStorage.removeItem(KEY);
+      const signIn = askGitHubSignIn({ action: long, kind: 'account' });
+      let sheet = page.querySelector('.sd-sheet')!;
+      expect(sheet.querySelector('h3')!.textContent).toBe('Sign in with GitHub to finish');
+      expect(focused).toEqual(['later:true']);
+      expect(sheet.querySelector('code')!.textContent).toBe(long.slice(0, 60) + '…');
+      expect(sheet.textContent).not.toContain('y'.repeat(61));
+      (sheet.querySelector('[data-act=later]') as HTMLElement).click();
+      expect(await signIn).toBeNull();
+      // the sheet for more permissions
+      focused.length = 0;
+      resetGitHubNeedDecline();
+      localStorage.setItem(KEY, 'gho_saved');
+      const more = askGitHubSignIn({ action: long, kind: 'scopes', add: ['read:project'], scopes: ['repo', 'read:project'] });
+      sheet = [...page.querySelectorAll('.sd-sheet')].at(-1)!;
+      expect(sheet.querySelector('h3')!.textContent).toBe('One more permission from GitHub');
+      expect(focused).toEqual(['later:true']);
+      expect(sheet.querySelector('code')!.textContent).toBe(long.slice(0, 60) + '…');
+      expect([...sheet.querySelectorAll('.sd-sheet-actions button')].map((b) => b.textContent)).toEqual(['Not now', 'Approve on GitHub']);
+      (sheet.querySelector('[data-act=later]') as HTMLElement).click();
+      expect(await more).toBeNull();
+    } finally {
+      if (had) Object.defineProperty(proto, 'focus', had); else delete proto.focus;
+      page.remove();
+      resetGitHubNeedDecline();
+    }
   });
 });
 

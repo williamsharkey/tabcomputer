@@ -209,16 +209,15 @@ export async function submitLab(fs: FileSystem, dir: string, deps: SubmitDeps): 
 
 interface OpenLab { dir: string; state: LabState | null; buffers: number }
 const openLabs = new Set<OpenLab>();
-let leaving = false;
+
+/** The page is being left on purpose (the shared-computer sign-out sets it): nothing asks "leave site?" */
+export const LEAVING_FLAG = '__tabcomputerLeaving';
 
 /** Folders open in the Code app with work GitHub does not have */
 export function unsavedWork(): string[] {
-  if (leaving) return [];
+  if ((globalThis as Record<string, unknown>)[LEAVING_FLAG]) return [];
   return [...openLabs].filter((l) => l.state?.unsaved || (l.buffers > 0 && !!l.state?.remote)).map((l) => l.state?.root ?? l.dir);
 }
-
-/** The page is being left on purpose (the shared-computer sign-out): no warning */
-export function leavingOnPurpose(): void { leaving = true; }
 
 const TITLE_MARK = '● ';
 function markTabTitle(): void {
@@ -270,7 +269,7 @@ export function attachLab(host: LabEditorHost): LabEditor {
     const tracked = !!me.state?.remote;
     const unsaved = tracked && (!!me.state?.unsaved || me.buffers > 0);
     host.post({ type: 'shiro-editor-git', tracked, unsaved, text: tracked ? (unsaved ? UNSAVED_TEXT : SAVED_TEXT) : '', detail: unsavedReason(me.state, me.buffers) });
-    host.setMark(unsaved ? UNSAVED_TEXT.toLowerCase() : '');
+    host.setMark(unsaved ? UNSAVED_TEXT : '');
     markTabTitle();
   };
   const sendBar = () => {

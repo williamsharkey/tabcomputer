@@ -83,7 +83,7 @@ beforeAll(async () => {
     },
   });
   // `code` opens a window on the desktop: here it records the folder
-  shell.commands.register({ name: 'code', description: 'stand-in', async exec(ctx) { await fs.writeFile('/tmp/code-opened', ctx.args.join(' ')); return 0; } });
+  shell.commands.register({ name: 'code', description: 'stand-in', async exec(ctx) { await fs.writeFile('/tmp/code-opened', fs.resolvePath(ctx.args[0] ?? '.', ctx.cwd)); return 0; } });
   shell.env['TABCOMPUTER_NETWORK_MODE'] = 'private';
   shell.env['HOME'] = HOME;
   await fs.mkdir(HOME, { recursive: true });
@@ -388,7 +388,7 @@ describe('Submit and the saved state', () => {
     await fs.writeFile(`${dir}/main.py`, 'print("from the editor")\n');
     await until(() => last('shiro-editor-git').unsaved === true);
     expect(last('shiro-editor-git').detail).toBe('1 changed file');
-    expect(marks[marks.length - 1]).toBe('not saved to github yet');
+    expect(marks[marks.length - 1]).toBe(UNSAVED_TEXT);
     expect(unsavedWork()).toEqual([dir]);
     expect((globalThis as any).__tabcomputerUnsavedWork()).toBe(true);
     expect(document.title).toBe('● tabcomputer');

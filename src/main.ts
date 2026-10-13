@@ -754,6 +754,8 @@ async function main() {
   // Cleanup iframe servers on page unload (hot reload)
   window.addEventListener('beforeunload', (e) => {
     iframeServer.cleanup();
+    // The shared-computer sign-out (src/sign-out.ts) leaves on purpose: everything is about to be deleted
+    if ((globalThis as { __tabcomputerLeaving?: boolean }).__tabcomputerLeaving) return;
     // Leaving mid-write (e.g. during npm install) loses the unsaved files
     // Or with work in the Code app that GitHub does not have (src/lab.ts): on a shared computer the push is the only copy
     const unsaved = (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork?.() === true;

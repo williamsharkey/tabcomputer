@@ -157,8 +157,8 @@ export async function signOutOfThisComputer(fs: FileSystem, go: () => void = () 
   // Edits to the credential files that node's fs was still holding
   removeStoredSignIns();
   try { sessionStorage.setItem(SIGN_OUT_KEY, '1'); } catch { /* no storage: the sign-ins are gone, the files stay */ }
-  // No "leave site?" for work the confirm already named
-  try { (await import('./lab')).leavingOnPurpose(); } catch { /* not loaded */ }
+  // No "leave site?" for work the confirm already named (src/lab.ts, main.ts's beforeunload)
+  (globalThis as Record<string, unknown>)['__tabcomputerLeaving'] = true;
   go();
 }
 

@@ -34,8 +34,11 @@ export const labCmd: Command = {
   name: 'lab',
   description: 'Class repositories: open one, run it, test it, submit it',
   async exec(ctx) {
-    const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else ctx.stdout += s; };
-    const err = (s: string) => { if (ctx.streamStderr) ctx.streamStderr(s); else ctx.stderr += s; };
+    // On a terminal each line appears as it is said: the commands this runs (git, gh) write there
+    // directly, and a line kept for the end would come after the sign-in it announces
+    const now = (s: string) => { if (!ctx.terminal) return false; ctx.terminal.writeOutput(s.replace(/\r?\n/g, '\r\n')); return true; };
+    const out = (s: string) => { if (ctx.streamStdout) ctx.streamStdout(s); else if (!now(s)) ctx.stdout += s; };
+    const err = (s: string) => { if (ctx.streamStderr) ctx.streamStderr(s); else if (!now(s)) ctx.stderr += s; };
     /** A line in this shell, on this terminal (its `cd` stays) */
     const sh = (line: string) => ctx.shell.execute(line, out, err, false, ctx.terminal, true);
     const home = ctx.env['HOME'] || '/home/user';
@@ -92,7 +95,8 @@ export const labCmd: Command = {
       const editor = desk?.windows().find((w) => w.appId === 'code' && w.codeDir === dir);
       if (editor) editor.focus();
       else {
-        await sh(`code ${shq(dir)}`);
+        // (from inside the folder: the window is named after it and shows paths relative to it)
+        await sh('code .');
         // The editor beside its Terminal (not on a phone, where every window fills the screen)
         const mine = desk?.windows().find((w) => w.kind === 'terminal' && !!ctx.terminal && !!w.content?.terminals?.().includes(ctx.terminal));
         const opened = desk?.windows().find((w) => w.appId === 'code' && w.codeDir === dir);

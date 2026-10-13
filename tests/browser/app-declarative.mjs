@@ -553,7 +553,7 @@ if (wants('polish')) for (const device of [WIDE, PHONE]) {
     await page.click('.tc-app-share [data-act=close]');
     // the same in the menu bar, with Export beside it
     const menu = await page.evaluate(() => window.__tabcomputer.desktop.apps().find((a) => a.id === 'expenses')?.menus?.().map((m) => [m.title, m.items.map((i) => i.label)]));
-    check('1280 share: the menu bar has the same under App', JSON.stringify(menu) === JSON.stringify([['App', ['Share as a Link…', 'Export with Its Data']]]), JSON.stringify(menu));
+    check('1280 share: the menu bar has the same under App', JSON.stringify(menu) === JSON.stringify([['App', ['Share as a Link…', 'Export with Its Data', 'Edit in Studio']]]), JSON.stringify(menu));
   }
 
   // the placeholder while what an app needs is installed: its name whole, sentences with the installer's own count

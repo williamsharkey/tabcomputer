@@ -388,6 +388,7 @@ export function registerInstalledApp(app: InstalledApp): void {
     menus: () => [{ title: 'App', items: [
       { label: 'Share as a Link…', action: () => void shareInstalled(app.id) },
       { label: 'Export with Its Data', action: () => void exportFromWindow(app.id, app.name) },
+      { label: 'Edit in Studio', action: () => void wm.openApp('studio', { id: app.id }) },
     ] }],
     launch: (args) => {
       const open = windowsOf(wm, app.id);

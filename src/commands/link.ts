@@ -239,6 +239,16 @@ const GH_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
  * person presses the button for it.
  */
 export async function makeGist(script: string, origin: string, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<string> {
+  const { id, login } = await saveGist({ 'setup.sh': script }, 'A tabcomputer setup, made by link', origin, fetchFn);
+  return `${origin}/#gist:${login}/${id}`;
+}
+
+/**
+ * Files as a new secret gist of the person's GitHub account (`link`'s script,
+ * the Studio's app.json), asking for the sign-in first when the tab has none.
+ * Resolves to the gist's id and its owner's login.
+ */
+export async function saveGist(files: Record<string, string>, description: string, origin: string, fetchFn: (url: string, init?: RequestInit) => Promise<Response> = (u, i) => fetch(u, i)): Promise<{ id: string; login: string }> {
   const [{ askGitHubSignIn, resetGitHubNeedDecline }, { githubApiBase }] = await Promise.all([import('../github-needed'), import('../net-mode')]);
   resetGitHubNeedDecline();
   const token = await askGitHubSignIn({ action: 'link', kind: 'account' });
@@ -248,7 +258,7 @@ export async function makeGist(script: string, origin: string, fetchFn: (url: st
     res = await fetchFn(`${githubApiBase(typeof location !== 'undefined' ? location.origin : origin)}/gists`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'content-type': 'application/json' },
-      body: JSON.stringify({ description: 'A tabcomputer setup, made by link', public: false, files: { 'setup.sh': { content: script } } }),
+      body: JSON.stringify({ description, public: false, files: Object.fromEntries(Object.entries(files).map(([name, content]) => [name, { content }])) }),
     });
   } catch { throw new Error('GitHub could not be reached. No gist was made.'); }
   if (!res.ok) throw new Error(`GitHub did not make the gist (HTTP ${res.status}).`);
@@ -256,5 +266,5 @@ export async function makeGist(script: string, origin: string, fetchFn: (url: st
   const id = typeof g?.id === 'string' && GIST_ID.test(g.id) ? g.id : '';
   const login = typeof g?.owner?.login === 'string' && GH_LOGIN.test(g.owner.login) ? g.owner.login : '';
   if (!id || !login) throw new Error('GitHub\'s answer did not name the gist.');
-  return `${origin}/#gist:${login}/${id}`;
+  return { id, login };
 }

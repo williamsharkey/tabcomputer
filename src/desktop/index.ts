@@ -313,6 +313,10 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       if (existing && !args?.newWindow) { existing.focus(); if (args) (existing as any).content?.navigate?.(args); return existing; }
       return launch(args);
     };
+  /** Studio's glyph: an app's window with a pencil */
+  const STUDIO_GLYPH = 'M4.5 5h15v14h-15zM4.5 8.5h15M8 12h5M8 15h3M13.5 17.5l4.5-4.5 1.5 1.5-4.5 4.5h-1.5z';
+  const STUDIO_ICON = `<span class="sd-tile" style="--t1:#9d8cff;--t2:#5a45d6"><svg viewBox="3 3 58 58" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">`
+    + `<g transform="translate(14 14) scale(1.5)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${STUDIO_GLYPH}"/></g></svg></span>`;
   const apps: AppDescriptor[] = [
     { id: 'terminal', name: 'Terminal', icon: ICONS.terminal, order: 0, launch: (args) => openTerminal(args as { command?: string; cwd?: string }) },
     { id: 'files', name: 'Files', icon: ICONS.files, order: 1, launch: lazy(() => import('./apps/files')) },
@@ -321,6 +325,11 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     // Jupyter notebooks (docs/NOTEBOOK.md): `jupyter notebook`, a .ipynb opened in Files or Code, a lab's notebook
     { id: 'notebook', name: 'Notebook', icon: ICONS.notebook, glyph: 'M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7zM7 3.5v17M4.5 8h2.5M4.5 12h2.5M4.5 16h2.5M10.5 9h4.5M10.5 13h4.5', order: 5, launch: lazy(() => import('./apps/notebook')) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
+    // Studio (docs/APPS.md "Studio"): make a one-file app with a form, the app running beside it
+    {
+      id: 'studio', name: 'Studio', icon: STUDIO_ICON, glyph: STUDIO_GLYPH, order: 6, launch: lazy(() => import('./apps/studio')),
+      menus: () => [{ title: 'File', items: [{ label: 'New App', action: () => { void import('./apps/studio').then((s) => s.newApp()); } }] }],
+    },
     { id: 'about', name: 'About This Computer', icon: ICONS.about, order: 90, dock: false, launch: focusOrLaunch('about', lazy(() => import('./apps/about'))) },
     // The privacy explainer (docs/DATA_FLOW.md): from the welcome card, the System and Help menus, Settings → Network
     { id: 'dataflow', name: 'How Your Data Flows', icon: ICONS.about, glyph: 'M2.5 8.5h5.5v7H2.5zM16 8.5h5.5v7H16zM8 12h8M13.5 9.5 16 12l-2.5 2.5', order: 92, dock: false, launch: focusOrLaunch('dataflow', lazy(() => import('./apps/dataflow'))) },

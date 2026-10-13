@@ -10,6 +10,7 @@
 import type { DesktopAPI, DesktopWindow } from '../desktop/wm';
 import { shareStatement, type AppShare } from './share';
 import { overlay } from './surface';
+import { QR_MAX_BYTES, qrCode, qrSvg } from '../qr';
 
 const STYLE_ID = 'tc-app-share-style';
 const CSS = `
@@ -30,7 +31,25 @@ const CSS = `
 .tc-app-share-actions button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
 .tc-app-share-actions button[data-act=copy] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 @media (pointer: coarse) { .tc-app-share-actions button { min-height: 44px; } }
+.tc-app-share-qr { flex: none; display: flex; justify-content: center; }
+.tc-app-share-qr svg { max-width: 100%; height: auto; border-radius: 6px; }
 `;
+
+/** The screen's style, for a caller that shows the screen in a place of its own (the Studio) */
+export function ensureShareStyle(): void {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = CSS;
+  document.head.appendChild(style);
+}
+
+export interface ShareScreenOptions {
+  /** The link as a QR code too, when it fits one (for a phone's camera) */
+  qr?: boolean;
+  /** Buttons of the caller's, before Close (the Studio's Save to a gist); `say` writes the status line */
+  actions?: (say: (text: string) => void) => HTMLElement[];
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -43,7 +62,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''):
 export type ShareShown = AppShare | { name: string; problem: string; title?: string };
 
 /** The screen's content. `copy` puts the link on the clipboard and says whether it did. */
-export function buildShareScreen(share: ShareShown, copy: (text: string) => Promise<boolean>, close: () => void): HTMLElement {
+export function buildShareScreen(share: ShareShown, copy: (text: string) => Promise<boolean>, close: () => void, opts: ShareScreenOptions = {}): HTMLElement {
   const root = el('div', '', 'tc-app-share');
   root.setAttribute('role', 'dialog');
   const title = ('problem' in share && share.title) || `Share ${share.name}`;
@@ -67,7 +86,17 @@ export function buildShareScreen(share: ShareShown, copy: (text: string) => Prom
   link.value = share.url;
   link.setAttribute('aria-label', 'The link');
   link.addEventListener('focus', () => link.select());
-  root.append(link, el('p', details.join(' '), 'tc-app-share-details'));
+  root.append(link);
+  const code = opts.qr && new TextEncoder().encode(share.url).length <= QR_MAX_BYTES ? qrCode(share.url) : null;
+  if (code) {
+    const picture = el('div', '', 'tc-app-share-qr');
+    picture.dataset.part = 'qr';
+    // (the markup is qr.ts's own: modules as a path)
+    picture.innerHTML = qrSvg(code, code.size > 77 ? 3 : 4);
+    picture.firstElementChild!.setAttribute('aria-label', 'The link as a QR code');
+    root.append(picture);
+  }
+  root.append(el('p', details.join(' '), 'tc-app-share-details'));
   const status = el('span');
   status.setAttribute('role', 'status');
   const copyBtn = el('button', 'Copy link');
@@ -79,19 +108,14 @@ export function buildShareScreen(share: ShareShown, copy: (text: string) => Prom
       if (!ok) { link.focus(); link.select(); }
     });
   });
-  actions.append(status, done, copyBtn);
+  actions.append(status, ...(opts.actions?.((t) => { status.textContent = t; }) ?? []), done, copyBtn);
   root.append(actions);
   return root;
 }
 
 /** Show the share screen: a desktop window, or an overlay where there is no desktop (or the tab is an app) */
 export function showShareScreen(share: ShareShown, wm: DesktopAPI | null, copy: (text: string) => Promise<boolean>): DesktopWindow | null {
-  if (!document.getElementById(STYLE_ID)) {
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = CSS;
-    document.head.appendChild(style);
-  }
+  ensureShareStyle();
   let close = () => {};
   const content = buildShareScreen(share, copy, () => close());
   let win: DesktopWindow | null = null;

@@ -13,6 +13,7 @@ Start with the [README](../README.md). Contributors and coding agents: [AGENTS.m
 | [NETWORKING.md](NETWORKING.md) | Kernel sockets, the WebSocket-to-TCP relay, its security model and how to run it |
 | [DATA_FLOW.md](DATA_FLOW.md) | Where files, sign-ins and traffic go: what stays in the tab, what the server can read on each path, guests, using your own relay or server |
 | [BROWSER.md](BROWSER.md) | The Browser app (research spike): browse origins, the broker, TLS in the page |
+| [POSTGRES.md](POSTGRES.md) | PostgreSQL in the tab: the server on `localhost:5432` that starts on the first connection (PGlite), `psql`, `createdb`, `pg_dump`, node and Python programs, the data directory, the measurements, what it does not do, and Debian's own PostgreSQL |
 | [RUN_LINKS.md](RUN_LINKS.md) | Run links: `?run=<recipe>`, `?run=gh:owner/repo`, the trust rules, the recipe format, the README badge |
 | [CLASSROOM.md](CLASSROOM.md) | The classroom workspace: lab links (`?run=lab:owner/repo`), `.tabcomputer/lab.json`, Run / Test / Submit in the Code app, "Not saved to GitHub yet", sign-out for a shared computer |
 | [NOTEBOOK.md](NOTEBOOK.md) | The Notebook app: Jupyter notebooks (.ipynb) opened, run and saved on the desktop, `jupyter notebook`, what runs the cells, the file format, what is not Jupyter, and why not JupyterLite |

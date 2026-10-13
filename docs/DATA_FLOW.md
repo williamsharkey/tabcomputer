@@ -46,6 +46,10 @@ The rows that say "everything" are that way by design today: each proxy exists b
 
 Run links and app links that name a GitHub repository (`?run=gh:`, `?app=gh:`, `app install gh:`) fetch from `raw.githubusercontent.com` and `api.github.com` straight from the browser, in both modes, without the token. Only after GitHub refused the visitor (a private repository, the rate limit) is the fetch made again with the GitHub token, to `api.github.com` alone (`githubTokenFetch` in `src/run-url.ts`); the server sees neither.
 
+**gh extensions** (`gh extension install OWNER/REPO`, `src/commands/gh-extension.ts`): an installed extension is a program from that repository, and `gh NAME` starts it with `GH_TOKEN` set to the GitHub token, as the place its own API calls look for it. What it does with the token is the extension's doing: a script's `gh api` calls go where `gh` goes, and a precompiled one makes its own TLS connections through `/tcp`, where the server sees a host name and byte counts. A release asset is downloaded through `/api/github` (in private mode: by curl over `/tcp`, without the token).
+
+**PostgreSQL** (`src/postgres/`, [POSTGRES.md](POSTGRES.md)) runs in the tab and listens on the tab's own `localhost:5432`. Its connections and its data directory never leave the tab; there is no password to store.
+
 **Private mode** (Settings → Network → Privacy, or `netmode private`; `src/net-mode.ts`, docs/NETWORKING.md "Private mode") takes the "everything" rows away from the server. `gh`, the Git app and git on github.com call `api.github.com` straight from the browser. GitHub sign-in, git on other hosts, repositories too large for the API, and the Claude and Gemini routes are encrypted in the tab and go by `/tcp`, so the server sees a host name and byte counts. `/api/ws-proxy` has no private route: Claude's voice input is off in that mode. The mode is off by default.
 
 ## Straight from the browser, not through the server

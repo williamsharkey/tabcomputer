@@ -216,7 +216,17 @@ ${bootSection(ctx, name)}
   (quicker than \`gh auth login\`, which needs them at a terminal; point them
   to the globe). git and gh then use the token. The built-in
   gh takes \`--body-file FILE\` and \`--json FIELDS --jq EXPR\`; a flag it doesn't
-  implement is an error, never silently ignored.
+  implement is an error, never silently ignored. \`gh extension install OWNER/REPO\`
+  works (a script extension is cloned, a precompiled one runs its linux-amd64
+  build in the emulator), and \`gh NAME\` runs it with GH_TOKEN set from the sign-in.
+- PostgreSQL is already here: a PostgreSQL 18 server (PGlite) answers on
+  localhost:5432 and starts by itself on the first connection, a few seconds the
+  first time. \`psql\` (\`-c\`, \`-f\`, \`-d\`, \`-U\`, and \`\\dt\`, \`\\d NAME\`, \`\\l\`, \`\\c\` at its
+  prompt), \`createdb\`, \`dropdb\`, \`pg_isready\`, node's \`pg\` and Python's \`pg8000\`
+  connect with any user name and no password. Its data is in /var/lib/postgresql
+  and survives a reload. One backend serves every connection in turn: no
+  extensions, no LISTEN/NOTIFY between connections, no replication. Don't
+  \`apt install postgresql\` for a database: that takes minutes.
 - If a prebuilt package misbehaves, check \`pkg outdated\` and run \`pkg upgrade\` first: fixed builds ship as
   new versions (a stale python3 caused tabcomputer#5).
 

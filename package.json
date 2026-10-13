@@ -19,6 +19,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@electric-sql/pglite": "0.5.9",
+    "@electric-sql/pglite-tools": "0.4.9",
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@imagemagick/magick-wasm": "0.0.38",

@@ -577,7 +577,16 @@ async function handleStatic(req, res, guest = null, guests = null) {
       || /^\/engines\/.*\.[0-9a-f]{12}\.wasm$/.test(pathname)
       || /^\/engines\/blink\/v-[0-9a-f]{12}\//.test(pathname)
       ? { 'cache-control': 'public, max-age=31536000, immutable' } : { 'cache-control': 'no-cache' };
-    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', ...staticHeaders, ...isolation, ...immutable });
+    // A brotli copy made by the build (vite-plugin-precompress.ts: PostgreSQL's
+    // wasm and data), for a browser that takes it
+    let encoding = {};
+    if (pathname.startsWith('/assets/') && /\bbr\b/.test(String(req.headers['accept-encoding'] || ''))) {
+      try {
+        data = await readFile(filePath + '.br');
+        encoding = { 'content-encoding': 'br', vary: 'accept-encoding' };
+      } catch { /* no copy: the file as it is */ }
+    }
+    res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', ...staticHeaders, ...isolation, ...immutable, ...encoding });
     res.end(data);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...staticHeaders });

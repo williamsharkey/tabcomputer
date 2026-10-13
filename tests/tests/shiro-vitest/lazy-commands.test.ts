@@ -682,67 +682,21 @@ describe('Lazy-Loaded Commands', () => {
   });
 
   describe('psql (PostgreSQL)', () => {
+    // (the server and psql's commands are in postgres.test.ts)
     it('should import and have correct name/description', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
+      const { psqlCmd } = await import('@shiro/commands/psql');
       expect(psqlCmd.name).toBe('psql');
       expect(psqlCmd.description).toContain('PostgreSQL');
     });
 
-    it('should show version with --version flag', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
-      const ctx = {
-        args: ['--version'],
-        fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
-      };
-      const code = await psqlCmd.exec(ctx);
-      expect(code).toBe(0);
-      expect(ctx.stdout).toContain('PGlite');
-    });
-
-    it('should show help with --help flag', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
-      const ctx = {
-        args: ['--help'],
-        fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
-      };
-      const code = await psqlCmd.exec(ctx);
-      expect(code).toBe(0);
-      expect(ctx.stdout).toContain('Usage:');
-      expect(ctx.stdout).toContain('SELECT');
-    });
-
-    it('should show database list with --list flag', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
-      const ctx = {
-        args: ['--list'],
-        fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
-      };
-      const code = await psqlCmd.exec(ctx);
-      expect(code).toBe(0);
-      expect(ctx.stdout).toContain('database');
-    });
-
-    it('should error when no SQL provided', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
-      const ctx = {
-        args: ['mydb'],
-        fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
-      };
-      const code = await psqlCmd.exec(ctx);
-      expect(code).toBe(1);
-      expect(ctx.stderr).toContain('no SQL');
-    });
-
-    it('should fail gracefully when PGlite cannot be loaded (test env)', async () => {
-      const { psqlCmd } = await import('@shiro/commands/postgres');
-      const ctx = {
-        args: ['SELECT 1;'],
-        fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell,
-      };
-      const code = await psqlCmd.exec(ctx);
-      // CDN load will fail in test env
-      expect(code).toBe(1);
-      expect(ctx.stderr).toContain('psql');
+    it('should show help and its version without starting the server', async () => {
+      const { psqlCmd } = await import('@shiro/commands/psql');
+      const help = { args: ['--help'], fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell };
+      expect(await psqlCmd.exec(help)).toBe(0);
+      expect(help.stdout).toContain('Usage:');
+      const version = { args: ['--version'], fs, cwd: '/home/user', env: {}, stdin: '', stdout: '', stderr: '', shell };
+      expect(await psqlCmd.exec(version)).toBe(0);
+      expect(version.stdout).toMatch(/^psql \(PostgreSQL\) \d+/);
     });
   });
 

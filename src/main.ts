@@ -80,7 +80,7 @@ import { hotswap } from './hotswap/swap';
 import { liveModule, trackInstance } from './hotswap/live';
 import { startDisplay } from './x11/display';
 import { startGLServer, getGLServer } from './gl/server';
-import { installNet, followRelaySetting } from './kernel/net';
+import { installNet, followRelaySetting, netStackOf } from './kernel/net';
 import { attachKernelTty } from './kernel/pty';
 import { sudoCmd } from './commands/sudo';
 import { shiroAptCmd, shiroAptMethodCmd, shiroAptStoreCmd, shiroPreconfigureCmd } from './commands/debian';
@@ -364,6 +364,16 @@ async function main() {
   registerCommand(commands, titleCmd, 'src/commands/title.ts');
   registerCommand(commands, desktopCmd, 'src/commands/desktop.ts');
 
+  // PostgreSQL in the tab (src/postgres/, docs/POSTGRES.md): the server starts on the first connection
+  for (const [name, description] of [
+    ['psql', 'PostgreSQL interactive terminal'], ['createdb', 'Create a PostgreSQL database'], ['dropdb', 'Remove a PostgreSQL database'],
+    ['pg_isready', 'Check whether PostgreSQL accepts connections'], ['pg_dump', 'Write a PostgreSQL database as a script of SQL'],
+    ['service', 'Start, stop or ask about a service'],
+  ]) {
+    registerCommand(commands, lazyCommand(name, description,
+      () => import('./commands/psql').then(m => m.postgresCommands.find(c => c.name === name)!),
+      name === 'service' ? { keepOverPackage: (args) => /^postgres(ql)?(@.*)?(\.service)?$/.test(args[0] ?? '') } : {}), 'src/commands/psql.ts');
+  }
   registerCommand(commands, lazyCommand('gh', 'GitHub CLI',
     () => import('./commands/gh').then(m => m.ghCmd)), 'src/commands/gh.ts');
   registerCommand(commands, lazyCommand('x86', 'Run x86-64 ELF binaries',
@@ -448,8 +458,6 @@ async function main() {
     () => import('./commands/lua').then(m => m.luaCmd)), 'src/commands/lua.ts');
   registerCommand(commands, lazyCommand('play', 'Auto-detect and run current project',
     () => import('./commands/play').then(m => m.playCmd)), 'src/commands/play.ts');
-  registerCommand(commands, lazyCommand('psql', 'PostgreSQL database (PGlite)',
-    () => import('./commands/postgres').then(m => m.psqlCmd)), 'src/commands/postgres.ts');
   registerCommand(commands, lazyCommand('convert', 'ImageMagick image conversion (magick-wasm)',
     () => import('./commands/magick').then(m => m.convertCmd)), 'src/commands/magick.ts');
   registerCommand(commands, lazyCommand('magick', 'ImageMagick (magick-wasm)',
@@ -600,6 +608,10 @@ async function main() {
   (window as any).__tabcomputerKernel = kernel;
   kernel.attach(fs, shell);
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
+  // PostgreSQL on localhost:5432 (src/postgres/service.ts): nothing is loaded until something connects there
+  for (const at of [5432, '/var/run/postgresql/.s.PGSQL.5432']) {
+    netStackOf(kernel)?.onDemand.set(at, () => import('./postgres/service').then((m) => m.postgresService({ fs, stack: netStackOf(kernel)!, kernel }).start()));
+  }
   // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
   followRelaySetting(kernel);
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)

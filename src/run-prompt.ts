@@ -12,6 +12,7 @@
  */
 import type { RunPromptInfo } from './run-url';
 import type { DesktopAPI, DesktopWindow } from './desktop/wm';
+import { overlay, phoneScreen } from './apps/surface';
 
 const STYLE_ID = 'tc-run-prompt-style';
 const RUN_ARMS_AFTER_MS = 700;
@@ -35,8 +36,7 @@ const CSS = `
 .tc-run-actions button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
 .tc-run-actions button[data-act=run] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 .tc-run-actions button:disabled { opacity: .5; cursor: default; }
-.tc-run-overlay { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; padding: 12px; background: rgba(0, 0, 0, .5); }
-.tc-run-overlay .tc-run-prompt { width: min(640px, 100%); height: auto; max-height: 100%; border: 1px solid #3d3d5c; border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.tc-full .tc-run-actions button { flex: 1; }
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {
@@ -53,9 +53,9 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
   // (a seed or a repository link brings its own words: src/inbound-link.ts)
   const w = info.wording;
   root.setAttribute('aria-label', w ? w.window : 'Run a script from a link');
+  // The question, where it is from, the whole text, and one sentence on what it can touch
   root.append(el('h3', w ? w.title : 'Run this script?'));
-  root.append(el('p', `From ${info.from}. tabcomputer has not reviewed it.`));
-  root.append(el('p', w ? w.warn : 'It runs as you, in this tab: it can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run it only if you trust whoever sent the link.', 'tc-run-warn'));
+  root.append(el('p', `From ${info.from}. Not reviewed by tabcomputer.`));
   const pre = el('pre', info.script);
   pre.tabIndex = 0;
   pre.setAttribute('aria-label', w ? w.box : 'The script');
@@ -67,11 +67,11 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
     if (info.ignored.length) dl.append(el('dt', 'ignored'), el('dd', `${info.ignored.join(', ')} (not in its "# args:" header)`));
     root.append(dl);
   }
-  root.append(el('p', w ? w.where : info.onOpenOnly === undefined
-    ? `It runs in ${info.dir.replace(/^\/home\/user\//, '~/')}, in a new Terminal.`
-    : info.onOpenOnly
-      ? `It already ran here. Run only does its on-open line: ${info.onOpenOnly}`
-      : 'It already ran here. Run only opens a Terminal in its directory.'));
+  root.append(el('p', w ? w.warn : 'It runs as you: it can read and change every file in this tab and use its sign-ins (Claude, GitHub).', 'tc-run-warn'));
+  // (said only when Run does something other than run it all: it ran here before)
+  const where = w ? w.where : info.onOpenOnly === undefined ? ''
+    : info.onOpenOnly ? `It already ran here. Run only does its on-open line: ${info.onOpenOnly}` : 'It already ran here. Run only opens a Terminal in its directory.';
+  if (where) root.append(el('p', where));
   const actions = el('div', '', 'tc-run-actions');
   const cancel = el('button', 'Cancel');
   cancel.type = 'button';
@@ -108,21 +108,18 @@ export function showRunPrompt(info: RunPromptInfo, wm: DesktopAPI | null): Promi
     };
     const content = buildRunPrompt(info, done);
     let win: DesktopWindow | null = null;
-    if (wm) {
+    // A phone has no room for a desktop around a question: the prompt is the screen
+    const full = phoneScreen();
+    if (wm && !full) {
       const wa = wm.workArea();
       const w = win = wm.createWindow({
         // Above windows the session restores after it (they take the focus when they come back)
         appId: 'run-link', title: info.wording?.window ?? 'Run link', alwaysOnTop: true, content: { kind: 'dom', element: content },
-        width: Math.min(640, Math.max(280, wa.width - 40)), height: Math.min(560, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
+        width: Math.min(600, Math.max(280, wa.width - 40)), height: Math.min(460, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
       });
       close = () => { w.close(true); };
       w.on('close', () => done(false));
-    } else {
-      const overlay = el('div', '', 'tc-run-overlay');
-      overlay.append(content);
-      document.body.appendChild(overlay);
-      close = () => overlay.remove();
-    }
+    } else close = overlay(content, { full });
     // Cancel has the focus, also after the desktop has finished its own boot-time focusing
     const cancel = content.querySelector<HTMLButtonElement>('[data-act=cancel]');
     const focus = () => { if (!settled) { win?.focus(); cancel?.focus(); } };

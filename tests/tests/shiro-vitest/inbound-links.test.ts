@@ -216,10 +216,16 @@ describe('inbound links: the window is the run links\'', () => {
     expect(answers).toEqual([false]);
   });
   it('a script link keeps its wording', () => {
-    const root = buildRunPrompt({ name: 'sh-1', from: 'the link itself', script: 'echo hi\n', env: {}, ignored: [], dir: '/home/user/run/sh-1' }, () => {});
+    const root = buildRunPrompt({ name: 'sh-1', from: 'this link', script: 'echo hi\n', env: {}, ignored: [], dir: '/home/user/run/sh-1' }, () => {});
     expect(root.querySelector('h3')!.textContent).toBe('Run this script?');
     expect(root.querySelector('[data-act=run]')!.textContent).toBe('Run');
-    expect(root.textContent).toContain('It runs in ~/run/sh-1, in a new Terminal.');
+    // the question, where it is from, the script, and one sentence on what it can touch
+    expect([...root.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+      'From this link. Not reviewed by tabcomputer.',
+      'It runs as you: it can read and change every file in this tab and use its sign-ins (Claude, GitHub).',
+    ]);
+    const again = buildRunPrompt({ name: 'sh-1', from: 'this link', script: 'echo hi\n', env: {}, ignored: [], dir: '/home/user/run/sh-1', onOpenOnly: 'cd work' }, () => {});
+    expect(again.textContent).toContain('It already ran here. Run only does its on-open line: cd work');
   });
 });
 

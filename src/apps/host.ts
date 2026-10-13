@@ -21,12 +21,15 @@
  * No DOM here. The desktop supplies `HostDeps`; tests supply stand-ins.
  */
 import type { AppManifest } from './manifest';
-import { firstInstallText, plainInstallLine } from './progress';
+import { firstInstallText, installProgress } from './progress';
 import { expandHome } from './manifest';
 import { AccessError, pagePath, resolveAllowed, safeRelPath, type AccessRoot } from './access';
-import { argvFor, fill, inputValue, outputName, placeholders, rulesOf, shellLineFor, splitRun, type RunValues } from './declare';
+import { argvFor, fill, inputValue, outputName, placeholders, rulesOf, shellLineFor, sniffKind, splitRun, type RunValues } from './declare';
 
 export const PROTOCOL_VERSION = 1;
+/** How much of a result is read to tell what kind of file it is, and the largest file that is looked at */
+const SNIFF_HEAD = 64 << 10;
+const SNIFF_FILE_MAX = 256 << 20;
 /** Largest single file a page may send or ask for in one message */
 export const MESSAGE_FILE_MAX = 512 << 20;
 
@@ -89,6 +92,8 @@ export interface HostApp {
   dataDir: string;
   /** The page is on an origin of its own: it has no other way to the tab than this channel */
   confined: boolean;
+  /** This site ships the app: its supplied page may say what the site checked */
+  reviewed?: boolean;
 }
 
 /** What a MessagePort is to the host (tests pass a pair of these) */
@@ -179,7 +184,7 @@ export class AppHost {
         return {
           value: {
             v: PROTOCOL_VERSION, id: manifest.id, name: manifest.name, version: manifest.version, manifest,
-            dir: this.app.dir, dataDir: this.app.dataDir, home: this.deps.home, confined: this.app.confined,
+            dir: this.app.dir, dataDir: this.app.dataDir, home: this.deps.home, confined: this.app.confined, reviewed: !!this.app.reviewed,
             theme: this.deps.theme?.get() ?? null,
           },
         };
@@ -315,8 +320,9 @@ export class AppHost {
           if (have[set]) continue;
           // `text` is the sentence for a person (progress.ts); `line` is the installer's own output
           let text = firstInstallText(manifest.name);
+          const said = installProgress();
           send('progress', { set, line: `Installing ${set}…`, text });
-          const code = await this.deps.toolchains.install(set, (line) => { text = plainInstallLine(line) ?? text; send('progress', { set, line, text }); });
+          const code = await this.deps.toolchains.install(set, (line) => { text = said(line) ?? text; send('progress', { set, line, text }); });
           if (code !== 0) throw new AccessError('EIO', `toolchain install ${set} failed (exit ${code})`);
           installed.push(set);
         }
@@ -369,6 +375,8 @@ export class AppHost {
     }
     const outDir = `${this.app.dataDir}/out/${session}`;
     let rel = '';
+    /** A file job without `out`: the input, whose name the result takes until its bytes say what it is */
+    let unnamed: { input: string; rel: string; ext: string; taken: Set<string> } | null = null;
     if (m.kind === 'files') {
       const files = Array.isArray(a.files) ? a.files as { path?: unknown; rel?: unknown }[] : [];
       if (!files.length || files.length > 10_000 || (m.each && files.length !== 1)) throw new AccessError('EINVAL', m.each ? 'one file at a time' : 'at least one file is needed');
@@ -376,11 +384,13 @@ export class AppHost {
       for (const f of files) paths.push((await this.path(f?.path, 'read')).real);
       let taken = this.taken.get(session);
       if (!taken) this.taken.set(session, taken = new Set());
-      const o = outputName(m.out, m.each ? safeRelPath(files[0].rel) : m.out, taken);
+      const from = m.each ? safeRelPath(files[0].rel) : m.out;
+      const o = outputName(m.out, from, taken);
       rel = o.rel;
+      if (m.each && !m.out) unnamed = { input: paths[0], rel: from, ext: o.ext.toLowerCase(), taken };
       Object.assign(values, m.each ? { in: paths[0], name: o.name, ext: o.ext } : { in: paths });
     } else if (m.output === 'file') rel = m.out;
-    const out = rel ? `${outDir}/${rel}` : '';
+    let out = rel ? `${outDir}/${rel}` : '';
     if (out) {
       values.out = out;
       values.dir = out.slice(0, out.lastIndexOf('/'));
@@ -406,7 +416,27 @@ export class AppHost {
       await fs.unlink(out).catch(() => {});
       made = null;
     }
+    // No `out` in the manifest: a result that is another kind of file than its input is named for
+    // what it is (a PDF made from p.png is p.pdf), so that it opens
+    if (made && unnamed) {
+      const kind = await this.kindOf(out, made.size);
+      if (kind && kind !== unnamed.ext && kind !== await this.kindOf(unnamed.input)) {
+        unnamed.taken.delete(rel.toLowerCase());
+        rel = outputName(`{name}.${kind}`, unnamed.rel, unnamed.taken).rel;
+        await fs.rename(out, `${outDir}/${rel}`);
+        out = `${outDir}/${rel}`;
+      }
+    }
     return { code, out: made ? out : null, name: rel, size: made?.size ?? 0, said: said.slice(0, 300) };
+  }
+
+  /** What a file is, by its first bytes (declare.ts `sniffKind`); '' when that is not known, or the file is too large to look at */
+  private async kindOf(path: string, size?: number): Promise<string> {
+    const { fs } = this.deps;
+    size ??= (await fs.stat(path).catch(() => null))?.size ?? 0;
+    if (!size || size > SNIFF_FILE_MAX) return '';
+    const bytes = await fs.readFile(path).catch(() => null);
+    return bytes instanceof Uint8Array ? sniffKind(bytes.subarray(0, SNIFF_HEAD), bytes.length <= SNIFF_HEAD) : '';
   }
 
   private async run(a: Record<string, unknown>, send: Send, onCancel: (fn: () => void) => void): Promise<{ code: number }> {

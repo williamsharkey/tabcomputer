@@ -14,7 +14,7 @@
  * own origin, as a Preview window's is. tab.js works the same, but the page
  * could reach around it, and `confined` is false so callers can say so.
  */
-import type { AppInstance } from './runtime';
+import { PAGE_BG, appTheme, type AppInstance } from './runtime';
 import { iframeServer, type VirtualRequest, type VirtualResponse } from '../iframe-server';
 import { previewUrl } from '../preview-sw-host';
 
@@ -111,8 +111,13 @@ export async function createAppFrame(inst: AppInstance, opts: FrameOptions = {})
   el.className = 'tc-app-frame';
   el.title = inst.manifest.name;
   el.setAttribute('data-app', inst.id);
-  el.style.cssText = 'display:block;width:100%;height:100%;border:0;background:#fff';
+  el.style.cssText = 'display:block;width:100%;height:100%;border:0';
   const drops: (() => void)[] = [];
+  // What shows before the page paints, and at a window's rounded corners: the supplied page's
+  // own background in the desktop's appearance; white for a page of the app's own, as on the web
+  const paintBack = () => { el.style.background = inst.manifest.kind === 'page' ? '#fff' : PAGE_BG[appTheme.get()]; };
+  paintBack();
+  drops.push(appTheme.on(paintBack));
   let disposed = false;
   const dispose = () => { if (disposed) return; disposed = true; for (const d of drops.splice(0)) { try { d(); } catch { /* gone */ } } el.remove(); };
 

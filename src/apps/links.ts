@@ -142,6 +142,14 @@ export interface FetchedApp {
 const SAFE_REL = /^[A-Za-z0-9._@+ -]+(\/[A-Za-z0-9._@+ -]+)*$/;
 const relOk = (rel: string) => SAFE_REL.test(rel) && rel.length <= 300 && !rel.split('/').some((s) => s === '.' || s === '..' || s.startsWith(' ') || s.endsWith(' '));
 
+/** An app.json that names no page, no backend and none of the keys tabcomputer supplies a page for */
+function namesNoPage(bytes: Uint8Array): boolean {
+  try {
+    const raw: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return !!raw && typeof raw === 'object' && !Array.isArray(raw) && !['entry', 'backend', 'run', 'fields', 'table', 'columns'].some((k) => (raw as Record<string, unknown>)[k] !== undefined);
+  } catch { return false; }
+}
+
 function manifestFrom(bytes: Uint8Array, hint: ManifestHint = {}): { manifest: AppManifest; text: string } {
   if (bytes.length > MANIFEST_MAX) throw new AppLinkError('the app\'s app.json is too large');
   let manifest: AppManifest;
@@ -213,28 +221,38 @@ export async function fetchGhApp(t: { owner: string; repo: string; path: string 
   const commit = new TextDecoder().decode(headBytes).trim();
   if (!COMMIT.test(commit)) throw new AppLinkError(`could not read the head commit of ${where}`);
   const raw = (rel: string) => `https://raw.githubusercontent.com/${t.owner}/${t.repo}/${commit}/${[...(t.path ? t.path.split('/') : []), ...rel.split('/')].map(encodeURIComponent).join('/')}`;
+  // The commit's files, listed once: for the page beside an app.json that names none, and for the install
+  let listed: Promise<{ rels: string[]; total: number }> | null = null;
+  const list = () => listed ??= (async () => {
+    const treeBytes = await fetchRaw(`${api}/git/trees/${commit}?recursive=1`, fetchFn, 16 << 20, `the file list of ${where}`, `${where} does not exist`);
+    let tree: { truncated?: boolean; tree?: { path?: unknown; type?: unknown; mode?: unknown; size?: unknown }[] };
+    try { tree = JSON.parse(new TextDecoder().decode(treeBytes)); } catch { throw new AppLinkError(`could not read the file list of ${where}`); }
+    if (tree?.truncated || !Array.isArray(tree?.tree)) throw new AppLinkError(`${where} has too many files to list`);
+    const prefix = t.path ? t.path + '/' : '';
+    const rels: string[] = [];
+    let total = 0;
+    for (const e of tree.tree) {
+      if (typeof e?.path !== 'string' || !e.path.startsWith(prefix)) continue;
+      const rel = e.path.slice(prefix.length);
+      // Files only: a link (mode 120000) or a submodule is left out, and so is the repository's own metadata
+      if (e.type !== 'blob' || e.mode === '120000' || rel.startsWith('.git/') || rel.startsWith('.github/')) continue;
+      if (!relOk(rel)) throw new AppLinkError(`the app has a file whose name is not a plain path (${plain(rel, 60)})`);
+      total += typeof e.size === 'number' ? e.size : 0;
+      rels.push(rel);
+    }
+    return { rels, total };
+  })();
+  const manifestBytes = await fetchRaw(raw(MANIFEST_FILE), fetchFn, MANIFEST_MAX, `${where}, ${MANIFEST_FILE}`, `${where} has no ${MANIFEST_FILE}: it is not an app`);
+  // An app with a page of its own may leave `entry` out, as in a folder or a gist: the page is the index.html beside app.json or in public/
+  let page: string | undefined;
+  if (namesNoPage(manifestBytes)) { const { rels } = await list(); page = pageBeside((rel) => rels.includes(rel)); }
   // (an app.json without an id takes the folder's name, else the repository's)
-  const { manifest, text } = manifestFrom(await fetchRaw(raw(MANIFEST_FILE), fetchFn, MANIFEST_MAX, `${where}, ${MANIFEST_FILE}`, `${where} has no ${MANIFEST_FILE}: it is not an app`), { id: t.path.split('/').pop() || t.repo });
+  const { manifest, text } = manifestFrom(manifestBytes, { id: t.path.split('/').pop() || t.repo, page });
   const spec = `${t.owner}/${t.repo}${t.path ? '/' + t.path : ''}`;
   return {
     manifest, manifestText: text, curated: false, source: `gh:${spec}@${commit}`, from: `${where} at commit ${commit.slice(0, 10)}`,
     async files() {
-      const treeBytes = await fetchRaw(`${api}/git/trees/${commit}?recursive=1`, fetchFn, 16 << 20, `the file list of ${where}`, `${where} does not exist`);
-      let tree: { truncated?: boolean; tree?: { path?: unknown; type?: unknown; mode?: unknown; size?: unknown }[] };
-      try { tree = JSON.parse(new TextDecoder().decode(treeBytes)); } catch { throw new AppLinkError(`could not read the file list of ${where}`); }
-      if (tree?.truncated || !Array.isArray(tree?.tree)) throw new AppLinkError(`${where} has too many files to list`);
-      const prefix = t.path ? t.path + '/' : '';
-      const rels: string[] = [];
-      let total = 0;
-      for (const e of tree.tree) {
-        if (typeof e?.path !== 'string' || !e.path.startsWith(prefix)) continue;
-        const rel = e.path.slice(prefix.length);
-        // Files only: a link (mode 120000) or a submodule is left out, and so is the repository's own metadata
-        if (e.type !== 'blob' || e.mode === '120000' || rel.startsWith('.git/') || rel.startsWith('.github/')) continue;
-        if (!relOk(rel)) throw new AppLinkError(`the app has a file whose name is not a plain path (${plain(rel, 60)})`);
-        total += typeof e.size === 'number' ? e.size : 0;
-        rels.push(rel);
-      }
+      const { rels, total } = await list();
       if (!rels.includes(MANIFEST_FILE)) throw new AppLinkError(`${where} has no ${MANIFEST_FILE}`);
       if (rels.length > FETCHED_FILES_MAX || total > FETCHED_BYTES_MAX) throw new AppLinkError(`the app is too large to install from a repository (${rels.length} files, ${(total / 1e6).toFixed(1)} MB)`);
       const out = new Map<string, Uint8Array>();
@@ -341,7 +359,7 @@ export async function linkApp(payload: string): Promise<FetchedApp> {
   const id = (await sha256Hex(new TextEncoder().encode(payload))).slice(0, 16);
   return {
     manifest, manifestText: text, curated: false, source: `link:${id}`,
-    from: `a link that carries the app's own files (${files.size} ${files.size === 1 ? 'file' : 'files'}, ${Math.max(1, Math.ceil(bytes / 1000))} KB)`,
+    from: `this link (${files.size} ${files.size === 1 ? 'file' : 'files'}, ${Math.max(1, Math.ceil(bytes / 1000))} KB)`,
     files: async () => files,
   };
 }
@@ -368,7 +386,7 @@ export async function keysApp(pairs: [string, string][]): Promise<FetchedApp> {
   const id = (await sha256Hex(new TextEncoder().encode(text))).slice(0, 16);
   return {
     manifest, manifestText: text, curated: false, source: `link:${id}`,
-    from: 'the link itself, which holds the whole app',
+    from: 'this link',
     files: async () => new Map([[MANIFEST_FILE, new TextEncoder().encode(text)]]),
   };
 }

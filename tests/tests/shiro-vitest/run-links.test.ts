@@ -203,7 +203,7 @@ describe('run links: which scripts are curated', () => {
     const { fetchFn, calls } = site({});
     const text = 'echo hi\n';
     const s = await loadScript(parseRunUrl(`?run=${encodeShLink(text)}`)!.target, ORIGIN, fetchFn);
-    expect(s).toMatchObject({ curated: false, text, name: `sh-${sha(text).slice(0, 12)}`, from: 'the link itself' });
+    expect(s).toMatchObject({ curated: false, text, name: `sh-${sha(text).slice(0, 12)}`, from: 'this link' });
     expect(calls).toEqual([]);
   });
 });

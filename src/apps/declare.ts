@@ -406,31 +406,105 @@ export function validateKind(raw: Record<string, unknown>, kind: Exclude<AppKind
 
 const list = (items: string[]): string => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
-/**
- * A declared app as the sentences a person reads before installing it
- * (`app check`, the install prompt): what it does, the exact command, what it
- * installs, what its page may use.
- */
-export function kindSentences(m: KindKeys & { name: string; description: string; needs: string[]; toolchains: string[] }): string[] {
-  const out: string[] = [];
-  if (m.description) out.push(m.description);
+/** A declared app, said in parts: the install prompt shows the first five, and the rest on request */
+export interface KindSaid {
+  /** Its own words for what it does ('' without `about`) */
+  about: string;
+  /** What it does, up to the command: "NAME runs this command once for each file you give it" (a table: where it is kept) */
+  does: string;
+  /** The exact command ('' for a table) */
+  run: string;
+  /** What is installed before its first start ('' when nothing is) */
+  installs: string;
+  /** The one sentence on what it can touch: the program's reach, or that it runs none */
+  touches: string;
+  /** How a result is named ('' when there is no result file) */
+  named: string;
+  /** What its page may use */
+  page: string;
+}
+
+export function kindSaid(m: KindKeys & { name: string; description: string; needs: string[]; toolchains: string[] }): KindSaid {
+  const s: KindSaid = { about: m.description, does: '', run: '', installs: '', touches: '', named: '', page: 'Its page may use only its own data folder, and is kept from other sites.' };
   if (m.kind === 'table') {
-    out.push(`${m.name} keeps a table in ${m.table}, in its own data folder.`);
-    out.push(m.table.endsWith('.sqlite') ? 'It runs the program sqlite3 on that file, and no other program.' : 'It runs no program.');
+    s.does = `${m.name} keeps a table in ${m.table}, in its own data folder.`;
+    s.touches = m.table.endsWith('.sqlite') ? 'It runs the program sqlite3 on that file, and no other program.' : 'It runs no program.';
   } else {
     const when = m.kind === 'files' ? (m.each ? 'once for each file you give it' : 'once, with all the files you give it') : m.live ? 'as you type' : 'when you choose Run';
-    out.push(`${m.name} runs this ${m.shell ? 'shell line' : 'command'} ${when}: ${m.run}`);
-    if (m.kind === 'files') out.push(m.each ? `Each result is named ${m.out || 'as the file it came from'}.` : `The result is named ${m.out}.`);
-    else if (m.output === 'file') out.push(`The result is named ${m.out}.`);
-    out.push(m.shell
+    s.does = `${m.name} runs this ${m.shell ? 'shell line' : 'command'} ${when}`;
+    s.run = m.run;
+    // (without `out` a result keeps its file's name, with the extension of what the program made: host.ts)
+    if (m.kind === 'files') s.named = m.each ? `Each result is named ${m.out || 'after the file it came from'}.` : `The result is named ${m.out}.`;
+    else if (m.output === 'file') s.named = `The result is named ${m.out}.`;
+    s.touches = m.shell
       ? 'A shell line can do everything a terminal here can: it can read and change every file in this tab.'
-      : `${m.run.split(/\s+/)[0]} is an ordinary program in this tab: it can read and change every file here.`);
+      : `${m.run.split(/\s+/)[0]} is an ordinary program in this tab: it can read and change every file here.`;
   }
   const installs = [
     m.toolchains.length ? `the ${m.toolchains.length > 1 ? 'toolchains' : 'toolchain'} ${list(m.toolchains)}` : '',
     m.needs.length ? `the Debian ${m.needs.length > 1 ? 'packages' : 'package'} ${list(m.needs)}` : '',
   ].filter(Boolean);
-  if (installs.length) out.push(`Before its first start it installs ${installs.join(', and ')}.`);
-  out.push('Its page may use only its own data folder, and is kept from other sites.');
-  return out;
+  if (installs.length) s.installs = `Before its first start it installs ${installs.join(', and ')}.`;
+  return s;
+}
+
+/**
+ * A declared app as every sentence there is to say about it (`app check`):
+ * what it does, the exact command, how results are named, what the program
+ * can touch, what it installs, what its page may use.
+ */
+export function kindSentences(m: KindKeys & { name: string; description: string; needs: string[]; toolchains: string[] }): string[] {
+  const s = kindSaid(m);
+  return [s.about, s.run ? `${s.does}: ${s.run}` : s.does, s.named, s.touches, s.installs, s.page].filter(Boolean);
+}
+
+/** The extensions `sniffKind` names, by what the bytes are */
+const ZIP_KINDS: [RegExp, string][] = [
+  [/^mimetypeapplication\/vnd\.oasis\.opendocument\.text/, 'odt'], [/^mimetypeapplication\/vnd\.oasis\.opendocument\.spreadsheet/, 'ods'],
+  [/^mimetypeapplication\/vnd\.oasis\.opendocument\.presentation/, 'odp'], [/^mimetypeapplication\/epub\+zip/, 'epub'],
+];
+
+/**
+ * What a file is, from its first bytes, as the extension such a file has:
+ * pdf, png, jpg, gif, zip (docx, xlsx, pptx, odt, ods, odp, epub), gz, and for
+ * text json, html, svg or txt. '' when it is none of these (or empty).
+ * `head` is the start of the file, and `whole` says that it is all of it.
+ */
+export function sniffKind(head: Uint8Array, whole = true): string {
+  const at = (bytes: number[], from = 0) => bytes.every((b, i) => head[from + i] === b);
+  if (!head.length) return '';
+  if (at([0x25, 0x50, 0x44, 0x46, 0x2d])) return 'pdf';
+  if (at([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'png';
+  if (at([0xff, 0xd8, 0xff])) return 'jpg';
+  if (at([0x47, 0x49, 0x46, 0x38]) && (head[4] === 0x37 || head[4] === 0x39) && head[5] === 0x61) return 'gif';
+  if (at([0x1f, 0x8b])) return 'gz';
+  const latin = (from: number, to: number) => String.fromCharCode(...head.subarray(from, Math.min(head.length, to)));
+  if (at([0x50, 0x4b, 0x03, 0x04])) {
+    // The first member's name and, when it is stored as it is, its text: OpenDocument and EPUB say what they are there
+    const nameLen = (head[26] ?? 0) | ((head[27] ?? 0) << 8), extra = (head[28] ?? 0) | ((head[29] ?? 0) << 8);
+    const first = latin(30, 30 + nameLen) + latin(30 + nameLen + extra, 30 + nameLen + extra + 60);
+    for (const [re, ext] of ZIP_KINDS) if (re.test(first)) return ext;
+    // Office Open XML: the folder of its parts is named among the first members
+    const names = latin(0, 4096);
+    if (/\[Content_Types\]\.xml|_rels\/\.rels/.test(names)) return /word\//.test(names) ? 'docx' : /xl\//.test(names) ? 'xlsx' : /ppt\//.test(names) ? 'pptx' : 'zip';
+    return 'zip';
+  }
+  // Text: UTF-8 that decodes (a part of a file may end inside a character) and has no control characters
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(whole ? head : head.subarray(0, lastWhole(head))); } catch { return ''; }
+  if (/[\x00-\x08\x0e-\x1f]/.test(text)) return '';
+  const t = text.replace(/^﻿/, '').trim();
+  if (/^<!doctype html|^<html[\s>]/i.test(t)) return 'html';
+  if (/^<svg[\s>]/i.test(t) || (/^<\?xml/i.test(t) && /<svg[\s>]/i.test(t))) return 'svg';
+  // JSON: an object or a list that reads as one; of a long file only the start is known
+  if (/^[{[]/.test(t)) {
+    if (!whole) { if (/^(\{\s*["}]|\[\s*[[{"\]])/.test(t)) return 'json'; } else { try { JSON.parse(t); return 'json'; } catch { /* text that starts with a bracket */ } }
+  }
+  return t ? 'txt' : '';
+}
+/** Where the last whole UTF-8 character of `b` ends */
+function lastWhole(b: Uint8Array): number {
+  let i = b.length;
+  while (i > 0 && (b[i - 1] & 0xc0) === 0x80) i--;
+  return i > 0 && b[i - 1] >= 0xc0 ? i - 1 : b.length;
 }

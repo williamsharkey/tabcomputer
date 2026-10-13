@@ -55,7 +55,7 @@ const CSS = `
 }
 .sd-launch-icon { width: 64px; height: 64px; flex: none; margin-bottom: 6px; display: grid; place-items: center; opacity: .92; }
 .sd-launch-icon img, .sd-launch-icon > svg, .sd-launch-icon .sd-tile { width: 100%; height: 100%; margin: 0; display: block; object-fit: contain; }
-.sd-launch-name { font-size: 24px; font-weight: 300; letter-spacing: -.01em; line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+.sd-launch-name { font-size: 24px; font-weight: 300; letter-spacing: -.01em; line-height: 1.2; max-width: 100%; overflow-wrap: anywhere; text-wrap: balance; flex: none; }
 .sd-launch-stage { font-size: 13px; font-weight: 400; color: var(--sd-text-2); max-width: 100%; flex: none; }
 .sd-launch-bar { width: min(280px, 78%); height: 4px; flex: none; margin: 8px 0 2px; border-radius: 2px; background: var(--sd-active); overflow: hidden; position: relative; }
 .sd-launch-bar > i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--sd-accent-2), var(--sd-accent)); transition: width .3s var(--sd-ease); }

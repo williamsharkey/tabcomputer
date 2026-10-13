@@ -17,6 +17,7 @@ import { becomeApp, idTaken, installedRef, monogramIcon, openInstalled, register
 import type { AppManifest } from './manifest';
 import { cleanRunUrl } from '../run-url';
 import { setShippedHidden } from './shipped';
+import { phoneScreen } from './surface';
 
 const desktop = (): WindowManager | null => ((globalThis as { __shiroDesktop?: WindowManager }).__shiroDesktop ?? null);
 
@@ -180,15 +181,13 @@ export async function startAppLink(o: {
     github: async (action, run) => (await import('../github-needed')).fetchSignedIn(action, run),
     installedSource: async (id) => (await findInstalled(appsDeps().fs, id))?.source ?? null,
     confirm: confirmInstall,
-    install: async (app, files) => {
-      await installFetched(app, files);
-      await prepareInstalled(app.manifest.id).catch((e) => o.report((e as Error).message));
-    },
+    // (what the app needs is installed when it opens, below: in its window's placeholder, or,
+    // where the tab becomes the app, under the app's own name, never in a desktop frame on a phone)
+    install: async (app, files) => { await installFetched(app, files); },
     open: async (id, become) => {
       // A phone has no room for a desktop around the app that was asked for: the tab is the app,
       // with a way back to the desktop (tabcomputer#139)
-      const { compactViewport } = await import('../desktop/wm');
-      const small = !become && compactViewport() && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      const small = !become && phoneScreen();
       if (become || small) await becomeApp((await installedRef(id)).ref, { back: small });
       else {
         const wm = desktop();

@@ -259,7 +259,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   ShiroTerminal.optionOverrides = { theme: terminalTheme(wm.theme()), fontFamily: TERMINAL_FONT };
 
   // The first window: the main terminal, front and center (or where it was last time)
-  const session = wm.compact ? [] : loadSession();
+  // (a phone shows one window at a time: of the last session only the apps that were open come back, docs/APPS.md "Lifecycle")
+  const session = loadSession().filter((s) => !wm.compact || /^app open /.test(s.restore?.cmd ?? ''));
   const first = (() => {
     const wa = wm.workArea();
     const width = Math.min(860, Math.max(320, wa.width - 100));

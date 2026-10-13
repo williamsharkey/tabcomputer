@@ -17,6 +17,7 @@
 :root { --bg: #fff; --fg: #1c1d22; --dim: #5d6170; --line: #d5d7de; --field: #fff; --soft: #f3f4f7; --accent: #2456c8; --on: #fff; --ok: #1d6b45; --bad: #b3261e; }
 :root[data-theme=dark] { --bg: #1b1d29; --fg: #e9e9f1; --dim: #a4a8b8; --line: #3b3e50; --field: #24273a; --soft: #24273a; --accent: #8fa8ff; --on: #10121c; --ok: #6fd3a1; --bad: #ff8a80; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { color-scheme: light; }
 html[data-theme=dark] { color-scheme: dark; }
 body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
@@ -48,6 +49,8 @@ legend { padding: 0; font-weight: 600; margin-bottom: 6px; }
 .drop .row { justify-content: center; }
 .bar { justify-content: space-between; margin: 18px 0 6px; }
 [role=status] { min-height: 24px; margin: 10px 0 0; }
+[role=status].bad { color: var(--bad); overflow-wrap: anywhere; }
+[role=status].quiet:empty { min-height: 0; margin: 0; }
 .bar [role=status] { margin: 0; }
 ul { list-style: none; margin: 0; padding: 0; }
 li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
@@ -59,11 +62,22 @@ li .why { flex: 1 1 100%; font-size: 14px; color: var(--dim); overflow-wrap: any
 pre, .rendered, iframe.rendered { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
 pre { min-height: 80px; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.45 ui-monospace, monospace; }
 pre.err { min-height: 0; color: var(--bad); }
+pre.stale, .stale .rendered { opacity: .5; }
 .rendered { overflow-wrap: anywhere; }
+.rendered:empty { display: none; }
 .rendered > :first-child { margin-top: 0; }
+.rendered > :last-child { margin-bottom: 0; }
 .rendered pre { background: var(--bg); min-height: 0; }
 .rendered code { font: 14px ui-monospace, monospace; }
-iframe.rendered { display: block; width: 100%; height: 50vh; padding: 0; background: #fff; }
+.rendered img { max-width: 100%; height: auto; vertical-align: middle; }
+.rendered a { color: var(--accent); }
+.rendered .wide { overflow-x: auto; margin: 0 0 12px; }
+.rendered table { width: auto; }
+.rendered th, .rendered td { padding: 6px 12px; border: 1px solid var(--line); overflow-wrap: normal; }
+.rendered th { background: var(--bg); }
+.frames { position: relative; margin: 12px 0 0; }
+iframe.rendered { display: block; width: 100%; height: 50vh; margin: 0; padding: 0; background: #fff; }
+iframe.rendered.next { position: absolute; inset: 0; visibility: hidden; }
 .tools { margin: 8px 0 12px; }
 .tools .grow { flex: 1 1 160px; }
 .tools label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -83,16 +97,16 @@ tfoot td.num { text-align: right; }
 @media (max-width: 560px) {
   .sortby { display: block; flex: 1 1 140px; }
   .scroll { overflow: visible; }
-  table, tbody, tfoot, tr, td { display: block; }
-  thead { display: none; }
-  tbody tr, tfoot tr { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin: 0 0 10px; }
-  td { display: flex; align-items: center; gap: 10px; border: 0; padding: 2px 0; width: auto !important; }
-  td > input:not([type=checkbox]), td > select { flex: 1; min-width: 0; }
-  td::before { content: attr(data-label); flex: 0 0 34%; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; }
-  td.act { width: auto; justify-content: flex-end; }
-  td.act::before, tfoot td.blank { display: none; }
-  td.num input, tfoot td.num { text-align: left; }
-  tfoot td { padding: 6px 0; }
+  .scroll table, .scroll tbody, .scroll tfoot, .scroll tr, .scroll td { display: block; }
+  .scroll thead { display: none; }
+  .scroll tbody tr, .scroll tfoot tr { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin: 0 0 10px; }
+  .scroll td { display: flex; align-items: center; gap: 10px; border: 0; padding: 2px 0; width: auto !important; }
+  .scroll td > input:not([type=checkbox]), .scroll td > select { flex: 1; min-width: 0; }
+  .scroll td::before { content: attr(data-label); flex: 0 0 34%; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; }
+  .scroll td.act { width: auto; justify-content: flex-end; }
+  .scroll td.act::before, .scroll tfoot td.blank { display: none; }
+  .scroll td.num input, .scroll tfoot td.num { text-align: left; }
+  .scroll tfoot td { padding: 6px 0; }
 }
 `;
 
@@ -108,7 +122,8 @@ tfoot td.num { text-align: right; }
     e.append(...kids.filter((x) => x != null));
     return e;
   }
-  const lastLine = (s) => (s || '').trim().split('\n').pop().trim().slice(0, 300);
+  // (a program that redraws one line ends each state with \r: the last one is what it says now)
+  const lastLine = (s) => (s || '').trim().split(/[\r\n]/).pop().trim().slice(0, 300);
   const list = (a) => (a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' or ' + a[a.length - 1]);
   let ids = 0;
   const newId = () => 'i' + (++ids);
@@ -132,6 +147,9 @@ tfoot td.num { text-align: right; }
   document.body.append(main);
   const state = { kind: m.kind };
   window.__app = state; // for tests
+  // The page uploads nothing. What the program does is the program's: only for an app this
+  // site ships does the page say more than where the work happens.
+  const filesNote = () => el('p', { class: 'note', text: app.reviewed ? 'Your files stay on this computer.' : 'Your files are worked on in this tab.' });
 
   /** One of a form's fields or a file job's options: its element, and how to read it */
   function control(input) {
@@ -177,7 +195,8 @@ tfoot td.num { text-align: right; }
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const rows = el('ul', { 'aria-label': 'Files' });
     const all = el('button', { type: 'button', id: 'all', class: 'main', text: 'Download all', disabled: true, onclick: () => tab.download(state.dirs.out, { zip: true, name: `${app.id}.zip` }) });
-    const work = el('section', { hidden: true }, el('div', { class: 'row bar' }, status, all), rows);
+    const stop = el('button', { type: 'button', id: 'stop', text: 'Stop', hidden: true, onclick: stopAll });
+    const work = el('section', { hidden: true }, el('div', { class: 'row bar' }, status, el('div', { class: 'row' }, stop, all)), rows);
     const accept = m.accept.join(',');
     const pick = (directory) => tab.files.pick({ directory, accept: directory ? '' : accept, dir: nextDir() }).then(take);
     const drop = el('section', { class: 'drop', 'aria-label': 'Files to work on' },
@@ -186,9 +205,9 @@ tfoot td.num { text-align: right; }
         el('button', { type: 'button', id: 'pick', class: 'main', text: 'Choose files', onclick: () => pick(false) }),
         folders ? el('button', { type: 'button', id: 'pickdir', text: 'Choose a folder', onclick: () => pick(true) }) : null));
     if (m.options.length) main.append(el('fieldset', {}, el('legend', { text: 'Options' }), ...options.els));
-    main.append(drop, work, el('p', { class: 'note', text: 'Your files stay on this computer.' }));
+    main.append(drop, work, filesNote());
 
-    let picks = 0, active = 0;
+    let picks = 0, active = 0, title = '';
     const queue = [];
     const nextDir = () => `${state.dirs.in}/${++picks}`;
     function addRow(name) {
@@ -204,6 +223,8 @@ tfoot td.num { text-align: right; }
       row.li.className = status;
       row.st.textContent = status;
       row.li.querySelectorAll('button, .why').forEach((n) => n.remove());
+      // While it is worked on: the program's own last line, as it writes them
+      row.says = status === 'working' ? row.li.appendChild(el('span', { class: 'why' })) : null;
       if (status === 'done') {
         const result = res.name.split('/').pop();
         row.result = res.name;
@@ -219,21 +240,36 @@ tfoot td.num { text-align: right; }
       work.hidden = !state.rows.length;
       all.disabled = !done || left > 0;
       all.textContent = done > 1 ? 'Download all (.zip)' : 'Download as a .zip';
-      const parts = [`${done} done`, count('failed') ? `${count('failed')} failed` : '', count('skipped') ? `${count('skipped')} skipped` : ''].filter(Boolean);
-      status.textContent = left ? `Working: ${state.rows.length - left} of ${state.rows.length}.` : parts.join(', ') + '.';
+      const parts = [`${done} done`, ...['failed', 'stopped', 'skipped'].map((s) => (count(s) ? `${count(s)} ${s}` : ''))].filter(Boolean);
+      // (skipped files were never work to do: "3 of 12" counts the files the program gets)
+      const total = state.rows.length - count('skipped'), sofar = `${total - left} of ${total}`;
+      status.textContent = left ? `${sofar} done.` : parts.join(', ') + '.';
+      stop.hidden = !left;
+      // The window's title says how far a long run is, for when the window is behind another
+      const now = left && total > 1 ? `${m.name} — ${sofar}` : '';
+      if (now !== title) tab.window.setTitle(title = now).catch(() => {});
     }
     function pump() {
       while (active < 2 && queue.length) {
         const { row, files } = queue.shift();
         active++;
         set(row, 'working');
-        tab.job({ files, values: options.values() }).then((res) => {
-          // (the program names the file by where the tab keeps it: the person knows it by its name)
-          const said = files.reduce((s, f) => s.split(f.path).join(f.rel), lastLine(res.stderr) || res.said);
+        // (the program names the file by where the tab keeps it: the person knows it by its name)
+        const named = (s) => files.reduce((t, f) => t.split(f.path).join(f.rel), s);
+        let tail = '';
+        const says = (s) => { tail = (tail + s).slice(-600); if (row.says) row.says.textContent = named(lastLine(tail)); };
+        row.job = tab.job({ files, values: options.values() }, { onStdout: says, onStderr: says });
+        row.job.then((res) => {
           if (res.out) set(row, 'done', '', res);
-          else set(row, 'failed', said || (res.code ? `The program ended with status ${res.code}.` : 'The program made no result.'));
-        }, (e) => set(row, 'failed', e.message)).then(() => { active--; pump(); });
+          else if (row.stopped) set(row, 'stopped');
+          else set(row, 'failed', named(lastLine(res.stderr) || res.said) || (res.code ? `The program ended with status ${res.code}.` : 'The program made no result.'));
+        }, (e) => set(row, row.stopped ? 'stopped' : 'failed', row.stopped ? '' : e.message)).then(() => { row.job = null; active--; pump(); });
       }
+    }
+    /** Stop: the files being worked on end now, and the ones waiting are not started */
+    function stopAll() {
+      for (const q of queue.splice(0)) set(q.row, 'stopped');
+      for (const row of state.rows) if (row.job) { row.stopped = true; row.job.kill(); }
     }
     function take(imported) {
       const wanted = [];
@@ -261,21 +297,49 @@ tfoot td.num { text-align: right; }
   }
 
   // ── form: fields fill a command; its output shows ──
-  /** Markdown as elements: headings, lists, quotes, code, bold, italic, links. Text only goes in as text. */
+  const IMAGE = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+  const pictures = new Map(); // a file of the app's data folder → its blob: address, read once
+  /**
+   * An image the output names. Only two kinds are shown: one written into the output itself
+   * (data:), and a file of the app's own data folder, which is where the command runs (plot.png).
+   * Anything else is another site's, which this page does not reach: its words are shown.
+   */
+  function picture(alt, src) {
+    const img = el('img', { alt });
+    if (/^data:image\/(png|jpeg|gif|webp|svg\+xml)[;,]/i.test(src)) { img.src = src; return img; }
+    const type = IMAGE[(/\.([a-z]+)$/i.exec(src) || [])[1]?.toLowerCase()];
+    if (!type || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(src)) return alt;
+    let p = pictures.get(src);
+    let path = src;
+    try { path = decodeURI(src); } catch (e) { /* read as written */ }
+    if (!p) pictures.set(src, p = tab.fs.read(path).then((bytes) => URL.createObjectURL(new Blob([bytes], { type }))));
+    p.then((url) => { img.src = url; }, () => img.replaceWith(alt));
+    return img;
+  }
+  /**
+   * Markdown as elements: headings, lists, quotes, code, tables, bold, italic, images, links.
+   * Text only goes in as text. A link opens in a new browser tab when the app may reach other
+   * sites; otherwise it is shown as its words and its address.
+   */
   function markdown(text) {
     const root = el('div', { class: 'rendered' });
     const inline = (into, s) => {
-      const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|\[[^\]]+\]\([^)\s]+\))/;
+      const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|!?\[[^\]]*\]\([^)\s]+\))/;
       for (const part of s.split(re)) {
         if (!part) continue;
+        let x;
         if (/^`.+`$/.test(part)) into.append(el('code', { text: part.slice(1, -1) }));
         else if (/^\*\*.+\*\*$/.test(part)) into.append(el('strong', { text: part.slice(2, -2) }));
         else if (/^\*.+\*$/.test(part)) into.append(el('em', { text: part.slice(1, -1) }));
-        else if (/^\[.+\]\(.+\)$/.test(part)) { const x = /^\[(.+)\]\((.+)\)$/.exec(part); into.append(x[1] === x[2] ? x[1] : `${x[1]} (${x[2]})`); }
-        else into.append(part);
+        else if ((x = /^!\[(.*)\]\((.+)\)$/.exec(part))) into.append(picture(x[1], x[2]));
+        else if ((x = /^\[(.+)\]\((.+)\)$/.exec(part))) {
+          if (m.access.network && /^(https?:\/\/|mailto:)/i.test(x[2])) into.append(el('a', { href: x[2], target: '_blank', rel: 'noopener noreferrer', text: x[1] }));
+          else into.append(x[1] === x[2] ? x[1] : `${x[1]} (${x[2]})`);
+        } else into.append(part);
       }
       return into;
     };
+    const cells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
     const lines = text.replace(/\r\n/g, '\n').split('\n');
     let para = [], items = null;
     const flush = () => { if (para.length) root.append(inline(el('p'), para.join(' '))); para = []; items = null; };
@@ -287,6 +351,15 @@ tfoot td.num { text-align: right; }
         const code = [];
         for (i++; i < lines.length && !/^```/.test(lines[i]); i++) code.push(lines[i]);
         root.append(el('pre', {}, el('code', { text: code.join('\n') })));
+      } else if (l.includes('|') && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[i + 1] || '') && cells(lines[i + 1]).length === cells(l).length) {
+        // A table: a line of names, a line of dashes (a colon says which side the column leans to), then the rows
+        flush();
+        const side = cells(lines[i + 1]).map((c) => (/^:.*:$/.test(c) ? 'center' : c.endsWith(':') ? 'right' : ''));
+        const row = (tag, line) => el('tr', {}, ...side.map((align, n) => inline(el(tag, align ? { style: `text-align: ${align}` } : {}), cells(line)[n] || '')));
+        const body = el('tbody');
+        const head = row('th', l);
+        for (i++; i + 1 < lines.length && lines[i + 1].includes('|'); i++) body.append(row('td', lines[i + 1]));
+        root.append(el('div', { class: 'wide' }, el('table', {}, el('thead', {}, head), body)));
       } else if ((x = /^(#{1,6})\s+(.*)$/.exec(l))) { flush(); root.append(inline(el('h' + Math.min(6, x[1].length + 1)), x[2])); }
       else if ((x = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(l))) {
         const tag = /\d/.test(x[1]) ? 'ol' : 'ul';
@@ -305,9 +378,10 @@ tfoot td.num { text-align: right; }
     Object.assign(state, { runs: 0, code: null, output: '', running: false });
     state.dirs = await tab.job.start();
     const fields = controls(m.fields);
-    const run = el('button', { type: 'submit', id: 'run', class: 'main', text: 'Run' });
-    const stop = el('button', { type: 'button', id: 'stop', text: 'Stop', disabled: true, onclick: () => current && current.kill() });
-    const status = el('p', { role: 'status', 'aria-live': 'polite' });
+    // A live form has no Run and no Stop: the result follows the typing
+    const run = el('button', { type: 'submit', id: 'run', class: 'main', text: 'Run', hidden: m.live });
+    const stop = el('button', { type: 'button', id: 'stop', text: 'Stop', hidden: true, onclick: () => current && current.kill() });
+    const status = el('p', { role: 'status', 'aria-live': 'polite', class: m.live ? 'quiet' : '' });
     const save = el('button', { type: 'button', id: 'save', class: 'main', hidden: true });
     const out = el('pre', { tabIndex: 0, 'aria-label': 'Output' });
     const shown = el('div', { 'aria-label': 'Result' });
@@ -315,13 +389,34 @@ tfoot td.num { text-align: right; }
     const plain = m.output === 'text' || m.output === 'file';
     const form = el('form', { onsubmit: (e) => { e.preventDefault(); start(); } }, ...fields.els, el('div', { class: 'row' }, run, stop, save));
     main.append(form, status, ...(plain ? [out] : [shown, errs]));
-    if (m.fields.some((f) => f.type === 'file')) main.append(el('p', { class: 'note', text: 'Your files stay on this computer.' }));
+    if (m.fields.some((f) => f.type === 'file')) main.append(filesNote());
 
-    let current = null, token = 0;
+    let current = null, token = 0, frames = null, drawn = '', due = 0;
+    /**
+     * The command's HTML, as a document that runs no script and reaches nothing. While the
+     * output still comes, each new state loads behind the one that shows and takes its place
+     * when it is whole, so the result never blinks.
+     */
+    function html(text) {
+      if (!frames) shown.replaceChildren(frames = el('div', { class: 'frames' }));
+      const next = el('iframe', { class: 'rendered next', sandbox: '', srcdoc: text, title: 'Result' });
+      next.addEventListener('load', () => {
+        if (!next.isConnected) return;
+        for (const old of [...frames.children]) if (old !== next) old.remove();
+        next.classList.remove('next');
+      });
+      for (const old of frames.querySelectorAll('.next')) old.remove();
+      frames.append(next);
+    }
     function render(text) {
-      if (m.output === 'markdown') shown.replaceChildren(markdown(text));
-      // (the command's HTML is shown as a document that runs no script and reaches nothing)
-      else shown.replaceChildren(el('iframe', { class: 'rendered', sandbox: '', srcdoc: text, title: 'Result' }));
+      if (text === drawn) return;
+      drawn = text;
+      if (m.output === 'markdown') { frames = null; shown.replaceChildren(markdown(text)); } else html(text);
+    }
+    /** Output that still comes: drawn at most four times a second */
+    function renderSoon(read) {
+      if (due) return;
+      due = setTimeout(() => { due = 0; if (state.running) render(read()); }, 250);
     }
     async function start() {
       const mine = ++token;
@@ -329,21 +424,45 @@ tfoot td.num { text-align: right; }
       if (mine !== token) return;
       let text = '', err = '';
       state.running = true;
-      stop.disabled = false;
-      status.textContent = 'Running.';
-      // As you type, the last result stays until the new one is whole; otherwise output shows as it is written
-      if (!m.live) { out.textContent = ''; errs.hidden = true; save.hidden = true; }
-      const live = (s) => { text += s; if (!m.live && plain) { out.textContent += s; out.scrollTop = out.scrollHeight; } };
+      clearTimeout(due);
+      due = 0;
+      // As you type, the last result stays until the new one is whole, and nothing says "Running";
+      // otherwise the output shows as it is written
+      if (!m.live) {
+        stop.hidden = false;
+        status.textContent = 'Running.';
+        out.textContent = '';
+        errs.hidden = save.hidden = true;
+        pictures.clear();
+        if (!plain) render('');
+      }
+      const more = (s) => {
+        text += s;
+        if (m.live) return;
+        if (plain) { out.textContent += s; out.scrollTop = out.scrollHeight; } else renderSoon(() => text);
+      };
       try {
-        current = tab.job({ values: fields.values() }, { onStdout: live, onStderr: (s) => { err += s; if (plain) live(s); } });
+        current = tab.job({ values: fields.values() }, { onStdout: more, onStderr: (s) => { err += s; if (plain) more(s); } });
         const res = await current;
         if (mine !== token) return;
+        const failed = res.code !== 0;
         Object.assign(state, { code: res.code, output: text, out: res.out });
-        if (plain) out.textContent = text; else if (res.code === 0 || text) render(text);
-        if (!plain) { errs.textContent = err; errs.hidden = !err.trim(); }
+        // A live form says one thing only, when there is one: why the program refused what was typed.
+        // The result before it stays, dimmed, until the typing is something the program takes.
+        if (m.live) {
+          status.className = failed ? 'quiet bad' : 'quiet';
+          status.textContent = failed ? lastLine(err) || `The program ended with status ${res.code}.` : '';
+          out.classList.toggle('stale', failed);
+          shown.classList.toggle('stale', failed);
+          errs.hidden = true;
+          if (!failed) { if (plain) out.textContent = text; else { pictures.clear(); render(text); } }
+        } else {
+          if (plain) out.textContent = text; else if (!failed || text) render(text);
+          if (!plain) { errs.textContent = err; errs.hidden = !err.trim(); }
+          status.textContent = !failed ? 'Done.' : res.code === 130 || res.code === 143 ? 'Stopped.' : `The program ended with status ${res.code}.`;
+        }
         save.hidden = !res.out;
         if (res.out) { save.textContent = `Download ${res.name}`; save.onclick = () => tab.download(res.out); }
-        status.textContent = res.code === 0 ? 'Done.' : res.code === 130 || res.code === 143 ? 'Stopped.' : `The program ended with status ${res.code}.`;
       } catch (e) {
         if (mine !== token) return;
         state.code = -1;
@@ -353,7 +472,7 @@ tfoot td.num { text-align: right; }
       current = null;
       state.running = false;
       state.runs++;
-      stop.disabled = true;
+      stop.hidden = true;
     }
     form.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); start(); } });
     if (m.live) {
@@ -455,20 +574,25 @@ tfoot td.num { text-align: right; }
     const filter = el('input', { type: 'search', id: filterId, placeholder: 'Filter', oninput: () => { state.filter = filter.value; draw(); } });
     const sortBy = el('select', { id: sortId, onchange: () => { state.sort = +sortBy.value; state.down = false; draw(); } });
     const table = el('table', {}, el('thead'), el('tbody'), el('tfoot'));
+    const kept = `The table is kept on this computer, in ${file.replace(app.home, '~')}.`;
+    const note = el('p', { class: 'note', text: kept });
     main.append(
       el('div', { class: 'row tools' },
         el('div', { class: 'grow' }, el('label', { for: filterId, text: 'Filter the rows' }), filter),
         el('div', { class: 'sortby' }, el('label', { for: sortId, text: 'Sort by' }), sortBy),
         el('button', { type: 'button', id: 'add', class: 'main', text: 'Add a row', onclick: add }),
         el('button', { type: 'button', id: 'export', text: 'Download CSV', onclick: async () => tab.download(await store.exported(), { name: m.table.replace(/\.[a-z]+$/, '.csv') }) })),
-      el('div', { class: 'scroll' }, table), status,
-      el('p', { class: 'note', text: `The table is kept on this computer, in ${file.replace(app.home, '~')}.` }));
+      el('div', { class: 'scroll' }, table), status, note);
 
     async function save(said) {
       try {
+        const t0 = performance.now();
         await store.write(state.cols.map((c) => c.name), state.rows);
         state.saves++;
         status.textContent = said || 'Saved.';
+        // Every edit writes the whole table. Said only once that is slow enough to feel, with the time it took.
+        const s = (performance.now() - t0) / 1000;
+        note.textContent = s < 0.5 ? kept : `${kept} Each change saves all ${state.rows.length.toLocaleString('en')} rows, which took ${s.toFixed(1)} seconds: a table this large is slow to edit here.`;
       } catch (e) { status.textContent = `The table could not be saved: ${e.message}`; }
     }
     async function load(said) {

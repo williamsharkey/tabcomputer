@@ -6,7 +6,7 @@
  *
  * No fraction and no time left: the installer measures neither. A build on
  * the server reports the package it is at ("package 12 of 71"), and that is
- * shown as the server says it.
+ * shown as the server says it; apt names each package, and those are counted.
  */
 
 /** The sentence shown from the moment an app's first start begins to install */
@@ -32,4 +32,27 @@ export function plainInstallLine(line: string): string | null {
   if (/already installed/.test(l)) return 'The programs are already here.';
   if (/^(Get:\d|Fetched |Unpacking |Setting up |Preparing to unpack |Selecting previously)/.test(l)) return 'The programs are being installed. This takes a few minutes.';
   return null;
+}
+
+/**
+ * The sentences of one install, in order: `plainInstallLine`, and apt's own
+ * count. apt says how many packages it adds ("71 newly installed") and then
+ * names each as it downloads, unpacks and sets it up, so the sentence says
+ * which package of how many that is. Without apt's total no count is shown.
+ */
+export function installProgress(): (line: string) => string | null {
+  let total = 0;
+  const at = { Get: 0, Unpacking: 0, 'Setting up': 0 };
+  const doing = { Get: 'downloaded', Unpacking: 'unpacked', 'Setting up': 'set up' };
+  return (line) => {
+    const l = line.trim();
+    const n = /(\d+) newly installed/.exec(l);
+    if (n) { total = Number(n[1]); return null; }
+    const step = /^(Get|Unpacking|Setting up)[: ]/.exec(l)?.[1] as keyof typeof at | undefined;
+    if (!total) return plainInstallLine(line);
+    // (apt's lines between two packages say nothing new: the count stays)
+    if (!step) return /^(Fetched |Preparing to unpack |Selecting previously)/.test(l) ? null : plainInstallLine(line);
+    at[step] = Math.min(total, at[step] + 1);
+    return `Package ${at[step]} of ${total} is being ${doing[step]}.`;
+  };
 }

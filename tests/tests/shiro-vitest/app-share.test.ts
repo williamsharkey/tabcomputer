@@ -87,7 +87,7 @@ describe('a link that carries an app', () => {
     expect(app.manifest.id).toBe('notes');
     expect(app.manifestText).toBe(MANIFEST);
     expect(app.source).toMatch(/^link:[0-9a-f]{16}$/);
-    expect(app.from).toBe('a link that carries the app\'s own files (4 files, 1 KB)');
+    expect(app.from).toBe('this link (4 files, 1 KB)');
     expect((await linkApp(payload)).source).toBe(app.source);
     expect(await message(linkApp(packed({ v: 1, t: { 'app.json': '{"manifest":1,"id":"terminal","name":"T","entry":"public"}' } })))).toMatch(/not valid/);
   });
@@ -193,16 +193,37 @@ describe('app share', () => {
   it('says each person gets their own copy and their own data, with nothing shared', () => {
     const s = shareStatement({ id: 'notes', name: 'Notes', url: 'x', kind: 'files', files: 3, bytes: 2400, asks: true });
     expect(s.promise).toEqual([
-      'Each person who opens this link gets their own copy of Notes.',
-      'Each copy keeps its own data on that person\'s computer.',
-      'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.',
+      'Each person who opens this link gets their own copy of Notes, with their own data.',
+      'Nobody sees your data, and you do not see theirs.',
     ]);
-    expect(s.details.join(' ')).toMatch(/3 files, 3 KB/);
-    expect(s.details.join(' ')).toMatch(/does not hold the data you stored in Notes/);
-    expect(s.details.join(' ')).toMatch(/installs it only when they choose Install/);
+    expect(s.details).toEqual([
+      'The link holds Notes\'s 3 files (3 KB). No server stores them.',
+      'A later change to Notes does not reach copies already made. Share a new link for that.',
+      'Each person sees what Notes does before it is installed.',
+    ]);
     const site = shareStatement({ id: 'converter', name: 'Convert Old Files', url: 'x', kind: 'site', asks: false });
-    expect(site.promise).toHaveLength(3);
-    expect(site.details.join(' ')).toMatch(/without asking, because this site ships it/);
+    expect(site.promise).toHaveLength(2);
+    expect(site.details).toEqual(['This site ships Convert Old Files, so it installs without a question.']);
+  });
+
+  it('the share screen: the sentences, the link and Copy; an app too large for a link says what to do', async () => {
+    const { buildShareScreen } = await import('@shiro/apps/share-ui');
+    const copied: string[] = [];
+    let closed = 0;
+    const screen = buildShareScreen({ id: 'notes', name: 'Notes', url: 'https://tabcomputer.com/?app=link#app=abc', kind: 'files', files: 3, bytes: 2400, asks: true }, async (t) => { copied.push(t); return true; }, () => { closed++; });
+    expect(screen.querySelector('h3')!.textContent).toBe('Share Notes');
+    expect(screen.querySelector('.tc-app-share-promise')!.textContent).toBe('Each person who opens this link gets their own copy of Notes, with their own data. Nobody sees your data, and you do not see theirs.');
+    expect((screen.querySelector('textarea') as unknown as { value: string }).value).toBe('https://tabcomputer.com/?app=link#app=abc');
+    expect([...screen.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Close', 'Copy link']);
+    (screen.querySelector('[data-act=copy]') as unknown as { click(): void }).click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(copied).toEqual(['https://tabcomputer.com/?app=link#app=abc']);
+    expect(screen.querySelector('[role=status]')!.textContent).toBe('Copied.');
+    const big = buildShareScreen({ name: 'Big One', problem: 'Big One is too large for a link.' }, async () => true, () => { closed++; });
+    expect(big.querySelectorAll('textarea')).toHaveLength(0);
+    expect(big.querySelector('p')!.textContent).toBe('Big One is too large for a link.');
+    (big.querySelector('[data-act=close]') as unknown as { click(): void }).click();
+    expect(closed).toBe(1);
   });
 
   it('one command gives a link that installs the same app somewhere else, without its data', async () => {
@@ -213,9 +234,8 @@ describe('app share', () => {
     await fs.writeFile(`${HOME}/.local/share/apps/shared-notes/private.csv`, 'my,own,data\n');
     const r = await app('share shared-notes');
     expect(r.exitCode, r.output).toBe(0);
-    expect(r.output).toContain('Each person who opens this link gets their own copy of');
-    expect(r.output).toContain('Each copy keeps its own data on that person\'s computer.');
-    expect(r.output).toContain('Nothing is shared between the copies.');
+    expect(r.output).toContain('Each person who opens this link gets their own copy of Shared notes, with their own data.');
+    expect(r.output).toContain('Nobody sees your data, and you do not see theirs.');
     const printed = await app('share shared-notes --print');
     const url = new URL(printed.output.trim());
     expect(r.output).toContain(url.href);
@@ -240,7 +260,7 @@ describe('app share', () => {
     const gist = await shareApp(fs, { ...base, source: `gist:${'ab12'.repeat(8)}@${'a'.repeat(40)}` }, ORIGIN);
     expect(gist).toMatchObject({ kind: 'gist', url: `${ORIGIN}/?app=gist:${'ab12'.repeat(8)}`, repo: `gist.github.com/${'ab12'.repeat(8)}`, asks: true });
     expect(parseAppUrl(new URL(gist.url).search)!.target).toEqual({ kind: 'gist', user: '', id: 'ab12'.repeat(8) });
-    expect(shareStatement(gist).details.join(' ')).toMatch(/Each person gets the files that gist holds when they open the link\./);
+    expect(shareStatement(gist).details.join(' ')).toMatch(/Each person gets what that gist holds when they open the link\./);
     // an app whose one file leaves its id to its folder's name: the link names it, so the copy is the same app
     await fs.mkdir(`${HOME}/Apps/tidy-it`, { recursive: true });
     await fs.writeFile(`${HOME}/Apps/tidy-it/app.json`, '{"name": "Something else entirely", "run": "jq . {in}"}');

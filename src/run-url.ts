@@ -443,7 +443,7 @@ export async function loadScript(target: RunTarget, origin: string, fetchFn: Fet
     bytes = await fetchRaw(`https://gist.githubusercontent.com/${user}/${target.id}/raw${target.file ? `/${target.file}` : ''}`, fetchFn, SCRIPT_MAX, from, `${from} does not exist (or the gist is secret and the link has no user)`);
   } else {
     bytes = target.bytes;
-    from = 'the link itself';
+    from = 'this link';
   }
   const text = scriptText(bytes);
   const sha256 = await sha256Hex(bytes);
@@ -532,7 +532,7 @@ export interface RunPromptWording {
   window: string; title: string;
   /** What is at stake, in place of the script's warning */
   warn: string;
-  /** Under the box, in place of where the script runs */
+  /** Under the box, when there is more a person needs before choosing ('' for nothing) */
   where: string;
   /** The box's label and the button that agrees */
   box: string; action: string;
@@ -640,8 +640,8 @@ async function handleLabLink(target: Extract<RunTarget, { kind: 'lab' }>, params
 const LINES_WORDING: RunPromptWording = {
   window: 'Run link',
   title: 'Run these commands?',
-  warn: 'They run as you, in this tab: they can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run them only if you trust whoever sent the link.',
-  where: 'They run in a new Terminal, in your home folder.',
+  warn: 'They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).',
+  where: '',
   box: 'The commands',
   action: 'Run',
 };

@@ -14,8 +14,9 @@ import type { AppManifest } from './manifest';
 import { AppHost, type HostDeps, type RunHandle, type RunRequest } from './host';
 import { resolveAllowed, normalizePath } from './access';
 import { Supervisor, pickPort, type BackendState } from './supervisor';
-import { firstInstallText, plainInstallLine } from './progress';
+import { firstInstallText, installProgress } from './progress';
 import { AppError, appDataDir, expectedPath } from './registry';
+import { appTheme } from './surface';
 import { iframeServer, type VirtualResponse } from '../iframe-server';
 import { PAGE_SET_TIMEOUT, PAGE_CLEAR_TIMEOUT } from '../node-compat/page-globals';
 import type { FileSystem } from '../filesystem';
@@ -167,22 +168,7 @@ const realPackages: Packages = {
   },
 };
 
-/** The desktop's appearance where there is a desktop, else the browser's */
-const theme: NonNullable<HostDeps['theme']> = {
-  get() {
-    const wm = (globalThis as { __shiroDesktop?: { theme(): 'light' | 'dark' } }).__shiroDesktop;
-    if (wm) return wm.theme();
-    return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  },
-  on(cb) {
-    const wm = (globalThis as { __shiroDesktop?: { on(ev: 'theme-changed', cb: () => void): () => void } }).__shiroDesktop;
-    if (wm) return wm.on('theme-changed', cb);
-    if (typeof matchMedia !== 'function') return () => {};
-    const q = matchMedia('(prefers-color-scheme: light)');
-    q.addEventListener('change', cb);
-    return () => q.removeEventListener('change', cb);
-  },
-};
+export { appTheme };
 
 const MIME: Record<string, string> = {
   html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
@@ -225,13 +211,20 @@ export const tabJsSource = (): Promise<string> => hostScript('tab.js');
 export function setTabJsSource(text: string | null, name = 'tab.js'): void { if (text === null) hostScripts.delete(name); else hostScripts.set(name, Promise.resolve(text)); }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-/** The document of a declared app: its name, tab.js, and the supplied page */
-export const suppliedPage = (m: AppManifest): string => `<!doctype html>
-<html lang="en">
+/** The supplied page's background in each appearance (page.js's --bg): its frame has this color before the page paints */
+export const PAGE_BG = { light: '#fff', dark: '#1b1d29' } as const;
+/**
+ * The document of a declared app: its name, tab.js, and the supplied page.
+ * It is written in the appearance the desktop has now, so nothing is white
+ * for a moment in the dark one.
+ */
+export const suppliedPage = (m: AppManifest, theme: 'light' | 'dark' = 'light'): string => `<!doctype html>
+<html lang="en" data-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(m.name)}</title>
+<style>html { background: ${PAGE_BG[theme]}; color-scheme: ${theme}; }</style>
 </head>
 <body>
 <script src="${TAB_JS_PATH}"></script>
@@ -288,7 +281,7 @@ export class AppInstance {
   private makeHost(): AppHost {
     const d = appsDeps();
     const self = this;
-    return new AppHost({ manifest: this.manifest, dir: this.dir, dataDir: this.dataDir, get confined() { return self.confined; } }, {
+    return new AppHost({ manifest: this.manifest, dir: this.dir, dataDir: this.dataDir, reviewed: this.source === 'site', get confined() { return self.confined; } }, {
       fs: d.fs as unknown as HostDeps['fs'],
       home: homeDir(),
       run: runLine,
@@ -296,7 +289,7 @@ export class AppInstance {
       toolchains: d.toolchains ?? realToolchains,
       get window() { return self.window; },
       reveal: d.reveal,
-      theme,
+      theme: appTheme,
       log: (line) => this.say(`[tab.js] ${line}\n`),
     });
   }
@@ -376,9 +369,10 @@ export class AppInstance {
       const missing = wanted.filter((p) => !have[p]);
       if (missing.length) {
         let stage = firstInstallText(this.manifest.name);
+        const said = installProgress();
         report(stage);
         this.say(`[app] ${this.id}: apt-get install ${missing.join(' ')}\n`);
-        const code = await pk.install(missing, (line) => { stage = plainInstallLine(line) ?? stage; report(stage, line); this.say(line + '\n'); });
+        const code = await pk.install(missing, (line) => { stage = said(line) ?? stage; report(stage, line); this.say(line + '\n'); });
         if (code !== 0) throw new AppError(`${missing.join(', ')} could not be installed (exit ${code}); ${this.manifest.name} needs ${missing.length > 1 ? 'them' : 'it'}`);
       }
       for (const p of wanted) done.add(`package:${p}`);
@@ -392,9 +386,10 @@ export class AppInstance {
           if (!have[set]) {
             // The stage is a sentence for the person (progress.ts); the installer's own lines are the details
             let stage = firstInstallText(this.manifest.name);
+            const said = installProgress();
             report(stage);
             this.say(`[app] ${this.id}: toolchain install ${set}\n`);
-            const code = await tc.install(set, (line) => { stage = plainInstallLine(line) ?? stage; report(stage, line); this.say(line + '\n'); });
+            const code = await tc.install(set, (line) => { stage = said(line) ?? stage; report(stage, line); this.say(line + '\n'); });
             if (code !== 0) throw new AppError(`toolchain install ${set} failed (exit ${code}); ${this.manifest.name} needs it`);
           }
           done.add(set);
@@ -465,7 +460,7 @@ export class AppInstance {
     }
     // An app without a page of its own: tabcomputer's, the same for every such app
     if (this.manifest.kind !== 'page' && (method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html')) {
-      return withCsp({ status: 200, headers: { 'content-type': MIME.html, 'cache-control': 'no-cache' }, body: suppliedPage(this.manifest) });
+      return withCsp({ status: 200, headers: { 'content-type': MIME.html, 'cache-control': 'no-cache' }, body: suppliedPage(this.manifest, appTheme.get()) });
     }
     if (method === 'GET' || method === 'HEAD') res = await this.staticFile(pathname);
     if (!res && this.supervisor) {

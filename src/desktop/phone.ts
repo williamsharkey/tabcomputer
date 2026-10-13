@@ -21,7 +21,7 @@
 
 import phoneCss from './phone.css?inline';
 import type { AppContext, DesktopLayout } from './index';
-import type { AppDescriptor, DesktopWindow, MenuSpec } from './wm';
+import { phoneSurfaceSize, type AppDescriptor, type DesktopWindow, type MenuSpec } from './wm';
 import { TerminalView } from './terminal-app';
 import { ShiroTerminal } from '../terminal';
 import { appIconIn, paintPixelTiles } from './iconsets';
@@ -64,7 +64,7 @@ export interface PhoneUI {
 
 /** Apps the person took off Home (they stay in the search) */
 export const HOME_HIDDEN_KEY = 'tabcomputer-home-hidden';
-/** A Linux app's "made for a large screen" line was shown */
+/** The Linux apps whose "made for a large screen" line was shown (a list of app ids) */
 export const GUI_NOTE_KEY = 'tabcomputer-phone-gui-note';
 /** The terminal's text size on a large screen (terminal.ts) */
 const DESKTOP_FONT = 14;
@@ -469,7 +469,14 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
   const paintCards = () => {
     const list = cards();
     for (const el of layer.querySelectorAll<HTMLElement>('.sd-win')) { delete el.dataset.phoneCard; delete el.dataset.phoneBusy; el.style.order = ''; }
+    const wa = wm.workArea();
+    const s = Number(root.style.getPropertyValue('--sw-s')) || 0.64;
     list.forEach((w, i) => {
+      // A Linux app's window is larger than the screen: its card is as wide as the others
+      const wide = w.element.offsetWidth > wa.width + 1;
+      for (const [k, v] of [['--sw-s', String(s * wa.width / w.element.offsetWidth)], ['--sw-w', `${w.element.offsetWidth}px`], ['--sw-h', `${w.element.offsetHeight}px`]]) {
+        if (wide) w.element.style.setProperty(k, v); else w.element.style.removeProperty(k);
+      }
       w.element.dataset.phoneCard = appName(w);
       if (busy(w)) w.element.dataset.phoneBusy = '';
       w.element.style.order = String(i);
@@ -513,8 +520,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
       delete el.dataset.phoneCard;
       delete el.dataset.phoneBusy;
       el.style.order = '';
-      el.style.removeProperty('--sw-dy');
-      el.style.removeProperty('--sw-o');
+      for (const k of ['--sw-dy', '--sw-o', '--sw-s', '--sw-w', '--sw-h']) el.style.removeProperty(k);
       el.classList.remove('sd-switch-snap', 'sd-switch-out');
       if (w) el.setAttribute('aria-label', w.title);
     }
@@ -625,9 +631,54 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
   };
   const spread = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
   const middle = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  // A Linux app's windows: one place and size for them all (CSS --gx, --gy, --gz), moved by two fingers
+  const gui = { x: 0, y: 0, z: 0 };
+  const guiApply = (x: number, y: number, z: number) => {
+    const wa = wm.workArea(), v = phoneSurfaceSize(wa);
+    const fit = Math.min(1, wa.width / v.width);
+    gui.z = Math.max(fit, Math.min(3, z || fit));
+    // The app's screen never leaves the phone's: its edges stop at the screen's
+    const range = (view: number, size: number, at: number) => (size <= view ? 0 : Math.max(view - size, Math.min(0, at)));
+    gui.x = range(wa.width, v.width * gui.z, x);
+    gui.y = range(wa.height, v.height * gui.z, y);
+    root.style.setProperty('--gx', `${gui.x}px`);
+    root.style.setProperty('--gy', `${gui.y}px`);
+    root.style.setProperty('--gz', String(gui.z));
+  };
+  const guiPlace = (w: DesktopWindow) => {
+    if (w.kind !== 'surface') return;
+    w.element.style.setProperty('--wl', String(w.element.offsetLeft));
+    w.element.style.setProperty('--wt', String(w.element.offsetTop));
+  };
+  const guiAt = (target: EventTarget | null): HTMLElement | null => (target as HTMLElement | null)?.closest?.<HTMLElement>('.sd-win[data-kind="surface"]') ?? null;
+  let pan: { d: number; x: number; y: number; from: { x: number; y: number; z: number } } | null = null;
+  // One finger is the app's pointer. A second one landing makes the two the app's screen's: the
+  // app sees no second press, and no move or release from either until both have lifted.
+  const touching = new Set<number>();
+  root.addEventListener('pointerdown', (e) => {
+    if (!active || e.pointerType !== 'touch' || !guiAt(e.target)) return;
+    touching.add(e.pointerId);
+    if (touching.size > 1) e.stopPropagation();
+  }, true);
+  root.addEventListener('pointermove', (e) => { if ((pan || touching.size > 1) && touching.has(e.pointerId)) e.stopPropagation(); }, true);
+  for (const ev of ['pointerup', 'pointercancel'] as const) root.addEventListener(ev, (e) => {
+    if (touching.delete(e.pointerId) && (pan || touching.size > 0)) e.stopPropagation();
+  }, true);
+
   let two: { view: TerminalView; d: number; x: number; y: number; t: number; font: number; mode: '' | 'pinch' | 'swipe'; lastX: number; travel: number } | null = null;
   root.addEventListener('touchstart', (e) => {
-    if (!active || switching || e.touches.length !== 2) { two = null; return; }
+    if (!active || switching || e.touches.length !== 2) { two = null; pan = null; return; }
+    const surface = guiAt(e.target);
+    if (surface) {
+      e.preventDefault();
+      e.stopPropagation();
+      // The first finger pressed the app's mouse button: let it go where it is
+      const t0 = e.touches[0];
+      surface.querySelector('canvas')?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: t0.clientX, clientY: t0.clientY, button: 0, buttons: 0 }));
+      const m = middle(e.touches);
+      pan = { d: spread(e.touches), x: m.x, y: m.y, from: { ...gui } };
+      return;
+    }
     const view = termViewOf(e.target);
     if (!view) return;
     e.preventDefault();
@@ -636,6 +687,15 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     two = { view, d: spread(e.touches), x: m.x, y: m.y, t: performance.now(), font, mode: '', lastX: m.x, travel: 0 };
   }, { capture: true, passive: false });
   root.addEventListener('touchmove', (e) => {
+    if (pan && e.touches.length === 2) {
+      e.preventDefault();
+      e.stopPropagation();
+      const m = middle(e.touches);
+      const z = Math.max(Math.min(1, wm.workArea().width / phoneSurfaceSize(wm.workArea()).width), Math.min(3, pan.from.z * spread(e.touches) / Math.max(1, pan.d)));
+      // What was under the fingers stays under them
+      guiApply(m.x - (pan.x - pan.from.x) * (z / pan.from.z), m.y - (pan.y - pan.from.y) * (z / pan.from.z), z);
+      return;
+    }
     if (!two || e.touches.length !== 2) return;
     e.preventDefault();
     e.stopPropagation();
@@ -652,6 +712,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     }
   }, { capture: true, passive: false });
   const twoEnd = (e: TouchEvent) => {
+    if (pan) { e.stopPropagation(); if (e.touches.length === 0) pan = null; return; }
     if (!two) return;
     e.stopPropagation();
     if (e.touches.length >= 2) return;
@@ -703,10 +764,17 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     if (!active) return;
     // A Linux app's first window here: it was drawn for a large screen
     if (w && w.kind === 'surface' && isCard(w) && !w.options.transientFor && deps.revealed()) {
+      const id = w.appId ?? '';
       let said = true;
-      try { said = !!localStorage.getItem(GUI_NOTE_KEY); localStorage.setItem(GUI_NOTE_KEY, '1'); } catch { /* no storage */ }
-      if (!said) note(`${appName(w)} was made for a large screen. It may be small here.`, 6000);
+      try {
+        const seen: unknown = JSON.parse(localStorage.getItem(GUI_NOTE_KEY) || '[]');
+        const list = Array.isArray(seen) ? seen.filter((x): x is string => typeof x === 'string') : [];
+        said = list.includes(id);
+        if (!said) localStorage.setItem(GUI_NOTE_KEY, JSON.stringify([...list, id]));
+      } catch { /* no storage: say nothing rather than every time */ }
+      if (!said) note(`${appName(w)} was made for a large screen. Move it with two fingers; pinch to make it larger.`, 7000);
     }
+    if (w) guiPlace(w);
     queueRender();
     requestAnimationFrame(checkScrollBars);
   });
@@ -715,6 +783,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     if (switching) paintCards();
     queueRender();
   });
+  wm.on('window-changed', (w) => { if (active && w) guiPlace(w); });
   wm.on('theme-changed', () => { if (ctx.iconSet() === 'pixel') queueRender(); });
   ctx.onIconSet(() => queueRender());
   wm.launches.on(() => { if (switching) paintCards(); });
@@ -722,6 +791,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     if (!active) return;
     if (readInsets()) layout.relayout();
     if (switching) endSwitch(null);
+    guiApply(gui.x, gui.y, gui.z);
     queueRender();
   });
 
@@ -743,6 +813,8 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
         tools.append(...deps.status);
         font = phoneFont();
         setFont(font);
+        guiApply(0, 0, 0);
+        for (const w of wm.windows()) guiPlace(w);
         syncOrder();
         if (goHome || !wm.focused()) showHome(); else showApp();
         render();

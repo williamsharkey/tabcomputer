@@ -33,6 +33,15 @@
 /* Any other app ends at the keyboard */
 .sd-phone.sd-kb-open .sd-win.sd-focused:not(:has(.sd-term, .sd-surface)) { max-height: var(--sd-kb-visible, none); }
 
+/* ── A Linux app: it keeps a large screen's size (wm.ts phoneSurfaceSize); two fingers pan and pinch over it ──
+   --gx, --gy, --gz: where and how large (phone.ts); --wl, --wt: the window's own place, so every window of the
+   app (a dialog, a menu) scales about the same point */
+.sd-phone:not(.sd-switching) .sd-win[data-kind='surface'] {
+  transform-origin: 0 0;
+  transform: translate(calc(var(--gx, 0px) + (var(--gz, 1) - 1) * var(--wl, 0) * 1px), calc(var(--gy, 0px) + (var(--gz, 1) - 1) * var(--wt, 0) * 1px)) scale(var(--gz, 1));
+}
+.sd-phone .sd-win[data-kind='surface'] .sd-surface { touch-action: none; }
+
 /* ── The key row: one row on top of the keyboard ── */
 .sd-phone .sd-keybar { flex-direction: row; gap: 0; padding: 4px 4px; bottom: auto; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; z-index: 100001; }
 .sd-phone .sd-keybar::-webkit-scrollbar { display: none; }
@@ -208,7 +217,7 @@
 
 /* A line said once, at the top (the terminal's number, a Linux app's note) */
 .sd-phone-note {
-  position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 10px); z-index: 100005; transform: translateX(-50%);
+  position: absolute; left: 50%; top: 22%; z-index: 100005; transform: translateX(-50%);
   max-width: calc(100% - 24px); padding: 8px 14px; border-radius: 14px; font-size: 13px; line-height: 1.35; text-align: center; pointer-events: none;
   background: var(--sd-material-strong); color: var(--sd-text); border: 1px solid var(--sd-window-border); box-shadow: var(--sd-shadow-blur);
   animation: sd-fade-in .16s ease-out;
@@ -227,12 +236,15 @@
 .sd-phone .sd-sheet .sd-btn { white-space: nowrap; }
 .sd-phone .sd-sheet .sd-link, .sd-phone .sd-popover .sd-link { display: inline-flex; align-items: center; min-height: 44px; }
 .sd-phone .sd-toast { left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); max-width: none; }
+.sd-phone .sd-toast.sd-preview-toast { min-width: 0; flex-wrap: wrap; }
+.sd-phone .sd-toast .sd-btn { min-height: 44px; white-space: nowrap; }
+.sd-phone .sd-toast .sd-icon-btn { width: 44px; }
 .sd-phone .sd-menu { min-width: 240px; max-width: calc(100vw - 12px); }
 .sd-phone .sd-menu-item { height: 44px; font-size: 15px; }
 .sd-phone .sd-popover { width: min(320px, calc(100vw - 16px)); }
 .sd-phone .sd-spot { top: calc(env(safe-area-inset-top) + 8px); width: calc(100vw - 16px); border-radius: 14px; }
-.sd-phone .sd-spot-field { padding: 10px 14px; }
-.sd-phone .sd-spot-field input { font-size: 17px; height: 28px; }
+.sd-phone .sd-spot-field { padding: 2px 14px; }
+.sd-phone .sd-spot-field input { font-size: 17px; height: 44px; }
 .sd-phone .sd-spot-list { max-height: min(420px, calc(var(--sd-kb-visible, 70vh) - 110px)); }
 .sd-phone .sd-spot-item { height: 46px; }
 .sd-phone .sd-spot-foot { display: none; }
@@ -247,3 +259,12 @@
 @media (min-width: 560px) { .sd-phone .sd-welcome-demos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .sd-phone .sd-welcome-foot > span { display: none; }
 .sd-phone .sd-welcome-foot { justify-content: flex-end; }
+
+/* ── The apps' own controls (the desktop's shared ones), sized for a finger ── */
+.sd-phone .sd-win .sd-btn, .sd-phone .sd-win .sd-seg button { min-height: 44px; }
+.sd-phone .sd-win .sd-icon-btn { min-width: 44px; }
+.sd-phone .sd-win .sd-side-item { min-height: 44px; }
+.sd-phone .sd-win .sd-input { min-height: 44px; font-size: 16px; }
+.sd-phone .sd-win .sd-table td { padding-top: 12px; padding-bottom: 12px; }
+.sd-phone .sd-win .sd-toolbar { flex-wrap: wrap; }
+.sd-phone .sd-win .sd-toolbar .sd-path { flex-basis: 100%; order: 9; }

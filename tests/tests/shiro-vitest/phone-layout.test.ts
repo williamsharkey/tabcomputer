@@ -10,7 +10,7 @@ import {
   homeGrid, homePages, menuSheet, neighbour, pillStrip, pinchFont, phoneFont, PillGesture, PAGE_ONE,
   PHONE_FONT, PHONE_FONT_KEY, PILL_DOUBLE, PILL_HOLD, type HomeApp, type PillAction,
 } from '@shiro/desktop/phone-model';
-import { WindowManager, type MenuSpec } from '@shiro/desktop/wm';
+import { WindowManager, phoneSurfaceSize, type MenuSpec } from '@shiro/desktop/wm';
 import { uiMode } from '@shiro/ui-mode';
 
 if (!(globalThis as any).localStorage) {
@@ -101,6 +101,32 @@ describe('which screens get the phone layout', () => {
     expect(before.height).toBe(200);
     // every later window fills it too
     expect(wm.createWindow({ title: 'B', width: 200, height: 100 }).geometry()).toEqual({ x: 0, y: 0, width: 393, height: 830 });
+  });
+});
+
+describe('a Linux app on a phone', () => {
+  it('keeps a large screen\'s size, never smaller than the phone\'s', () => {
+    expect(phoneSurfaceSize({ width: 393, height: 830 })).toEqual({ width: 1024, height: 830 });
+    expect(phoneSurfaceSize({ width: 852, height: 375 })).toEqual({ width: 1024, height: 720 });
+    expect(phoneSurfaceSize({ width: 1280, height: 900 })).toEqual({ width: 1280, height: 900 });
+  });
+
+  it('its window has that size in the phone layout; any other window, and its menus, do not', () => {
+    document.body.innerHTML = '';
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const wm = new WindowManager(root, { workArea: () => ({ x: 0, y: 0, width: 393, height: 830 }) });
+    wm.phone = true;
+    wm.relayout();
+    const app = wm.createWindow({ title: 'GIMP', appId: 'gimp', content: { kind: 'surface' } });
+    expect(app.geometry()).toEqual({ x: 0, y: 0, width: 1024, height: 830 });
+    const menu = wm.createWindow({ override: true, x: 40, y: 60, width: 180, height: 240, content: { kind: 'surface' } });
+    expect(menu.geometry()).toEqual({ x: 40, y: 60, width: 180, height: 240 });
+    expect(wm.createWindow({ title: 'Files' }).geometry()).toEqual({ x: 0, y: 0, width: 393, height: 830 });
+    // back on the desktop it is a window among others again
+    wm.phone = false;
+    wm.relayout();
+    expect(app.geometry().width).toBeLessThanOrEqual(393);
   });
 });
 

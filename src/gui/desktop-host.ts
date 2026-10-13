@@ -8,7 +8,7 @@
  * snapping to whole cells, the rest is background). No auto-resize: the X
  * client redraws at the new size and rootless.ts sets the buffer.
  */
-import type { DesktopAPI, DesktopWindow, Surface, WindowOptions } from '../desktop/wm';
+import { phoneSurfaceSize, type DesktopAPI, type DesktopWindow, type Surface, type WindowOptions } from '../desktop/wm';
 import type { CanvasWindow, CanvasWindowEvents, CanvasWindowOptions, GuiInputEvent, WindowHost } from './window-host';
 import { displayScale } from './display-scale';
 
@@ -19,7 +19,8 @@ export function createDesktopHost(d: DesktopAPI): WindowHost {
   return {
     name: 'desktop',
     scale: displayScale(),
-    desktopSize: () => { const g = d.workArea(), s = displayScale(); return { width: Math.round(g.width * s), height: Math.round(g.height * s) }; },
+    // (the phone layout gives these apps a large screen's size to pan over: wm.ts phoneSurfaceSize)
+    desktopSize: () => { const wa = d.workArea(), g = (d as { phone?: boolean }).phone ? phoneSurfaceSize(wa) : wa, s = displayScale(); return { width: Math.round(g.width * s), height: Math.round(g.height * s) }; },
     createCanvasWindow: (opts) => new DesktopCanvasWindow(d, opts),
   };
 }

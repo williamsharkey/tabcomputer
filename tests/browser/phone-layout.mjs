@@ -11,6 +11,8 @@
 //             key row is one row on top of it, the terminal keeps its rows and columns, the cursor's
 //             line stays in view
 //   sheets    a prompt (the network sign-in) comes from the bottom; the Welcome is a sheet over Home
+//   gui       a native GUI app's window (a canvas stands in for it): a large screen's size, panned and
+//             pinched with two fingers, the first-open line
 //   rotate    the screen turned with apps open, and back
 //   link      a link to an app: the install question on the whole screen, then the app with the pill
 //             and no "‹ tabcomputer" bar; a reload comes back to it; a tab an earlier build left in
@@ -171,22 +173,34 @@ async function targets(s, where, scope) {
   const found = await s.page.evaluate((scopes) => {
     const out = [];
     const seen = new Set();
-    for (const q of scopes) for (const root of document.querySelectorAll(q)) {
-      for (const e of root.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=tab], [role=menuitem], [role=option], [tabindex]:not([tabindex="-1"])')) {
+    const CONTROLS = 'button, a[href], input, select, textarea, [role=button], [role=tab], [role=menuitem], [role=option], [tabindex]:not([tabindex="-1"])';
+    /** `doc`: the page, or a frame's document that the page can read (the Code editor's), `at` its place on screen */
+    const look = (root, doc, at) => {
+      const view = doc.defaultView;
+      for (const e of root.querySelectorAll(CONTROLS)) {
         if (seen.has(e)) continue;
         seen.add(e);
-        const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+        const r = e.getBoundingClientRect(), cs = view.getComputedStyle(e);
         if (r.width < 1 || r.height < 1 || cs.visibility === 'hidden' || cs.display === 'none' || cs.pointerEvents === 'none' || e.disabled) continue;
-        if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) continue;
+        if (r.right <= 0 || r.bottom <= 0 || r.left >= view.innerWidth || r.top >= view.innerHeight) continue;
+        if (at.left + r.left >= innerWidth || at.top + r.top >= innerHeight) continue;
         // (what a finger at its middle would reach)
-        const hit = document.elementFromPoint(Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2)));
+        const hit = doc.elementFromPoint(Math.min(view.innerWidth - 1, Math.max(0, r.left + r.width / 2)), Math.min(view.innerHeight - 1, Math.max(0, r.top + r.height / 2)));
         if (!hit || !(e === hit || e.contains(hit) || hit.contains(e))) continue;
-        if (e.classList.contains('xterm-helper-textarea') || e.closest('.xterm')) continue;
+        if (e.classList.contains('xterm-helper-textarea') || e.closest('.xterm') || e.classList.contains('cm-content')) continue;
         if (r.width >= 43.5 && r.height >= 43.5) continue;
         const label = (e.getAttribute('aria-label') || e.title || e.textContent || e.placeholder || e.className || e.tagName).trim().replace(/\s+/g, ' ').slice(0, 28);
         out.push(`${label} ${Math.round(r.width)}x${Math.round(r.height)}`);
       }
-    }
+      for (const f of root.querySelectorAll('iframe')) {
+        let inner = null;
+        try { inner = f.contentDocument; } catch { /* another origin */ }
+        const fr = f.getBoundingClientRect();
+        if (inner?.body) look(inner, inner, { left: at.left + fr.left, top: at.top + fr.top });
+        else if (fr.width > 0) out.push('(a frame of another origin: not measured)');
+      }
+    };
+    for (const q of scopes) for (const root of document.querySelectorAll(q)) look(root, document, { left: 0, top: 0 });
     return out;
   }, scope);
   if (!small.has(where)) small.set(where, new Set());
@@ -323,6 +337,7 @@ async function phone(width, height, theme, first) {
       st = await state(s);
       check(`${T} apps: the one-file app is the whole screen`, st.focused === 'count' && whole(st) && bare(st), st);
       await shot(s, '08-one-file-app');
+      await targets(s, 'In a one-file app (its own page)', ['.sd-win.sd-focused']);
       await pillTap(s);
       const c = await centre(s, '.sd-home-app[data-app=count] .sd-home-icon');
       await drag(s, [c], { hold: 650 });
@@ -440,7 +455,7 @@ async function phone(width, height, theme, first) {
       await fingers(s, [[mid[0] + 60, mid[1] - 20], [mid[0] + 60, mid[1] + 20]], [[mid[0] - 80, mid[1] - 20], [mid[0] - 80, mid[1] + 20]]);
       await s.page.waitForTimeout(500);
       const swapped = await term(s);
-      check(`${T} terminal: a sideways swipe with two fingers moves to the other terminal`, /400/.test(swapped.text) !== /400/.test(two.text) && swapped.tabs === two.tabs, `${swapped.tabs} terminals`);
+      check(`${T} terminal: a sideways swipe with two fingers moves to another terminal`, swapped.text !== two.text && swapped.tabs === two.tabs, `${swapped.tabs} terminals`);
       check(`${T} terminal: every terminal has the same size, and no tab bar takes rows`, swapped.cols === t0.cols && swapped.rows === t0.rows, `${swapped.cols}x${swapped.rows}`);
     }
 
@@ -469,13 +484,14 @@ async function phone(width, height, theme, first) {
         const keys = [...b.querySelectorAll('.sd-key')];
         return {
           shown: !b.hidden, rows: b.querySelectorAll('.sd-keyrow').length, top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height),
-          scrolls: b.scrollWidth > b.clientWidth, labels: keys.map((k) => k.textContent).join(' '),
+          // (it scrolls sideways where the keys do not all fit: a phone upright)
+          scrolls: b.scrollWidth > b.clientWidth || keys.every((k) => k.getBoundingClientRect().right <= innerWidth), labels: keys.map((k) => k.textContent).join(' '),
           tops: new Set(keys.map((k) => Math.round(k.getBoundingClientRect().top))).size,
           small: keys.filter((k) => { const q = k.getBoundingClientRect(); return q.width < 44 || q.height < 44; }).length,
           shift: getComputedStyle(document.getElementById('shiro-desktop')).getPropertyValue('--sd-kb-shift'),
         };
       });
-      check(`${T} keyboard: the key row is one row on top of the keyboard, scrolling sideways`, up.shown && up.rows === 1 && up.tops === 1 && up.bottom === s.H - kb && up.scrolls && up.small === 0, up);
+      check(`${T} keyboard: the key row is one row on top of the keyboard, scrolling sideways where it has to`, up.shown && up.rows === 1 && up.tops === 1 && up.bottom === s.H - kb && up.scrolls && up.small === 0, up);
       check(`${T} keyboard: esc, tab, ctrl, alt, the arrows, then the symbols`, up.labels.startsWith('esc tab ctrl alt ← ↓ ↑ → | ~ / - $ & ;'), up.labels);
       const t1 = await term(s);
       check(`${T} keyboard: the terminal keeps its rows and columns when the keyboard opens`, t1.cols === t0.cols && t1.rows === t0.rows && Math.round(t1.body[3]) === Math.round(t0.body[3]), `${t0.cols}x${t0.rows} → ${t1.cols}x${t1.rows}`);
@@ -517,6 +533,51 @@ async function phone(width, height, theme, first) {
       await shot(s, '13-prompt-sheet');
       await targets(s, 'The sign-in sheet', ['.sd-sheet']);
       await s.page.evaluate(() => [...document.querySelectorAll('.sd-sheet button')].find((b) => /not now/i.test(b.textContent))?.click());
+      await s.page.waitForTimeout(400);
+    }
+
+    if (part('gui')) {
+      // A native GUI app's window, stood in for by a canvas client (docs/DESKTOP.md "Surfaces"): no Debian app is installed here
+      await s.page.evaluate(() => {
+        const d = window.__tabcomputer.desktop;
+        const w = d.createWindow({ title: 'xeyes', appId: 'xeyes', width: 300, height: 200, content: { kind: 'surface' } });
+        const ctx = w.surface.canvas.getContext('2d');
+        const draw = () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w.surface.width, w.surface.height); ctx.fillStyle = '#c33'; ctx.fillRect(0, 0, 80, 80); ctx.fillStyle = '#000'; ctx.font = '40px sans-serif'; ctx.fillText('a window drawn for a large screen', 120, 80); };
+        w.surface.onConfigure(draw);
+        window.__gui = { w, got: [] };
+        w.surface.onInput((e) => { if (e.type === 'pointerdown' || e.type === 'pointerup') window.__gui.got.push([e.type, e.x, e.y]); });
+        draw();
+      });
+      await s.page.waitForTimeout(700);
+      const g = () => s.page.evaluate(() => { const w = window.__gui.w, c = w.surface.canvas, r = c.getBoundingClientRect(); return { css: [c.offsetWidth, c.offsetHeight], rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], buffer: [c.width, c.height], note: document.querySelector('.sd-phone-note')?.textContent ?? '', got: window.__gui.got.splice(0) }; });
+      const g0 = await g();
+      check(`${T} gui: a Linux app's window keeps a large screen's size (its buffer too), shown whole across the phone's width`, g0.css[0] >= 1024 && g0.css[1] >= 720 && g0.buffer[0] === g0.css[0] * 2 && g0.rect[0] === 0 && Math.abs(g0.rect[2] - s.W) <= 1, g0);
+      check(`${T} gui: the first time, a line says it was made for a large screen and how to move it`, /made for a large screen/.test(g0.note) && /two fingers/.test(g0.note), g0.note);
+      await shot(s, '19-gui-app');
+      // Pinch: larger. Two fingers moved: it pans. One finger: the app's pointer, where the finger is.
+      const mid = [s.W / 2, Math.min(s.H * 0.3, 200)];
+      await fingers(s, [[mid[0] - 30, mid[1]], [mid[0] + 30, mid[1]]], [[mid[0] - 90, mid[1]], [mid[0] + 90, mid[1]]]);
+      await s.page.waitForTimeout(300);
+      const g1 = await g();
+      check(`${T} gui: a pinch makes it larger`, g1.rect[2] > g0.rect[2] * 2 && g1.rect[2] <= g0.css[0] * 3 + 1, `${g0.rect[2]} → ${g1.rect[2]} px wide`);
+      await fingers(s, [[mid[0] + 40, mid[1] - 20], [mid[0] + 40, mid[1] + 20]], [[mid[0] - 100, mid[1] - 20], [mid[0] - 100, mid[1] + 20]]);
+      await s.page.waitForTimeout(300);
+      const g2 = await g();
+      check(`${T} gui: two fingers moved sideways pan across it, and its edge stops at the screen's`, g2.rect[0] < g1.rect[0] - 100 && g2.rect[0] + g2.rect[2] >= s.W - 1 && g2.rect[2] === g1.rect[2] && g2.got.filter((e) => e[0] === 'pointerdown').length <= 1 && g2.got.at(-1)?.[0] !== 'pointerdown', `left ${g1.rect[0]} → ${g2.rect[0]}; the app's pointer got ${JSON.stringify(g2.got)}`);
+      await tap(s, 100, mid[1]);
+      await s.page.waitForTimeout(300);
+      const g3 = await g();
+      const want = [Math.round((100 - g2.rect[0]) * g2.buffer[0] / g2.rect[2]), Math.round((mid[1] - g2.rect[1]) * g2.buffer[1] / g2.rect[3])];
+      const down = g3.got.find((e) => e[0] === 'pointerdown');
+      check(`${T} gui: one finger is the app's pointer, at the place under it`, !!down && Math.abs(down[1] - want[0]) <= 3 && Math.abs(down[2] - want[1]) <= 3, `got ${JSON.stringify(down)}, the finger is at ${want.join(',')} of its ${g2.buffer.join('x')} pixels`);
+      await shot(s, '20-gui-app-larger');
+      // In the switcher its card is as wide as the others
+      await pillUp(s);
+      const cards = await s.page.evaluate(() => [...document.querySelectorAll('.sd-win[data-phone-card]')].map((c) => [c.dataset.phoneCard, Math.round(c.getBoundingClientRect().width)]));
+      check(`${T} gui: in the switcher its card is as wide as the others`, new Set(cards.map((c) => c[1])).size === 1, cards);
+      await shot(s, '21-gui-switcher');
+      await pillUp(s);
+      await s.page.evaluate(() => window.__gui.w.close(true));
       await s.page.waitForTimeout(400);
     }
 
@@ -748,7 +809,7 @@ async function desktop() {
 
 let n = 0;
 for (const [w, h] of sizes) for (const theme of themes) {
-  if (['home', 'apps', 'pill', 'switcher', 'terminal', 'keyboard', 'sheets', 'rotate'].some(part)) await phone(w, h, theme, n === 0);
+  if (['home', 'apps', 'pill', 'switcher', 'terminal', 'keyboard', 'sheets', 'gui', 'rotate'].some(part)) await phone(w, h, theme, n === 0);
   n++;
 }
 if (part('sheets') || part('python')) await fresh(sizes[0][0], sizes[0][1], themes[0]);

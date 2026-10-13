@@ -55,7 +55,11 @@ export const CODE_HINT_KEY = 'tabcomputer-code-hint';
 /** The hint: what this editor has, where to find it (no command palette here) */
 export const CODE_HINT = 'File ▸ Open… in the menu bar opens a file or folder · Ctrl+S saves · ☰ (bottom left) shows the file list · Ctrl+F finds';
 
-function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string, hint = ''): string {
+/** The same on a phone, where the menus are the pill's sheet (docs/DESKTOP.md "Phone layout") */
+export const CODE_HINT_PHONE = 'Tap the pill twice for the menu: File ▸ Open… opens a file or folder · ☰ (bottom left) shows the file list';
+
+/** `phone`: the desktop's phone layout: the file list starts closed and opens over the editor, controls are finger-sized */
+function buildEditorHtml(files: { path: string; content: string; language: string }[], cwd: string, hint = '', phone = false): string {
   const filesJson = JSON.stringify(files);
   const cwdJson = JSON.stringify(cwd);
 
@@ -124,9 +128,14 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
   #status-git { margin-left: auto; white-space: nowrap; }
   #status-git.unsaved { color: #f9e2af; }
   #status-git.saved { color: #a6e3a1; }
+  /* A phone (the desktop's phone layout) */
+  body.phone #sidebar { position: absolute; z-index: 5; top: 0; bottom: 0; left: 0; width: min(280px, 80%); box-shadow: 8px 0 24px rgba(0, 0, 0, .4); }
+  body.phone .tree-item { min-height: 44px; display: flex; align-items: center; }
+  body.phone #toggle-sidebar { min-width: 44px; min-height: 44px; }
+  body.phone #hint button { min-height: 44px; padding: 1px 14px; }
 </style>
 </head>
-<body>
+<body${phone ? ' class="phone"' : ''}>
 <div id="sidebar"></div>
 <div id="main">
   ${hint ? `<div id="hint"><span>${hint.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span><button type="button" onclick="this.parentElement.remove()">Got it</button></div>` : ''}
@@ -232,6 +241,7 @@ let activeFile = null;
 let view = null;
 
 const sidebar = document.getElementById('sidebar');
+if (document.body.classList.contains('phone')) sidebar.classList.add('hidden');
 const tabsEl = document.getElementById('tabs');
 const editorContainer = document.getElementById('editor-container');
 const statusFile = document.getElementById('status-file');
@@ -523,11 +533,12 @@ export const codeEditorCmd: Command = {
     // On the desktop: a desktop window of the Code app, so the menu bar follows it (its File menu)
     const wm = (globalThis as { __shiroDesktop?: DesktopLike }).__shiroDesktop;
     if (wm?.createWindow) {
+      const phone = !!(wm as { phone?: boolean }).phone;
       let hint = '';
-      try { if (!localStorage.getItem(CODE_HINT_KEY)) { hint = CODE_HINT; localStorage.setItem(CODE_HINT_KEY, String(Date.now())); } } catch {}
+      try { if (!localStorage.getItem(CODE_HINT_KEY)) { hint = phone ? CODE_HINT_PHONE : CODE_HINT; localStorage.setItem(CODE_HINT_KEY, String(Date.now())); } } catch {}
       const dwin = wm.createWindow({
         appId: 'code', title, width: 960, height: 620, minWidth: 360, minHeight: 220,
-        content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint) },
+        content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint, phone) },
       });
       // session restore opens it again; File ▸ Open… starts in its folder
       (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };

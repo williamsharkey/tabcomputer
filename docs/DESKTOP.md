@@ -6,8 +6,11 @@ full-page terminal (the `shiro` profile's UI) is still there with
 `?ui=terminal`.
 
 - Code: `src/desktop/` (window manager `wm.ts`, shell `index.ts`, Terminal
-  `terminal-app.ts`, network sheet `network.ts`, lazy apps in `apps/`),
-  `src/dom-fs.ts` (/dom), `src/net-signin.ts` (sign-in hook), `src/ui-mode.ts`.
+  `terminal-app.ts`, network sheet `network.ts`, lazy apps in `apps/`, the
+  phone layout `phone.ts`), `src/dom-fs.ts` (/dom), `src/net-signin.ts`
+  (sign-in hook), `src/ui-mode.ts`, `src/phone-rule.ts`.
+- On a phone the same desktop has a second layout, a home screen of apps with
+  one app on the whole screen: "Phone layout" below.
 - Screenshots (1440×900, and phone width at 390 px):
 
   | | |
@@ -19,6 +22,14 @@ full-page terminal (the `shiro` profile's UI) is still there with
 ## Changelog (API)
 
 All changes are additive. Nothing below renames or removes an earlier name.
+
+- **2026-10-13 (unix/phone-layout), v1.7.** `MenuItem.phone` (`false`: the
+  command is left out of the phone layout's menu sheet; the desktop sets it on
+  the Window menu's moving and tiling). On the window manager, for the desktop
+  shell and display servers to read: `phone` (the phone layout is on; it
+  implies `compact`, a window then has no title bar and `geometry()` counts
+  none) and the exported `phoneSurfaceSize(workArea)`, the size a `surface`
+  window gets there. Nothing changes while `phone` is false.
 
 - **2026-10-12 (unix/app-toolkit), v1.6.** Optional `unregisterApp(id)` on
   `DesktopAPI`: an app leaves the dock and the app list (an uninstalled app;
@@ -73,6 +84,7 @@ shiro.computer), since link previews don't run JS.
 | condition | UI |
 |---|---|
 | `?ui=desktop` / `?ui=terminal` | that one, remembered in localStorage `tabcomputer-ui` |
+| `?ui=phone` | the desktop (remembered as such), in its phone layout whatever the screen; `?ui=desktop` likewise forces the windowed layout ("Phone layout") |
 | `?demo=1`, embedded in another page (seeds), app ("become") mode (not on the `?unbecome` load that leaves it) | terminal |
 | saved `tabcomputer-ui` | that one |
 | host `shiro.computer` or `*.shiro.computer` | terminal |
@@ -156,7 +168,8 @@ destroyed), and the next Terminal window adopts it again.
   between the menu bar and the top of the dock (moved up, then shrunk if it
   has to be), however the cascade or an asked-for position would place it.
 - **First visit**: a welcome card in the corner (`welcome.ts`, Drafting
-  style, not modal) with one-click demos that type their command into a
+  style, not modal; in the phone layout a sheet from the bottom over Home,
+  which a choice closes, so it is never a box over an app) with one-click demos that type their command into a
   Terminal: a Debian package (`apt install cowsay`), a Vite + React app
   (its Preview opens when the dev server is up), Python (`toolchain install
   python`), Claude Code, a Linux GUI app (the Apps window) and Settings.
@@ -195,7 +208,11 @@ destroyed), and the next Terminal window adopts it again.
   `tabcomputer-desktop-theme`. Terminals switch palettes with the theme.
 - **Motion**: every animation and transition turns off under
   `prefers-reduced-motion: reduce`.
-- **Phones** (≤ 640 px wide, or a phone on its side: the screen's short side
+- **Phones** get the phone layout ("Phone layout" below). What follows in
+  this item is the desktop's own compact mode, which a phone shows only when
+  the desktop is forced (`?ui=desktop`, or Settings → Appearance → Layout:
+  Desktop), and which a touched screen 600 to 640 px wide still gets
+  (≤ 640 px wide, or a phone on its side: the screen's short side
   ≤ 500 px and the viewport ≤ 500 px tall; `compactViewport()` in `wm.ts`,
   which reads the screen so the on-screen keyboard doesn't flip it): every
   window fills the work area, Previews included. Menus collapse
@@ -223,7 +240,8 @@ destroyed), and the next Terminal window adopts it again.
   picks Off, Auto (hidden while the phone's keyboard is open) or Always
   (localStorage `tabcomputer-keybar`). In every mode the bar shows only while
   the focused window holds a terminal: under an app's window its keys go
-  nowhere. The classic UI keeps `src/mobile-input.ts`.
+  nowhere. The classic UI keeps `src/mobile-input.ts`. The phone layout
+  treats the keyboard differently: "Phone layout", "The keyboard".
 - **Dock stacks**: when the dock would not fit (phones), Settings and
   Activity share a System stack and Vim, Python and installed programs a
   Programs stack; Terminal, Files and htop stay loose. Debian GUI apps stack
@@ -231,6 +249,151 @@ destroyed), and the next Terminal window adopts it again.
 - **Fonts** are self-hosted: Inter and JetBrains Mono (latin, variable,
   `public/fonts/`, SIL OFL, license files next to them). Only the desktop
   loads them.
+
+## Phone layout
+
+On a phone the desktop is a second layout (tabcomputer#154): **Home**, **one
+app on the whole screen**, and **one control, the pill**. It replaces the
+dock, the menu bar and the window frames, and nothing else: an open app is
+still a window of the window manager (in its compact mode, every window the
+size of the work area), with the content it has on a large screen. The desktop
+on a large screen is the same as without it: the layout's code is a chunk of
+its own (`phone.ts`, `phone.css`) that such a screen never loads.
+
+- Code: `src/phone-rule.ts` (which screens), `src/desktop/phone-model.ts`
+  (the rules that need no DOM: Home's pages, the pill's gestures, the menu
+  sheet), `src/desktop/phone.ts` and `phone.css` (what is drawn),
+  `src/desktop/mobile.ts` (the on-screen keyboard), a few lines in
+  `index.ts` (the work area, switching) and `wm.ts` (`phone`).
+
+**Which screens** (`phoneFor` in `src/phone-rule.ts`):
+
+| screen | layout |
+|---|---|
+| the viewport is under 600 CSS px wide (a phone upright, a narrow browser window on a desktop) | phone |
+| a touched screen (`pointer: coarse`) whose short side is under 500 px (a phone on its side) | phone |
+| the short side is 600 px or more (a tablet, upright too; any large screen) | desktop |
+| `?ui=phone` / `?ui=desktop` | that one, for the page that carries it |
+| Settings → Appearance → Layout: Phone / Desktop (localStorage `tabcomputer-layout`) | that one, remembered |
+
+It is decided at boot and again whenever the window's size changes (a
+rotation, a desktop window dragged narrow): the layout switches at once, the
+open apps stay open and the one in front stays in front. The short side is
+the screen's, so a tablet does not become a phone while its keyboard is up.
+
+- **Home.** App icons with their names, four across upright (more on a phone
+  on its side), in pages that a sideways swipe turns, with dots under them.
+  Page one: Terminal, Files, Code, Notebook, Browser, Python, Claude Code,
+  Settings, Convert Old Files, then the installed apps (docs/APPS.md). Later
+  pages: the rest in dock order, the dock's stacks as folders (Text Editors,
+  Developer Tools, AI agents, and Linux apps, which holds every Debian GUI
+  app, the ones not installed yet with the dock's ↓ badge). A folder opens
+  over Home; a tap outside closes it. At the top, one status line (the network
+  and the sign-in in words, the appearance button, the network button with its
+  popover) and the search field, which opens the search (`spotlight.ts`). A
+  dot before a name marks an open app. Holding an icon down gives a sheet:
+  Open, Share as a Link… and Remove… for an installed app (Remove runs `app
+  remove`), Info, and for any other app Remove from Home (it stays in the
+  search; the pill's sheet on Home has Show All Apps on Home). There is no
+  dock and no menu bar.
+- **An app is the whole screen**: no title bar, window buttons, border or
+  shadow. Its content reaches the screen's edges inside the safe areas
+  (`env(safe-area-inset-*)`, read by `phone.ts`; the page has
+  `viewport-fit=cover`) and ends above the pill's strip. The Browser's title
+  bar holds its toolbar, so that bar stays, without the window buttons. The
+  desktop's shared controls in an app (buttons, fields, sidebar rows, table
+  rows) are 44 px high there, and the Code editor's file list starts closed.
+- **The pill**: a small bar at the bottom centre, in an app and on Home.
+  Tap: Home (on Home: its first page). Swipe up, or hold: the switcher.
+  Swipe sideways: the next open app (leftwards) or the previous one, in the
+  order they were opened. Two taps: the app's menus as a sheet from the
+  bottom, a section each for File, Edit, View, Window, the app's own and
+  Help, then the System menu's commands, without the ones that move and tile
+  windows (`MenuItem.phone: false`) and without shortcuts. The visible bar is
+  134 x 5 px in a strip 22 px high (18 on a phone on its side; taller over a
+  home indicator, `pillStrip`); its target is 180 x 44 px, which reaches 22 px
+  (26) above the strip into the middle of the app's bottom edge. A tap is
+  answered after 280 ms, the wait for a second one.
+- **The switcher**: the open apps as cards in a row, each the app's own
+  window drawn smaller (so the picture is live), with the app's name above it
+  and a turning mark when the app is busy (a command running in a terminal,
+  an install or a launch in progress). Tap a card to open it, swipe it up to
+  close it, tap beside the cards to go back.
+- **Terminal.** The whole screen; text at 13 px, which is 49 columns on a
+  393 px screen and 47 on 375. 13 px is the largest whole size with 48
+  columns or more at 393 px (the desktop's 14 px gives 45 there); 12 px gives
+  53, with text smaller than a phone's own small print. A pinch changes the size (8 to
+  28 px, remembered in localStorage `tabcomputer-phone-font`). One finger
+  scrolls the output. Two fingers tapped open another terminal (a tab of the
+  same window: there is no tab bar, a line says "Terminal 2 of 2"); two
+  fingers swiped sideways move between them. `exit` closes one.
+- **The keyboard** (`mobile.ts`). The page keeps the height it has without the
+  on-screen keyboard, so a terminal keeps its rows and columns when the
+  keyboard opens (tabcomputer#146: nothing running in it sees a resize). The
+  windows move up just far enough that the cursor's line is above the
+  keyboard, and follow it as output arrives. The key row is one row on top of
+  the keyboard that scrolls sideways (esc, tab, ctrl, alt, the arrows, then
+  `| ~ / - $ & ;`, the backquote and paste), there only while the keyboard
+  is up and a terminal is in front; ctrl and alt latch for one key. An app
+  that is not a terminal ends at the keyboard instead, and a sheet stands on
+  it. Where the keyboard is, is read from `visualViewport`.
+- **Sheets, not windows.** A prompt comes from the bottom (the network and
+  Claude sign-ins, Clone, Open…, every `.sd-sheet`) or is the whole screen
+  (the Run and Install questions, `src/apps/surface.ts`; a starting app's
+  placeholder; the share screen).
+- **Linux GUI apps** were drawn for a large screen, so their windows keep
+  one (1024 x 720 CSS px or the phone's own size where that is larger,
+  `phoneSurfaceSize` in `wm.ts`; the display server is told the same). The
+  window is shown whole across the phone's width; two fingers pan and pinch
+  over it (up to three times its size), one finger is the app's pointer, and
+  the app's dialogs and menus move with it. The first time each app opens, a
+  line says so. A second finger landing lets go of the app's mouse button,
+  which the app may take for a click where the first finger was.
+- **A link to an app** opens as the app on the whole screen (after the
+  install question where the link needs one), with the pill to leave it by
+  and no bar back to the desktop; a reload comes back to the app. A tab that
+  an earlier build's link turned into the app (`becomeApp` with `back`) opens
+  the same way. Only the terminal UI on a phone, which has no desktop under
+  it, still makes the tab the app with that bar.
+- **At boot** it shows Home, with the main Terminal already open behind it;
+  only a reload that left an installed app in front comes back to that app.
+
+Measured by `tests/browser/phone-layout.mjs` in Chromium with a touch screen
+(on a build served by `server.mjs` on the same machine):
+
+| | 393 x 852 | 375 x 667 | 852 x 393 |
+|---|---|---|---|
+| the terminal's share of the screen's height | 830 px, 97.4% | 645 px, 96.7% | 375 px, 95.4% |
+| columns x rows at 13 px | 49 x 43 | 47 x 33 | 108 x 19 |
+
+One tap from a cold start to a running `python3` (Home's Python icon; it
+installs python3 on the way). One gesture between two open apps (a sideways
+swipe on the pill), or two by the switcher.
+
+Not there, and not checked:
+
+- No real phone was used. The on-screen keyboard cannot be raised in headless
+  Chromium: the key row, the terminal's fixed size and the cursor following
+  are checked with `visualViewport` made shorter by the test. iOS Safari and
+  Android Chrome on real devices are tabcomputer#146.
+- xterm sets 15 px aside for a scroll bar where the browser's scroll bars take
+  no room (iOS); `phone.ts` widens the terminal by as much there
+  (`sd-overlay-scroll`). Chromium's emulation has such scroll bars; a real
+  iPhone was not tried.
+- Linux GUI apps were checked with a canvas client standing in, not with a
+  Debian app.
+- Targets under 44 px that remain are in the apps' own pages, which the
+  layout does not fork: the test lists the ones it can read.
+- The other browser checks' phone-sized parts (`app-declarative.mjs`,
+  `app-toolkit.mjs`, `launch-feedback.mjs` and others at 360 to 390 px) were
+  written for the desktop on a phone; `small-screens.mjs` now asks for that
+  desktop with `?ui=desktop`.
+- Tests: `tests/tests/shiro-vitest/phone-layout.test.ts` (the rule, Home's
+  pages, the pill's recogniser, the menu sheet, the window manager's part);
+  `tests/browser/phone-layout.mjs` (the layout at 393 x 852, 375 x 667 and
+  852 x 393, light and dark; the desktop at 1280 x 800 and on a tablet,
+  where no part of it loads; `--baseline URL` compares the 1280 x 800
+  desktop pixel for pixel with another build's; `--shots DIR`).
 
 ## Launch feedback
 

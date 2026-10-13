@@ -515,6 +515,14 @@ async function phone(width, height, theme, first) {
       const t2 = await term(s);
       const cb2 = t2.screen[1] + (t2.cursorY + 1) * (t2.screen[3] / t2.rows);
       check(`${T} keyboard: it stays in view as output arrives`, cb2 <= up.top + 1, `line ends at ${Math.round(cb2)}`);
+      // A sheet that asks something while the keyboard is up stands on the keyboard
+      await s.page.evaluate(() => { void window.__shiroRequireNetwork({ host: 'example.org', port: 443, reason: 'a program wants to connect' }); });
+      await s.page.waitForSelector('.sd-sheet', { timeout: 10_000 }).catch(() => {});
+      await s.page.waitForTimeout(400);
+      const onKb = await s.page.evaluate(() => { const e = document.querySelector('.sd-sheet'); if (!e) return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) }; });
+      check(`${T} keyboard: a sheet stands on the keyboard, all of it in view`, !!onKb && onKb.bottom === s.H - kb && onKb.top >= 0, onKb);
+      await s.page.evaluate(() => [...document.querySelectorAll('.sd-sheet button')].find((b) => /not now/i.test(b.textContent))?.click());
+      await s.page.waitForTimeout(400);
       // The keyboard goes down
       await s.page.evaluate(() => { delete window.visualViewport.height; window.visualViewport.dispatchEvent(new Event('resize')); });
       await s.page.waitForTimeout(500);
@@ -524,15 +532,18 @@ async function phone(width, height, theme, first) {
     }
 
     if (part('sheets')) {
-      // A prompt: the network sign-in (src/net-signin.ts) asks from the bottom
-      await s.page.evaluate(() => { void window.__shiroRequireNetwork({ host: 'example.com', port: 443, reason: 'curl wants to connect' }); });
+      if (!(await state(s)).focused) await openFromHome('terminal');
+      // A prompt (Clone Repository…, src/desktop/gitsheets.ts) comes from the bottom
+      // (Clone…, from the File menu: "Not now" on the sign-in sheet holds for a minute, and the keyboard part may have said it)
+      await pillTwice(s);
+      await s.page.evaluate(() => [...document.querySelectorAll('.sd-psheet-item')].find((b) => /Clone Repository/.test(b.textContent))?.click());
       await s.page.waitForSelector('.sd-sheet', { timeout: 10_000 }).catch(() => {});
       await s.page.waitForTimeout(500);
       const sheet = await s.page.evaluate(() => { const e = document.querySelector('.sd-sheet'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), top: Math.round(r.top), text: e.textContent.replace(/\s+/g, ' ').slice(0, 60) }; });
       check(`${T} sheets: a prompt is a sheet from the bottom, as wide as the screen`, !!sheet && sheet.left === 0 && sheet.right === s.W && sheet.bottom === s.H && sheet.top > 0, sheet);
       await shot(s, '13-prompt-sheet');
-      await targets(s, 'The sign-in sheet', ['.sd-sheet']);
-      await s.page.evaluate(() => [...document.querySelectorAll('.sd-sheet button')].find((b) => /not now/i.test(b.textContent))?.click());
+      await targets(s, 'A prompt sheet (Clone)', ['.sd-sheet']);
+      await s.page.evaluate(() => [...document.querySelectorAll('.sd-sheet button')].find((b) => /cancel/i.test(b.textContent))?.click());
       await s.page.waitForTimeout(400);
     }
 
@@ -577,7 +588,7 @@ async function phone(width, height, theme, first) {
       check(`${T} gui: in the switcher its card is as wide as the others`, new Set(cards.map((c) => c[1])).size === 1, cards);
       await shot(s, '21-gui-switcher');
       await pillUp(s);
-      await s.page.evaluate(() => window.__gui.w.close(true));
+      await s.page.evaluate(() => { window.__gui.w.close(true); document.querySelector('.sd-phone-note')?.remove(); });
       await s.page.waitForTimeout(400);
     }
 
@@ -608,14 +619,14 @@ async function phone(width, height, theme, first) {
   }
 }
 
-// ── The Welcome, and python3 from a cold start ──
-async function fresh(width, height, theme) {
-  const s = await start(width, height, theme, { init: false });
+// ── The Welcome (a first visit), and python3 from a cold start (a profile of its own) ──
+async function fresh(width, height, theme, welcome) {
+  const s = await start(width, height, theme, { init: !welcome });
   s.theme = `${theme}-`;
   const T = s.tag;
   try {
     await boot(s.page);
-    if (part('sheets')) {
+    if (welcome) {
       await s.page.waitForSelector('.sd-welcome', { timeout: 15_000 }).catch(() => {});
       await s.page.waitForTimeout(600);
       const w = await s.page.evaluate(() => { const e = document.querySelector('.sd-welcome'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), top: Math.round(r.top), home: document.getElementById('shiro-desktop').classList.contains('sd-at-home') }; });
@@ -626,19 +637,18 @@ async function fresh(width, height, theme) {
       await s.page.waitForTimeout(1500);
       const st = await state(s);
       check(`${T} sheets: a demo chosen closes it, and the Terminal is in front with nothing over it`, !(await s.page.$('.sd-welcome:not(.sd-leaving)')) && st.focused === 'terminal' && !st.home, st);
-      await pillTap(s);
-    }
-    if (part('python')) {
+    } else {
       // From a cold start: Home, one tap on Python, and python3 is running
       const t0 = Date.now();
       await tapOn(s, '.sd-home-page .sd-home-app[data-app=python3] .sd-home-icon');
       const got = await waitText(s, /^>>> /m, 180_000);
+      const upIn = Date.now() - t0;
       check(`${T} python: one tap on Home's Python icon gets a running python3`, !!got, got ? '' : (await term(s))?.text.slice(-300));
       if (got) {
         await s.page.keyboard.type('print(6 * 7)\n', { delay: 4 });
         const ran = await waitText(s, /^42$/m, 20_000);
         check(`${T} python: it answers`, !!ran);
-        measure(`${T} taps from a cold start to a running python3`, `1 (Home → Python; the first time it installs, ${Math.round((Date.now() - t0) / 1000)} s here; before: dock scrolled, then tapped)`);
+        measure(`${T} taps from a cold start to a running python3`, `1 (Home's Python icon; this first time it installed python3 on the way: ${(upIn / 1000).toFixed(1)} s from the tap to its prompt)`);
         await shot(s, '16-python');
       }
     }
@@ -658,8 +668,10 @@ async function link(width, height, theme) {
     shared = (await side(s, 'app share count --print')).o.trim().split('\n').pop();
   } finally { await s.browser.close(); }
   const T = `${width}x${height} ${theme}`;
-  check(`${T} link: app share prints a link`, /[?#]app=/.test(shared), shared.slice(0, 80));
-  if (!/[?#]app=/.test(shared)) return;
+  // (an app that is one file travels after the #: `#name=…&run=…`; a larger one as `?app=link#app=…`)
+  const isLink = /^https?:\/\/[^/]+\/(\?app=|#\w+=)/.test(shared);
+  check(`${T} link: app share prints a link`, isLink, shared.slice(0, 80));
+  if (!isLink) return;
   s = await start(width, height, theme);
   s.theme = `${theme}-`;
   try {
@@ -670,7 +682,9 @@ async function link(width, height, theme) {
     check(`${T} link: the install question is the whole screen, with Cancel and Install`, !!q && q.full && q.w === s.W && q.h === s.H && q.buttons.includes('Install') && q.buttons.includes('Cancel'), q);
     await shot(s, '17-link-question');
     await targets(s, 'The install question', ['.tc-overlay']);
-    await s.page.evaluate(() => [...document.querySelectorAll('.tc-overlay button')].find((b) => b.textContent.trim() === 'Install').click());
+    // (the prompt takes a real tap only, once its buttons are armed)
+    await s.page.waitForFunction(() => !document.querySelector('.tc-app-prompt [data-act=install]')?.disabled, null, { timeout: 10_000 }).catch(() => {});
+    await tapOn(s, '.tc-app-prompt [data-act=install]');
     await s.page.waitForFunction(() => window.__shiroDesktop?.focused()?.appId === 'count', null, { timeout: 60_000 }).catch(() => {});
     await s.page.waitForSelector('.sd-win[data-app=count] iframe', { timeout: 30_000 }).catch(() => {});
     await s.page.waitForTimeout(1200);
@@ -812,7 +826,8 @@ for (const [w, h] of sizes) for (const theme of themes) {
   if (['home', 'apps', 'pill', 'switcher', 'terminal', 'keyboard', 'sheets', 'gui', 'rotate'].some(part)) await phone(w, h, theme, n === 0);
   n++;
 }
-if (part('sheets') || part('python')) await fresh(sizes[0][0], sizes[0][1], themes[0]);
+if (part('sheets')) await fresh(sizes[0][0], sizes[0][1], themes[0], true);
+if (part('python')) await fresh(sizes[0][0], sizes[0][1], themes[0], false);
 if (part('link')) await link(sizes[0][0], sizes[0][1], themes[0]);
 if (part('desktop')) await desktop();
 

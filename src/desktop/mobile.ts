@@ -216,8 +216,14 @@ export function initMobile(ctx: AppContext, layout: DesktopLayout): void {
     // On top of the keyboard: the bottom of what is visible
     bar.style.top = `${Math.round(m.top + m.h - (showBar ? bar.offsetHeight : 0))}px`;
     root.classList.toggle('sd-kb-open', kbOpen);
-    if (kbOpen) root.style.setProperty('--sd-kb-visible', `${Math.max(120, Math.round(m.top + m.h - layout.insets.top))}px`);
-    else root.style.removeProperty('--sd-kb-visible');
+    // (what an app other than a terminal may take, and where a sheet from the bottom stands)
+    if (kbOpen) {
+      root.style.setProperty('--sd-kb-visible', `${Math.max(120, Math.round(m.top + m.h - layout.insets.top))}px`);
+      root.style.setProperty('--sd-kb-h', `${Math.max(0, Math.round(fullH - m.top - m.h))}px`);
+    } else {
+      root.style.removeProperty('--sd-kb-visible');
+      root.style.removeProperty('--sd-kb-h');
+    }
     layout.keybarH = 0;
     layout.dockHidden = false;
     layout.viewportH = fullH;
@@ -235,6 +241,7 @@ export function initMobile(ctx: AppContext, layout: DesktopLayout): void {
         shift = fullH = 0;
         root.style.removeProperty('--sd-kb-shift');
         root.style.removeProperty('--sd-kb-visible');
+        root.style.removeProperty('--sd-kb-h');
       }
     }
     const m = measure();

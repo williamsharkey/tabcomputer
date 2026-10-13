@@ -215,7 +215,11 @@
 .sd-psheet-item .sd-grow { flex: 1; min-width: 0; }
 .sd-psheet-item .sd-check { flex: none; color: var(--sd-accent); font-weight: 700; }
 
-/* A line said once, at the top (the terminal's number, a Linux app's note) */
+/* The on-screen keyboard is up: a sheet stands on it, and is no taller than what shows */
+.sd-phone.sd-kb-open .sd-psheet-veil { bottom: var(--sd-kb-h, 0px); }
+.sd-phone.sd-kb-open .sd-sheet, .sd-phone.sd-kb-open .sd-welcome { bottom: var(--sd-kb-h, 0px); max-height: calc(var(--sd-kb-visible, 100%) - 12px); padding-bottom: 14px; }
+
+/* A line said once (the terminal's number, a Linux app's note) */
 .sd-phone-note {
   position: absolute; left: 50%; top: 22%; z-index: 100005; transform: translateX(-50%);
   max-width: calc(100% - 24px); padding: 8px 14px; border-radius: 14px; font-size: 13px; line-height: 1.35; text-align: center; pointer-events: none;
@@ -235,6 +239,8 @@
 .sd-phone .sd-sheet-actions { flex-wrap: wrap; justify-content: flex-end; }
 .sd-phone .sd-sheet .sd-btn { white-space: nowrap; }
 .sd-phone .sd-sheet .sd-link, .sd-phone .sd-popover .sd-link { display: inline-flex; align-items: center; min-height: 44px; }
+/* (a link inside a sentence: the line keeps its height, the finger gets the room around the words) */
+.sd-phone .sd-sheet p .sd-link { display: inline; min-height: 0; padding: 12px 4px; margin: 0 -4px; }
 .sd-phone .sd-toast { left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); max-width: none; }
 .sd-phone .sd-toast.sd-preview-toast { min-width: 0; flex-wrap: wrap; }
 .sd-phone .sd-toast .sd-btn { min-height: 44px; white-space: nowrap; }

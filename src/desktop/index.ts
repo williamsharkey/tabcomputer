@@ -1020,8 +1020,9 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         document.getElementById('boot-mark')?.remove();
         // the keyboard goes to the focused window (a DOM focus on the main terminal would raise it)
         const back = restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed' ? restoredFocus : null;
-        // The phone layout starts at Home, or in the app a reload came back to
-        if (phoneOn && phoneUI) phoneUI.arrive(back);
+        // The phone layout starts at Home, or in the app a reload came back to (its window may
+        // still be on its way: session.ts runs `app open ID`, and the window comes when the app is up)
+        if (phoneOn && phoneUI) phoneUI.arrive(back, session.find((s) => s.focused && s.id !== 'terminal')?.app);
         else if (back) back.focus();
         else term.term.focus();
         performance.mark('shiro:desktop:revealed');

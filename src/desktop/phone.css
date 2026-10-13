@@ -240,7 +240,7 @@
 .sd-phone .sd-sheet .sd-btn { white-space: nowrap; }
 .sd-phone .sd-sheet .sd-link, .sd-phone .sd-popover .sd-link { display: inline-flex; align-items: center; min-height: 44px; }
 /* (a link inside a sentence: the line keeps its height, the finger gets the room around the words) */
-.sd-phone .sd-sheet p .sd-link { display: inline; min-height: 0; padding: 12px 4px; margin: 0 -4px; }
+.sd-phone .sd-sheet p .sd-link { display: inline; min-height: 0; padding: 14px 4px; margin: 0 -4px; }
 .sd-phone .sd-toast { left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); max-width: none; }
 .sd-phone .sd-toast.sd-preview-toast { min-width: 0; flex-wrap: wrap; }
 .sd-phone .sd-toast .sd-btn { min-height: 44px; white-space: nowrap; }

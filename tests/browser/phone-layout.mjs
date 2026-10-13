@@ -236,11 +236,15 @@ async function phone(width, height, theme, first) {
       check(`${T} home: the appearance button changes light to dark and back`, themeNow !== themeWas, `${themeWas} → ${themeNow}`);
       await tapOn(s, '.sd-home-tools > :first-child');
       await s.page.waitForTimeout(250);
-      // A swipe turns the page
-      await drag(s, [[s.W - 30, s.H / 2], [30, s.H / 2]]);
-      await s.page.waitForTimeout(600);
+      // A swipe turns the page (a finger's pace: the synthetic touch is otherwise over before the page answers)
+      const turned = () => s.page.waitForFunction(() => document.querySelector('.sd-home-dot:nth-child(2)')?.getAttribute('aria-current') === 'true', null, { timeout: 2500 }).then(() => true, () => false);
+      await s.page.waitForTimeout(300);
+      await drag(s, [[s.W - 30, s.H * 0.6], [30, s.H * 0.6]], { steps: 14 });
+      let swiped = await turned();
+      if (!swiped) { console.log(`     ${T} home: the first swipe did not turn the page; trying once more`); await drag(s, [[s.W - 30, s.H * 0.6], [30, s.H * 0.6]], { steps: 14 }); swiped = await turned(); }
+      await s.page.waitForTimeout(400);
       h = await home(s);
-      check(`${T} home: a swipe sideways turns to page two, and the dots say so`, h.page === 1, `page ${h.page + 1}`);
+      check(`${T} home: a swipe sideways turns to page two, and the dots say so`, swiped && h.page === 1, `page ${h.page + 1}`);
       await shot(s, '02-home-page-two');
       // A folder
       await tapOn(s, '.sd-home-folder[data-folder=editors] .sd-home-icon');

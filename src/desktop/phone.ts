@@ -56,8 +56,12 @@ export interface PhoneUI {
   setActive(on: boolean, home: boolean): void;
   /** The apps, their state or the open windows changed */
   refresh(): void;
-  /** The desktop just appeared: show this app, or Home */
-  arrive(win: DesktopWindow | null): void;
+  /**
+   * The desktop just appeared: show this app, or Home. `coming`: the app a
+   * reload left in front, when its window is not there yet: it takes the
+   * front when it comes, unless the person has gone somewhere by then.
+   */
+  arrive(win: DesktopWindow | null, coming?: string): void;
   home(): void;
   active(): boolean;
 }
@@ -110,6 +114,8 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
   /** Open apps (window ids) in the order they were opened: the switcher's cards, the pill's sideways order */
   let order: string[] = [];
   let page = 0;
+  /** The app a reload left in front, until its window comes (or the person goes elsewhere) */
+  let coming = '';
 
   // ── Elements ──
   const back = h('div', 'sd-phone-back');
@@ -374,6 +380,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
   });
 
   const openApp = (id: string) => {
+    coming = '';
     closeFolder();
     const wins = wm.visibleOrder().filter((w) => w.appId === id);
     if (wins.length) { showApp(wins.find((w) => w.state !== 'minimized') ?? wins[0]); return; }
@@ -576,6 +583,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
   // ── The pill ──
   const onPill = (a: PillAction) => {
     if (!active) return;
+    coming = '';
     if (a === 'home') {
       closeSheet();
       const was = atHome && !switching && !folderEl;
@@ -775,6 +783,7 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
       if (!said) note(`${appName(w)} was made for a large screen. Move it with two fingers; pinch to make it larger.`, 7000);
     }
     if (w) guiPlace(w);
+    if (w && coming && w.appId === coming && isCard(w) && deps.revealed()) { coming = ''; showApp(w); }
     queueRender();
     requestAnimationFrame(checkScrollBars);
   });
@@ -799,9 +808,16 @@ export function initPhone(deps: PhoneDeps): PhoneUI {
     active: () => active,
     home: () => { if (active) onPill('home'); },
     refresh: queueRender,
-    arrive(win) {
+    arrive(win, later) {
       if (!active) return;
-      if (win && win.state !== 'closed') showApp(win); else showHome();
+      // (its window may have come while the desktop was still out of sight)
+      const there = win && win.state !== 'closed' ? win : later ? wm.visibleOrder().find((w) => w.appId === later) : undefined;
+      if (there) showApp(there);
+      else {
+        showHome();
+        coming = later ?? '';
+        if (coming) setTimeout(() => { coming = ''; }, 30_000);
+      }
       requestAnimationFrame(checkScrollBars);
     },
     setActive(on, goHome) {

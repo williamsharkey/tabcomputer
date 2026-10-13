@@ -86,6 +86,8 @@ const windowTexts = (page) => page.evaluate(() => (window.__shiroDesktop?.window
   return `${w.title}\n${text.trim()}`;
 }));
 const prompt = (page) => page.locator('.tc-run-prompt');
+// Run (Load, Clone and run) turns on once the end of the text has been on screen: scroll it there as a reader would
+const readToEnd = (page) => page.evaluate(() => { const pre = document.querySelector('.tc-run-prompt pre'); if (pre) { pre.scrollTop = pre.scrollHeight; pre.dispatchEvent(new Event('scroll')); } });
 const shot = async (page, name) => { if (shots) await page.screenshot({ path: join(shots, `inbound-links-${name}.png`) }); };
 const until = async (fn, ms = 20_000) => { const end = Date.now() + ms; let v; while (Date.now() < end) { v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 250)); } return v; };
 
@@ -144,6 +146,8 @@ const until = async (fn, ms = 20_000) => { const end = Date.now() + ms; let v; w
   page = await open(ctx, `${PLAIN}/s/${SEED}`);
   await prompt(page).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(900);
+  await readToEnd(page);
+  await page.waitForTimeout(100);
   await prompt(page).locator('button[data-act=run]').click();
   await page.waitForURL(`${PLAIN}/`, { timeout: 30_000 });
   await booted(page);
@@ -176,6 +180,8 @@ const until = async (fn, ms = 20_000) => { const end = Date.now() + ms; let v; w
   page = await open(ctx, `${PLAIN}/someone/repo/`);
   await prompt(page).waitFor({ timeout: 30_000 });
   await page.waitForTimeout(900);
+  await readToEnd(page);
+  await page.waitForTimeout(100);
   await prompt(page).locator('button[data-act=run]').click();
   check(await until(async () => /Cloning https:\/\/github\.com\/someone\/repo\.\.\./.test(await mainScreen(page))), 'repo: Clone and run starts the clone');
   await page.close();

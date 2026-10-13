@@ -30,13 +30,13 @@ import * as store from './session-store';
 import * as agentResume from '../agent-resume';
 import type { ResumeCommand } from '../agent-resume';
 import { isPlaceholder, rememberGeometry } from './launch-state';
+import { RESTORED_NOTE } from './restore-note';
 
 export const SESSION_KEY = 'tabcomputer-desktop-session';
 /** '0': don't restore the session on reload (Settings → Desktop) */
 export const RESTORE_KEY = 'tabcomputer-restore-session';
 const RESTORABLE = new Set(['terminal', 'files', 'settings', 'activity', 'about']);
-/** The line printed under a restored terminal's scrollback (as a dim shell comment, terminal.ts restoreScreen) */
-export const RESTORED_NOTE = '── the output above is from before the page reloaded ──';
+export { RESTORED_NOTE };
 /**
  * Long-running commands that run again by themselves after a reload (servers
  * that only serve files): anything else that was running is only offered.

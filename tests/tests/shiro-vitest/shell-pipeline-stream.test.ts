@@ -92,6 +92,37 @@ describe('pipelines headed by a compound stream (#72)', () => {
     expect(r.at('got a')).toBeGreaterThanOrEqual(1800);
   }, 30_000);
 
+  it("sleep 2 | sh -c 'echo started': the rest runs while the sleep does", async () => {
+    const r = await agentSh("sleep 2 | sh -c 'echo started'; echo \"ps=${PIPESTATUS[*]}\"");
+    expect(r.status).toBe(0);
+    expect(r.out).toBe('started\nps=0 0\n');
+    expect(r.at('started')).toBeLessThan(1500);
+    expect(r.at('ps=')).toBeGreaterThanOrEqual(1800); // the pipeline still lasts as long as the sleep
+    // in the page shell, and with a sleep in the middle
+    const chunks: { t: number; text: string }[] = [];
+    const t0 = Date.now();
+    const code = await shell.execute('echo in | sleep 2 | echo out; echo "rc=$? ps=${PIPESTATUS[*]}"', (s) => { chunks.push({ t: Date.now() - t0, text: s }); });
+    expect(code).toBe(0);
+    expect(chunks.map((c) => c.text).join('').replace(/\r\n/g, '\n')).toBe('out\nrc=0 ps=0 0 0\n');
+    expect(chunks.find((c) => c.text.includes('out'))!.t).toBeLessThan(1500);
+    // the old way with the escape hatch
+    const old = await agentSh("sleep 2 | sh -c 'echo started'", { env: { TABCOMPUTER_STREAM_PIPES: '0' } });
+    expect(old.out).toBe('started\n');
+    expect(old.at('started')).toBeGreaterThanOrEqual(1800);
+  }, 30_000);
+
+  it('pipelines the sleep rule leaves alone: read at the end, a sleep at the end, a function, a quoted |', async () => {
+    const r = await run(shell, [
+      'sleep 0.1 | read v; echo "read rc=$?"',
+      'echo a | sleep 0.1; echo "tail rc=$?"',
+      'sleep() { echo "my sleep $*"; }; sleep 5 | cat; unset -f sleep',
+      'echo "sleep 9 | x"',
+      'sleep 0.1 | cat; echo "ps=${PIPESTATUS[*]}"',
+      'sleep 0.1 | false; echo "rc=$?"',
+    ].join('\n'));
+    expect(r.output.replace(/\r\n/g, '\n')).toBe('read rc=1\ntail rc=0\nmy sleep 5\nsleep 9 | x\nps=0 0\nrc=1\n');
+  }, 30_000);
+
   it('in the page shell too', async () => {
     const { output, exitCode } = await run(shell, 'for i in 1 2 3; do echo $i; done | tail -1; (echo p; echo q) | tac');
     expect(exitCode).toBe(0);

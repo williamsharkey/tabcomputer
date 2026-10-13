@@ -92,6 +92,34 @@ describe('kernel programs from the prompt (no terminal)', () => {
     expect(r.exitCode).toBe(0);
   });
 
+  it("time reports the CPU time of the programs it ran, and none for another shell's (#128)", async () => {
+    const secs = (err: string, k: string) => { const m = new RegExp(`^${k}\\t(\\d+)m([\\d.]+)s$`, 'm').exec(err)!; return Number(m[1]) * 60 + Number(m[2]); };
+    const r = await run('time wseq 30000 > /dev/null');
+    expect(r.exitCode).toBe(0);
+    const real = secs(r.err, 'real'), user = secs(r.err, 'user'), sys = secs(r.err, 'sys');
+    expect(user + sys).toBeGreaterThan(0);
+    expect(user + sys).toBeLessThanOrEqual(real + 0.05);
+    // -p, and a pipeline
+    const p = await run('time -p wseq 30000 | upper > /dev/null');
+    const up = /^user (\d+\.\d\d)$/m.exec(p.err)!, sp = /^sys (\d+\.\d\d)$/m.exec(p.err)!;
+    expect(Number(up[1]) + Number(sp[1])).toBeGreaterThan(0);
+    // a builtin has no process
+    const b = await run('time true');
+    expect(b.err).toMatch(/^user\t0m0\.000s$/m);
+    // a program of a process that is not this shell's is not counted
+    const kernel = kernelForContext({ fs: shell.fs, shell } as unknown as CommandContext);
+    const { startCpuMeter } = await import('@shiro/shell-time');
+    const host = kernel.spawn({ path: 'other', argv: ['other'], env: {}, cwd: '/', fds: {}, run: () => new Promise<number>(() => {}) });
+    shell.kernelHost = { kernel, proc: host };
+    const stop = await startCpuMeter(shell);
+    const other = kernel.spawn({ path: 'other2', argv: ['other2'], env: {}, cwd: '/', fds: {}, run: () => new Promise<number>(() => {}) });
+    const mineProc = kernel.spawn({ path: '/usr/local/bin/wseq', argv: ['wseq', '20000'], env: {}, cwd: '/', fds: {}, parent: other });
+    await mineProc.wait();
+    expect(stop()).toEqual({ user: 0, sys: 0 });
+    shell.kernelHost = null;
+    kernel.kill(host.pid, 9); kernel.kill(other.pid, 9);
+  }, 60_000);
+
   it('builtin | wasm | builtin', async () => {
     const r = await run('echo abc | upper | tr B X');
     expect(r.out).toBe('AXC\n');

@@ -74,6 +74,15 @@ export function shq(s: string): string {
 }
 
 /**
+ * What a windowed tool runs: its `run`, or the same program on the file or
+ * folder asked for (`desktop open code DIR`).
+ */
+export function windowCommand(t: DevTool, args?: Record<string, unknown>): string {
+  const path = typeof args?.path === 'string' ? args.path : '';
+  return path ? `${t.run.split(' ')[0]} ${shq(path)}` : t.run;
+}
+
+/**
  * The Terminal command for a tool: install if none of its executables is on
  * PATH (saying what, how long, and why), then run it. Safe to run every time.
  */

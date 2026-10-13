@@ -320,6 +320,10 @@ export const unameCmd: Command = {
 export const whichCmd: Command = {
   name: 'which',
   description: 'Locate a command',
+  // The shell's `which` stays this one in Debian mode (after `toolchain install`
+  // too): it says "NAME not found" where debianutils' prints nothing, and it
+  // knows the builtins. Programs that search PATH themselves get Debian's.
+  keepOverPackage: () => true,
   async exec(ctx) {
     // which [-a] NAME...: a line per name found (-a: every match on PATH); 1 if any is missing
     let all = false;

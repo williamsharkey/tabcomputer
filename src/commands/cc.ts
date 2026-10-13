@@ -35,6 +35,14 @@ export function splitLibraryFlags(args: string[]): { rest: string[]; missing: st
   }
   return { rest, missing };
 }
+/**
+ * What follows an error of the built-in compiler: it is a small one (no
+ * scanf, no -E/-S, libc only), so a correct first program can fail in it
+ * with an error that isn't the writer's. The real gcc is one command away.
+ */
+export const FULL_TOOLCHAIN_NOTE =
+  "cc: note: this is tabcomputer's small built-in C compiler; it lacks parts of C and of libc (scanf, for one).\n" +
+  'cc: note: if the error above is not in your program, install the full gcc and compile again: toolchain install c\n';
 const FALLBACK_URL = 'https://tyfkda.github.io/xcc/wccfiles.zip';
 const CACHE_DB = 'tabcomputer-cc-cache';
 const CACHE_STORE = 'binaries';
@@ -640,7 +648,7 @@ export const ccCmd: Command = {
       if (a === '-o' && i + 1 < rest.length) { outputFile = rest[++i]; }
       else if (a === '-c') { compileOnly = true; }
       else if (a === '-E' || a === '-S') {
-        ctx.stderr += `cc: ${a} not supported (compile to WASM only)\n`;
+        ctx.stderr += `cc: ${a} not supported (compile to WASM only)\n` + FULL_TOOLCHAIN_NOTE;
         return 1;
       }
       else if (a.startsWith('-W') || a.startsWith('-O') || a === '-g') { /* ignore */ }
@@ -657,6 +665,7 @@ export const ccCmd: Command = {
       for (const lib of missingLibs) {
         ctx.stderr += `cc: error: cannot find -l${lib}: only libc is available (it includes libm: -lm and -lc are fine)\n`;
       }
+      ctx.stderr += FULL_TOOLCHAIN_NOTE;
       return 1;
     }
 
@@ -726,7 +735,7 @@ export const ccCmd: Command = {
 
     if (rt.stderr) ctx.stderr += rt.stderr;
     if (rt.stdout) ctx.stdout += rt.stdout;
-    if (rt.exitCode !== 0) return rt.exitCode;
+    if (rt.exitCode !== 0) { ctx.stderr += FULL_TOOLCHAIN_NOTE; return rt.exitCode; }
 
     // Handle output — check both root and /work for compiler output
     if (compileOnly) {

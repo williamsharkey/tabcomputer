@@ -14,6 +14,7 @@ import { activeProfile } from '../profile';
 import * as agentResume from '../agent-resume';
 import type { ResumeCommand } from '../agent-resume';
 import { bufferToString } from '../utils/copy-utils';
+import { dropTrailingNotes } from './restore-note';
 
 export interface TerminalDeps {
   makeShell: () => Shell;
@@ -58,7 +59,8 @@ export function screenText(text: string, atPrompt: boolean, n = SCROLLBACK_LINES
   const lines = text.replace(/\s+$/, '').split('\n');
   if (atPrompt) lines.pop();
   while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  return lines.slice(-n).join('\n');
+  // (reloaded again with nothing run since: the next restore prints the note anew)
+  return dropTrailingNotes(lines).slice(-n).join('\n');
 }
 
 interface Tab {

@@ -6,6 +6,7 @@
  *   <id>                       an app this site ships: /apps/<id>/, listed in /apps/index.json
  *   gh:<owner>/<repo>[/<path>] a folder of a public GitHub repository, at its default branch
  *   https://…/x.zip | .tar.gz  an archive holding the app
+ *   link  (+ #app=<files>)     the app's own files, carried by the address (share.ts, `app share`)
  *
  * Trust is the run links' (src/run-url.ts): an app of this site, whose every
  * file matches the sha256 the site's own list gives, installs at once.
@@ -17,13 +18,16 @@
  * No DOM and no filesystem here: the callers pass `fetch`, and get files back.
  */
 import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest } from './manifest';
-import { FETCHED_BYTES_MAX, FETCHED_FILES_MAX } from './registry';
+import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX } from './registry';
+import { LINK_APP, unpackApp } from './share';
 import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, sha256Hex, plain, type Fetch } from '../run-url';
 
 export type AppTarget =
   | { kind: 'site'; id: string }
   | { kind: 'gh'; owner: string; repo: string; path: string }
-  | { kind: 'url'; url: string };
+  | { kind: 'url'; url: string }
+  /** `?app=link#app=<payload>`: the files are in the address itself (share.ts) */
+  | { kind: 'link'; payload: string };
 
 /** A refused app link or install, and why (a sentence; no text from the link) */
 export class AppLinkError extends RunLinkError {}
@@ -44,6 +48,7 @@ export function parseAppSpec(spec: string): AppTarget {
     if (!/\.(zip|tar\.gz|tgz)$/i.test(u.pathname)) throw new AppLinkError('an app\'s address must be a .zip, .tar.gz or .tgz archive');
     return { kind: 'url', url: u.href };
   }
+  if (spec === LINK_APP) throw new AppLinkError('an app that a link carries is opened from the whole link, in the address bar');
   if (APP_ID.test(spec) && !RESERVED_IDS.has(spec)) return { kind: 'site', id: spec };
   throw new AppLinkError('no such app (an app is an id, gh:<owner>/<repo>[/<path>], or the address of an archive)');
 }
@@ -54,10 +59,19 @@ export interface ParsedAppLink {
   become: boolean;
 }
 
-/** The app link in a query string: null when there is none. Only `id` and `gh:` forms: an address never names an archive. */
-export function parseAppUrl(search: string): ParsedAppLink | null {
+/**
+ * The app link in a page address: null when there is none. Only `id`, `gh:`
+ * and `link` forms: an address never names an archive. `hash` is the part
+ * after `#`, where a shared app's files travel.
+ */
+export function parseAppUrl(search: string, hash = ''): ParsedAppLink | null {
   const q = new URLSearchParams(search);
   if (!q.has('app')) return null;
+  if (q.get('app') === LINK_APP) {
+    const m = /^#app=([A-Za-z0-9_-]+)$/.exec(hash);
+    if (!m) throw new AppLinkError('this app link is incomplete: the part after # is missing (it may have been cut short when it was copied)');
+    return { target: { kind: 'link', payload: m[1] }, become: q.has('become') && q.get('become') !== '0' };
+  }
   const target = parseAppSpec(q.get('app') ?? '');
   if (target.kind === 'url') throw new AppLinkError('an app link names an app of this site or gh:<owner>/<repo>[/<path>]');
   return { target, become: q.has('become') && q.get('become') !== '0' };
@@ -65,10 +79,10 @@ export function parseAppUrl(search: string): ParsedAppLink | null {
 
 /** `?app=…` for a target, with the parameters that go along (guest, become) */
 export function appLinkQuery(target: AppTarget, extra: Record<string, string> = {}): string {
-  const spec = target.kind === 'site' ? target.id : target.kind === 'gh' ? `gh:${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}` : target.url;
+  const spec = target.kind === 'site' ? target.id : target.kind === 'gh' ? `gh:${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}` : target.kind === 'link' ? LINK_APP : target.url;
   const q = new URLSearchParams({ app: spec });
   for (const [k, v] of Object.entries(extra)) if (PAGE_PARAMS.has(k)) q.set(k, v);
-  return '?' + q.toString().replace(/%3A/g, ':').replace(/%2F/g, '/');
+  return '?' + q.toString().replace(/%3A/g, ':').replace(/%2F/g, '/') + (target.kind === 'link' ? `#app=${target.payload}` : '');
 }
 
 export interface FetchedApp {
@@ -220,6 +234,27 @@ export function archiveApp(files: Map<string, Uint8Array>, url: string): Fetched
   return { manifest, manifestText: text, curated: false, source: `url:${url}`, from: plain(host, 100), files: async () => map };
 }
 
+/**
+ * The app a shared link carries (`app share`, share.ts). Never curated: the
+ * person who opens the link is shown it first. Its `source` is a hash of the
+ * link's payload, so the same link opened again finds the app it installed.
+ */
+export async function linkApp(payload: string): Promise<FetchedApp> {
+  let files: Map<string, Uint8Array>;
+  try { files = await unpackApp(payload); } catch (e) {
+    throw new AppLinkError(e instanceof AppError ? e.message : 'the link does not hold an app');
+  }
+  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!);
+  let bytes = 0;
+  for (const b of files.values()) bytes += b.length;
+  const id = (await sha256Hex(new TextEncoder().encode(payload))).slice(0, 16);
+  return {
+    manifest, manifestText: text, curated: false, source: `link:${id}`,
+    from: `a link that carries the app's own files (${files.size} ${files.size === 1 ? 'file' : 'files'}, ${Math.max(1, Math.ceil(bytes / 1000))} KB)`,
+    files: async () => files,
+  };
+}
+
 /** The bytes of an archive at an address: no cookies, no redirect to somewhere else, not a web page */
 export function fetchArchive(url: string, fetchFn: Fetch): Promise<Uint8Array> {
   let shown = url;
@@ -242,6 +277,8 @@ export type InstallChoice = 'install' | 'guest' | 'cancel';
 
 export interface AppLinkDeps {
   search: string;
+  /** The address's part after `#` (a shared app's files) */
+  hash?: string;
   origin: string;
   framed: boolean;
   fetch: Fetch;
@@ -266,12 +303,14 @@ export type AppLinkOutcome = 'none' | 'opened' | 'installed' | 'guest' | 'cancel
 export async function handleAppLink(deps: AppLinkDeps): Promise<AppLinkOutcome> {
   let parsed: ParsedAppLink | null;
   try {
-    try { parsed = parseAppUrl(deps.search); } finally { if (new URLSearchParams(deps.search).has('app')) deps.cleanUrl(); }
+    try { parsed = parseAppUrl(deps.search, deps.hash ?? ''); } finally { if (new URLSearchParams(deps.search).has('app')) deps.cleanUrl(); }
     await deps.ready?.();
     if (!parsed) return 'none';
     if (deps.framed) throw new AppLinkError('app links are ignored inside a frame; open the link in its own tab');
     const t = parsed.target;
-    const app = t.kind === 'site' ? await fetchSiteApp(t.id, deps.origin, deps.fetch) : await fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch);
+    const app = t.kind === 'site' ? await fetchSiteApp(t.id, deps.origin, deps.fetch)
+      : t.kind === 'link' ? await linkApp(t.payload)
+      : await fetchGhApp(t as { owner: string; repo: string; path: string }, deps.fetch);
     const had = await deps.installedSource(app.manifest.id);
     // Already here from this very place (the same commit, for a repository): opening it is all that is left
     if (had !== app.source) {

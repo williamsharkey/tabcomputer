@@ -578,6 +578,7 @@ async function shipLib(fs: FileSystem, name: string, path: string): Promise<bool
   return true;
 }
 
+/** `pid` changes when a restored process ends at once and the app is started the usual way instead */
 export interface LaunchedApp { pid: number; exited: Promise<number>; output: () => string }
 
 type SnapshotModule = typeof import('./snapshot');
@@ -699,6 +700,7 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   if (plan) noteSnapshotApp(name);
   let p: Process | null = null;
   const restoredPids: number[] = [];
+  let restoredAt = 0;
   if (plan?.stored) {
     const t0 = Date.now();
     try {
@@ -707,16 +709,9 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
       const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
       p = r.proc;
       snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.procs[0].pid, hidden: !!plan.stored.meta.hidden });
-      // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again,
-      // and no other is taken until something it was made from changes
-      const S = plan.S, key = plan.key;
-      void p.wait().then((st) => {
-        if (st === 0 || Date.now() - t0 >= 5000) return;
-        const why = `the restored process ended at once (${st})`;
-        snapshotLog(name, { restored: false, why });
-        void S.dropSnapshot(name);
-        S.setSkip(name, key, why);
-      });
+      restoredAt = t0;
+      // (tests: a restored process that dies as an image that doesn't run would)
+      if ((globalThis as { __guiSnapshotKillRestored?: boolean }).__guiSnapshotKillRestored) kernel.kill(p.pid, 6 /* SIGABRT */);
     } catch (e) {
       for (const pid of restoredPids.splice(0)) ids.pidAppIds.delete(pid);
       snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
@@ -741,20 +736,36 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
       });
     }
   }
-  const pid = p.pid;
-  ids.pidAppIds.set(pid, name);
+  const first = p;
+  ids.pidAppIds.set(first.pid, name);
   runningApps.set(name, (runningApps.get(name) ?? 0) + 1);
-  const launched = {
-    pid, output: () => out.text(),
-    exited: exitOf(kernel, p).finally(() => {
-      ids.pidAppIds.delete(pid);
-      for (const old of restoredPids) ids.pidAppIds.delete(old);
-      const n = (runningApps.get(name) ?? 1) - 1;
-      if (n > 0) runningApps.set(name, n); else runningApps.delete(name);
-      // It may have saved its settings as it quit: then its snapshot is taken again, in the background
-      if (snapshotsFor(name)) void retakesReady(kernel).then((q) => q?.request(name));
-    }),
-  };
+  const launched: LaunchedApp = { pid: first.pid, output: () => out.text(), exited: Promise.resolve(0) };
+  launched.exited = (async () => {
+    let st = await exitOf(kernel, first);
+    // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again, and
+    // no other is taken until something it was made from changes. The person asked for the app: it is
+    // started the usual way now
+    if (restoredAt && plan && st !== 0 && Date.now() - restoredAt < 5000) {
+      const why = `the restored process ended at once (${st})`;
+      snapshotLog(name, { restored: false, why });
+      await plan.S.dropSnapshot(name);
+      plan.S.setSkip(name, plan.key, why);
+      ids.pidAppIds.delete(first.pid);
+      for (const old of restoredPids.splice(0)) ids.pidAppIds.delete(old);
+      const again = kernel.spawn({ path: app.bin, argv, cwd, env: fullEnv, fds: { 0: new BufferFile(''), 1: out, 2: out } });
+      ids.pidAppIds.set(again.pid, name);
+      launched.pid = again.pid;
+      st = await exitOf(kernel, again);
+    }
+    return st;
+  })().finally(() => {
+    ids.pidAppIds.delete(launched.pid);
+    for (const old of restoredPids) ids.pidAppIds.delete(old);
+    const n = (runningApps.get(name) ?? 1) - 1;
+    if (n > 0) runningApps.set(name, n); else runningApps.delete(name);
+    // It may have saved its settings as it quit: then its snapshot is taken again, in the background
+    if (snapshotsFor(name)) void retakesReady(kernel).then((q) => q?.request(name));
+  });
   (globalThis as { __guiLast?: LaunchedApp }).__guiLast = launched;
   return launched;
 }

@@ -284,9 +284,17 @@ describe('GUI snapshots: the kernel side', () => {
 
 describe('GUI snapshots: the setting', () => {
   const chromium = { userAgentData: { brands: [{ brand: 'Chromium' }, { brand: 'Google Chrome' }], mobile: false }, deviceMemory: 8 };
-  it('is on by default for the tested apps in a desktop Chromium with 4 GB or more, and off elsewhere', async () => {
+  it('is off unless asked for: one restored process in about a hundred ended at once, and the cause is not known', async () => {
+    const { snapshotMode, SNAPSHOT_DEFAULT_ON } = await import('@shiro/gui/snapshot-setting');
+    expect(SNAPSHOT_DEFAULT_ON).toBe(false);
+    expect(snapshotMode({ stored: null, env: {}, safe: false, nav: chromium })).toBe('off');
+    expect(snapshotMode({ stored: '1', env: {}, safe: false, nav: chromium })).toBe('tested');
+    expect(snapshotMode({ stored: null, env: { TABCOMPUTER_GUI_SNAPSHOTS: '1' }, safe: false, nav: {} })).toBe('tested');
+  });
+
+  it('where it is the default: on for the tested apps in a desktop Chromium with 4 GB or more, and off elsewhere', async () => {
     const { snapshotMode, snapshotsFor, snapshotDefaultOn, SNAPSHOT_TESTED } = await import('@shiro/gui/snapshot-setting');
-    const mode = (o: object) => snapshotMode({ stored: null, env: {}, safe: false, nav: chromium, ...o });
+    const mode = (o: object) => snapshotMode({ stored: null, env: {}, safe: false, nav: chromium, defaultOn: true, ...o });
     expect(mode({})).toBe('tested');
     expect(snapshotsFor('geany', 'tested')).toBe(true);
     expect(snapshotsFor('gimp', 'tested')).toBe(true);
@@ -302,17 +310,19 @@ describe('GUI snapshots: the setting', () => {
     expect(mode({ nav: {} })).toBe('off');
   });
 
-  it('the off switch: Settings (localStorage 0), TABCOMPUTER_GUI_SNAPSHOTS=0, safe mode; 1 turns it on for every app', async () => {
+  it('the off switch: Settings (localStorage 0), TABCOMPUTER_GUI_SNAPSHOTS=0, safe mode; `all` turns it on for every app', async () => {
     const { snapshotMode } = await import('@shiro/gui/snapshot-setting');
-    const mode = (o: object) => snapshotMode({ stored: null, env: {}, safe: false, nav: chromium, ...o });
+    const mode = (o: object) => snapshotMode({ stored: null, env: {}, safe: false, nav: chromium, defaultOn: true, ...o });
     expect(mode({ stored: '0' })).toBe('off');
     expect(mode({ env: { TABCOMPUTER_GUI_SNAPSHOTS: '0' } })).toBe('off');
     expect(mode({ stored: '1', env: { TABCOMPUTER_GUI_SNAPSHOTS: '0' } })).toBe('off');
     expect(mode({ safe: true })).toBe('off');
     expect(mode({ stored: '1', safe: true })).toBe('off');
-    expect(mode({ stored: '1' })).toBe('all');
-    expect(mode({ stored: '1', nav: {} })).toBe('all');
-    expect(mode({ env: { TABCOMPUTER_GUI_SNAPSHOTS: '1' }, nav: {} })).toBe('all');
+    expect(mode({ stored: 'all', safe: true })).toBe('off');
+    expect(mode({ stored: '1' })).toBe('tested');
+    expect(mode({ stored: 'all' })).toBe('all');
+    expect(mode({ stored: 'all', nav: {} })).toBe('all');
+    expect(mode({ env: { TABCOMPUTER_GUI_SNAPSHOTS: 'all' }, nav: {} })).toBe('all');
   });
 });
 

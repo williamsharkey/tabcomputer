@@ -1,12 +1,14 @@
 // What a snapshot of a started GUI app must respect, and its retake in the
 // background (docs/research/GUI_SNAPSHOTS.md; src/gui/snapshot.ts, retake.ts).
-// From a fresh browser profile, with the setting as it is by default.
+// From a fresh browser profile, with the setting on (localStorage
+// tabcomputer-gui-snapshots = 1; it is off unless set).
 //
 // rules (xeyes): a snapshot is restored when nothing changed, and never
 //   across another engine, a changed binary, a changed library, a changed
 //   setting in the home directory that the app reads at its start, another
 //   display size (the usual start then lays its window out for the new one),
-//   or by an app that read a sign-in; the off switch; what `doctor` reports.
+//   or by an app that read a sign-in; a restored process that ends at once is
+//   followed by a usual start; the setting; what `doctor` reports.
 // retake (geany by default): after a quit that outdated the snapshot, the app
 //   is started again where nobody sees it (no window, no mark in the dock)
 //   once the tab is quiet, its snapshot is kept, and the next launch is a
@@ -39,6 +41,8 @@ const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbo
 const results = { rules: {}, retake: {} };
 let failed = 0;
 
+/** The setting on, in every document of the context (until a test says otherwise) */
+const settingOn = (page) => page.addInitScript(() => { if (!sessionStorage.getItem('gs-leave-setting')) localStorage.setItem('tabcomputer-gui-snapshots', '1'); });
 const boot = async (page, app) => {
   await page.waitForFunction(() => window.__tabcomputer?.desktop && window.__tabcomputer.kernel, null, { timeout: 120_000 });
   await page.waitForFunction((app) => window.__tabcomputer.desktop.apps().some((a) => a.id === app), app, { timeout: 30_000 });
@@ -106,6 +110,7 @@ if (!only || only === 'rules') {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  await settingOn(page);
   await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=desktop');
   await boot(page, app);
   /** A reload, then a launch that must not be a restore, for `why`; its new snapshot is kept, and it is quit */
@@ -120,9 +125,7 @@ if (!only || only === 'rules') {
   };
   const again = async () => { await page.reload(); await boot(page, app); };
 
-  const first = await check('rules', 'on by default: the first start is a usual one and keeps a snapshot; after a reload it is restored', async () => {
-    const mode = await page.evaluate(() => localStorage.getItem('tabcomputer-gui-snapshots'));
-    if (mode !== null) throw new Error(`the setting is set (${mode}) in a fresh profile`);
+  const first = await check('rules', 'with the setting on: the first start is a usual one and keeps a snapshot; after a reload it is restored', async () => {
     const cold = await open(page, app);
     if (cold.restore) throw new Error(`a first start said ${JSON.stringify(cold.restore)}`);
     const t = await taken(page, app);
@@ -257,25 +260,61 @@ if (!only || only === 'rules') {
       if (!/app snapshots [\d.]+ MB of at most [\d.]+ MB \(xeyes [\d.]+ MB\)/.test(r.out)) throw new Error(`no snapshots in:\n${r.out}`);
       return r.out.trim().split('\n')[0].replace(/^.*?(app snapshots[^)]*\)).*$/, '$1');
     });
-    await check('rules', 'the off switch: nothing is restored and nothing is taken; Settings shows the switch', async () => {
-      await page.evaluate(() => localStorage.setItem('tabcomputer-gui-snapshots', '0'));
+    await check('rules', 'a restored process that ends at once: the app is started the usual way, and no snapshot of it is used or taken again', async () => {
+      await again();
+      await page.evaluate(() => { window.__guiSnapshotKillRestored = true; });
+      await page.evaluate((app) => { window.__guiSnapshots = []; void window.__tabcomputer.desktop.openApp(app); }, app);
+      // the restored one is killed at once (the stand-in for an image that doesn't run); a usual start follows
+      await page.waitForFunction((app) => (window.__guiSnapshots ?? []).some((e) => e.app === app && e.restored === false && /ended at once/.test(e.why ?? '')), app, { timeout: 30_000, polling: 50 });
+      await page.waitForFunction((app) => {
+        const p = window.__tabcomputer.kernel.procs.get(window.__guiLast?.pid);
+        return !!p && p.state === 'running' && !!window.__tabcomputer.desktop.windows().find((w) => w.appId === app && w.surface && !w.id.startsWith('launching-'));
+      }, app, { timeout: 60_000, polling: 50 });
+      const log = await page.evaluate((app) => (window.__guiSnapshots ?? []).filter((e) => e.app === app), app);
+      if (!log[0]?.restored || log[0].pid === await page.evaluate(() => window.__guiLast.pid)) throw new Error(`not a restore followed by another process: ${JSON.stringify(log)}`);
+      await page.waitForTimeout(3000);
+      if ((await procs(page, app)).length !== 1) throw new Error(`not exactly one process of it: ${JSON.stringify(await procs(page, app))}`);
+      if (await entry(page, app)) throw new Error('the snapshot that did not run is still stored');
+      await quit(page, app);
+      await page.evaluate(() => { window.__guiSnapshotKillRestored = false; });
+      // the next launch: a usual start, and no new snapshot (it is asked for again when the build or a setting changes)
+      const o = await open(page, app);
+      await page.waitForTimeout(4000);
+      const after = await page.evaluate((app) => (window.__guiSnapshots ?? []).filter((e) => e.app === app), app);
+      if (o.restore?.restored || after.some((e) => e.taken)) throw new Error(`a snapshot was used or taken again: ${JSON.stringify(after)}`);
+      await quit(page, app);
+      await page.evaluate(() => localStorage.removeItem('tabcomputer-gui-snapshot-skip'));
+      return log.find((e) => e.restored === false).why;
+    });
+    await check('rules', 'the setting: off unless set (nothing is restored or taken, Settings has no switch); set, Settings shows the switch and Off forgets what was kept', async () => {
+      await page.evaluate(() => { sessionStorage.setItem('gs-leave-setting', '1'); localStorage.removeItem('tabcomputer-gui-snapshots'); });
       await again();
       const o = await open(page, app);
       await page.waitForTimeout(4000);
       const log = await page.evaluate(() => window.__guiSnapshots ?? []);
-      if (o.restore || log.length) throw new Error(`the snapshot code ran: ${JSON.stringify(log)}`);
+      if (o.restore || log.length) throw new Error(`the snapshot code ran with the setting unset: ${JSON.stringify(log)}`);
       await quit(page, app);
       await page.evaluate(() => { void window.__tabcomputer.desktop.openApp('settings', { pane: 'storage' }); });
-      await page.waitForFunction(() => document.querySelector('[data-snap="0"]')?.classList.contains('sd-active'), null, { timeout: 15_000 });
-      // On again from Settings: the default
-      await page.evaluate(() => document.querySelector('[data-snap="1"]').click());
-      const stored = await page.evaluate(() => localStorage.getItem('tabcomputer-gui-snapshots'));
-      if (stored !== null) throw new Error(`On left the setting at ${stored}`);
-      // Off from Settings forgets what was kept
+      await page.waitForFunction(() => /Persistent/.test(document.body.innerText), null, { timeout: 15_000 });
+      await page.waitForTimeout(500);
+      if (await page.evaluate(() => !!document.querySelector('[data-snap]'))) throw new Error('Settings shows the switch to someone who never set it');
+      await page.evaluate(() => { for (const w of window.__tabcomputer.desktop.windows()) if (w.appId === 'settings') w.close(); });
+      // set: a snapshot is kept again, the switch is there and says On
+      await page.evaluate(() => localStorage.setItem('tabcomputer-gui-snapshots', '1'));
+      await again();
+      await open(page, app);
+      const t = await taken(page, app);
+      if (!t.taken) throw new Error(`no snapshot with the setting on: ${t.why}`);
+      await quit(page, app);
+      await page.evaluate(() => { void window.__tabcomputer.desktop.openApp('settings', { pane: 'storage' }); });
+      await page.waitForFunction(() => document.querySelector('[data-snap="1"]')?.classList.contains('sd-active'), null, { timeout: 15_000 });
+      // Off from Settings forgets what was kept, and stays off
       await page.evaluate(() => document.querySelector('[data-snap="0"]').click());
       await page.waitForTimeout(1000);
       if (await entry(page, app)) throw new Error('Off left the stored snapshot');
-      await page.evaluate(() => { document.querySelector('[data-snap="1"]').click(); for (const w of window.__tabcomputer.desktop.windows()) if (w.appId === 'settings') w.close(); });
+      const stored = await page.evaluate(() => localStorage.getItem('tabcomputer-gui-snapshots'));
+      if (stored !== '0') throw new Error(`Off left the setting at ${stored}`);
+      await page.evaluate(() => { for (const w of window.__tabcomputer.desktop.windows()) if (w.appId === 'settings') w.close(); });
     });
   }
   if (errors.length) { failed++; console.log(`FAIL  page errors: ${errors.join('; ').slice(0, 400)}`); }
@@ -335,6 +374,7 @@ if (!only || only === 'retake') {
     const cdp = await browser.newBrowserCDPSession();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
+    await settingOn(page);
     const R = results.retake;
     const title = () => page.evaluate((app) => window.__tabcomputer.desktop.windows().filter((w) => w.appId === app && w.surface).map((w) => w.title), app);
     const until = async (what, test, ms = 40_000) => {

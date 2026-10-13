@@ -17,13 +17,12 @@
 //   node tests/browser/gui-launch-bench.mjs [URL] [--json FILE] [--md FILE] [--passes cold,warm,reload]
 //        [--engine-profile DIR] [--env K=V,...] [--set localStorageKey=value,...] [--label TEXT] [--snapshots] [APP...]
 //
-// Snapshots of started apps (docs/research/GUI_SNAPSHOTS.md) are on by default
-// for the tested apps, but a pass here quits the app 0.4 s after its window, before a
-// snapshot is taken: these are the times of a usual start. --snapshots lets
-// each start keep its snapshot, and waits after each quit for the background
+// --snapshots turns snapshots of started apps on (docs/research/GUI_SNAPSHOTS.md;
+// localStorage tabcomputer-gui-snapshots = 1), lets each start keep its
+// snapshot before it is quit, and waits after each quit for the background
 // retake (10 s of quiet, then a hidden start when the quit outdated the
 // snapshot), so warm and reload are what the next click gets: "restored" in
-// the table. `--set tabcomputer-gui-snapshots=0` is the setting off.
+// the table. Without it the times are a usual start's.
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools.
 // Exits 1 when an app fails to show a usable window.
@@ -281,6 +280,7 @@ for (const app of apps) {
   results.apps[app] = r;
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } }); // a fresh profile
   const page = await context.newPage();
+  if (snapshots && !('tabcomputer-gui-snapshots' in storage)) storage['tabcomputer-gui-snapshots'] = '1';
   if (Object.keys(storage).length) await page.addInitScript((s) => { for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v); }, storage);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));

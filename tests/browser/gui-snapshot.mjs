@@ -1,7 +1,7 @@
 // Snapshots of started GUI apps (docs/research/GUI_SNAPSHOTS.md; src/gui/snapshot.ts).
-// Per app, in a fresh browser profile with the setting as it is by default (on for the apps
-// of SNAPSHOT_TESTED, src/gui/snapshot-setting.ts; --all turns it on for every app, which is
-// how an app is tried before it joins that list):
+// Per app, in a fresh browser profile with the setting on (localStorage tabcomputer-gui-snapshots
+// = 1: the apps of SNAPSHOT_TESTED, src/gui/snapshot-setting.ts; --all sets it to `all`, every
+// app, which is how an app is tried before it joins that list):
 //   1. the first launch starts the program and, once it is up and quiet, keeps its snapshot;
 //   2. after a reload of the page, the next launch is restored from it: timed click → window;
 //   3. the restored app is used (the pointer for xeyes, typing for the editors) and must react;
@@ -231,7 +231,7 @@ for (const app of apps) {
   const r = results[app] = {};
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
-  if (all) await page.addInitScript(() => localStorage.setItem('tabcomputer-gui-snapshots', '1'));
+  await page.addInitScript((v) => localStorage.setItem('tabcomputer-gui-snapshots', v), all ? 'all' : '1');
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   try {
@@ -296,7 +296,9 @@ for (const app of apps) {
     failed++;
     r.error = String(e.message);
     r.log = await snapshotLog(page).catch(() => []);
-    console.log(`FAIL ${app}  ${String(e.message).split('\n')[0]}  ${JSON.stringify(r.log).slice(0, 400)}${errors.length ? '  page errors: ' + errors.join('; ').slice(0, 300) : ''}`);
+    // (what the app itself said last: an X error, an assertion)
+    r.output = await page.evaluate(() => (window.__guiLast?.output?.() ?? '').trim().split('\n').slice(-6).join(' | ')).catch(() => '');
+    console.log(`FAIL ${app}  ${String(e.message).split('\n')[0]}  ${JSON.stringify(r.log).slice(0, 400)}${r.output ? '  its output: ' + r.output.slice(0, 600) : ''}${errors.length ? '  page errors: ' + errors.join('; ').slice(0, 300) : ''}`);
   }
   await context.close();
   if (jsonOut) writeFileSync(jsonOut, JSON.stringify(results, null, 1));

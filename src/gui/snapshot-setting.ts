@@ -3,18 +3,23 @@
  * docs/research/GUI_SNAPSHOTS.md). Small on purpose: the launcher and the X
  * session read it without loading the snapshot code.
  *
- *   localStorage `tabcomputer-gui-snapshots`: `0` off, `1` on for every app,
- *     unset the default
- *   TABCOMPUTER_GUI_SNAPSHOTS=0 (exported in ~/.profile): off
+ *   localStorage `tabcomputer-gui-snapshots`: `1` on for the tested apps,
+ *     `all` on for every app, `0` off, unset the default
+ *   TABCOMPUTER_GUI_SNAPSHOTS=0 (exported in ~/.profile): off; =1 and =all as above
  *
- * The default is on for the apps `tests/browser/gui-snapshot.mjs` restores
- * and uses, in the browsers and on the machines it has run on: a Chromium
- * browser that is not a phone's, with 4 GB of memory or more. Everywhere
- * else an app starts the usual way unless the setting is `1`.
+ * The default is off (SNAPSHOT_DEFAULT_ON): one restored process in about a
+ * hundred ended at once in the tests, for a reason not found yet
+ * (GUI_SNAPSHOTS.md "Before it can be on by default"). When that constant is
+ * true the default is on for the tested apps, in the browsers and on the
+ * machines the tests have run on: a Chromium browser that is not a phone's,
+ * with 4 GB of memory or more.
  */
 import { isSafeMode } from '../safe-mode';
 
 export const SNAPSHOT_SETTING = 'tabcomputer-gui-snapshots';
+
+/** Whether snapshots are on where nobody set the setting (and `snapshotDefaultOn` agrees) */
+export const SNAPSHOT_DEFAULT_ON = false;
 
 /** The apps the test restores, uses and quits (docs/research/GUI_SNAPSHOTS.md "What works after a restore") */
 export const SNAPSHOT_TESTED = new Set(['xeyes', 'xclock', 'dillo', 'gpicview', 'l3afpad', 'galculator', 'geany', 'mousepad', 'featherpad', 'inkscape', 'gimp']);
@@ -23,7 +28,7 @@ export type SnapshotMode = 'off' | 'tested' | 'all';
 
 interface Nav { userAgentData?: { brands?: { brand: string }[]; mobile?: boolean }; deviceMemory?: number }
 
-/** Where snapshots are on without being asked for */
+/** Where snapshots would be on without being asked for: the browsers and machines they have been tested on */
 export function snapshotDefaultOn(nav: Nav | undefined = (globalThis as { navigator?: Nav }).navigator): boolean {
   const ua = nav?.userAgentData;
   if (!ua?.brands?.some((b) => b.brand === 'Chromium') || ua.mobile) return false;
@@ -34,14 +39,17 @@ function shellEnv(): Record<string, string | undefined> {
   return (globalThis as { __tabcomputer?: { shell?: { env?: Record<string, string | undefined> } } }).__tabcomputer?.shell?.env ?? {};
 }
 
+function storedSetting(): string | null {
+  try { return (globalThis as { localStorage?: Storage }).localStorage?.getItem(SNAPSHOT_SETTING) ?? null; } catch { return null; }
+}
 
-export function snapshotMode(o: { stored?: string | null; env?: Record<string, string | undefined>; nav?: Nav; safe?: boolean } = {}): SnapshotMode {
-  let stored = o.stored;
-  if (stored === undefined) { try { stored = (globalThis as { localStorage?: Storage }).localStorage?.getItem(SNAPSHOT_SETTING) ?? null; } catch { stored = null; } }
+export function snapshotMode(o: { stored?: string | null; env?: Record<string, string | undefined>; nav?: Nav; safe?: boolean; defaultOn?: boolean } = {}): SnapshotMode {
+  const stored = o.stored === undefined ? storedSetting() : o.stored;
   const env = (o.env ?? shellEnv()).TABCOMPUTER_GUI_SNAPSHOTS;
   if (stored === '0' || env === '0' || (o.safe ?? isSafeMode())) return 'off';
-  if (stored === '1' || env === '1') return 'all';
-  return snapshotDefaultOn(o.nav) ? 'tested' : 'off';
+  if (stored === 'all' || env === 'all') return 'all';
+  if (stored === '1' || env === '1') return 'tested';
+  return (o.defaultOn ?? SNAPSHOT_DEFAULT_ON) && snapshotDefaultOn(o.nav) ? 'tested' : 'off';
 }
 
 /** Snapshots are on for some app */
@@ -52,18 +60,23 @@ export function snapshotsFor(app: string, mode: SnapshotMode = snapshotMode()): 
   return mode === 'all' || (mode === 'tested' && SNAPSHOT_TESTED.has(app));
 }
 
-/** Whether Settings shows the switch: where snapshots are on unless turned off, or someone set the key by hand */
+/**
+ * Whether Settings shows the switch: where snapshots are on unless turned
+ * off, or where someone set the key. With the default off there is nothing
+ * to choose for a person who never asked.
+ */
 export function snapshotSwitchShown(): boolean {
-  let stored: string | null = null;
-  try { stored = (globalThis as { localStorage?: Storage }).localStorage?.getItem(SNAPSHOT_SETTING) ?? null; } catch { /* no storage */ }
-  return snapshotDefaultOn() || stored !== null;
+  return (SNAPSHOT_DEFAULT_ON && snapshotDefaultOn()) || storedSetting() !== null;
 }
 
-/** The switch in Settings: on is the default again, off is kept */
+/** The switch in Settings */
 export function setSnapshotsEnabled(on: boolean): void {
   try {
     const ls = (globalThis as { localStorage?: Storage }).localStorage;
-    if (on) { if (ls?.getItem(SNAPSHOT_SETTING) === '0') ls.removeItem(SNAPSHOT_SETTING); } else ls?.setItem(SNAPSHOT_SETTING, '0');
+    const byDefault = SNAPSHOT_DEFAULT_ON && snapshotDefaultOn();
+    // (the default is not written down: it is the default again when it changes)
+    if (on) { if (byDefault) { if (ls?.getItem(SNAPSHOT_SETTING) === '0') ls.removeItem(SNAPSHOT_SETTING); } else if (ls?.getItem(SNAPSHOT_SETTING) !== 'all') ls?.setItem(SNAPSHOT_SETTING, '1'); }
+    else ls?.setItem(SNAPSHOT_SETTING, '0');
   } catch { /* no storage: nothing is kept anyway */ }
 }
 

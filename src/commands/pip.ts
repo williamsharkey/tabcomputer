@@ -18,6 +18,7 @@ import {
 } from '../utils/pep440';
 import { readTarball } from '../utils/tar';
 import { buildSdist, stripTopDir, CompiledSdistError, OPTIONAL_EXTENSIONS } from './pip-sdist';
+import { fetchLock, lockClosure, pyodideProvides, recordPyodidePackage, rebuildPyodideIndex, PYODIDE_VERSION, type PyodideLock } from '../python/pyodide-dist';
 
 export const PY_PREFIX = '/usr/lib/pkg/python3';
 export const PY_VERSION = '3.13.7';
@@ -128,7 +129,10 @@ export interface Candidate { name: string; version: string; wheel: PypiFile; req
 /** What to do about a project the built-in Python can't have (tabcomputer#125). */
 const COMPILED_HINT = `the built-in Python can't load compiled extensions, and there is no pure-Python build of this one.
 Debian's Python can install it: toolchain install python`;
-/** In the Pyodide distribution, which \`pyodide\` fetches on first import (checked in a tab: docs/research/PYTHON_NATIVE_WHEELS.md). */
+/**
+ * In the Pyodide distribution. pip records these as Pyodide's (the \`provided\` hook of resolve); this
+ * hint is what is left to say when Pyodide's package list could not be fetched.
+ */
 const PYODIDE_HAS = new Set(['numpy', 'pandas', 'matplotlib']);
 const pyodideHint = (name: string) => (PYODIDE_HAS.has(normalizeName(name)) ? `\nOr run the program with pyodide (pyodide FILE.py), which has ${name}.` : '');
 
@@ -213,15 +217,25 @@ function safeSatisfies(v: ReturnType<typeof parseVersion> & {}, spec: string): b
 
 // ── resolve ──────────────────────────────────────────────────────────
 
-export interface ResolveOptions { upgrade?: boolean; noDeps?: boolean; pre?: boolean; forceReinstall?: boolean; log?: (s: string) => void }
+export interface ResolveOptions {
+  upgrade?: boolean; noDeps?: boolean; pre?: boolean; forceReinstall?: boolean; log?: (s: string) => void;
+  /**
+   * Asked when PyPI has nothing the built-in Python can install for a name:
+   * the Pyodide build of it, if there is one (numpy, pandas, matplotlib).
+   */
+  provided?: (name: string) => Promise<{ name: string; version: string } | null>;
+}
 
-export interface Plan { install: Candidate[]; satisfied: Installed[]; requested: Set<string> }
+/** A package that comes from Pyodide: recorded in site-packages, not downloaded (src/python/pyodide-dist.ts) */
+export interface PyodideChoice { name: string; version: string; pyodide: true }
+
+export interface Plan { install: Candidate[]; satisfied: Installed[]; requested: Set<string>; pyodide: PyodideChoice[] }
 
 export async function resolve(pypi: PyPI, roots: Requirement[], installed: Map<string, Installed>, opts: ResolveOptions = {}): Promise<Plan> {
   const env = markerEnv(PY_VERSION);
   const specs = new Map<string, Specifier[]>();
   const extras = new Map<string, Set<string>>();
-  const chosen = new Map<string, Candidate | Installed>();
+  const chosen = new Map<string, Candidate | Installed | PyodideChoice>();
   const requested = new Set(roots.map(r => normalizeName(r.name)));
   const queue: { req: Requirement; parentExtras: string[]; root: boolean }[] = roots.map(req => ({ req, parentExtras: [], root: true }));
   const log = opts.log ?? (() => {});
@@ -253,7 +267,19 @@ export async function resolve(pypi: PyPI, roots: Requirement[], installed: Map<s
       continue;
     }
     log(`Collecting ${req.text.split(';')[0].trim()}\n`);
-    const cand = await pypi.best(req, all, !!opts.pre);
+    let cand: Candidate;
+    try {
+      cand = await pypi.best(req, all, !!opts.pre);
+    } catch (e) {
+      // Nothing for the built-in Python: Pyodide's build, when it has one (its dependencies come with it)
+      const p = await opts.provided?.(req.name).catch(() => null);
+      if (!p) throw e;
+      if (!satisfies(p.version, all, true)) {
+        throw new Error(`${p.name}${all.map(s => s.op + s.version).join(',')}: ${p.name} is compiled, so it comes from Pyodide ${PYODIDE_VERSION}, which has version ${p.version} only`);
+      }
+      chosen.set(key, { name: p.name, version: p.version, pyodide: true });
+      continue;
+    }
     if (have && !opts.forceReinstall && have.version === cand.version && !upgradeThis) {
       chosen.set(key, have);
       continue;
@@ -269,7 +295,8 @@ export async function resolve(pypi: PyPI, roots: Requirement[], installed: Map<s
     if (!opts.noDeps) await enqueueDeps(cand, [...ex]);
   }
 
-  async function enqueueDeps(c: Candidate | Installed, withExtras: string[]) {
+  async function enqueueDeps(c: Candidate | Installed | PyodideChoice, withExtras: string[]) {
+    if ('pyodide' in c) return;
     const reqs = 'requires' in c ? c.requires : (c.metadata['requires-dist'] ?? []);
     for (const r of reqs) {
       try { queue.push({ req: parseRequirement(r), parentExtras: withExtras, root: false }); } catch { /* skip malformed */ }
@@ -278,8 +305,9 @@ export async function resolve(pypi: PyPI, roots: Requirement[], installed: Map<s
 
   const install: Candidate[] = [];
   const satisfied: Installed[] = [];
-  for (const c of chosen.values()) ('wheel' in c ? install.push(c) : satisfied.push(c));
-  return { install, satisfied, requested };
+  const pyodide: PyodideChoice[] = [];
+  for (const c of chosen.values()) ('pyodide' in c ? pyodide.push(c) : 'wheel' in c ? install.push(c) : satisfied.push(c));
+  return { install, satisfied, requested, pyodide };
 }
 
 // ── install / uninstall ──────────────────────────────────────────────
@@ -603,6 +631,7 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
       await uninstall(fs, d);
       out(`  Successfully uninstalled ${d.name}-${d.version}\n`);
     }
+    await rebuildPyodideIndex(fs, target.site, await listInstalled(fs, target.site));
     return 0;
   }
 
@@ -663,7 +692,12 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         if (!noDeps) roots.push(...ed.requires.map(parseRequirement));
       }
       if (editables.length) installed = await listInstalled(fs, target2.site);
-      const plan = await resolve(pypi, roots, installed, { upgrade, noDeps, pre, forceReinstall, log });
+      let lock: PyodideLock | null = null;
+      const provided = async (name: string) => {
+        lock ??= await fetchLock(fetchFn);
+        return pyodideProvides(lock, name);
+      };
+      const plan = await resolve(pypi, roots, installed, { upgrade, noDeps, pre, forceReinstall, log, provided });
 
       if (sub === 'download') {
         const dir = fs.resolvePath(dest ?? '.', ctx.cwd);
@@ -672,6 +706,7 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
           await writeFile(fs, `${dir}/${c.wheel.filename}`, data);
           log(`Saved ${dir}/${c.wheel.filename}\n`);
         }
+        if (plan.pyodide.length) log(`Not downloaded (compiled; they come from Pyodide when a program runs): ${plan.pyodide.map(c => c.name).join(', ')}\n`);
         log('Successfully downloaded ' + plan.install.map(c => c.name).join(' ') + '\n');
         return 0;
       }
@@ -692,8 +727,30 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         }
         toInstall.push({ name: c.name, version: c.version, data, requested: plan.requested.has(normalizeName(c.name)) });
       }
+      // What Pyodide provides is recorded, with the packages it brings along: nothing to download now
+      const recorded: string[] = [];
+      if (plan.pyodide.length && lock) {
+        const wanted = new Map<string, boolean>();
+        for (const c of plan.pyodide) {
+          for (const p of lockClosure(lock, c.name)) {
+            const key = normalizeName(p.name);
+            wanted.set(key, wanted.get(key) || plan.requested.has(key));
+          }
+        }
+        for (const [key, requested] of wanted) {
+          const p = (lock as PyodideLock).packages[key];
+          // (one that pip already installed from PyPI stays: a pure-Python package serves both Pythons)
+          if (installed.has(key) || plan.install.some(c => normalizeName(c.name) === key)) continue;
+          await recordPyodidePackage(fs, target2.site, p, requested);
+          recorded.push(`${p.name}-${p.version}`);
+        }
+        log(`Provided by Pyodide, the tab's Python for compiled packages (python3 runs a program that imports them there): ${plan.pyodide.map(c => `${c.name} ${c.version}`).join(', ')}\n`);
+        if (!fetchFn) void import('../pyodide-worker/host').then(h => h.warmPyodide(plan.pyodide.flatMap(c => lockClosure(lock!, c.name).map(p => p.file_name)))).catch(() => {});
+      }
+      const finish = async () => { if (recorded.length || toInstall.length) await rebuildPyodideIndex(fs, target2.site, await listInstalled(fs, target2.site)); };
       if (!toInstall.length) {
-        if (editableNames.length) log(`Successfully installed ${editableNames.join(' ')}\n`);
+        await finish();
+        if (editableNames.length || recorded.length) log(`Successfully installed ${[...editableNames, ...recorded].join(' ')}\n`);
         return 0;
       }
       log(`Installing collected packages: ${toInstall.map(t => t.name).join(', ')}\n`);
@@ -706,7 +763,8 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         }
         await installWheel(fs, t.data, target2, { requested: t.requested });
       }
-      log(`Successfully installed ${[...editableNames, ...toInstall.map(t => `${t.name}-${t.version}`)].join(' ')}\n`);
+      await finish();
+      log(`Successfully installed ${[...editableNames, ...recorded, ...toInstall.map(t => `${t.name}-${t.version}`)].join(' ')}\n`);
       return 0;
     } catch (e: any) {
       ctx.stderr += `ERROR: ${e?.message ?? e}\n` + (e instanceof CompiledSdistError ? `${COMPILED_HINT}\n` : '');

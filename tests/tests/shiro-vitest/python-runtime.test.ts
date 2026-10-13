@@ -289,9 +289,10 @@ describe('Python Runtime', () => {
 
   describe('source code structure', () => {
     it('should use Pyodide CDN URL', async () => {
-      const pySource = await import('@shiro/commands/python?raw');
-      const src = typeof pySource === 'string' ? pySource : pySource.default;
-      expect(src).toContain('cdn.jsdelivr.net/pyodide');
+      // (the one place that names it: src/python/pyodide-dist.ts)
+      const { PYODIDE_CDN, pyodideIndexURL } = await import('@shiro/python/pyodide-dist');
+      expect(PYODIDE_CDN).toContain('cdn.jsdelivr.net/pyodide');
+      expect(pyodideIndexURL()).toBe(PYODIDE_CDN);
     });
 
     it('should redirect stdout/stderr through StringIO', async () => {

@@ -2,8 +2,10 @@
 
 Research for tabcomputer#125 (and #112), 2026-10-12, Build 1008 plus branch
 `unix/python-wheels`. Measured on an Apple M3 in headless Chrome unless a line
-says otherwise. Nothing here was built: this is what was measured, what now
-works, and the plan for numpy, pandas and matplotlib.
+says otherwise. What was measured, what now works, and the plan for numpy,
+pandas and matplotlib. Option A of that plan has since been built: the last
+section says how it turned out, and the sections before it describe the tab
+as it was before.
 
 ## What the built-in Python is
 
@@ -172,3 +174,74 @@ compiled that Pyodide does not ship (check50, Jupyter with real kernels).
   less than 45 s after `python3 t.py` started (the first check was at 45 s).
   The built-in Python has no tkinter (`import turtle` fails at
   `import tkinter`); a canvas-backed turtle for it is not written.
+
+## Option A, as built (2026-10-13, branch `unix/pyodide-numpy`)
+
+Measured by `tests/browser/pyodide-numpy.mjs` on an Apple M3 in headless
+Chrome against a local build, a fresh profile, packages from pypi.org and
+cdn.jsdelivr.net. Four runs over three builds; a range is the fastest and the
+slowest of them.
+
+What a student types: `pip install numpy pandas matplotlib`, then
+`python3 plot.py`. Nothing names Pyodide.
+
+| Step | Time |
+| --- | --- |
+| `pip install numpy pandas matplotlib` (records them; downloads nothing, starts fetching in the background; the time is pypi.org answering) | 0.4 to 2.3 s |
+| `python3 hello.py`, no compiled import: the built-in Python, as before | 0.2 to 0.4 s |
+| `pyodide -c "import numpy"` in a fresh profile (Pyodide and numpy fetched) | 1.8 to 2.6 s |
+| the same again | 0.7 to 0.9 s |
+| `python3 np.py` (imports numpy) after `pip install`, whole command | 0.5 to 1.0 s |
+| `import numpy` inside it | 0.2 to 0.4 s |
+| `python3 chart.py`: pandas `read_csv` of 500 rows and a matplotlib `savefig`, packages already fetched, whole command | 2.8 s |
+| of which `import pandas` | 1.2 to 1.3 s |
+| `pd.read_csv` | 0.01 s |
+| `import matplotlib.pyplot` | 0.6 to 0.7 s |
+| `plt.savefig` (640x480 PNG, 24 kB, written to the tab's files) | 0.1 s |
+| `python3 show.py` (`plt.show()`: a window with the figure) | 2.0 to 2.2 s |
+| longest delay of the page's main thread during a 3 s numpy loop | under 1 ms |
+
+How it works is in AGENTS.md ("Languages And Toolchains"). In short: Pyodide
+0.29.5 (CPython 3.13.2, numpy 2.2.5, pandas 2.3.3, matplotlib 3.8.4) runs as a
+kernel process in a Worker; its filesystem calls are syscalls on the tab's
+kernel, so it reads and writes the tab's files at their own paths; `pip`
+records a compiled package Pyodide has instead of refusing it; `python3`
+scans a program's imports and runs it in Pyodide when one needs such a
+package.
+
+Not done, or different from a desktop Python:
+
+- No sockets, subprocess, threads or multiprocessing in Pyodide (checked with
+  Pyodide 0.29.5 under Node: `subprocess` raises "emscripten does not support
+  processes", a thread "can't start new thread", `urllib` times out). A
+  program that needs numpy and the network together does not work in either
+  Python. `asyncio.run` works where the browser has JSPI (Chrome), because
+  the program is entered with `callPromising`; elsewhere it raises.
+- Only `python3` typed at a shell (or run by one) is routed. A `python3`
+  started by another program by path (make, a subprocess) is the built-in
+  one, and so are the REPL and `python3 -`: there `import numpy` raises
+  ModuleNotFoundError saying to use `python3 --pyodide`. `python3 -m pytest`
+  on code that imports numpy needs `--pyodide` for the same reason.
+- `plt.show()` does not wait for the window to be closed; it returns at once
+  and closes the figures. No pan or zoom: the window shows a PNG.
+- `/lib`, `/dev` and `/proc` inside Pyodide are its own, not the tab's. FIFOs
+  and devices of the tab are not reachable, and `mmap` of a tab file fails.
+  `OSError.errno` carries Emscripten's numbers (ENOENT is 44), the exception
+  classes are right.
+- Each program starts a fresh Pyodide (about 0.3 s when one was loaded
+  ahead, about 1 s otherwise).
+
+Hosting. Everything comes from `https://cdn.jsdelivr.net/pyodide/v0.29.5/full/`
+(`pyodideIndexURL` in `src/python/pyodide-dist.ts`). As served (brotli),
+measured with `curl -I`: the core is 5.3 MB (`pyodide.asm.wasm` 2.67 MB,
+`python_stdlib.zip` 2.39 MB, `pyodide.asm.js` 0.23 MB, the lock 0.03 MB);
+numpy adds 2.8 MB, pandas 5.0 MB more (with python-dateutil, pytz, six),
+matplotlib 9.0 MB more (with pillow, fonttools, contourpy, kiwisolver, cycler,
+packaging, pyparsing): 22.1 MB for a class that uses all three. scipy is
+16.3 MB, scikit-learn 5.8 MB on top of it. Moving to the site's mirror needs:
+a copy of that `full/` directory (the five core files and the wheels to be
+offered; Pyodide checks each wheel's sha256 from the lock) served from the
+page's origin with `application/wasm` for the `.wasm` and long cache
+lifetimes, and the default of `pyodideIndexURL` pointed at it (today
+localStorage `tabcomputer-pyodide-url` overrides it, for trying a mirror).
+Nothing was uploaded.

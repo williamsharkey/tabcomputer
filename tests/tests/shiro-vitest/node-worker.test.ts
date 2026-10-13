@@ -333,6 +333,36 @@ w.terminate();
     expect(r.out).toBe('ok 42\n');
   }, 60_000);
 
+  it("worker_threads: a MessagePort goes to the thread in a transfer list, and closes when the thread ends (#82)", async () => {
+    const r = await sh(`node /tmp/nt3/m.js < /dev/null`, async (fs) => {
+      await fs.mkdir('/tmp/nt3', { recursive: true });
+      await fs.writeFile('/tmp/nt3/w.js', `const { parentPort, threadId, isMainThread } = require('worker_threads');
+parentPort.once('message', ({ port, sab }) => {
+  port.on('message', (m) => {
+    if (m === 'exit') process.exit(5);
+    // the parent blocks until this thread, running beside it, has answered
+    port.postMessage({ m, isMainThread, thread: threadId > 0 });
+    const a = new Int32Array(sab); Atomics.store(a, 0, 1); Atomics.notify(a, 0);
+  });
+});
+`);
+      await fs.writeFile('/tmp/nt3/m.js', `const { Worker, MessageChannel } = require('worker_threads');
+const w = new Worker('/tmp/nt3/w.js');
+const { port1, port2 } = new MessageChannel();
+const sab = new SharedArrayBuffer(4), a = new Int32Array(sab);
+w.postMessage({ port: port2, sab }, [port2]);
+port1.postMessage('ping');
+console.log(Atomics.wait(a, 0, 0, 10000));
+port1.on('message', (m) => { console.log(JSON.stringify(m)); port1.postMessage('exit'); });
+port1.on('close', () => console.log('port closed'));
+w.on('exit', (code) => console.log('exit', code));
+`);
+    });
+    expect(r.err).toBe('');
+    expect(r.out.split('\n').slice(0, 2).join('\n')).toBe('ok\n{"m":"ping","isMainThread":false,"thread":true}');
+    expect(r.out.split('\n').slice(2).sort().join('\n')).toBe('\nexit 5\nport closed');
+  }, 60_000);
+
   it("a guest's server-sent events stream to the page as they are written", async () => {
     const { iframeServer } = await import('@shiro/iframe-server');
     const { shell, fs } = await createTestShell();

@@ -10,13 +10,14 @@
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/image-paste.mjs [http://localhost:5299/]
 import { createRequire } from 'node:module';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
 for (const p of ['playwright', 'playwright-core', '/opt/node-tools/node_modules/playwright']) {
   try { ({ chromium } = require(p)); break; } catch { /* next */ }
 }
 const base = new URL(process.argv[2] || 'http://localhost:5299/');
-const exe = process.env.CHROMIUM || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
 await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base.origin });

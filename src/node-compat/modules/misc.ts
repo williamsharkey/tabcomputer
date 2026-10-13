@@ -5,6 +5,7 @@ import { createQuerystringModule } from './querystring';
 import { createZlibModule } from './zlib';
 import { createAssertModule } from './assert';
 import type { CommandContext } from '../../commands/index';
+import { createWorkerPorts } from './worker-ports';
 
 export interface MiscDeps {
   ctx: CommandContext;
@@ -19,6 +20,8 @@ export interface MiscDeps {
   requireModule: (id: string, fromDir: string) => any;
   /** Runs a worker_threads Worker's script in its own module context on this thread. */
   startWorker?: (filename: string, options: any, worker: any) => void;
+  /** Run `fn` a task later, counted as the script's activity until it has run (a MessagePort's deliveries) */
+  deferTask?: (fn: () => void) => void;
 }
 
 export function createMiscModule(name: string, deps: MiscDeps): any | null {
@@ -307,31 +310,9 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         return obj;
       }
 
-      class MessagePort {
-        constructor() { makeEmitter(this); }
-        postMessage(_value: any, _transferList?: any[]) {}
-        start() {}
-        close() { (this as any).emit('close'); }
-        ref() { return this; }
-        unref() { return this; }
-        // EventEmitter methods added by makeEmitter
-        on!: (ev: string, fn: Function) => this;
-        once!: (ev: string, fn: Function) => this;
-        off!: (ev: string, fn: Function) => this;
-        addListener!: (ev: string, fn: Function) => this;
-        removeListener!: (ev: string, fn: Function) => this;
-        removeAllListeners!: (ev?: string) => this;
-        emit!: (ev: string, ...args: any[]) => boolean;
-      }
-
-      class MessageChannel {
-        port1: MessagePort;
-        port2: MessagePort;
-        constructor() {
-          this.port1 = new MessagePort();
-          this.port2 = new MessagePort();
-        }
-      }
+      // Joined ports, and ports that go to another thread in a transfer list (worker-ports.ts)
+      const ports = createWorkerPorts(makeEmitter, deps.deferTask ?? ((fn) => { setTimeout(fn, 0); }));
+      const { MessagePort, MessageChannel } = ports;
 
       /**
        * worker.stdout / worker.stderr: what the worker writes, with { stdout: true } /
@@ -371,7 +352,7 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
       class Worker {
         threadId = nextThreadId++;
         resourceLimits = {};
-        _toWorker?: (value: any) => void;
+        _toWorker?: (value: any, transferList?: any[]) => void;
         _terminate?: () => void;
         _exited = false;
         stdout: any;
@@ -393,7 +374,7 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
             (this as any).emit('exit', 1);
           }, 0);
         }
-        postMessage(value: any, _transferList?: any[]) { this._toWorker?.(value); }
+        postMessage(value: any, transferList?: any[]) { this._toWorker?.(value, transferList); }
         terminate(): Promise<number> {
           this._terminate?.();
           if (!this._exited) { this._exited = true; (this as any).emit('exit', 0); }
@@ -429,6 +410,7 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         parentPort: null,
         workerData: null,
         _makeEmitter: makeEmitter,
+        _ports: ports,
         threadId: 0,
         resourceLimits: {},
         SHARE_ENV: Symbol('SHARE_ENV'),
@@ -438,7 +420,7 @@ export function createMiscModule(name: string, deps: MiscDeps): any | null {
         BroadcastChannel,
         markAsUntransferable: (_obj: any) => {},
         moveMessagePortToContext: (port: any, _ctx: any) => port,
-        receiveMessageOnPort: (_port: any) => undefined,
+        receiveMessageOnPort: ports.receiveMessageOnPort,
         setEnvironmentData: (key: any, value: any) => { envData.set(key, value); },
         getEnvironmentData: (key: any) => envData.get(key),
       };

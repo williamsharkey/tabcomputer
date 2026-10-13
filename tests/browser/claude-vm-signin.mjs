@@ -22,6 +22,7 @@
 import { createRequire } from 'node:module';
 import { createServer, request as httpRequest } from 'node:http';
 import { createHash } from 'node:crypto';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
 for (const p of ['playwright', 'playwright-core', '/opt/node-tools/node_modules/playwright']) {
@@ -29,7 +30,7 @@ for (const p of ['playwright', 'playwright-core', '/opt/node-tools/node_modules/
 }
 
 const upstream = new URL(process.argv[2] ?? 'http://localhost:5299/');
-const exe = process.env.CHROMIUM || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const START_MS = 240_000; // (the first start extracts the bundle)
 const BLOCK = !!process.env.BLOCK;
 const SESSION = process.env.LOGIN === 'session';

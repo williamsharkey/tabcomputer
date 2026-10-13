@@ -17,11 +17,10 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium } = pw;
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -78,7 +77,7 @@ async function stubGitHub(context, state) {
   });
 }
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium') });
 async function open(viewport, theme, init = {}) {
   const context = await browser.newContext({ viewport, colorScheme: theme, ...(viewport.width < 500 ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } : {}) });
   const state = { requests: [], polls: 0, expired: false };

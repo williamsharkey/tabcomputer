@@ -18,20 +18,18 @@
 //   node tests/browser/classroom.mjs http://localhost:5837/ [--shots DIR]
 //
 // Node 22.18+ (it imports the TypeScript stand-in as it is). CHROMIUM= picks the browser.
-import { createRequire } from 'node:module';
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { fakeGitHub, parseCommit, parseTree } from '../tests/shiro-vitest/git-github-api-fake.ts';
-const require = createRequire(import.meta.url);
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 let chromium;
-try { ({ chromium } = require('playwright-core')); } catch { try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); } }
+({ chromium } = loadPlaywright());
 
 const argv = process.argv.slice(2);
 const shotsAt = argv.indexOf('--shots');
 const shots = shotsAt < 0 ? null : argv.splice(shotsAt, 2)[1];
 const url = argv[0] ?? 'http://localhost:5837/';
 if (shots) mkdirSync(shots, { recursive: true });
-const MAC = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const exe = process.env.CHROMIUM || (existsSync(MAC) ? MAC : '/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failed++; };
 

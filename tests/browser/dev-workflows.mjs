@@ -13,16 +13,17 @@
 // (CHROMIUM, default the pre-installed one).
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const only = opt('--only');
 const shots = opt('--shots');
 const url = args[0] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.WORKFLOW_LIMIT_MS || 900_000); // per step
 if (shots) mkdirSync(shots, { recursive: true });
 

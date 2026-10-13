@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
 for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_modules/playwright', 'playwright-core'].filter(Boolean)) {
@@ -60,7 +61,7 @@ const pattern = (n) => Buffer.from(Array.from({ length: n }, (_, i) => (i * 7) &
 const file = (name, n) => ({ name, mimeType: 'application/octet-stream', buffer: pattern(n) });
 const sha = (n) => createHash('sha256').update(pattern(n)).digest('hex');
 
-const browser = await pw.chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 
 async function newTab(viewport) {
   const context = await browser.newContext({ viewport, acceptDownloads: true });

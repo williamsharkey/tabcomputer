@@ -10,29 +10,26 @@
 // Prints one line per step with its time; exits 1 if a step fails.
 // PLAYWRIGHT= and CHROMIUM= pick the tools (default: playwright or
 // playwright-core from node_modules, the pre-installed Chromium).
-import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
-const require = createRequire(import.meta.url);
-let chromium;
-for (const m of [process.env.PLAYWRIGHT, 'playwright', 'playwright-core', '/opt/node-tools/node_modules/playwright'].filter(Boolean)) {
-  try { ({ chromium } = require(m)); break; } catch { /* the next one */ }
-}
+import { chromiumPath, joinWrappedRows, loadPlaywright } from './_browser.mjs';
+const { chromium } = loadPlaywright();
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
 const url = args[0] || 'http://localhost:5299/?ui=terminal';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.WORKFLOW_LIMIT_MS || 300_000); // per step
 if (shots) mkdirSync(shots, { recursive: true });
 
-const bufferOf = (page) => page.evaluate(() => {
-  const t = window.__tabcomputer.terminal.term;
-  const b = t.buffer.active;
+// Whole lines: a row xterm wrapped is joined to the one before it, so pip's long
+// "Successfully installed ..." line matches at any terminal width.
+const bufferOf = async (page) => joinWrappedRows(await page.evaluate(() => {
+  const b = window.__tabcomputer.terminal.term.buffer.active;
   const rows = [];
-  for (let y = 0; y < b.length; y++) rows.push(b.getLine(y)?.translateToString(true) ?? '');
-  return rows.join('\n');
-});
+  for (let y = 0; y < b.length; y++) { const l = b.getLine(y); rows.push({ text: l?.translateToString(false) ?? '', wrapped: !!l?.isWrapped }); }
+  return rows;
+}));
 
 let marks = 0;
 /** Type `cmd` at the prompt and wait for its exit status (as in dev-workflows.mjs). */

@@ -292,6 +292,44 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     if ((events['error'] || []).length) events['error'].forEach((h) => h(e));
     else deps.getProcess?.()?.stderr?.write(`${e?.stack ?? e}\n`);
   };
+  /**
+   * A program run without a shell that isn't there is node's ENOENT, not an exit
+   * status: an 'error' with code 'ENOENT', then 'close' with -2 (execFile's callback
+   * gets the error). Programs tell "not installed" from "failed" by that code: jest
+   * 30 took a missing `watchman` for a broken one and ran no tests (tabcomputer#81).
+   * Here the program is found by running it, so the sign is the shell's (or the
+   * kernel's) own message with status 127; a guest's kernel, asked for the program
+   * itself, says ENOENT, which node-worker/child.ts reports as KERNEL_ENOENT.
+   */
+  const KERNEL_ENOENT = 'spawn sh: errno 2\n';
+  const notFoundHeads = (file: string) => [`tabcomputer: command not found: ${file}\n`, `${file}: command not found\n`];
+  const isMissing = (file: string, code: number | null, stderr: string): boolean =>
+    code === 127 && !isShellBin(file) && notFoundHeads(file).some((h) => stderr.replace(/\r\n/g, '\n').startsWith(h));
+  const enoent = (file: string, args?: unknown[], sync = false) => Object.assign(new Error(`${sync ? 'spawnSync' : 'spawn'} ${file} ENOENT`),
+    { errno: -2, code: 'ENOENT', syscall: `${sync ? 'spawnSync' : 'spawn'} ${file}`, path: file, spawnargs: (args ?? []).map(String) });
+  /**
+   * A child's stderr on its way to listeners: what may be the not-found message waits
+   * for the exit status, so a missing program writes nothing (as in node). `missing()`
+   * at the end says whether it was; if not, what waited goes out.
+   */
+  const notFoundGate = (file: string, pass: (t: string) => void) => {
+    const heads = notFoundHeads(file);
+    let held: string | null = isShellBin(file) ? null : '';
+    const release = () => { const all = held; held = null; if (all) pass(all); };
+    return {
+      write(t: string) {
+        if (held === null) { pass(t); return; }
+        held += t;
+        const h = held.replace(/\r\n/g, '\n');
+        if (!heads.some((x) => x.startsWith(h) || h.startsWith(x))) release();
+      },
+      missing(code: number | null): boolean {
+        const m = held !== null && isMissing(file, code, held);
+        if (!m) release();
+        return m;
+      },
+    };
+  };
   /** A page shell's output for `live`: its \r\n line ends as \n, a \r at a chunk's end kept for the next */
   const lfChunks = () => {
     let cr = false;
@@ -558,6 +596,8 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
     inheritOut: boolean; inheritErr: boolean; resolve: (v: any) => void;
     /** the program and its arguments, when it ran without a shell */
     argv?: string[];
+    /** the program, when no shell runs it: one that isn't there is ENOENT (notFoundGate) */
+    file?: string;
   }): any => {
     const { FakeBuffer } = deps;
     const bytesOf = (d: any, enc?: string): Uint8Array => typeof d === 'string' ? FakeBuffer.from(d, enc) : d instanceof Uint8Array ? d : FakeBuffer.from(d);
@@ -638,6 +678,12 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       : /(^|\/)node$/.test(io.argv[0]) ? ['node', ...io.argv.slice(1)] : io.argv;
     const envGiven = opts?.env ?? (direct ? proc?.env : undefined);
     const env = envGiven ? Object.fromEntries(Object.entries(envGiven).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])) : undefined;
+    const errOut = (b: Uint8Array | string) => deliver(() => {
+      if (io.inheritErr) proc?.stderr?.write(b);
+      else if (errOpen) (io.stderrEvents['data'] || []).forEach((fn) => fn(FakeBuffer.from(b)));
+    });
+    const errText = new TextDecoder();
+    const gate = io.file && !io.inheritErr ? notFoundGate(io.file, errOut) : null;
     deps.guest!.runChild(cmd, {
       cwd: opts?.cwd ? ctx.fs.resolvePath(String(opts.cwd), ctx.cwd) : ctx.cwd,
       ...(env ? { env } : {}),
@@ -645,10 +691,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         if (io.inheritOut) proc?.stdout?.write(b);
         else if (outOpen) (io.stdoutEvents['data'] || []).forEach((fn) => fn(FakeBuffer.from(b)));
       }),
-      onStderr: (b) => deliver(() => {
-        if (io.inheritErr) proc?.stderr?.write(b);
-        else if (errOpen) (io.stderrEvents['data'] || []).forEach((fn) => fn(FakeBuffer.from(b)));
-      }),
+      onStderr: (b) => { if (gate) gate.write(errText.decode(b, { stream: true })); else errOut(b); },
       ...(ipcIn ? { ipc: (b: Uint8Array | null) => { if (b) ipcIn!(b); else ipcGone(); } } : {}),
       ...(direct ? { argv: direct } : {}),
       ...(opts?.serialization === 'advanced' ? { serialization: 'advanced' as const } : {}),
@@ -659,9 +702,23 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         child.pid = c.pid;
         for (const b of early.splice(0)) if (b) c.write(b); else c.end();
       },
-    }).then((r) => deliver(() => {
+    }).then((r) => {
+      // (the kernel, asked for the program itself, refuses one that isn't there: child.ts's words for that)
+      const gone = !!gate?.missing(r.status) || (!!gate && !!direct && r.status === 127 && new TextDecoder().decode(r.stderr) === KERNEL_ENOENT);
+      deliver(() => {
       exited = true;
       fileCache.clear(); // files it changed are read again
+      if (gone) {
+        const e = enoent(io.file!, io.argv?.slice(1));
+        child.exitCode = -2;
+        ipcGone();
+        (io.events['error'] || []).forEach((fn) => fn(e));
+        for (const ev of ['end', 'close']) { (io.stdoutEvents[ev] || []).forEach((fn) => fn()); (io.stderrEvents[ev] || []).forEach((fn) => fn()); }
+        (io.events['close'] || []).forEach((fn) => fn(-2, null));
+        io.resolve({ stdout: '', stderr: '', exitCode: -2 });
+        unhold();
+        return;
+      }
       const code = r.status ?? 128 + (r.signal ?? 0);
       for (const ev of ['end', 'close']) { (io.stdoutEvents[ev] || []).forEach((fn) => fn()); (io.stderrEvents[ev] || []).forEach((fn) => fn()); }
       child.exitCode = r.status;
@@ -670,7 +727,7 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       (io.events['close'] || []).forEach((fn) => fn(r.status, child.signalCode));
       io.resolve({ stdout: '', stderr: '', exitCode: code });
       unhold();
-    }));
+    }); });
     return child;
   };
   /** kill() for a child execAsync runs with `killer`: the signal to it (#89, #90); `sent` notes it */
@@ -850,6 +907,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       }
       if (deps.guest) {
         const g = guestSync(fullCmd, opts);
+        // (no such program: `error` with ENOENT and no status, as node's)
+        if (!opts?.shell && isMissing(cmd, g.r.status, new TextDecoder().decode(g.r.stderr))) {
+          const none = typeof g.stdout === 'string' ? '' : FakeBuffer.from('');
+          return { pid: 0, output: [null, none, none], stdout: none, stderr: none, status: null, signal: null, error: enoent(cmd, args, true) };
+        }
         return { pid: g.r.pid, output: [null, g.stdout, g.stderr], stdout: g.stdout, stderr: g.stderr, status: g.r.status, signal: signalName(g.r.signal) };
       }
       const wantString = opts?.encoding && opts.encoding !== 'buffer';
@@ -873,7 +935,9 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       let stderr = '';
       let status: number | null = 0;
       let signal: string | null = null; // the signal that ended it: then status is null, as node's
+      let gone: Error | undefined; // (no such program: ENOENT)
       const p = execAsync(fullCmd, undefined, inputOf(opts), undefined, inheritOf(opts)).then(r => {
+        if (!opts?.shell && isMissing(cmd, r.exitCode, r.stderr)) { gone = enoent(cmd, args, true); status = null; return; }
         signal = signalName(r.signal);
         r = inherited(r, opts); stdout = r.stdout; stderr = r.stderr; status = signal ? null : r.exitCode;
       });
@@ -883,10 +947,10 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
         get stderr() { return wrap(stderr); },
         get status() { return status; },
         get signal() { return signal; },
-        get error() { return status !== 0 && !signal ? new Error(`spawnSync exited with ${status}`) : undefined; },
+        get error() { return gone ?? (status !== 0 && !signal ? new Error(`spawnSync exited with ${status}`) : undefined); },
         // awaited (sync-await.ts): the whole result, as node's spawnSync returns it
         then: (resolve: any, reject: any) => p.then(() => resolve({
-          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal,
+          pid: 0, output: [null, wrap(stdout), wrap(stderr)], stdout: wrap(stdout), stderr: wrap(stderr), status, signal, ...(gone ? { error: gone } : {}),
         })).catch(reject),
       };
     },
@@ -954,13 +1018,25 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       let killedWith: number | null = null;
       child.kill = killVia(child, killer, (n) => { killedWith ??= n; });
       const live = execLive(childEvents);
+      const gate = notFoundGate(file, live.err);
       const cmdP = isClipCmd
         ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(inCwd(cmd, opts), opts?.env, undefined, live, undefined, killer, undefined, (pid) => { child.pid = pid; });
+        : execAsync(inCwd(cmd, opts), opts?.env, undefined, { out: live.out, err: gate.write }, undefined, killer, undefined, (pid) => { child.pid = pid; });
       const untime = isClipCmd ? () => {} : execTimeout(child, opts);
       const p = cmdP.then(r => {
         untime();
+        // (no such program: the error, 'close' with -2, and nothing written)
+        if (gate.missing(r.exitCode) || (!opts?.shell && isMissing(file, r.exitCode, r.stderr) && !r.stdout)) {
+          const e = Object.assign(enoent(file, args), { cmd });
+          child.exitCode = -2;
+          (childEvents['error'] || []).forEach(fn => fn(e));
+          (childEvents['stdout_end'] || []).forEach(fn => fn());
+          (childEvents['stderr_end'] || []).forEach(fn => fn());
+          (childEvents['close'] || []).forEach(fn => fn(-2, null));
+          callback?.(e, '', '');
+          return;
+        }
         live.flush();
         (childEvents['stdout_end'] || []).forEach(fn => fn());
         (childEvents['stderr_end'] || []).forEach(fn => fn());
@@ -1115,9 +1191,11 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       };
       const live = !isClipboardCmd && !stdioOutPath && !stdioErrPath
         ? liveTo({ out: liveStream(inheritOut, 'stdout', stdoutEvents), err: liveStream(inheritErr, 'stderr', stderrEvents) }, listenerError(events)) : undefined;
+      // (a program that isn't there, run without a shell: ENOENT, below)
+      const gate = live && !opts?.shell ? notFoundGate(cmd, live.err) : null;
       // A guest's child with piped stdin: live pipes both ways, a real process
       if (deps.guest && !isClipboardCmd && !stdioOutPath && !stdioErrPath && !inherits(opts?.stdio, 0) && !ignores(opts?.stdio, 0)) {
-        return spawnGuestLive(child, fullCmd, opts, { stdoutEvents, stderrEvents, events, inheritOut, inheritErr, resolve: (v) => _resolveChild?.(v), argv: !opts?.shell && args ? [cmd, ...args.map(String)] : undefined });
+        return spawnGuestLive(child, fullCmd, opts, { stdoutEvents, stderrEvents, events, inheritOut, inheritErr, resolve: (v) => _resolveChild?.(v), argv: !opts?.shell && args ? [cmd, ...args.map(String)] : undefined, file: opts?.shell ? undefined : cmd });
       }
       // A node child with piped stdio in the page: live pipes both ways (live-stdin.ts),
       // for programs that talk to it while it runs (esbuild's API and its --service)
@@ -1128,13 +1206,23 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       const cmdPromise = isClipboardCmd
         ? new Promise<{ stdout: string; stderr: string; exitCode: number; signal?: number | null }>(resolve =>
             setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 0))
-        : execAsync(fullCmd, opts?.env, undefined, live, [inherits(opts?.stdio, 0), inheritOut, inheritErr], killer,
+        : execAsync(fullCmd, opts?.env, undefined, live && gate ? { out: live.out, err: gate.write } : live, [inherits(opts?.stdio, 0), inheritOut, inheritErr], killer,
           // (a kernel guest's child without a shell: the program itself, as spawnGuestLive's)
           deps.guest && args && !opts?.shell && !isShellBin(cmd) && !/(^|\/)rg$/.test(cmd) ? {
             argv: /(^|\/)node$/.test(cmd) ? ['node', ...args.map(String)] : [cmd, ...args.map(String)],
             ...(opts?.cwd ? { cwd: ctx.fs.resolvePath(String(opts.cwd), ctx.cwd) } : {}),
           } : undefined);
       const p = cmdPromise.then(r => {
+        // (a guest's kernel, asked for the program itself, refuses one that isn't there)
+        if (gate?.missing(r.exitCode) || (gate && deps.guest && r.exitCode === 127 && r.stderr === KERNEL_ENOENT)) {
+          const e = enoent(cmd, args);
+          child.exitCode = -2;
+          (events['error'] || []).forEach(fn => fn(e));
+          for (const ev of ['end', 'close']) { (stdoutEvents[ev] || []).forEach(fn => fn()); (stderrEvents[ev] || []).forEach(fn => fn()); }
+          (events['close'] || []).forEach(fn => fn(-2, null));
+          _resolveChild?.({ stdout: '', stderr: '', exitCode: -2 });
+          return;
+        }
         const writePromises: Promise<any>[] = [];
         // Write output to stdio file paths FIRST (before emitting events, because
         // event handlers may call closeSync which deletes the fd→path mapping).
@@ -1195,7 +1283,12 @@ export function createChildProcessModule(deps: ChildProcessDeps): any {
       } else {
         fullCmd = args ? `${file} ${shellQuoteArgs(args)}` : file;
       }
-      if (deps.guest) { const g = guestSync(fullCmd, opts); guestThrow(fullCmd, g); return g.stdout; }
+      if (deps.guest) {
+        const g = guestSync(fullCmd, opts);
+        if (!opts?.shell && isMissing(file, g.r.status, new TextDecoder().decode(g.r.stderr))) throw enoent(file, args, true);
+        guestThrow(fullCmd, g);
+        return g.stdout;
+      }
       // Synchronous fast-path for detection commands
       fullCmd = inCwd(fullCmd, opts); // (the guest above takes cwd as an option)
       const syncResponse = inputOf(opts) === undefined ? syncInherited(getSyncResponse(fullCmd), opts) : null;

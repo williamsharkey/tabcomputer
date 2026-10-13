@@ -20,11 +20,10 @@ import { createRequire } from 'node:module';
 import { gzipSync } from 'node:zlib';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium } = pw;
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -50,7 +49,7 @@ const up = await fetch(`${PLAIN}/api/seed`, { method: 'POST', body: gzipSync(JSO
 if (!up.ok) { console.log(`FAIL the server keeps no shared seeds (start it with TABCOMPUTER_SEED_SHARE=1): HTTP ${up.status}`); process.exit(1); }
 const { id: SEED } = await up.json();
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 async function newContext(options = {}) {
   const ctx = await browser.newContext(options);
   await ctx.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });

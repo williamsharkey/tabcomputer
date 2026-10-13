@@ -4,11 +4,12 @@
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/term-queries.mjs [http://localhost:5299/]
 import { createRequire } from 'node:module';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 const base = process.argv[2] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const page = await (await browser.newContext()).newPage();
 await page.goto(base);

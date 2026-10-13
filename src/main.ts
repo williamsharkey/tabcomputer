@@ -156,6 +156,9 @@ async function main() {
   const profile = activeProfile();
   const mode = uiMode();
   const desktopModule = mode === 'desktop' ? import('./desktop/index') : null;
+  // The terminal UI has no sign-in sheet: a command that needs GitHub opens the one-time-code panel
+  // (github-needed.ts; the desktop registers its sheet in desktop/network.ts). Never in a guest.
+  if (mode !== 'desktop') void Promise.all([import('./github-needed'), import('./guest')]).then(([m, g]) => { if (!g.guestInfo()) m.setGitHubNeedHandler(() => m.deviceFlowAsker()); });
   // Its fonts download alongside (the desktop appears once they have: one draw)
   if (desktopModule) {
     for (const f of ['inter-latin-wght', 'jetbrains-mono-latin-wght']) {

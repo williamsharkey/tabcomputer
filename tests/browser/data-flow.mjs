@@ -23,11 +23,10 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium } = pw;
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -45,7 +44,7 @@ const APIKEY = 'sk-ant-api03-FAKE-dataflow-check-key';
 const RELAY_SECRET = 'RELAYQUERYSECRETFAKE';
 const SECRETS = [TOKEN, CLAUDE, APIKEY, RELAY_SECRET];
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 
 async function load(ctx, url) {
   const page = await ctx.newPage();

@@ -23,6 +23,11 @@ const GLOBE = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="1
 let root: HTMLElement;
 let fsRef: FileSystem;
 let wmRef: WindowManager;
+import { setGitHubNeedHandler, GITHUB_NEED_REASON, type GitHubNeed } from '../github-needed';
+
+/** What the sheet is asked for: a network sign-in, or a GitHub sign-in a command needs (github-needed.ts) */
+type SheetNeed = NetworkNeed & { github?: GitHubNeed };
+
 let current: { el: HTMLElement; done: (tok: string | null) => void; promise: Promise<string | null> } | null = null;
 
 export function initNetwork(wm: WindowManager, fs: FileSystem, button: HTMLElement, _kernel?: Kernel): void {
@@ -34,6 +39,8 @@ export function initNetwork(wm: WindowManager, fs: FileSystem, button: HTMLEleme
   onOwnRelayChange(() => { setNetworkStatus(navigator.onLine ? 'online' : 'offline'); });
   // A guest never asks for a sign-in by itself: a token saved there is the guest's to read
   if (!guestInfo()) setNetworkSignInHandler((need) => showSignInSheet(need));
+  // A command that failed for want of a GitHub sign-in asks through the same sheet
+  if (!guestInfo()) setGitHubNeedHandler((need) => showSignInSheet({ github: need }));
   const initial: NetworkStatus = guestInfo()?.noNetwork ? 'unavailable' : !navigator.onLine ? 'offline' : networkCredential() ? 'signed-in' : 'online';
   setNetworkStatus(initial);
   window.addEventListener('online', () => setNetworkStatus(guestInfo()?.noNetwork ? 'unavailable' : networkCredential() ? 'signed-in' : 'online'));
@@ -154,11 +161,12 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | null> {
+function showSignInSheet(need: SheetNeed, manual = false): Promise<string | null> {
   if (current) return current.promise;
   const sheet = el('div', 'sd-sheet');
   sheet.setAttribute('role', 'dialog');
-  sheet.setAttribute('aria-label', 'Connect to the internet');
+  const gh = need.github;
+  sheet.setAttribute('aria-label', gh ? 'Sign in with GitHub' : 'Connect to the internet');
   let resolveFn!: (tok: string | null) => void;
   const promise = new Promise<string | null>((r) => { resolveFn = r; });
   const abort = new AbortController();
@@ -174,6 +182,33 @@ function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | nu
 
   const what = need.host ? `${esc(need.reason ?? 'A program wants to connect')} (${esc(need.host)}${need.port ? ':' + need.port : ''}).` : esc(need.reason ?? 'A program wants to connect to the internet.');
   const ask = () => {
+    // A command needs GitHub: the sign-in is the one prominent button, the rest is behind "Other ways"
+    if (gh) {
+      sheet.innerHTML = `
+      <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLYPHS.key}</div><div>
+        <h3>Sign in with GitHub to finish</h3>
+        <p><code>${esc(gh.action)}</code> needs a GitHub sign-in. ${esc(GITHUB_NEED_REASON[gh.kind])}</p>
+        <p class="sd-small sd-muted">${gh.afterFailure ? `Sign in, then run <code>${esc(gh.action)}</code> again.` : `<code>${esc(gh.action)}</code> runs again by itself once you are signed in.`}</p>
+      </div></div>
+      <div class="sd-sheet-actions">
+        <button class="sd-link sd-small" data-act="other" type="button">Other ways</button>
+        <span class="sd-grow"></span>
+        <button class="sd-btn" data-act="later" type="button">Not now</button>
+        <button class="sd-btn sd-primary" data-act="github" type="button">Sign in with GitHub</button>
+      </div>
+      <div class="sd-other sd-small sd-muted" hidden style="margin-top:10px">
+        <label for="sd-gh-token">Paste a GitHub token</label>
+        <div class="sd-row" style="gap:8px;border:0;padding:4px 0">
+          <input id="sd-gh-token" class="sd-input sd-grow" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… or github_pat_…">
+          <button class="sd-btn" data-act="token" type="button">Use token</button></div>
+        <div class="sd-status-line"></div>
+        ${gh.kind === 'rate-limit' ? '<div>Or wait: GitHub\'s limit for visitors resets within the hour.</div>' : ''}
+        ${gh.kind === 'private' ? '<div>A public repository clones without a sign-in. Check the name if this one should be public.</div>' : ''}
+        <div>In a terminal: <code>gh auth login</code>, or <code>gh auth login --with-token</code>.</div>
+      </div>`;
+      sheet.querySelector<HTMLElement>('[data-act=github]')!.focus();
+      return;
+    }
     sheet.innerHTML = `
       <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLOBE}</div><div>
         <h3>Connect to the internet</h3>
@@ -199,8 +234,31 @@ function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | nu
     else if (act === 'other') { const o = sheet.querySelector<HTMLElement>('.sd-other'); if (o) o.hidden = !o.hidden; }
     else if (act === 'github' || act === 'retry') void deviceFlow();
     else if (act === 'own') { done(null); void wmRef?.openApp('settings', { pane: 'network' }); }
+    else if (act === 'token') void useToken();
   });
   sheet.addEventListener('keydown', (e) => { if (e.key === 'Escape') done(null); });
+
+  // "Other ways": a token the user made at GitHub. Checked against GitHub before it is saved.
+  const useToken = async () => {
+    const input = sheet.querySelector<HTMLInputElement>('#sd-gh-token');
+    const line = sheet.querySelector<HTMLElement>('.sd-other .sd-status-line');
+    const tok = input?.value.trim() ?? '';
+    const say = (text: string, cls = '') => { if (line) { line.textContent = text; line.className = 'sd-status-line ' + cls; } };
+    if (!tok) { say('Paste a token first.', 'err'); return; }
+    say('Checking the token with GitHub…');
+    try {
+      const res = await fetch(`${githubApiBase('')}/user`, { headers: { Authorization: `Bearer ${tok}`, Accept: 'application/vnd.github+json' }, signal: abort.signal });
+      if (!res.ok) { say(res.status === 401 ? 'GitHub does not accept this token.' : `GitHub answered ${res.status}.`, 'err'); return; }
+      const gha = await import('../github-auth');
+      gha.saveGitHubToken(tok);
+      setNetworkStatus('signed-in');
+      void gha.ensureGitIdentity(fsRef, tok).catch(() => {});
+      say('Signed in.', 'ok');
+      setTimeout(() => done(tok), 600);
+    } catch (e) {
+      if (!abort.signal.aborted) say(`The token could not be checked: ${(e as Error)?.message ?? e}`, 'err');
+    }
+  };
 
   const deviceFlow = async () => {
     sheet.innerHTML = `
@@ -213,8 +271,8 @@ function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | nu
       if (s) { s.textContent = text; s.className = 'sd-status-line ' + cls; }
     };
     try {
-      const gh = await import('../github-auth');
-      const code = await gh.requestDeviceCode(gh.DEFAULT_GITHUB_SCOPES);
+      const gha = await import('../github-auth');
+      const code = await gha.requestDeviceCode(gha.DEFAULT_GITHUB_SCOPES);
       if (abort.signal.aborted) return;
       sheet.innerHTML = `
         <div class="sd-sheet-head"><div class="sd-sheet-icon">${GLYPHS.key}</div><div>
@@ -230,11 +288,11 @@ function showSignInSheet(need: NetworkNeed, manual = false): Promise<string | nu
       const copy = () => { navigator.clipboard?.writeText(code.user_code).catch(() => {}); };
       sheet.querySelector('[data-act=copy]')!.addEventListener('click', (e) => { copy(); (e.currentTarget as HTMLElement).textContent = 'Copied'; });
       sheet.querySelector('[data-act=open]')!.addEventListener('click', copy);
-      const token = await gh.pollForToken(code, { signal: abort.signal, onStatus: (s) => { if (s === 'slow_down') status('Still waiting…'); } });
-      gh.saveGitHubToken(token);
+      const token = await gha.pollForToken(code, { signal: abort.signal, onStatus: (s) => { if (s === 'slow_down') status('Still waiting…'); } });
+      gha.saveGitHubToken(token);
       setNetworkStatus('signed-in');
-      void gh.ensureGitIdentity(fsRef, token).catch(() => {});
-      status('Connected. Programs can reach the internet now.', 'ok');
+      void gha.ensureGitIdentity(fsRef, token).catch(() => {});
+      status(gh ? (gh.afterFailure ? `Signed in. Run ${gh.action} again.` : `Signed in. ${gh.action} is running again.`) : 'Connected. Programs can reach the internet now.', 'ok');
       setTimeout(() => done(token), 1200);
     } catch (e) {
       if (abort.signal.aborted) return;

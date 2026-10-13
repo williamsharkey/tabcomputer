@@ -93,11 +93,14 @@ function parseColor(color: string): [number, number, number] {
 let lastDownloadBlob: Blob | null = null;
 let lastDownloadFilename: string | null = null;
 let origCreateElement: typeof document.createElement;
+let origObjectURL: { create: typeof URL.createObjectURL; revoke: typeof URL.revokeObjectURL } | null = null;
 
 function installDownloadCapture() {
   lastDownloadBlob = null;
   lastDownloadFilename = null;
 
+  // URL is the page's own under `hotswap test`: teardown puts these back (#106)
+  origObjectURL ??= { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
   (globalThis as any).URL.createObjectURL = (blob: Blob) => {
     lastDownloadBlob = blob;
     return 'blob:test';
@@ -120,6 +123,11 @@ function installDownloadCapture() {
 }
 
 function teardownDownloadCapture() {
+  if (origObjectURL) {
+    (globalThis as any).URL.createObjectURL = origObjectURL.create;
+    (globalThis as any).URL.revokeObjectURL = origObjectURL.revoke;
+    origObjectURL = null;
+  }
   if (origCreateElement) {
     document.createElement = origCreateElement;
   }
@@ -734,7 +742,9 @@ describe('seed blob — self-contained clipboard snippet', () => {
     (globalThis as any).URL.revokeObjectURL = () => {};
 
     try {
-      await (0, eval)(snippet);
+      // The snippet is page code: it reaches `document` by name. Give it this suite's
+      // (under `hotswap test` that is the run's own, not the page's, #106).
+      await new Function('document', 'return eval(arguments[1])')(document, snippet);
       expect(iframeEl).not.toBeNull();
 
       await iframeEl.onload?.();

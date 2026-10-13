@@ -6,15 +6,12 @@
 //
 //   npx vite build && PORT=5611 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/class-papercuts.mjs http://localhost:5611/
-import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
-const require = createRequire(import.meta.url);
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 let chromium;
-try { ({ chromium } = require('playwright-core')); } catch { try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); } }
+({ chromium } = loadPlaywright());
 
 const url = process.argv[2] ?? 'http://localhost:5611/';
-const MAC = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const exe = process.env.CHROMIUM || (existsSync(MAC) ? MAC : '/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failed++; };

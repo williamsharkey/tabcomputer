@@ -20,11 +20,10 @@
 import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium, devices } = pw;
 
 const args = process.argv.slice(2);
@@ -32,7 +31,7 @@ const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined :
 const shots = opt('--shots');
 const only = opt('--only');
 const url = args[0] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
+const exe = chromiumPath('/opt/pw-browsers/chromium');
 const SETTLE_MS = Number(process.env.NO_REFLOW_SETTLE_MS || 4000);
 if (shots) mkdirSync(shots, { recursive: true });
 

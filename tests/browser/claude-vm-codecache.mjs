@@ -16,12 +16,13 @@ import { createRequire } from 'node:module';
 import { fakeBunElf } from '../tests/shiro-vitest/fake-bun-elf.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const url = process.argv[2] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
+const exe = chromiumPath('/opt/pw-browsers/chromium');
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 let page = await (await browser.newContext()).newPage();
 let failed = 0;

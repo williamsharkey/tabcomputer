@@ -311,6 +311,18 @@ describe('git commands', () => {
       expect((await sh('cd /tmp/o && git log --format=%s')).out).toBe('two\nh\ninit\n');
     });
 
+    it('rebase after merges replays only what the target lacks, without the merges (tabcomputer#131)', async () => {
+      await setup();
+      // main: init, m2, a merge of f, m3. t: m2, t1, a merge of f, t2 (the tree is git 2.39.5's for the same commands)
+      await sh('cd /tmp/o && git commit -qm init && echo a >> f && git commit -qam m2 && git checkout -qb t && echo t > t.txt && git add t.txt && git commit -qm t1'
+        + ' && git checkout -q main && git checkout -qb side HEAD~1 && echo 1 > f1.txt && git add f1.txt && git commit -qm f1 && git checkout -q main && git merge -q -m mf side'
+        + ' && echo b >> f && git commit -qam m3 && git checkout -q t && git merge -q -m tf side && echo u > u.txt && git add u.txt && git commit -qm t2');
+      const r = await sh('cd /tmp/o && git rebase -q main');
+      expect([r.code, r.out]).toEqual([0, '']);
+      expect((await sh('cd /tmp/o && git log --format=%s -3 && git status -s && git rev-list --count --merges main..t && cat f && ls')).out)
+        .toBe('t2\nt1\nm3\n0\n1\na\nb\nf\nf1.txt\nt.txt\nu.txt\n');
+    });
+
     it('rebase goes to the full git package once it can be installed (a local stand-in for the package)', async () => {
       await setup();
       await sh('cd /tmp/o && git commit -qm init');

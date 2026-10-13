@@ -47,10 +47,11 @@ import { patchPackageSource } from './source-patches';
 import { createHttpModule, createHttpsModule, createHttp2Module } from './modules/http';
 import { createNetModule, createTlsModule } from './modules/net-tls';
 import { createMiscModule } from './modules/misc';
+import type { WorkerPorts } from './modules/worker-ports';
 import { createAppShim } from './shims/app-shims';
 import { getShiroOrigin } from '../utils/shiro-origin';
 
-import { PAGE_FETCH, PAGE_SET_TIMEOUT, PAGE_CLEAR_TIMEOUT, PAGE_SET_INTERVAL, PAGE_CLEAR_INTERVAL, SCRIPT_TIMER_NAMES, type ScriptTimers } from './page-globals';
+import { PAGE_FETCH, PAGE_SET_TIMEOUT, PAGE_CLEAR_TIMEOUT, PAGE_SET_INTERVAL, PAGE_CLEAR_INTERVAL, SCRIPT_TIMER_NAMES, SCRIPT_PORT_NAMES, type ScriptTimers } from './page-globals';
 
 /** A Node Timeout object around a page timer id: ref/unref/hasRef/refresh,
  *  and it converts to the id, so arithmetic and clearTimeout(id) both work
@@ -253,7 +254,17 @@ export async function executeNodeScript(
     // The process's own globalThis (its writes stay its own; globalThis.process is its process)
     // (a guest runs in a Worker: node code doesn't see its worker globals)
     const workerOnly = nodeGuestOf(ctx) ? WORKER_ONLY_GLOBALS : [];
-    const processGlobal = createProcessGlobal({ process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers }, workerOnly);
+    // (its MessageChannel and MessagePort are worker_threads', made when first read)
+    const portGlobals: Record<string, unknown> = {};
+    const ownGlobals: Record<string, unknown> = { process: fakeProcess, Buffer: FakeBuffer, console: fakeConsole, ...scriptTimers };
+    for (const k of SCRIPT_PORT_NAMES) {
+      Object.defineProperty(ownGlobals, k, {
+        configurable: true, enumerable: true,
+        get: () => (k in portGlobals ? portGlobals[k] : getBuiltinModule('worker_threads')[k]),
+        set: (v) => { portGlobals[k] = v; },
+      });
+    }
+    const processGlobal = createProcessGlobal(ownGlobals, workerOnly);
     const processFunction = createProcessFunction(processGlobal, fakeProcess, FakeBuffer);
     /** Packages this script reaches that run as their browser builds (rolldown): filled before it starts */
     const browserModules = new Map<string, any>();
@@ -280,11 +291,18 @@ export async function executeNodeScript(
     /** What keeps this script running for worker_threads: ref'd Workers it started, or (a thread) a parentPort listened to */
     const liveWorkers = new Set<any>();
     let parentPortAlive = () => false;
-    const threadsAlive = () => liveWorkers.size > 0 || parentPortAlive();
+    const threadsAlive = () => liveWorkers.size > 0 || parentPortAlive() || !!_builtinCache.get('worker_threads')?._ports?.alive();
+    /** The script's MessageChannel and MessagePort (SCRIPT_PORT_NAMES): worker_threads' own, as node's globals are */
+    const scriptPorts = () => { const wt = getBuiltinModule('worker_threads'); return SCRIPT_PORT_NAMES.map((k) => wt[k]); };
+    /** A task later, and the script's activity until then (a message between threads or ports on its way) */
+    const deferTask = (fn: () => void) => { trackAsync(new Promise<void>((done) => { _baseST(() => { try { fn(); } finally { done(); } }, 0); })); };
     function threadSide(mainWT: any, t: NonNullable<typeof guest>['thread'] & object): any {
       const parentPort: any = mainWT._makeEmitter({});
       let refd = true, closed = false;
-      parentPort.postMessage = (v: any) => { if (!closed) t.post(v); };
+      // (ports in a transfer list go across as ids: worker-ports.ts)
+      const wp: WorkerPorts = mainWT._ports;
+      const link = wp.link((wire) => t.post(wire));
+      parentPort.postMessage = (v: any, transfer?: any[]) => { if (closed) return; const m = wp.encode(link, v, transfer); t.post(m.wire); m.after(); };
       parentPort.start = () => {};
       parentPort.close = () => { closed = true; parentPort.emit('close'); };
       parentPort.ref = () => { refd = true; return parentPort; };
@@ -301,7 +319,7 @@ export async function executeNodeScript(
         const orig = parentPort[k];
         if (typeof orig === 'function') parentPort[k] = (ev: string, fn: any) => { const r = orig(ev, fn); if (ev === 'message') flush(); return r; };
       }
-      t.onMessage((v) => { queued.push(v); flush(); });
+      t.onMessage((v) => { const m = wp.receive(link, v); if (m) { queued.push(m.value); flush(); } });
       parentPortAlive = () => !closed && refd && parentPort.listenerCount('message') > 0;
       return { ...mainWT, isMainThread: false, parentPort, workerData: t.workerData, threadId: t.threadId };
     }
@@ -384,7 +402,7 @@ export async function executeNodeScript(
         default: {
           const appShim = createAppShim(name, { ctx, fileCache, fakeProcess, FakeBuffer });
           if (appShim !== null) return appShim;
-          return createMiscModule(name, { ctx, FakeBuffer, fakeProcess, fakeConsole, getBuiltinModule, fileCache, moduleCache, requireModule, startWorker, scriptTimers });
+          return createMiscModule(name, { ctx, FakeBuffer, fakeProcess, fakeConsole, getBuiltinModule, fileCache, moduleCache, requireModule, startWorker, scriptTimers, deferTask });
         }
       }
     }
@@ -398,7 +416,7 @@ export async function executeNodeScript(
     // Require function (module resolver + loader)
     const requireModule = createRequireFunction({
       ctx, fileCache, fileMtimes, moduleCache, pendingPromises, processEvents,
-      getBuiltinModule, fakeConsole, fakeProcess, FakeBuffer, processGlobal, processFunction, browserModules, scriptTimers: scriptTimers as unknown as Record<string, Function>,
+      getBuiltinModule, fakeConsole, fakeProcess, FakeBuffer, processGlobal, processFunction, browserModules, scriptTimers: scriptTimers as unknown as Record<string, Function>, scriptPorts,
       createExpressShim: expressFactory,
       createSqliteShim: () => createSqliteShim({ ctx }),
       createAutoStub,
@@ -419,11 +437,13 @@ export async function executeNodeScript(
         const target = options?.eval ? String(filename)
           : filename.startsWith('file://') ? decodeURIComponent(new URL(filename).pathname) : ctx.fs.resolvePath(String(filename), ctx.cwd);
         const env = options?.env && typeof options.env === 'object' ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : undefined;
+        const wp: WorkerPorts = getBuiltinModule('worker_threads')._ports;
+        const link = wp.link((wire) => h.post(wire));
         const h = guest.startThread(target, { threadId: worker.threadId, eval: !!options?.eval, workerData: options?.workerData, argv: options?.argv?.map(String), env, stdout: !!options?.stdout, stderr: !!options?.stderr }, {
           stdout: (b) => worker.stdout?._push(b),
           stderr: (b) => worker.stderr?._push(b),
           online: () => worker.emit('online'),
-          message: (v) => { if (!worker._exited) worker.emit('message', v); },
+          message: (v) => { const m = wp.receive(link, v); if (m && !worker._exited) worker.emit('message', m.value); },
           error: (e) => {
             const err = Object.assign(new Error(e.message), { stack: e.stack ?? e.message });
             if (worker.listenerCount('error')) worker.emit('error', err);
@@ -431,12 +451,13 @@ export async function executeNodeScript(
           },
           exit: (code) => {
             liveWorkers.delete(worker);
+            wp.unlink(link);
             if (!worker._exited) { worker._exited = true; worker.emit('exit', code); }
           },
         });
         liveWorkers.add(worker);
-        worker._toWorker = (v: any) => h.post(v);
-        worker._terminate = () => { liveWorkers.delete(worker); h.terminate(); };
+        worker._toWorker = (v: any, transfer?: any[]) => { const m = wp.encode(link, v, transfer); h.post(m.wire); m.after(); };
+        worker._terminate = () => { liveWorkers.delete(worker); wp.unlink(link); h.terminate(); };
         worker.ref = () => { if (!worker._exited) liveWorkers.add(worker); return worker; };
         worker.unref = () => { liveWorkers.delete(worker); return worker; };
         return;
@@ -452,18 +473,28 @@ export async function executeNodeScript(
       const mainWT = getBuiltinModule('worker_threads');
       const parentPort: any = mainWT._makeEmitter({});
       let alive = true;
-      const clone = (v: any) => { try { return structuredClone(v); } catch { return v; } };
+      // (a port in the transfer list is the same port on arrival: both threads are this one)
+      const clone = (v: any, transfer?: any[]) => (mainWT._ports as WorkerPorts).localClone(v, transfer);
       // A message between the threads is activity from post to handler (pnpm
       // unref()s its workers; under load the hop outlasted the idle window and
       // pnpm exited mid-install)
-      const deliver = (fn: () => void) => { trackAsync(new Promise<void>((done) => { _baseST(() => { try { fn(); } finally { done(); } }, 0); })); };
-      parentPort.postMessage = (v: any) => { const c = clone(v); deliver(() => { if (!worker._exited) worker.emit('message', c); }); };
+      const deliver = deferTask;
+      // Ports the worker has hold nothing open themselves (the Worker does, while it is ref'd),
+      // and close with it, so their other ends do: a thread's ports in node
+      const wp: WorkerPorts = mainWT._ports;
+      const owned = new Set<any>();
+      const own = (list: unknown[] | undefined, mine: boolean) => {
+        wp.adopt(list, mine);
+        for (const p of Array.isArray(list) ? list : []) if (p instanceof mainWT.MessagePort) { if (mine) owned.add(p); else owned.delete(p); }
+      };
+      parentPort.postMessage = (v: any, transfer?: any[]) => { const c = clone(v, transfer); own(transfer, false); deliver(() => { if (!worker._exited) worker.emit('message', c); }); };
       parentPort.start = () => {};
       parentPort.close = () => { alive = false; };
       parentPort.ref = parentPort.unref = () => parentPort;
-      worker._toWorker = (v: any) => { const c = clone(v); deliver(() => { if (alive) parentPort.emit('message', c); }); };
-      worker._terminate = () => { alive = false; parentPort.removeAllListeners(); };
-      const workerWT = { ...mainWT, isMainThread: false, parentPort, workerData: clone(options.workerData), threadId: worker.threadId };
+      worker._toWorker = (v: any, transfer?: any[]) => { const c = clone(v, transfer); own(transfer, true); deliver(() => { if (alive) parentPort.emit('message', c); }); };
+      worker._terminate = () => { alive = false; parentPort.removeAllListeners(); for (const p of owned) p.close(); owned.clear(); };
+      class WorkerChannel extends mainWT.MessageChannel { constructor() { super(); own([(this as any).port1, (this as any).port2], true); } }
+      const workerWT = { ...mainWT, MessageChannel: WorkerChannel, isMainThread: false, parentPort, workerData: clone(options.workerData), threadId: worker.threadId };
       // `new Worker(f, { env })`: the worker's process.env (SvelteKit's build tells its forked steps so)
       const workerEnv = options?.env && typeof options.env === 'object'
         ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)])) : null;
@@ -539,7 +570,7 @@ export async function executeNodeScript(
     const fn = compileAsyncModule(AsyncFunction, [
       'console', 'process', 'require', 'Buffer', '__filename', '__dirname', 'shiro', '__import_meta', 'module', 'exports', '__dynamic_import',
       '__shiro_module', '__shiro_require', 'global', '__shiro_require_ready', 'globalThis', 'Function',
-      ...SCRIPT_TIMER_NAMES, ...workerOnly,
+      ...SCRIPT_TIMER_NAMES, ...SCRIPT_PORT_NAMES, ...workerOnly,
     ], wrappedCode);
 
     // Fake import.meta for ES modules
@@ -979,7 +1010,7 @@ export async function executeNodeScript(
           cwd: ctx.cwd,
         }, fakeImportMeta, fakeModule, fakeExports, dynamicImport, fakeModule, entryRequire, processGlobal,
         (p: string) => requireModule.ready(p, entryDirname, entryFilename), processGlobal, processFunction,
-        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...workerOnly.map(() => undefined)),
+        ...SCRIPT_TIMER_NAMES.map((k) => (scriptTimers as any)[k]), ...scriptPorts(), ...workerOnly.map(() => undefined)),
         timeoutPromise,
       ]);
       (requireModule as any).mainLoaded?.();

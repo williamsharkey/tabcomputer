@@ -4,7 +4,7 @@
  * Extracted from node-cmd.ts requireModule()/_requireModule().
  */
 
-import { SCRIPT_TIMER_NAMES } from './page-globals';
+import { SCRIPT_TIMER_NAMES, SCRIPT_PORT_NAMES } from './page-globals';
 import type { CommandContext } from '../commands/index';
 import { patchPackageSource } from './source-patches';
 import { transformESModules, transformTS, transformJSX, esmLive } from '../commands/jseval/module-transform';
@@ -31,6 +31,8 @@ export interface RequireDeps {
   processGlobal?: any;
   /** Packages loaded as their browser builds, by specifier (browser-packages.ts) */
   browserModules?: Map<string, any>;
+  /** The process's MessageChannel and MessagePort, in SCRIPT_PORT_NAMES' order */
+  scriptPorts?: () => unknown[];
   /** Its Function: code compiled at run time sees the process's globals (process-global.ts) */
   processFunction?: FunctionConstructor;
   createExpressShim: () => any;
@@ -497,7 +499,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
         'module', 'exports', 'require', '__filename', '__dirname',
         'console', 'process', 'global', 'Buffer', '__import_meta',
         '__shiro_module', '__shiro_require', '__dynamic_import', '__shiro_require_ready', 'globalThis', 'Function',
-        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES : []), ...(guest ? WORKER_ONLY_GLOBALS : []),
+        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES : []), ...(deps.scriptPorts ? SCRIPT_PORT_NAMES : []), ...(guest ? WORKER_ONLY_GLOBALS : []),
       ];
       const dynamicImport = async (specifier: unknown) => {
         let spec = String(specifier);
@@ -508,7 +510,7 @@ export function createRequireFunction(deps: RequireDeps): RequireFunction {
       const fnArgs = [mod, mod.exports, nestedRequire, resolved, modDir,
         fakeConsole, fakeProcess, deps.processGlobal ?? globalThis, FakeBuffer, modImportMeta,
         mod, nestedRequire, dynamicImport, (p: string) => requireReady(p, modDir, resolved), deps.processGlobal ?? globalThis, deps.processFunction ?? Function,
-        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES.map((k) => deps.scriptTimers![k]) : []), ...(guest ? WORKER_ONLY_GLOBALS.map(() => undefined) : [])];
+        ...(deps.scriptTimers ? SCRIPT_TIMER_NAMES.map((k) => deps.scriptTimers![k]) : []), ...(deps.scriptPorts ? deps.scriptPorts() : []), ...(guest ? WORKER_ONLY_GLOBALS.map(() => undefined) : [])];
 
       const AsyncFn = Object.getPrototypeOf(async function(){}).constructor;
       const runAsync = (wrapped: (...a: any[]) => Promise<any>) => {

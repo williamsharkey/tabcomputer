@@ -608,12 +608,12 @@ async function main() {
   (window as any).__tabcomputerKernel = kernel;
   kernel.attach(fs, shell);
   installNet(kernel); // socket syscalls (src/kernel/net.ts, docs/NETWORKING.md)
+  // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
+  followRelaySetting(kernel);
   // PostgreSQL on localhost:5432 (src/postgres/service.ts): nothing is loaded until something connects there
   for (const at of [5432, '/var/run/postgresql/.s.PGSQL.5432']) {
     netStackOf(kernel)?.onDemand.set(at, () => import('./postgres/service').then((m) => m.postgresService({ fs, stack: netStackOf(kernel)!, kernel }).start()));
   }
-  // "Use my own connection" (Settings → Network): in the desktop and the terminal UI alike
-  followRelaySetting(kernel);
   // kernel.spawn() of an x86-64 ELF runs it in Blink when the page can (src/x86-engine)
   const blinkLoader = import('./x86-engine/blink').then(m => m.registerBlinkLoader(kernel));
   // TABCOMPUTER_NODE_WORKER=1: node the kernel starts (sh -c, #! scripts) runs as a guest

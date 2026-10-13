@@ -1,0 +1,1119 @@
+From f25c1b52b7fb831c3bdbaab87a279dcafa9963fa Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Tue, 13 Oct 2026 03:10:06 -0400
+Subject: [PATCH] Shiro: the wasm JIT compiles code in writable pages, and
+ drops it when the bytes it came from are written
+
+The JIT compiled only from pages that aren't writable, so everything a
+runtime generates into RWX memory (HotSpot's code cache, V8's, JavaScriptCore's)
+ran in the interpreter: 345 M of the main thread's instructions in a cold
+javac, 941 M of 1.35 G in Debian's node running a loop.
+
+A writable page code is compiled from gets PAGE_WJC in its page table entry.
+No write translation is cached for such a page (WjFill refuses it, the other
+threads drop their caches when the mark is set), so every store to it comes
+through LookupAddressFor: a store in compiled code leaves its region and the
+interpreter runs it. LookupAddressFor calls WjWrote, with the length where
+the caller knows it. Each region records the 64-byte pieces of each marked
+page it was decoded from (its instructions and what the flag crawler read);
+a write that touches one is logged, every thread drops the regions that
+depend on it before it next enters compiled code, and the writer leaves the
+regions it is in. A write beside the code costs only the slow path; a page
+that takes too many of them in a second is given back to the interpreter
+for a while. wjit.c, "code on writable pages", has the rules.
+
+What it costs code that never generates any: nothing on a store (the test
+shares the copy-on-write test's branch in LookupAddressFor; WjFill tests one
+more bit on a miss) and nothing on a region entry (the same epoch compare).
+
+Also:
+- callers that only read say so (Load, pops, ReserveAddress for reading,
+  CopyFromUser, SchlepR, LoadStr, a read's iovecs, the source of movs, the
+  aligned SSE operand as a source), so reading a constant beside code
+  doesn't drop it;
+- MADV_DONTNEED of a marked page reports the write;
+- the flag crawler reads only pages code may be compiled from, and what it
+  reads in a marked page is part of the region's dependencies (it used to
+  read writable pages with nothing to notice a later change);
+- WjExecute's chain stops when a region left for the interpreter to run the
+  instruction at m->ip (it entered the same block up to 64 times);
+- a compile that can't take a page now (given up lately, locked by a system
+  call, a thread in the middle of an instruction without the GIL) is tried
+  again after another BLINK_WJIT_THRESHOLD executions, not marked failed.
+
+BLINK_WJIT_RWX=0 leaves writable pages to the interpreter, as before. 3 and
+4 are for the tests (fixtures/x86/smcjit.c): 3 ignores the writes, 4 ignores
+mprotect and munmap too. SHIRO_BLINK_PROFILE and BLINK_WJIT_DEBUG print the
+counts (pages marked, writes that hit code or fell beside it, regions
+dropped, pages given up).
+---
+ blink/iovs.c    |   2 +-
+ blink/machine.h |   8 +
+ blink/memory.c  |  83 +++++++-
+ blink/modrm.c   |  14 +-
+ blink/modrm.h   |   1 +
+ blink/shiro.inc |   9 +-
+ blink/ssemov.c  |   2 +-
+ blink/string.c  |   4 +-
+ blink/syscall.c |   2 +
+ blink/wjit.c    | 530 +++++++++++++++++++++++++++++++++++++++++++++++-
+ blink/wjit.h    |  10 +
+ 11 files changed, 635 insertions(+), 30 deletions(-)
+
+diff --git a/blink/iovs.c b/blink/iovs.c
+index 0000000..0000000 100644
+--- a/blink/iovs.c
++++ b/blink/iovs.c
+@@ -104,7 +104,7 @@ int AppendIovsReal(struct Machine *m, struct Iovs *ib, i64 addr, u64 size,
+     need |= PAGE_RW;
+   }
+   while (size && ib->i < GetIovMax()) {
+-    if (!(real = LookupAddress2(m, addr, mask, need))) return efault();
++    if (!(real = LookupAddressFor(m, addr, mask, need, (prot & PROT_WRITE) ? -1 : 0))) return efault();
+     have = 4096 - (addr & 4095);
+     got = MIN(size, have);
+     if (AppendIovs(ib, real, got) == -1) return -1;
+diff --git a/blink/machine.h b/blink/machine.h
+index 0000000..0000000 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -111,6 +111,10 @@
+ // writable (a write gets this process its own copy)
+ #define PAGE_COW   0x0002000000000000
+ #define PAGE_COWRW 0x0004000000000000
++// Shiro: the wasm JIT has compiled code from this writable page (wjit.c,
++// "code on writable pages"). No write translation is cached for it: each
++// write comes through LookupAddressFor, which reports it first (WjWrote)
++#define PAGE_WJC   0x0008000000000000
+ // Shiro: a page of an object shared with other Blink instances (shmobj,
+ // docs/research/SHARED_MAPPINGS.md): its bytes live in the kernel's
+ // SharedArrayBuffer; the host page is this instance's shadow of them,
+@@ -608,6 +612,10 @@ bool HasPageLock(const struct Machine *, i64) nosideeffect;
+ void CollectPageLocks(struct Machine *);
+ u8 *LookupAddress(struct Machine *, i64);
+ u8 *LookupAddress2(struct Machine *, i64, u64, u64);
++u8 *LookupAddressFor(struct Machine *, i64, u64, u64, int);
++u8 *LookupAddressRead(struct Machine *, i64);
++u8 *ResolveAddressRead(struct Machine *, i64);
++int ShiroPteBits(struct Machine *, i64, u64, u64, u64);
+ u8 *SpyAddress(struct Machine *, i64);
+ u8 *Load(struct Machine *, i64, size_t, u8 *);
+ u8 *MallocPage(void);
+diff --git a/blink/memory.c b/blink/memory.c
+index 0000000..0000000 100644
+--- a/blink/memory.c
++++ b/blink/memory.c
+@@ -334,7 +334,36 @@ u64 BreakCow(struct Machine *m, i64 virt) {
+   return e2;
+ }
+ 
++// Sets and clears bits in the entry of the 4 KiB page at `page`, unless the
++// entry (as it is now, not a cached copy) has one of `unless` (a system
++// call's page lock, say): 0 then, or when the page isn't mapped; 1 if the
++// entry changed, 2 if it had them already. This thread's cached copy follows.
++int ShiroPteBits(struct Machine *m, i64 page, u64 set, u64 clear, u64 unless) {
++  u8 *pslot;
++  u64 entry, e2;
++  long tlbkey = (page >> 12) & g_tlb_mask;
++  if (!(pslot = FindPteSlot(m, page))) return 0;
++  do {
++    entry = LoadPte(pslot);
++    if (!(entry & PAGE_V) || (entry & unless)) return 0;
++    e2 = (entry | set) & ~clear;
++  } while (e2 != entry && !CasPte(pslot, entry, e2));
++  if (m->tlb[tlbkey].page == (i64)(page | m->tlbgen)) {
++    m->tlb[tlbkey].entry = (m->tlb[tlbkey].entry | set) & ~clear;
++  }
++  return e2 != entry ? 1 : 2;
++}
++
+ u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
++  // (an instruction fetch writes nothing; any other caller may)
++  return LookupAddressFor(m, virt, mask, need, mask == PAGE_XD && !need ? 0 : -1);
++}
++
++// LookupAddress2 with what the caller will do through the pointer: wlen 0,
++// only read; n > 0, write at most n bytes from `virt` on; -1, unknown (it
++// may write anywhere in the page). The wasm JIT's code from a writable
++// page (PAGE_WJC) is dropped by a write that touches it.
++u8 *LookupAddressFor(struct Machine *m, i64 virt, u64 mask, u64 need, int wlen) {
+   u8 *host;
+   u64 entry;
+   if (!m->metal || m->mode.omode == XED_MODE_LONG ||
+@@ -354,9 +383,14 @@ u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
+   // soon as Blink resolves an address in it: many of its paths write
+   // through a resolved pointer without checking PAGE_RW (only compiled
+   // code's inline reads keep sharing; its writes come here)
+-  if ((entry & PAGE_COW) && !(entry = BreakCow(m, virt))) {
+-    m->segvcode = SEGV_MAPERR_LINUX;
+-    return (u8 *)enomem();
++  if (UNLIKELY(entry & (PAGE_COW | PAGE_WJC))) {
++    if ((entry & PAGE_COW) && !(entry = BreakCow(m, virt))) {
++      m->segvcode = SEGV_MAPERR_LINUX;
++      return (u8 *)enomem();
++    }
++    if ((entry & PAGE_WJC) && wlen && (entry & mask) == need) {
++      WjWrote(m, virt, wlen);
++    }
+   }
+   if ((entry & mask) != need) {
+     m->segvcode = SEGV_ACCERR_LINUX;
+@@ -400,6 +434,19 @@ u8 *LookupAddress(struct Machine *m, i64 virt) {
+   return LookupAddress2(m, virt, need, need);
+ }
+ 
++// LookupAddress for a pointer that is only read through
++u8 *LookupAddressRead(struct Machine *m, i64 virt) {
++  u64 need = 0;
++  if (Cpl(m) == 3) need = PAGE_U;
++  return LookupAddressFor(m, virt, need, need, 0);
++}
++
++u8 *ResolveAddressRead(struct Machine *m, i64 v) {
++  u8 *r;
++  if ((r = LookupAddressRead(m, v))) return r;
++  ThrowSegmentationFault(m, v);
++}
++
+ flattencalls u8 *GetAddress(struct Machine *m, i64 v) {
+   if (HasLinearMapping()) return ToHost(v);
+   return LookupAddress(m, v);
+@@ -481,7 +528,7 @@ int VirtualCopy(struct Machine *m, i64 v, char *r, u64 n, bool d) {
+       k = 4096;
+       continue;
+     }
+-    if (!(p = d ? LookupAddress(m, v) : LookupAddressWrite(m, v))) return -1;
++    if (!(p = d ? LookupAddressRead(m, v) : LookupAddressWrite(m, v))) return -1;
+     if (d) {
+       memcpy(r, p, k);
+     } else if (!IsRomAddress(m, p)) {
+@@ -562,7 +609,7 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
+     need = 0;
+   }
+   if ((v & 4095) + n <= 4096) {
+-    if ((res = LookupAddress2(m, v, mask, need))) {
++    if ((res = LookupAddressFor(m, v, mask, need, writable ? (n ? (int)n : 1) : 0))) {
+       if (!IsRomAddress(m, res)) return res;
+       p1 = res;
+       m->stashaddr = v;
+@@ -584,8 +631,8 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
+   m->opcache->writable = writable;
+   res = m->opcache->stash;
+   k = 4096 - (v & 4095);
+-  if ((p1 = LookupAddress2(m, v, mask, need))) {
+-    if ((p2 = LookupAddress2(m, v + k, mask, need))) {
++  if ((p1 = LookupAddressFor(m, v, mask, need, writable ? (int)k : 0))) {
++    if ((p2 = LookupAddressFor(m, v + k, mask, need, writable ? (int)(n - k) : 0))) {
+       IGNORE_RACES_START();
+       memcpy(res, p1, k);
+       memcpy(res + k, p2, n - k);
+@@ -604,6 +651,19 @@ static u8 *AccessRam2(struct Machine *m, i64 v, size_t n, void *p[2], u8 *tmp,
+   u8 *a, *b;
+   unsigned k;
+   unassert(n <= 4096);
++  if (copy && !protect_rom) {  // Load(), a pop: read only
++    if ((v & 4095) + n <= 4096) return ResolveAddressRead(m, v);
++    STATISTIC(++page_overlaps);
++    k = 4096;
++    k -= v & 4095;
++    a = ResolveAddressRead(m, v);
++    b = ResolveAddressRead(m, v + k);
++    memcpy(tmp, a, k);
++    memcpy(tmp + k, b, n - k);
++    p[0] = a;
++    p[1] = b;
++    return tmp;
++  }
+   if ((v & 4095) + n <= 4096) {
+     a = ResolveAddress(m, v);
+     if (!protect_rom || !IsRomAddress(m, a)) return a;
+@@ -703,7 +763,8 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
+   size_t have;
+   void *res, *page;
+   if (!size) return 0;
+-  if (!(page = LookupAddress2(m, addr, mask, need))) return 0;
++  int w = (need & PAGE_RW) ? -1 : 0;  // SchlepR only reads
++  if (!(page = LookupAddressFor(m, addr, mask, need, w))) return 0;
+   have = 4096 - (addr & 4095);
+   if (size <= have) {
+     res = page;
+@@ -711,7 +772,7 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
+     if (!(copy = (char *)malloc(size))) return 0;
+     memcpy(copy, page, have);
+     for (; have < size; have += 4096) {
+-      if (!(page = LookupAddress2(m, addr + have, mask, need))) {
++      if (!(page = LookupAddressFor(m, addr + have, mask, need, w))) {
+         free(copy);
+         return 0;
+       }
+@@ -746,7 +807,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
+   char *copy, *page, *p;
+   have = 4096 - (addr & 4095);
+   if (!addr) return 0;
+-  if (!(page = (char *)LookupAddress2(m, addr, PAGE_U, PAGE_U))) return 0;
++  if (!(page = (char *)LookupAddressFor(m, addr, PAGE_U, PAGE_U, 0))) return 0;
+   if ((p = (char *)memchr(page, '\0', have))) {
+     SetReadAddr(m, addr, p - page + 1);
+     return page;
+@@ -754,7 +815,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
+   if (!(copy = (char *)malloc(have + 4096))) return 0;
+   memcpy(copy, page, have);
+   for (;;) {
+-    if (!(page = (char *)LookupAddress2(m, addr + have, PAGE_U, PAGE_U))) break;
++    if (!(page = (char *)LookupAddressFor(m, addr + have, PAGE_U, PAGE_U, 0))) break;
+     if ((p = (char *)memccpy(copy + have, page, '\0', 4096))) {
+       SetReadAddr(m, addr, have + (p - (copy + have)) + 1);
+       return (char *)AddToFreeList(m, copy);
+diff --git a/blink/modrm.c b/blink/modrm.c
+index 0000000..0000000 100644
+--- a/blink/modrm.c
++++ b/blink/modrm.c
+@@ -293,27 +293,33 @@ u8 *GetModrmRegisterXmmPointerWrite16(P) {
+   return GetModrmRegisterXmmPointerWrite(A, 16);
+ }
+ 
+-static u8 *GetVectorAddress(P, size_t n) {
++static u8 *GetVectorAddress(P, size_t n, bool write) {
+   u8 *p;
+   i64 v;
++  u64 need = Cpl(m) == 3 ? PAGE_U : 0;
+   if (IsModrmRegister(rde)) {
+     p = XmmRexbRm(m, rde);
+   } else {
+     v = ComputeAddress(A);
+     SetReadAddr(m, v, n);
+-    if ((v & (n - 1)) || !(p = LookupAddress(m, v))) {
++    if ((v & (n - 1)) || !(p = LookupAddressFor(m, v, need, need, write ? (int)n : 0))) {
+       ThrowSegmentationFault(m, v);
+     }
+   }
+   return p;
+ }
+ 
++// (the aligned operand as a destination: movdqa/movaps to memory)
++u8 *GetXmmAddressWrite(P) {
++  return GetVectorAddress(A, 16, true);
++}
++
+ u8 *GetMmxAddress(P) {
+-  return GetVectorAddress(A, 8);
++  return GetVectorAddress(A, 8, false);
+ }
+ 
+ u8 *GetXmmAddress(P) {
+-  return GetVectorAddress(A, 16);
++  return GetVectorAddress(A, 16, false);
+ }
+ 
+ u8 *GetModrmReadBW(P) {
+diff --git a/blink/modrm.h b/blink/modrm.h
+index 0000000..0000000 100644
+--- a/blink/modrm.h
++++ b/blink/modrm.h
+@@ -84,6 +84,7 @@ u8 *GetModrmRegisterXmmPointerWrite16(P);
+ u8 *GetModrmRegisterXmmPointerWrite4(P);
+ u8 *GetModrmRegisterXmmPointerWrite8(P);
+ u8 *GetXmmAddress(P) returnsaligned((16));
++u8 *GetXmmAddressWrite(P) returnsaligned((16));
+ u8 *GetMmxAddress(P) returnsaligned((8));
+ 
+ #endif /* BLINK_MODRM_H_ */
+diff --git a/blink/shiro.inc b/blink/shiro.inc
+index 0000000..0000000 100644
+--- a/blink/shiro.inc
++++ b/blink/shiro.inc
+@@ -333,7 +333,7 @@ EMSCRIPTEN_KEEPALIVE int blink_shiro_forkrestart(void) { return 1; }
+ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+                        int inlen, int outcap, bool restart, bool intr) {
+   int args[12], r, as;
+-  bool held;
++  bool held, mid;
+   i64 res;
+   if (m && nr != 14) ShiroSyncMask(m);
+   // The mask just sent can release a signal the kernel held (ppoll and
+@@ -348,12 +348,18 @@ static i64 ShiroCallIn(struct Machine *m, int nr, const int a[12], void *data,
+   for (;;) {
+     memcpy(args, a, sizeof(args));
+     held = GilHeld();
++    // outside a system call this is a fault's call, in the middle of an
++    // instruction that may write through an address it has already
++    // (wjit.c, code on writable pages)
++    mid = held && m && !m->insyscall;
++    if (mid) WjMidInstruction(1);
+     if (held) GilRelease();
+     r = ShiroKsys(nr, args, as, data, inlen, outcap);
+     // system time: every call counts as a quick call's time (a clock read
+     // on each side of every call cost more than the estimate is off by)
+     if (m) __atomic_fetch_add(&m->system->shiro_sysns, SHIRO_CALL_NS, __ATOMIC_RELAXED);
+     if (held) GilAcquire();
++    if (mid) WjMidInstruction(-1);
+     res = (i64)(u64)(u32)r | (i64)args[0] << 32;
+     // (a same-instance fork child calls as itself and takes its own
+     // signals, so it restarts as SA_RESTART says; a vfork child runs on its
+@@ -4782,6 +4788,7 @@ static bool ShiroSyscall(struct Machine *m, int nr, u64 a, u64 b, u64 c,
+         break;
+     }
+   }
++  if (nr == 0x0E7) WjExitStats();  // (BLINK_WJIT_DEBUG)
+   if (nr == 0x0E7 && g_shiro_pid) ShiroReportSys(m, 0);  // (the parent's tms_cstime)
+   switch (nr) {
+     case 0x063: {                                                     // sysinfo
+diff --git a/blink/ssemov.c b/blink/ssemov.c
+index 0000000..0000000 100644
+--- a/blink/ssemov.c
++++ b/blink/ssemov.c
+@@ -102,7 +102,7 @@ static void MovdqaVdqWdq(P) {
+ static void MovdqaWdqVdq(P) {
+   u8 *dst;
+   IGNORE_RACES_START();
+-  dst = GetXmmAddress(A);
++  dst = GetXmmAddressWrite(A);
+   if (!IsRomAddress(m, dst)) {
+     memcpy(dst, XmmRexrReg(m, rde), 16);
+   }
+diff --git a/blink/string.c b/blink/string.c
+index 0000000..0000000 100644
+--- a/blink/string.c
++++ b/blink/string.c
+@@ -222,7 +222,7 @@ static void RepMovsbEnhanced(P) {
+       atomic_thread_fence(memory_order_acquire);
+       do {
+         direal = ResolveAddress(m, diactual);
+-        sireal = ResolveAddress(m, siactual);
++        sireal = ResolveAddressRead(m, siactual);
+         dilow = Get16(m->di);
+         silow = Get16(m->si);
+         if (!GetFlag(m->flags, FLAGS_DF)) {
+@@ -310,7 +310,7 @@ static bool RepMovsFast(P, unsigned n) {
+     k = MIN((long)cx, MIN(diremain, siremain) / (long)n);
+     if (!k) break;
+     direal = ResolveAddress(m, diactual);
+-    sireal = ResolveAddress(m, siactual);
++    sireal = ResolveAddressRead(m, siactual);
+     if (!IsRomAddress(m, direal)) {
+       if (direal >= sireal + k * n || sireal >= direal + k * n ||
+           direal <= sireal) {
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 0000000..0000000 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -83,6 +83,7 @@
+ #include "blink/timespec.h"
+ #include "blink/util.h"
+ #include "blink/vfs.h"
++#include "blink/wjit.h"
+ #include "blink/xlat.h"
+ 
+ #ifdef __linux
+@@ -1531,6 +1532,7 @@ static int SysMadvise(struct Machine *m, i64 addr, u64 len, int advice) {
+       if ((e & PAGE_COWRW) && !(e = BreakCow(m, p))) continue;  // (zeros here only)
+       if ((e & (PAGE_V | PAGE_U | PAGE_RW)) != (PAGE_V | PAGE_U | PAGE_RW)) continue;
+       if (e & (PAGE_RSRV | PAGE_FILE | PAGE_MAP)) continue;  // untouched, or file
++      if (e & PAGE_WJC) WjWrote(m, p, -1);  // (compiled code from the page goes)
+       if ((h = GetPageAddress(m->system, e, false))) memset(h, 0, 4096);
+     }
+     UNLOCK(&m->system->mmap_lock);
+diff --git a/blink/wjit.c b/blink/wjit.c
+index 0000000..0000000 100644
+--- a/blink/wjit.c
++++ b/blink/wjit.c
+@@ -66,9 +66,10 @@
+  * - Jumps inside a region spend a budget and check m->attention, so the
+  *   GIL, signals and other threads still get a turn.
+  * - Wasm tables aren't shared between pthreads, so each thread compiles
+- *   and keeps its own regions. Code is only compiled from pages that are
+- *   not writable; when such a page is unmapped or its protection changes,
+- *   a global epoch makes every thread drop its regions.
++ *   and keeps its own regions. When a page that held code is unmapped or
++ *   its protection changes, a global epoch makes every thread drop its
++ *   regions. Code in a writable page (a JIT's code cache) is compiled too:
++ *   see "code on writable pages" below.
+  *
+  * BLINK_WJIT=0 turns it off. BLINK_WJIT_THRESHOLD sets the hotness,
+  * BLINK_WJIT_DEBUG=1 prints statistics; BLINK_WJIT_OFF, _MAX and _BISECT
+@@ -96,6 +97,27 @@ static int g_wj_maxblk = 64;  // BLINK_WJIT_BLOCKS (at most kMaxBlocks)
+ static bool g_wj_straddle;
+ static i64 g_wj_lo = -1, g_wj_hi = -1;  // BLINK_WJIT_BISECT=lo:hi (pc range; 64-bit: guest code is above 2 GiB)
+ static _Atomic(unsigned) g_wj_epoch;
++// g_wj_epoch moves on every change compiled code must see; g_wj_full says
++// how many of them drop everything (the others are in the write log)
++static _Atomic(unsigned) g_wj_full;
++// BLINK_WJIT_RWX: 1 (the default) compiles code in writable pages, 0 leaves
++// it to the interpreter. For the tests, what a missing invalidation does:
++// 3 compiles it and ignores the writes, 4 ignores mprotect and munmap too
++static int g_wj_rwx = 1;
++static bool WjCodeWritable(struct Machine *, i64, u64);
++static void WjDepNote(i64, int);
++static void WjSync(void);
++static void WjRegister(const i64 *, const int *, int);
++static void WjRegClear(void);
++// the write-watched pages the region being compiled was decoded from, and
++// which 64-byte pieces of each
++#define kWjMaxDeps 12
++static _Thread_local struct WjDep {
++  i64 page;
++  u64 mask;
++} t_cd[kWjMaxDeps];
++static _Thread_local int t_ncd;
++static _Thread_local bool t_csoft;  // the compile failed for now: try again later
+ 
+ // statistics
+ static long g_wj_callops[0x400];
+@@ -239,6 +261,17 @@ double WjStat(int which) {
+   return wj_stat(which);
+ }
+ 
++// gives back the table slots of one region (its code was overwritten)
++EM_JS(void, wj_release, (const int *p, int n), {
++  p >>>= 0;
++  var free = Module['wjFree'] || (Module['wjFree'] = []);
++  for (var i = 0; i < n; i++) {
++    var idx = HEAP32[(p >>> 2) + i];
++    wasmTable.set(idx, null);
++    free.push(idx);
++  }
++});
++
+ // drops every function this worker installed (new thread, or an epoch flip)
+ EM_JS(void, wj_release_all, (void), {
+   var all = Module['wjAll'] || [];
+@@ -549,14 +582,16 @@ static void WjFill(struct Machine *m, i64 v, bool write) {
+   struct WjTlb *t;
+   if (!(entry = FindPageTableEntry(m, v & -4096))) return;
+   if (!(entry & PAGE_U) || (entry & PAGE_REMOTE)) return;
+-  if (write && !(entry & PAGE_RW)) return;
++  // (no write translation for a page that holds compiled code: the store
++  // leaves the region and the interpreter's lookup reports it, WjWrote)
++  if (write && (entry & (PAGE_RW | PAGE_WJC)) != PAGE_RW) return;
+   if (!(host = GetPageAddress(m->system, entry, false))) return;
+   if (IsRomAddress(m, host)) return;
+   t = write ? m->wjw : m->wjr;
+   t += (v >> 12) & g_wj_tlb_mask;
+   t->tag = v & -4096;
+   t->host = (u32)(uintptr_t)host - (u32)(v & -4096);
+-  if (!write && (entry & PAGE_RW)) {
++  if (!write && (entry & (PAGE_RW | PAGE_WJC)) == PAGE_RW) {
+     // a readable+writable page can go in both caches
+     t = m->wjw + ((v >> 12) & g_wj_tlb_mask);
+     t->tag = v & -4096;
+@@ -2120,14 +2155,19 @@ static bool IsFlagConsumer(int op) {
+ // and ret as clobbering every flag, but hand-written assembly (Go's runtime,
+ // libc string functions) does return results in flags, so here call and ret
+ // end the crawl as "unknown".
++static u8 *CodePage(struct Machine *, i64);
+ static int Crawl(struct Machine *m, i64 pc, int flags, int *look, int depth) {
+   int op, need = 0, deps;
+   u64 rde;
+   for (;;) {
+     if (--*look < 0 || depth > 4) return -1;
++    // only code that can't change under the region that relies on it
++    if (!CodePage(m, pc & -4096)) return -1;
++    if ((pc & 4095) > 4096 - 15 && !CodePage(m, (pc & -4096) + 4096)) return -1;
+     if (LoadInstruction2(m, pc)) return -1;
+     rde = m->xedd->op.rde;
+     op = Mopcode(rde);
++    WjDepNote(pc, Oplength(rde));
+     if (op == 0x0E8 || op == 0x0C3 || op == 0x0C2) return -1;
+     // syscalls preserve the flags on Linux; Blink assumes they don't
+     if (ClassifyOp(rde) != kOpNormal && op != 0x0E9 && op != 0x0EB &&
+@@ -3959,8 +3999,11 @@ static u8 *CodePage(struct Machine *m, i64 page) {
+   u64 entry;
+   u8 *host;
+   if (!(entry = FindPageTableEntry(m, page))) return 0;
+-  if ((entry & (PAGE_U | PAGE_RW | PAGE_XD)) != PAGE_U) return 0;
++  if ((entry & (PAGE_U | PAGE_XD)) != PAGE_U) return 0;
+   if (entry & PAGE_COW) return 0;  // (writable once a write copies it)
++  // a writable page: its writes are watched from here on, or it isn't
++  // compiled
++  if ((entry & PAGE_RW) && !WjCodeWritable(m, page, entry)) return 0;
+   if (!(host = GetPageAddress(m->system, entry, false))) return 0;
+   if (IsRomAddress(m, host)) return 0;
+   return host;
+@@ -4008,6 +4051,7 @@ static bool DecodeBlock(struct Cg *g, i64 pc) {
+     in->uimm0 = x.op.uimm0;
+     in->pc = pc;
+     in->len = x.length;
++    WjDepNote(pc, x.length);
+     pc += x.length;
+     Analyze(in);
+     in->exits = MayExit(in, x.op.has_modrm);
+@@ -4358,6 +4402,12 @@ static void Stats(void) {
+           "wjit: %ld regions %ld insns %ld inline; this thread ran %ld "
+           "regions; %ld KB of wasm\n",
+           (long)g_wj_blocks, (long)g_wj_insns, (long)g_wj_inline, t_runs, (long)g_wj_bytes / 1024);
++  {
++    char line[512];
++    int WjSmcText(char *, int, int);
++    WjSmcText(line, 0, sizeof(line));
++    fprintf(stderr, "wjit: %s", line);
++  }
+   for (j = 0; j < 12; ++j) {
+     for (best = 0, i = 1; i < 0x400; ++i) {
+       if (g_wj_callops[i] > g_wj_callops[best]) best = i;
+@@ -4397,6 +4447,10 @@ int WjProfText(char *b, int n, int cap) {
+   extern long g_shiro_tlb_resets;
+   n += snprintf(b + n, cap - n, "\ncompiled regions entered: %ld from the interpreter, %ld chained by WjExecute, %ld by WjCall; %ld TLB resets\n",
+                 g_wj_ents[0], g_wj_ents[1], g_wj_ents[2], g_shiro_tlb_resets);
++  {
++    int WjSmcText(char *, int, int);
++    n = WjSmcText(b, n, cap);
++  }
+   {
+     int nr = atomic_load(&g_wj_prof_nregion), r, *idx;
+     int ntop = getenv("SHIRO_BLINK_PROFILE_REGIONS") ? atoi(getenv("SHIRO_BLINK_PROFILE_REGIONS")) : 20;
+@@ -4439,9 +4493,16 @@ static int Compile(struct Machine *m, i64 pc) {
+   mod.nimp = 0;
+   g->mod = &mod;
+   g->m = m;
++  t_ncd = 0;
++  t_csoft = false;
+   if (!Discover(g, pc)) {
+     free(g);
+     ++g_wj_failed;
++    if (t_csoft) return 0;
++    if (t_ncd) {  // (code that may be overwritten with code that compiles)
++      WjDepNote(pc, 15);
++      WjRegister(&pc, &fn, 1);
++    }
+     return -1;
+   }
+   SortBlocks(g);
+@@ -4464,6 +4525,11 @@ static int Compile(struct Machine *m, i64 pc) {
+       SetEntry(e, out[k]);
+     }
+     ++g_wj_blocks;
++    if (t_ncd) {
++      i64 pcs[kMaxBlocks];
++      for (k = 0; k < g->nblk; ++k) pcs[k] = g->blk[k].start;
++      WjRegister(pcs, out, g->nblk);
++    }
+   }
+   if (g_wj_debug > 2) {
+     fprintf(stderr, "wjit: %#llx %d blocks %d insns -> %d (%ld bytes)\n",
+@@ -4500,6 +4566,7 @@ static void Clear(void) {
+   t_used = 0;
+   t_tab = (struct WjEnt *)calloc(t_mask + 1, sizeof(struct WjEnt));
+   wj_release_all();
++  WjRegClear();
+ }
+ 
+ static void SetEntry(struct WjEnt *e, int fn) {
+@@ -4546,6 +4613,439 @@ static struct WjEnt *Insert(i64 pc) {
+   return t_tab + i;
+ }
+ 
++////////////////////////////////////////////////////////////////////////////////
++// code on writable pages
++//
++// A JIT (HotSpot, V8, JavaScriptCore, LuaJIT) keeps its code in memory it
++// can write, so that code may change under a region compiled from it. A
++// writable page that code is compiled from is marked PAGE_WJC in its page
++// table entry. No write translation is cached for a marked page (WjFill
++// refuses, every thread's caches are dropped when the mark is set), so each
++// store to it reaches LookupAddressFor: a store in compiled code leaves its
++// region first and the interpreter runs it. LookupAddressFor calls WjWrote.
++//
++// - Each region remembers the 64-byte pieces of each marked page it was
++//   decoded from (its instructions and the ones the flag crawler read).
++//   A write that touches such a piece is logged; every thread drops the
++//   regions that depend on it before it next enters compiled code, and the
++//   writer leaves the regions it is in (m->attention).
++// - A write beside the code (data in the same page, a call site in code
++//   that isn't compiled yet) only costs the slow path. A page that takes
++//   kWjSlowMax of them inside kWjWindow ms (a write that hits code counts
++//   as kWjHitCost: a region to compile again) is given up: its regions are
++//   dropped, the mark is cleared and writes are fast again. It is taken
++//   again no sooner than kWjRest ms later, twice as long each time it is
++//   given up (at most kWjStrikes doublings; a page left alone for a
++//   minute starts over). So the worst a page of mixed code and data costs
++//   is a bounded number of slow writes per second, and otherwise it runs
++//   as it did before this patch: interpreted.
++// - When no compiled piece is left in a page its mark is cleared at the
++//   next write (a code buffer that is refilled).
++// - Only private anonymous pages of the process are taken. A page some
++//   system call holds locked (a read() into it under way) isn't taken now.
++//   A thread that writes without the GIL (inside a system call) drops the
++//   page's regions whatever it touches, and a region compiled meanwhile
++//   isn't entered. While a thread has let the GIL go in the middle of an
++//   instruction (a page fault's kernel call: it may hold an address it
++//   resolved before and write through it after), no writable page is
++//   compiled from. Without the GIL (BLINK_GIL=0) nothing here applies:
++//   writable pages stay with the interpreter.
++// - munmap and mprotect of a page with code drop everything, as before.
++//
++// What it costs code that never generates any: nothing on a store (the
++// test in LookupAddressFor shares the copy-on-write test's branch, WjFill
++// tests one more bit on a miss) and nothing on a region entry (the same
++// epoch compare).
++
++#define kWjGran    64
++#define kWjSlowMax 2048
++#define kWjHitCost 64
++#define kWjWindow  1000
++#define kWjRest    500
++#define kWjStrikes 6
++#define kWjLog     512
++
++struct WjPage {
++  i64 key;           // the page | 1 (0: empty)
++  u64 mask;          // the pieces some region was compiled from
++  unsigned full;     // g_wj_full when mask was set
++  unsigned nslow;    // slow writes in the window that began at `since`
++  unsigned strikes;  // times it was given up lately
++  double since;
++  double until;      // not taken again before this time
++  double gave;       // when it was last given up
++};
++
++static pthread_mutex_t g_wjp_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct WjPage *g_wjp;
++static unsigned g_wjp_cap, g_wjp_n;
++static struct WjDep g_wj_log[kWjLog];
++static unsigned g_wj_logn;  // entries ever logged
++// [0] pages marked, [1] writes that hit compiled code, [2] writes beside
++// it, [3] pages given up, [4] regions dropped, [5] regions compiled from
++// writable pages, [6] compiles put off, [7] marks cleared (no code left)
++long g_wj_smc[8];
++static _Atomic(int) g_wj_mid;  // threads without the GIL in the middle of an instruction
++
++void WjMidInstruction(int d) {
++  atomic_fetch_add_explicit(&g_wj_mid, d, memory_order_acq_rel);
++}
++
++// a region that depends on marked pages: its entries, and a node per page
++struct WjReg {
++  int n;    // 0: dropped
++  int *fn;  // table index of pc[i]'s entry (-1: a failed compile to forget)
++  i64 *pc;
++};
++struct WjNode {
++  i64 page;
++  u64 mask;
++  int reg;
++  int next;  // index + 1 of the next node in the bucket, 0: none
++};
++static _Thread_local struct WjReg *t_reg;
++static _Thread_local int t_nreg, t_creg;
++static _Thread_local struct WjNode *t_node;
++static _Thread_local int t_nnode, t_cnode, t_nodefree;
++static _Thread_local int t_bucket[1024];
++static _Thread_local unsigned t_full, t_logn;
++
++static u64 WjGranMask(int off, int len) {
++  int lo = off / kWjGran, hi = (off + len - 1) / kWjGran;
++  if (hi > 63) hi = 63;
++  return hi - lo == 63 ? -1ull : ((1ull << (hi - lo + 1)) - 1) << lo;
++}
++
++// (g_wjp_lock held)
++static struct WjPage *WjPageRec(i64 page, bool create) {
++  unsigned i, j, full;
++  struct WjPage *old, *r;
++  if (create && (g_wjp_n + 1) * 2 > g_wjp_cap) {
++    unsigned cap = g_wjp_cap ? g_wjp_cap * 2 : 256;
++    if (!(r = (struct WjPage *)calloc(cap, sizeof(*r)))) return 0;
++    old = g_wjp;
++    for (j = 0; j < g_wjp_cap; ++j) {
++      if (!old[j].key) continue;
++      for (i = Hash(old[j].key) & (cap - 1); r[i].key; i = (i + 1) & (cap - 1)) {
++      }
++      r[i] = old[j];
++    }
++    free(old);
++    g_wjp = r;
++    g_wjp_cap = cap;
++  }
++  if (!g_wjp_cap) return 0;
++  for (i = Hash(page | 1) & (g_wjp_cap - 1);; i = (i + 1) & (g_wjp_cap - 1)) {
++    if (g_wjp[i].key == (page | 1)) break;
++    if (!g_wjp[i].key) {
++      if (!create) return 0;
++      g_wjp[i].key = page | 1;
++      ++g_wjp_n;
++      break;
++    }
++  }
++  r = g_wjp + i;
++  full = atomic_load_explicit(&g_wj_full, memory_order_acquire);
++  if (r->full != full) {  // everything was dropped since
++    r->mask = 0;
++    r->full = full;
++  }
++  return r;
++}
++
++static void WjMarked(struct Machine *m, i64 page) {
++  struct Dll *e;
++  struct Machine *o;
++  struct WjTlb *t = m->wjw + ((page >> 12) & g_wj_tlb_mask);
++  if (t->tag == page) t->tag = -1;
++  LOCK(&m->system->machines_lock);
++  for (e = dll_first(m->system->machines); e; e = dll_next(m->system->machines, e)) {
++    if ((o = MACHINE_CONTAINER(e)) != m) {
++      atomic_store_explicit(&o->invalidated, true, memory_order_release);
++    }
++  }
++  UNLOCK(&m->system->machines_lock);
++}
++
++// CodePage() for a writable page: true if code may be compiled from it,
++// with its writes watched from now on
++static bool WjCodeWritable(struct Machine *m, i64 page, u64 entry) {
++  int i;
++  bool ok;
++  struct WjPage *r;
++  if (g_wj_rwx <= 0 || !g_gil_enabled) return false;
++  // a private anonymous page of this process alone: nothing else (another
++  // mapping of a shared object, a forked child, a file's cache) writes it
++  if ((entry & (PAGE_HOST | PAGE_MAP | PAGE_MUG | PAGE_RSRV | PAGE_REMOTE |
++                PAGE_SHRD | PAGE_GROW | PAGE_NOMW)) != PAGE_HOST) {
++    return false;
++  }
++  for (i = 0; i < t_ncd; ++i) {
++    if (t_cd[i].page == page) return true;
++  }
++  if (t_ncd == kWjMaxDeps) return false;  // (the region ends here)
++  if (atomic_load_explicit(&g_wj_mid, memory_order_acquire)) {
++    t_csoft = true;
++    ++g_wj_smc[6];
++    return false;
++  }
++  pthread_mutex_lock(&g_wjp_lock);
++  if (!(r = WjPageRec(page, true))) {
++    ok = false;
++  } else if (r->until && emscripten_get_now() < r->until) {
++    ok = false;  // given up a moment ago
++    t_csoft = true;
++  } else {
++    r->until = 0;
++    ok = true;
++  }
++  pthread_mutex_unlock(&g_wjp_lock);
++  if (ok) {
++    // a system call that is filling the page has its address already and
++    // holds the page locked (marked or not): not now
++    switch (ShiroPteBits(m, page, PAGE_WJC, 0, PAGE_LOCKS | PAGE_COW)) {
++      case 1:
++        // no write goes around the mark: the other threads drop their
++        // cached translations at their next lookup or region entry (none
++        // is inside a region with the GIL let go: g_wj_mid above), and
++        // this one drops its own for the page (ShiroPteBits did the
++        // interpreter's)
++        WjMarked(m, page);
++        ++g_wj_smc[0];
++        if (g_wj_debug > 1) fprintf(stderr, "wjit: writable page %#llx marked\n", (long long)page);
++        break;
++      case 0:
++        ok = false;
++        t_csoft = true;
++        break;
++      default:
++        break;
++    }
++  }
++  if (!ok) {
++    ++g_wj_smc[6];
++    return false;
++  }
++  t_cd[t_ncd].page = page;
++  t_cd[t_ncd].mask = 0;
++  ++t_ncd;
++  return true;
++}
++
++// the region being compiled depends on the `len` code bytes at `pc`
++static void WjDepNote(i64 pc, int len) {
++  int i;
++  i64 a, e, end, page;
++  if (!t_ncd) return;
++  for (a = pc, e = pc + len; a < e; a = end) {
++    page = a & -4096;
++    end = page + 4096 < e ? page + 4096 : e;
++    for (i = 0; i < t_ncd; ++i) {
++      if (t_cd[i].page == page) {
++        t_cd[i].mask |= WjGranMask(a & 4095, end - a);
++        break;
++      }
++    }
++  }
++}
++
++static void WjRegClear(void) {
++  int i;
++  for (i = 0; i < t_nreg; ++i) {
++    free(t_reg[i].fn);
++    free(t_reg[i].pc);
++  }
++  free(t_reg);
++  free(t_node);
++  t_reg = 0;
++  t_node = 0;
++  t_nreg = t_creg = t_nnode = t_cnode = t_nodefree = 0;
++  memset(t_bucket, 0, sizeof(t_bucket));
++}
++
++// records the region just compiled (entries fns[i] at pcs[i]) with the
++// marked pages it depends on (t_cd)
++static void WjRegister(const i64 *pcs, const int *fns, int n) {
++  int i, k, r, *b;
++  void *p;
++  struct WjPage *pg;
++  struct WjReg *g;
++  for (i = k = 0; i < t_ncd; ++i) k += !!t_cd[i].mask;
++  if (!k) return;
++  if (t_nreg == t_creg) {
++    if (!(p = realloc(t_reg, (t_creg ? t_creg * 2 : 64) * sizeof(*t_reg)))) return;
++    t_reg = (struct WjReg *)p;
++    t_creg = t_creg ? t_creg * 2 : 64;
++  }
++  r = t_nreg++;
++  g = t_reg + r;
++  g->n = n;
++  g->fn = (int *)malloc(n * sizeof(int));
++  g->pc = (i64 *)malloc(n * sizeof(i64));
++  memcpy(g->fn, fns, n * sizeof(int));
++  memcpy(g->pc, pcs, n * sizeof(i64));
++  for (i = 0; i < t_ncd; ++i) {
++    if (!t_cd[i].mask) continue;
++    if (t_nodefree) {
++      k = t_nodefree;
++      t_nodefree = t_node[k - 1].next;
++    } else {
++      if (t_nnode == t_cnode) {
++        p = realloc(t_node, (t_cnode ? t_cnode * 2 : 256) * sizeof(*t_node));
++        t_node = (struct WjNode *)p;
++        t_cnode = t_cnode ? t_cnode * 2 : 256;
++      }
++      k = ++t_nnode;
++    }
++    b = &t_bucket[Hash(t_cd[i].page) & 1023];
++    t_node[k - 1].page = t_cd[i].page;
++    t_node[k - 1].mask = t_cd[i].mask;
++    t_node[k - 1].reg = r;
++    t_node[k - 1].next = *b;
++    *b = k;
++  }
++  pthread_mutex_lock(&g_wjp_lock);
++  for (i = 0; i < t_ncd; ++i) {
++    if (t_cd[i].mask && (pg = WjPageRec(t_cd[i].page, true))) pg->mask |= t_cd[i].mask;
++  }
++  pthread_mutex_unlock(&g_wjp_lock);
++  if (fns[0] > 0) ++g_wj_smc[5];
++}
++
++static void WjKill(int r) {
++  int i, n = 0;
++  struct WjEnt *e;
++  struct WjReg *g = t_reg + r;
++  for (i = 0; i < g->n; ++i) {
++    if ((e = Find(g->pc[i])) && e->fn == g->fn[i]) {
++      e->fn = 0;  // counts again from the start
++      e->count = 1;
++    }
++    if (g->fn[i] > 0) g->fn[n++] = g->fn[i];
++  }
++  if (n) {
++    wj_release(g->fn, n);
++    ++g_wj_smc[4];
++  }
++  free(g->fn);
++  free(g->pc);
++  g->fn = 0;
++  g->pc = 0;
++  g->n = 0;
++}
++
++// this thread's regions that depend on those pieces of `page` go
++static void WjDropPage(i64 page, u64 mask) {
++  int k, *link = &t_bucket[Hash(page) & 1023];
++  struct WjNode *nd;
++  while ((k = *link)) {
++    nd = t_node + k - 1;
++    if (t_reg[nd->reg].n && nd->page == page && (nd->mask & mask)) WjKill(nd->reg);
++    if (!t_reg[nd->reg].n) {  // (a dropped region's nodes go as they're met)
++      *link = nd->next;
++      nd->next = t_nodefree;
++      t_nodefree = k;
++    } else {
++      link = &nd->next;
++    }
++  }
++}
++
++// g_wj_epoch moved (or the thread is new): everything goes, or what the
++// write log says. Only called with none of this thread's regions running.
++static void WjSync(void) {
++  unsigned i, n, full;
++  bool all;
++  struct WjDep *buf = 0;
++  full = atomic_load_explicit(&g_wj_full, memory_order_acquire);
++  pthread_mutex_lock(&g_wjp_lock);
++  n = g_wj_logn - t_logn;
++  all = !t_ready || t_full != full || n > kWjLog ||
++        (n && !(buf = (struct WjDep *)malloc(n * sizeof(*buf))));
++  if (!all) {
++    for (i = 0; i < n; ++i) buf[i] = g_wj_log[(t_logn + i) % kWjLog];
++  }
++  t_logn = g_wj_logn;
++  pthread_mutex_unlock(&g_wjp_lock);
++  t_full = full;
++  if (all) {
++    Clear();
++  } else {
++    for (i = 0; i < n; ++i) WjDropPage(buf[i].page, buf[i].mask);
++  }
++  free(buf);
++}
++
++void WjWrote(struct Machine *m, i64 virt, int len) {
++  i64 page = virt & -4096;
++  u64 mask;
++  bool drop = false, clear = false, mine;
++  struct WjPage *r;
++  if (g_wj_rwx >= 3) return;  // (the tests' missing invalidation)
++  // a thread inside a system call writes while another may be compiling
++  // from the page: whatever it touches, the page's regions go
++  mine = !g_gil_enabled || GilHeld();
++  mask = len < 0 || !mine ? -1ull : WjGranMask(virt & 4095, len ? len : 1);
++  pthread_mutex_lock(&g_wjp_lock);
++  r = WjPageRec(page, false);
++  if (!mine || (r && (r->mask & mask))) {
++    g_wj_log[g_wj_logn++ % kWjLog].page = page;
++    g_wj_log[(g_wj_logn - 1) % kWjLog].mask = mask;
++    atomic_fetch_add_explicit(&g_wj_epoch, 1, memory_order_release);
++    drop = true;
++    ++g_wj_smc[1];
++    if (r && !(r->mask &= ~mask)) clear = true;
++    if (r) r->nslow += kWjHitCost;
++  } else if (!r || !r->mask) {
++    clear = true;  // no code left there: writes are fast again
++  } else {
++    ++g_wj_smc[2];
++    ++r->nslow;
++  }
++  if (r && r->nslow >= kWjSlowMax) {
++    double now = emscripten_get_now();
++    if (now - r->since < kWjWindow) {
++      // more writing than running: the page goes back to the interpreter
++      // for a while
++      g_wj_log[g_wj_logn++ % kWjLog].page = page;
++      g_wj_log[(g_wj_logn - 1) % kWjLog].mask = -1ull;
++      atomic_fetch_add_explicit(&g_wj_epoch, 1, memory_order_release);
++      if (r->gave && now - r->gave > 60000) r->strikes = 0;
++      r->gave = now;
++      r->mask = 0;
++      r->until = now + (double)(kWjRest << r->strikes);
++      if (r->strikes < kWjStrikes) ++r->strikes;
++      drop = clear = true;
++      ++g_wj_smc[3];
++      if (g_wj_debug) fprintf(stderr, "wjit: writable page %#llx given up (%u)\n", (long long)page, r->strikes);
++    }
++    r->since = now;
++    r->nslow = 0;
++  }
++  pthread_mutex_unlock(&g_wjp_lock);
++  if (clear) {
++    if (ShiroPteBits(m, page, 0, PAGE_WJC, 0)) ++g_wj_smc[7];
++  }
++  if (drop) {
++    if (g_wj_debug > 1) fprintf(stderr, "wjit: write to compiled code at %#llx+%d\n", (long long)virt, len);
++    // the regions this thread is in are left after this instruction
++    atomic_store_explicit(&m->attention, true, memory_order_release);
++  }
++}
++
++void WjExitStats(void) {
++  if (g_wj_debug) Stats();
++}
++
++int WjSmcText(char *b, int n, int cap) {
++  return n + snprintf(b + n, cap - n,
++                      "code on writable pages (BLINK_WJIT_RWX=%d): %ld regions compiled, %ld pages marked, "
++                      "%ld writes hit compiled code, %ld beside it, %ld regions dropped, %ld pages given up, "
++                      "%ld marks cleared, %ld compiles put off\n",
++                      g_wj_rwx, g_wj_smc[5], g_wj_smc[0], g_wj_smc[1], g_wj_smc[2], g_wj_smc[4],
++                      g_wj_smc[3], g_wj_smc[7], g_wj_smc[6]);
++}
++
+ void WjInit(void) {
+   const char *s;
+   g_wj_enabled = !(s = getenv("BLINK_WJIT")) || strcmp(s, "0");
+@@ -4561,6 +5061,7 @@ void WjInit(void) {
+     if (g_wj_maxblk > kMaxBlocks) g_wj_maxblk = kMaxBlocks;
+   }
+   g_wj_straddle = !((s = getenv("BLINK_WJIT_STRADDLE")) && *s == '0');
++  if ((s = getenv("BLINK_WJIT_RWX"))) g_wj_rwx = atoi(s);
+   if ((s = getenv("BLINK_WJIT_TLB")) && atoi(s) > 0 && atoi(s) <= WJ_TLB_SIZE && !(atoi(s) & (atoi(s) - 1))) {
+     g_wj_tlb_mask = atoi(s) - 1;
+   }
+@@ -4576,7 +5077,8 @@ void WjInit(void) {
+ // a page that held code changed (munmap, mprotect, ...): drop everything
+ void WjPageChanged(i64 virt) {
+   (void)virt;
+-  if (g_wj_enabled) {
++  if (g_wj_enabled && g_wj_rwx != 4) {
++    atomic_fetch_add(&g_wj_full, 1);
+     atomic_fetch_add(&g_wj_epoch, 1);
+     if (g_wj_debug) fprintf(stderr, "wjit: page %#llx changed, epoch %u\n", (long long)virt, g_wj_epoch);
+   }
+@@ -4601,7 +5103,7 @@ int WjExecute(struct Machine *m) {
+   if (m->mxcsr & 0x6000) return 0;
+   epoch = atomic_load_explicit(&g_wj_epoch, memory_order_acquire);
+   if (UNLIKELY(!t_ready || t_epoch != epoch)) {
+-    Clear();
++    WjSync();
+     t_epoch = epoch;
+     t_ready = true;
+   }
+@@ -4619,8 +5121,8 @@ int WjExecute(struct Machine *m) {
+     for (k = 0; k < 64; ++k) {
+       if (atomic_load_explicit(&m->attention, memory_order_acquire) ||
+           t_epoch != atomic_load_explicit(&g_wj_epoch, memory_order_relaxed) ||
+-          (g_gil_enabled && GilWanted()) || m->wjspin || !(e = Find(m->ip)) || e->fn <= 0) {
+-        break;
++          (g_gil_enabled && GilWanted()) || m->wjspin || !m->wjhot || !(e = Find(m->ip)) || e->fn <= 0) {
++        break;  // (wjhot clear: the interpreter is to run the instruction at m->ip)
+       }
+       ((wj_f)(uintptr_t)e->fn)(m);
+       ++t_runs;
+@@ -4653,8 +5155,16 @@ int WjExecute(struct Machine *m) {
+   }
+   // Compile() may have grown the table
+   e = Find(m->ip);
++  if (!fn) {  // put off (a writable page that can't be taken now)
++    e->count = 1;
++    if (UNLIKELY(g_shiro_prof)) ++g_wj_miss[1];
++    return 0;
++  }
+   e->fn = fn;
+   if (e->fn > 0) {
++    // (a thread in a system call wrote the code while it was compiled:
++    // the region goes at the next entry)
++    if (t_epoch != atomic_load_explicit(&g_wj_epoch, memory_order_acquire)) return 0;
+     ((wj_f)(uintptr_t)e->fn)(m);
+     return 1;
+   }
+diff --git a/blink/wjit.h b/blink/wjit.h
+index 0000000..0000000 100644
+--- a/blink/wjit.h
++++ b/blink/wjit.h
+@@ -32,9 +32,19 @@ int WjExecute(struct Machine *);
+ void WjFlushPosts(void);
+ void WjResetTlb(struct Machine *);
+ void WjPageChanged(i64);
++// a write of `len` bytes at `virt` (-1: anywhere in its page) is about to
++// happen in a page the JIT has code from (PAGE_WJC)
++void WjWrote(struct Machine *, i64 virt, int len);
++void WjExitStats(void);  // BLINK_WJIT_DEBUG: the statistics, when the process exits
++// a thread lets the GIL go in the middle of an instruction (+1: a fault's
++// kernel call) and has it back (-1)
++void WjMidInstruction(int);
+ #else
++#define WjMidInstruction(d) (void)0
++#define WjExitStats()     (void)0
+ #define WjResetTlb(m)     (void)0
+ #define WjPageChanged(v)  (void)0
++#define WjWrote(m, v, n)  (void)0
+ #endif
+ 
+ #endif /* BLINK_WJIT_H_ */

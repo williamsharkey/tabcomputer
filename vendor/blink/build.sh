@@ -45,6 +45,14 @@ for p in "$HERE"/patches/*.patch; do
   git -c user.email=build@shiro -c user.name=shiro am -q --keep-cr "$p"
 done
 
+# configure's probes run in parallel and each edits config.h under flock(1).
+# Where there is none (macOS) it builds its own with $CC, which is emcc here:
+# a wasm program whose flock() locks nothing, and a define is lost now and
+# then (HAVE_EPOLL_PWAIT1, HAVE_GETDOMAINNAME). So build it for the host first.
+if ! command -v flock >/dev/null; then
+  mkdir -p o/tool
+  "${HOST_CC:-cc}" -o o/tool/flock tool/flock.c
+fi
 CFLAGS="-O2" emconfigure ./configure >/dev/null
 emmake make -j"$(nproc)" o//blink/blink.a o//blink/blink.o >/dev/null
 

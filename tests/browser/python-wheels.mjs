@@ -72,7 +72,8 @@ const STEPS = [
   [`python3 -c 'import yaml, tornado.web; print(yaml.safe_load("a: [1, 2]"), yaml.__with_libyaml__, tornado.version)'`, /\{'a': \[1, 2\]\} False \d/],
   ['pip install "termcolor<2"', /Successfully installed termcolor-1\.1\.0/],
   refused('check50 submit50'),
-  refused('jupyterlab'),
+  // (notebooks are built in since Build 1017: pip says so and installs nothing)
+  ['pip install jupyterlab', /Notebooks are built in here/],
   // numpy comes from Pyodide (tests/browser/pyodide-numpy.mjs has the rest): pip records it, python3 runs it there
   ['pip install numpy', /Provided by Pyodide/],
   [`python3 -c "import numpy; print('sum', numpy.arange(10).sum())"`, /sum 45/],

@@ -12,7 +12,7 @@ import { createTestShell, run } from './helpers';
 import { SESSIONS, HOME } from './fixtures/link-sessions';
 import { FILE_TEXT_MAX, editedPaths, editorFiles, lineKind, scriptPath, secretIn, simpleCommands, trimSession, type TrimEntry } from '@shiro/link-trim';
 import { NOISE, noteEdited, resetSessionLog, sessionEnd, sessionLog, sessionStart, watchSessionFs } from '@shiro/session-log';
-import { RELAY_WARN_BYTES, classifyUrl, downloadSentences, sumTally, tallySince } from '@shiro/net-tally';
+import { RELAY_WARN_BYTES, classifyUrl, downloadSentences, received, sumTally, tallySince } from '@shiro/net-tally';
 import { parseFragment, scriptLink } from '@shiro/link-fragment';
 import { buildLink, fileNow, linkCmd } from '@shiro/commands/link';
 import { handleRunLink, type RunLinkDeps } from '@shiro/run-url';
@@ -178,8 +178,8 @@ describe('link: the rules, one at a time', () => {
     expect(r.script).toBe('wc -l data.csv > count.txt\n');
     expect(r.dropped).toEqual([{ line: 'upload', why: 'files chosen from this computer: a link cannot carry them' }]);
     expect(r.notInLink).toEqual([
-      '~/data.csv (13 KB) came from your computer, by a drop or an upload. It is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
-      '~/\'my photos/cat.png\' (2.3 MB) came from your computer, by a drop or an upload. It is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
+      '~/data.csv (13 KB, from your computer) is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
+      '~/\'my photos/cat.png\' (2.3 MB, from your computer) is not in the link. Put it where the link\'s commands can fetch it, and add the line that fetches it.',
     ]);
   });
 
@@ -376,6 +376,17 @@ describe('link: what the setup downloaded, by the path it took', () => {
     expect(classifyUrl('https://tabcomputer.com/pkg/jq/jq.wasm', 'http://localhost:6871')).toEqual({ path: 'site', label: 'tabcomputer packages' });
     // the page itself, an app's own origin, and what is no request
     for (const u of [`${o}/assets/index-abc.js`, `${o}/`, `${o}/api/anthropic/v1/messages`, 'https://app--x--0123.web.tabcomputer.com/__tabcomputer/frame.html', 'http://app--x--0123.localhost:6871/a', 'blob:https://tabcomputer.com/1', 'data:text/plain,x']) expect(classifyUrl(u, o), u).toBeNull();
+  });
+
+  it('does not count a fetch the browser refused', () => {
+    // What Chrome records (tests/browser/link-is-computer.mjs `relay`, and a fetch of each kind by hand):
+    // refused for CORS, allowed by CORS, and a browser that records no status
+    expect(received({ initiatorType: 'fetch', responseStatus: 0 })).toBe(false);
+    expect(received({ initiatorType: 'xmlhttprequest', responseStatus: 0 })).toBe(false);
+    expect(received({ initiatorType: 'fetch', responseStatus: 200 })).toBe(true);
+    expect(received({ initiatorType: 'fetch' })).toBe(true);
+    // (a script or an image from another site has status 0 and did arrive)
+    expect(received({ initiatorType: 'script', responseStatus: 0 })).toBe(true);
   });
 
   it('says it in a sentence for each path, and warns when the relay carried a lot', () => {

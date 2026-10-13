@@ -825,7 +825,7 @@ async function main() {
         Object.assign(shell.env, env);
         terminal.injectInput(command + '\r');
       },
-      report: (message) => terminal.term.writeln(`\r\n\x1b[33m${link ? 'link' : 'run link'}: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
+      report: (message) => terminal.notice(`\x1b[33m${link ? 'link' : 'run link'}: ${message}\x1b[0m`),
     }).catch((e) => console.warn('[run-link]', e));
   };
 
@@ -844,7 +844,7 @@ async function main() {
       ready: async () => {
         for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
       },
-      report: (message) => terminal.term.writeln(`\r\n\x1b[33m${link ? 'link' : 'app link'}: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
+      report: (message) => terminal.notice(`\x1b[33m${link ? 'link' : 'app link'}: ${message}\x1b[0m`),
     }).catch((e) => console.warn('[app-link]', e));
   };
   /**
@@ -853,7 +853,7 @@ async function main() {
    * to one or the other by what it holds. There is no way from here around those prompts.
    */
   const startFragmentLink = async (hash: string) => {
-    const say = (message: string) => terminal.term.writeln(`\r\n\x1b[33mlink: ${message.replace(/\n/g, '\r\n')}\x1b[0m`);
+    const say = (message: string) => terminal.notice(`\x1b[33mlink: ${message}\x1b[0m`);
     const [{ parseFragment, FragmentError }, { gistFragmentQuery, fetchOnce, githubTokenFetch, RunLinkError }] = await Promise.all([import('./link-fragment'), import('./run-url')]);
     try {
       const link = parseFragment(hash);
@@ -1009,7 +1009,7 @@ async function main() {
   const inbound = safe ? null : inboundCodeLink(location.pathname);
   if (inbound) {
     const [{ handleInboundLink }, { showRunPrompt }] = await Promise.all([import('./inbound-link'), import('./run-prompt')]);
-    const say = (line: string) => terminal.term.writeln(`\r\n${line}`);
+    const say = (line: string) => terminal.notice(line);
     let framed = true;
     try { framed = window.top !== window; } catch { /* cross-origin parent */ }
     const outcome = handleInboundLink({
@@ -1071,7 +1071,7 @@ async function main() {
       const wm = (globalThis as { __shiroDesktop?: { openApp(id: string): Promise<unknown>; apps(): { id: string }[] } }).__shiroDesktop;
       if (wm?.apps().some((a) => a.id === id)) await wm.openApp(id); else await (await import('./apps/window')).openInstalled(id);
     },
-    report: (message) => terminal.term.writeln(`\r\n\x1b[33mapp import: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
+    report: (message) => terminal.notice(`\x1b[33mapp import: ${message}\x1b[0m`),
   });
 
   // Initialize mobile virtual keys and voice input (the desktop has its own: src/desktop/mobile.ts)

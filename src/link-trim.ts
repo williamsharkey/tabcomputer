@@ -494,7 +494,7 @@ export function trimSession(input: TrimInput): Trimmed {
   // What was dropped into the tab or uploaded: the script has no line that makes it (unless an editor's file above is the same file)
   for (const a of input.arrived ?? []) {
     if (files.includes(a.path)) continue;
-    notInLink.push(`${scriptPath(a.path, home)} (${sizeText(a.size)}) came from your computer, by a drop or an upload. It is not in the link. Put it where the link's commands can fetch it, and add the line that fetches it.`);
+    notInLink.push(`${scriptPath(a.path, home)} (${sizeText(a.size)}, from your computer) is not in the link. Put it where the link's commands can fetch it, and add the line that fetches it.`);
   }
   return { script: lines.length ? lines.join('\n') + '\n' : '', kept, dropped, files, notInLink };
 }

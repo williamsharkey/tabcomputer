@@ -86,7 +86,8 @@ describe('session restore: the pieces', () => {
       let saved = 'user@tab:~$ ls\na.txt';
       for (let i = 0; i < 4; i++) {
         t.restoreScreen(saved, RESTORED_NOTE);
-        t.term.write(`\r\nrun link: no such recipe ${i}\r\nuser@tab:~$ `);
+        // (what a refused link does: a line of the page's own, with the prompt drawn again under it)
+        t.notice(`run link: no such recipe ${i}`);
         await new Promise<void>((r) => t.term.write('', r));
         saved = screenText(bufferToString(t.term), true);
       }

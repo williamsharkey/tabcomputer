@@ -69,12 +69,24 @@ export function tallyRelay(host: string, bytes: number): void {
   add('relay', host || 'a host', 0, bytes);
 }
 
+/**
+ * Whether the page got what it asked for. A fetch the browser refused (the site
+ * sends no CORS headers) is in the browser's record too, with status 0: nothing
+ * came from it, and the same file then comes through the relay. Counted, it made
+ * `link` say "Straight from the browser: HOST 1 file" for a file the browser never
+ * gave (seen in Chrome, tests/browser/link-is-computer.mjs `relay`). A browser
+ * that records no status counts as before.
+ */
+export function received(e: { initiatorType?: string; responseStatus?: number }): boolean {
+  return !(e.responseStatus === 0 && (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest'));
+}
+
 let observer: PerformanceObserver | null = null;
 function take(list: PerformanceEntry[], origin: string): void {
   for (const e of list) {
     const r = e as PerformanceResourceTiming;
     const c = classifyUrl(r.name, origin);
-    if (c) add(c.path, c.label, 1, r.transferSize || r.encodedBodySize || 0);
+    if (c && received(r)) add(c.path, c.label, 1, r.transferSize || r.encodedBodySize || 0);
   }
 }
 

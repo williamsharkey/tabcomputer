@@ -2,7 +2,7 @@
 // "After the #", tabcomputer#147) in Chromium, at 1280 px and on a 390 x 844 touch screen.
 // Needs a build and a running server; no relay and no Debian:
 //   npx vite build && PORT=6871 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/link-is-computer.mjs [http://localhost:6871/] [--only NAME[,NAME]] [--shots DIR]
+//   node tests/browser/link-is-computer.mjs [http://localhost:6871/] [--only NAME[,NAME]] [--shots DIR] [--theme light|dark]
 //
 //   commands   #mkdir … typed by hand, from a fresh profile: the address is cleaned, the Run / Cancel
 //              window shows the commands whole, Cancel has the focus, a click made by script does
@@ -14,7 +14,11 @@
 //   gist       #gist:ID against a stand-in GitHub: an app.json is an app, otherwise the first script
 //   guards     a frame, ?safe=1, a link pasted into a tab that is already open
 //   page       /link: the box, the address beside it and its length, the examples, Open
-//   link       `link` after a short session, and its link opened in a second fresh profile
+//   link       `link` after a short session (with two lines that cancel out and a file that came from
+//              outside), its QR code read back by the browser's own reader, and its link opened in a
+//              second fresh profile
+//   relay      (only when asked for by name, on a server with the relay on) what link says the
+//              setup sent through the relay
 //   times      each /link example from its link to working (python and flask need the network)
 //
 // Every request of every page is recorded: none may carry a link's commands or its manifest.
@@ -28,6 +32,8 @@ const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
 const only = opt('--only')?.split(',');
+// The desktop's appearance for the whole run: dark (the default) or light
+const theme = opt('--theme') === 'light' ? 'light' : 'dark';
 const base = args[0] || 'http://localhost:6871/';
 const origin = new URL(base).origin;
 if (shots) mkdirSync(shots, { recursive: true });
@@ -42,7 +48,16 @@ const WIDE = { name: '1280', viewport: { width: 1280, height: 800 } };
 const PHONE = { name: 'phone', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
 const DEVICES = [WIDE, PHONE];
 
-const browser = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
+// A browser that has run one part's checks is big, and a machine with little memory ends it: each part
+// (each screen of each kind) gets a browser of its own.
+const launch = async () => {
+  const b = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
+  b.on('disconnected', () => { if (b === browser && !closing) console.log('the browser went away'); });
+  return b;
+};
+let closing = false;
+let browser = await launch();
+const relaunch = async () => { closing = true; await browser.close().catch(() => {}); closing = false; browser = await launch(); };
 
 // ── a stand-in for GitHub: a gist that is an app, and one that is a script ──
 const GIST_APP = 'abcdef0123456789abcdef0123456789';
@@ -75,6 +90,7 @@ async function newContext(device, { welcome = false } = {}) {
     ? route.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', headers: cors, body: GIST_SCRIPT })
     : route.fulfill({ status: 404, contentType: 'text/plain', headers: cors, body: 'Not Found' })));
   if (!welcome) await ctx.addInitScript(() => { try { if (window.top === window) localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
+  await ctx.addInitScript((theme) => { try { if (window.top === window) localStorage.setItem('tabcomputer-desktop-theme', theme); } catch {} }, theme);
   return ctx;
 }
 /** Close a context after checking that none of its requests carried what only a link's # part held */
@@ -121,7 +137,10 @@ const promptOf = (page, sel) => page.evaluate((sel) => {
   const r = el.getBoundingClientRect();
   return {
     text: el.innerText, title: el.querySelector('h3')?.textContent ?? '', box: el.querySelector('pre')?.textContent ?? '',
-    left: Math.round(r.left), right: Math.round(r.right), sw: el.scrollWidth, cw: el.clientWidth,
+    // what a person reads at once: the sentences outside the disclosures, and the buttons
+    says: [...el.querySelectorAll(':scope > p')].map((p) => p.innerText.replace(/\s*\n\s*/g, ' ')), buttons: [...el.querySelectorAll('[class$=actions] button')].map((b) => b.textContent),
+    more: [...el.querySelectorAll('summary')].map((s) => s.textContent), guest: el.querySelector('details [data-act=guest]')?.textContent ?? '',
+    left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), sw: el.scrollWidth, cw: el.clientWidth,
     focus: document.activeElement?.getAttribute('data-act'), hash: location.hash, search: location.search,
   };
 }, sel);
@@ -144,6 +163,7 @@ const typed = (text) => `${base}#${text}`;
 // ── commands ────────────────────────────────────────────────────────
 if (wants('commands')) for (const device of DEVICES) {
   const D = device.name;
+  await relaunch();
   const mark = secret(`zqcmd${D}mark`);
   const commands = `mkdir -p ~/linked && cd ~/linked && echo ${mark} > note.txt # a note`;
   const ctx = await newContext(device);
@@ -156,7 +176,9 @@ if (wants('commands')) for (const device of DEVICES) {
   time(`${D} commands: link to the Run / Cancel window (fresh profile)`, Date.now() - t0);
   let p = await promptOf(page, RUN);
   check(`${D} commands: the window shows the commands whole, with Run and Cancel`, !!p && p.title === 'Run these commands?' && p.box === commands + '\n'
-    && p.text.includes('From the link itself. tabcomputer has not reviewed it.') && p.text.includes('They run in a new Terminal, in your home folder.'), JSON.stringify(p && { title: p.title, box: p.box }));
+    && p.says.join(' | ') === 'From this link. Not reviewed by tabcomputer. | They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).', JSON.stringify(p && { title: p.title, box: p.box, says: p.says }));
+  // a phone has no room for a desktop around a question: the prompt is the screen
+  if (device.hasTouch) check('phone commands: the prompt fills the screen, with nothing of the desktop around it', !!p && p.left === 0 && p.right === device.viewport.width && p.top === 0 && p.bottom === device.viewport.height && p.buttons.join() === 'Cancel,Run', JSON.stringify(p && { left: p.left, right: p.right, top: p.top, bottom: p.bottom }));
   check(`${D} commands: Cancel has the focus, and the window fits`, !!p && p.focus === 'cancel' && p.left >= 0 && p.right <= device.viewport.width && p.sw <= p.cw, JSON.stringify(p && { focus: p.focus, left: p.left, right: p.right, sw: p.sw, cw: p.cw }));
   check(`${D} commands: the address has no link in it`, !!p && p.hash === '' && p.search === '', JSON.stringify(p && { hash: p.hash, search: p.search }));
   await shot(page, `${D}-commands-prompt`);
@@ -213,6 +235,7 @@ if (wants('commands')) for (const device of DEVICES) {
 // ── a one-file app ──────────────────────────────────────────────────
 if (wants('app')) for (const device of DEVICES) {
   const D = device.name;
+  await relaunch();
   const phone = !!device.hasTouch;
   const ctx = await newContext(device);
   // (the app's id is the one thing of the link a server learns, once the app is open: it is in the
@@ -228,8 +251,10 @@ if (wants('app')) for (const device of DEVICES) {
   time(`${D} app: link to the install prompt (fresh profile)`, Date.now() - t0);
   let p = await promptOf(page, APP);
   check(`${D} app: the prompt shows the app's sentences: where from, the exact command`, !!p && p.title === "Install Jq two?"
-    && p.text.includes('From the link itself, which holds the whole app. tabcomputer has not reviewed it.')
-    && p.text.includes("Jq two runs this command as you type: jq {filter}") && p.text.includes(mark) && p.text.includes('jq is an ordinary program in this tab'), p?.text.replace(/\n+/g, ' | ').slice(0, 400));
+    && p.says.join(' | ') === `From this link. Not reviewed by tabcomputer. | Try a jq filter. ${mark} | Jq two runs this command as you type: jq {filter} | jq is an ordinary program in this tab: it can read and change every file here.`, p?.says.join(' | '));
+  // two buttons; the rest, and a guest where the server has them, is one click away
+  check(`${D} app: Cancel and Install are the only buttons, and the rest is under two disclosures`, !!p && p.buttons.join() === 'Cancel,Install' && p.more.join(' | ') === 'What it can reach | app.json, as it will be installed' && (p.guest === '' || p.guest === 'open it in a guest'), JSON.stringify(p && { buttons: p.buttons, more: p.more, guest: p.guest }));
+  if (phone) check('phone app: the prompt fills the screen, with nothing of the desktop around it', !!p && p.left === 0 && p.right === device.viewport.width && p.top === 0 && p.bottom === device.viewport.height, JSON.stringify(p && { left: p.left, right: p.right, top: p.top, bottom: p.bottom }));
   check(`${D} app: Cancel has the focus, the prompt fits, and the address has no link in it`, !!p && p.focus === 'cancel' && p.left >= 0 && p.right <= device.viewport.width && p.sw <= p.cw && p.hash === '' && p.search === '', JSON.stringify(p && { focus: p.focus, left: p.left, right: p.right, hash: p.hash }));
   await shot(page, `${D}-app-prompt`);
   await page.waitForTimeout(900);
@@ -272,7 +297,8 @@ if (wants('app')) for (const device of DEVICES) {
   page = await open(ctx, typed(`name=Costs&about=${mark}&table=costs.csv&columns=Date:date,What,Category:Food|Travel,Amount:number`));
   await page.waitForSelector(APP, { timeout: 90_000 });
   p = await promptOf(page, APP);
-  check(`${D} app: a table's prompt says what it keeps and that it runs no program`, p.text.includes('keeps a table in costs.csv') && p.text.includes('It runs no program.'), p.text.replace(/\n+/g, ' | ').slice(0, 300));
+  check(`${D} app: a table's prompt says what it keeps and that it runs no program`, p.says.slice(2).join(' | ') === 'Costs keeps a table in costs.csv, in its own data folder. | It runs no program, and its page may use only its own data folder.', p.says.join(' | '));
+  await shot(page, `${D}-table-prompt`);
   await agree(page, APP, 'install');
   f = await ready(page, "costs");
   const heads = f && await f.evaluate(() => [...document.querySelectorAll('th')].map((e) => e.textContent.trim()).filter(Boolean).join(','));
@@ -283,8 +309,14 @@ if (wants('app')) for (const device of DEVICES) {
   page = await open(ctx, typed('run=tesseract {in} stdout pdf&accept=.png,.jpg&name=Make scans searchable&needs=tesseract-ocr'));
   await page.waitForSelector(APP, { timeout: 90_000 });
   p = await promptOf(page, APP);
-  check(`${D} app: the issue's own example shows what it runs and what it installs`, p.text.includes('Make scans searchable runs this command once for each file you give it: tesseract {in} stdout pdf')
-    && p.text.includes('Before its first start it installs the Debian package tesseract-ocr.'), p.text.replace(/\n+/g, ' | ').slice(0, 400));
+  // (the link the coordinator opened on production: five things to read, where there were eight sentences)
+  check(`${D} app: the issue's own example: the question, where from, the command, what it installs, what it can touch`, p.title === 'Install Make scans searchable?' && p.says.join(' | ') === [
+    'From this link. Not reviewed by tabcomputer.', 'Make scans searchable runs this command once for each file you give it: tesseract {in} stdout pdf',
+    'Before its first start it installs the Debian package tesseract-ocr.', 'tesseract is an ordinary program in this tab: it can read and change every file here.',
+  ].join(' | '), p.says.join(' | '));
+  await shot(page, `${D}-needs-prompt`);
+  await page.click(`${APP} summary`);
+  await shot(page, `${D}-needs-prompt-reach`);
   await page.click(`${APP} [data-act=cancel]`);
   await page.close();
 
@@ -300,12 +332,13 @@ if (wants('app')) for (const device of DEVICES) {
 // ── a gist ──────────────────────────────────────────────────────────
 if (wants('gist')) for (const device of DEVICES) {
   const D = device.name;
+  await relaunch();
   const ctx = await newContext(device);
   let page = await open(ctx, `${base}#gist:${GIST_APP}`);
   await page.waitForSelector(APP, { timeout: 90_000 }).catch(() => null);
   let p = await promptOf(page, APP);
   check(`${D} gist: a gist with an app.json is an app, asked for like any app from a gist`, !!p && p.text.includes(`From gist.github.com/${GIST_APP} at revision ${REV.slice(0, 10)}`)
-    && p.text.includes('Upper case runs this command once for each file you give it: sed -e s/a/A/g {in}') && p.focus === 'cancel' && p.hash === '', p?.text.replace(/\n+/g, ' | ').slice(0, 300));
+    && p.says.includes('Upper case runs this command once for each file you give it: sed -e s/a/A/g {in}') && p.focus === 'cancel' && p.hash === '', p?.says.join(' | '));
   const asked = (requests.get(ctx) ?? []).filter((r) => r.startsWith(`GET https://api.github.com/gists/${GIST_APP}`)).length;
   check(`${D} gist: GitHub was asked for the gist once`, asked === 1, `${asked} requests`);
   await agree(page, APP, 'install');
@@ -383,6 +416,7 @@ if (wants('guards')) {
 // ── the /link page ──────────────────────────────────────────────────
 if (wants('page')) for (const device of DEVICES) {
   const D = device.name;
+  await relaunch();
   const ctx = await newContext(device);
   let page = await open(ctx, new URL('link', base).toString());
   await page.waitForFunction(() => document.querySelectorAll('#examples button').length >= 5 && document.getElementById('address').textContent.length > 10, null, { timeout: 30_000 });
@@ -458,6 +492,7 @@ const linkWindow = (page) => page.evaluate(() => {
 
 if (wants('link')) for (const device of DEVICES) {
   const D = device.name;
+  await relaunch();
   const mark = secret(`zqlink${D}mark`);
   const vim = secret(`zqvim${D}mark`);
   const ctx = await newContext(device);
@@ -479,6 +514,14 @@ if (wants('link')) for (const device of DEVICES) {
   await page.waitForFunction(() => window.__linkTerm.foregroundLine === null, null, { timeout: 15_000 }).catch(() => {});
   await typeLine(page, `echo '<h1>${mark}</h1>' > index.html`);
   await typeLine(page, 'pwd');
+  // two lines that cancel out, and a file that came from the person's own computer
+  await typeLine(page, 'touch scratch.txt');
+  await typeLine(page, 'rm scratch.txt');
+  await page.evaluate(async () => {
+    await window.__tabcomputer.fs.writeFile('/home/user/zqsite/photo.bin', new Uint8Array(2300));
+    // (what the upload command and a drop on the file manager do after writing the file: src/session-log.ts)
+    window.__tabcomputer.live('src/session-log.ts').noteArrived('/home/user/zqsite/photo.bin');
+  });
 
   // (the line entered twice stays where it was entered last, after the editor's file)
   const want = `mkdir zqsite && cd zqsite\ncat > notes.txt <<'EOF'\n${vim}\nEOF\necho '<h1>${mark}</h1>' > index.html\n`;
@@ -487,6 +530,9 @@ if (wants('link')) for (const device of DEVICES) {
   const why = (await side(page, 'link --why')).o;
   check(`${D} link: link --why says why each other line went`, /cat nope\.txt\n\s+left out: it failed \(status 1\)/.test(why) && /ls\n\s+left out: looking around/.test(why) && /cd \/tmp\n\s+left out: a change of folder/.test(why)
     && /vi notes\.txt\n\s+left out: an editor/.test(why) && /left out: entered again later/.test(why), why);
+  check(`${D} link: a file made and then removed is in neither line of the script`, /touch scratch\.txt\n\s+left out: undone later \(rm scratch\.txt\)/.test(why) && /rm scratch\.txt\n\s+left out: it only undid an earlier line \(touch scratch\.txt\)/.test(why) && !script.o.includes('scratch'), why);
+  const said = (await side(page, 'link | cat')).o;
+  check(`${D} link: a file that came from the person's computer is named as not in the link`, said.includes('~/zqsite/photo.bin (3 KB, from your computer) is not in the link.'), said.slice(-600));
   const printed = (await side(page, 'link --print')).o;
   check(`${D} link: link --print is an address with the script after its #, readable`, printed.startsWith(`${origin}/#mkdir%20zqsite%20&&%20cd%20zqsite%0Acat%20%3E%20notes.txt%20`) && printed.endsWith('%0Acd%20~') && printed.length < 2000, printed);
 
@@ -500,11 +546,45 @@ if (wants('link')) for (const device of DEVICES) {
   check(`${D} link: it says how many lines were left out, and why`, !!w && /^\d+ lines were left out$/.test(w.dropped) && w.why.some((x) => x === 'cat nope.txt: it failed (status 1)') && w.why.some((x) => x === 'link: the link command itself'), JSON.stringify(w && [w.dropped, w.why]));
   check(`${D} link: the window fits`, !!w && w.left >= 0 && w.right <= device.viewport.width && w.sw <= w.cw, JSON.stringify(w && { left: w.left, right: w.right, sw: w.sw, cw: w.cw }));
   await shot(page, `${D}-link-window`);
+  // the link as a QR code, read back by the browser's own reader (not by anything of ours)
+  const readQr = () => page.evaluate(async () => {
+    const svg = document.querySelector('.tc-link [data-part=qr] svg');
+    if (!svg) return { error: 'no code is drawn' };
+    if (!('BarcodeDetector' in window)) return { error: 'this browser has no BarcodeDetector' };
+    const img = new Image();
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.outerHTML);
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width; canvas.height = img.height;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    try {
+      const found = await new BarcodeDetector({ formats: ['qr_code'] }).detect(canvas);
+      return { text: found[0]?.rawValue ?? '', found: found.length, side: img.width, link: document.querySelector('.tc-link [data-part=link]').value };
+    } catch (e) { return { error: String(e) }; }
+  });
+  await page.click('.tc-link [data-act=qr]');
+  let qr = await readQr();
+  if (qr.error && /BarcodeDetector/.test(qr.error)) console.log(`skip ${D} link: the QR code was not read back: ${qr.error}`);
+  else check(`${D} link: the QR code reads back as the link, by the browser's reader`, qr.found === 1 && qr.text === qr.link && qr.text.length > 60, JSON.stringify({ ...qr, text: qr.text?.slice(0, 80), link: qr.link?.length }));
+  await shot(page, `${D}-link-qr`);
   // the person changes the script: the link follows
   await page.fill('.tc-link [data-part=script]', want + `echo ${mark} > edited.txt\n`);
   const made = await until(page, async () => { const x = await linkWindow(page); return x.link.endsWith('edited.txt') ? x : null; }, 5000);
   check(`${D} link: an edit in the window changes the link and its length`, !!made && made.size === `The script fits in a link a person can read: ${made.link.length} characters.`, JSON.stringify(made && [made.size, made.link.length]));
   const link = made?.link ?? '';
+  // the code follows the link too; a dense one still reads back (words that do not repeat, so
+  // that the link stays long however it is written)
+  qr = await readQr();
+  if (!qr.error) check(`${D} link: the QR code follows the edited link`, qr.text === link, JSON.stringify({ found: qr.found, side: qr.side }));
+  let rnd = 20261013;
+  const word = (n) => Array.from({ length: n }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[(rnd = (rnd * 1103515245 + 12345) % 2147483648) >> 16 & 31]).join('');
+  await page.fill('.tc-link [data-part=script]', Array.from({ length: 34 }, () => `echo ${word(44)}`).join('\n') + '\n');
+  const dense = await until(page, async () => { const x = await linkWindow(page); return x.link.length > 1200 ? x : null; }, 5000);
+  qr = await readQr();
+  if (!qr.error) check(`${D} link: a link of ${dense?.link.length} characters reads back from its code too`, !!dense && qr.found === 1 && qr.text === dense.link, JSON.stringify({ found: qr.found, side: qr.side, got: qr.text?.length }));
+  await shot(page, `${D}-link-qr-dense`);
+  await page.fill('.tc-link [data-part=script]', want + `echo ${mark} > edited.txt\n`);
+  await until(page, async () => { const x = await linkWindow(page); return x.link === link ? x : null; }, 5000);
   // a script too long for any link: only then is a gist offered, and it needs the person's click
   check(`${D} link: no gist is offered for a script that fits a link`, !!made && !made.gist);
   await page.evaluate(() => { try { localStorage.setItem('tabcomputer_github_token', 'gho_standin'); } catch {} });
@@ -575,6 +655,7 @@ if (wants('times')) {
   await ctx0.close();
   for (const device of DEVICES) {
     const D = device.name;
+    await relaunch();
     // commands: from the link to their result, the person's click included
     for (const [name, works, ms] of [
       ['A Python one-liner', async (page) => (await windows(page)).some((w) => w.title === 'From a link' && /^5050$/m.test(w.text)), 240_000],
@@ -620,6 +701,48 @@ if (wants('times')) {
   }
 }
 
+// ── the relay's bytes in link's downloads line: needs a server with the relay on ──
+// The server under test must allow this machine's own address and the stand-in's port:
+//   TABCOMPUTER_TCP_RELAY=1 TABCOMPUTER_TCP_ORIGINS=<the site's origin> TABCOMPUTER_TCP_PORTS=80,443,6877 \
+//   TABCOMPUTER_TCP_ALLOW_CIDRS=<this machine's address>/32
+// and the check is asked for by name: --only relay
+if (only?.includes('relay')) {
+  const [{ createServer }, { networkInterfaces }] = await Promise.all([import('node:http'), import('node:os')]);
+  const address = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+  const PORT = 6877, BYTES = 6_000_000;
+  // a site that sends no CORS headers: the page's fetch cannot have it, so curl goes over the relay
+  const standIn = createServer((req, res) => {
+    const size = req.url === '/big.bin' ? BYTES : 2000;
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(size) });
+    res.end(Buffer.alloc(size, 0x61));
+  });
+  await new Promise((r) => standIn.listen(PORT, '0.0.0.0', r));
+  const ctx = await newContext(WIDE);
+  const page = await open(ctx, base);
+  await booted(page);
+  await typeLine(page, `curl -s -o small.txt http://${address}:${PORT}/small.txt`, 60_000);
+  let said = (await side(page, 'link | cat')).o;
+  const got = (await side(page, 'wc -c < ~/small.txt')).o.trim();
+  check('relay: curl of a site without CORS headers went over the relay and wrote the file', got === '2000', `${got} bytes; ${(await mainScreen(page)).slice(-300)}`);
+  const line = (text) => text.split('\n').find((l) => l.startsWith('What the script downloaded here:')) ?? '';
+  check('relay: link says what went through the relay, by host and size', new RegExp(`Through this site's relay: ${address.replace(/\./g, '\\.')} \\d+(\\.\\d+)? KB\\.`).test(line(said)) && !/costs this site/.test(said), line(said));
+  // (the browser tried first and was refused: that is no download, and is not said as one)
+  check('relay: a file the browser refused is not said to have come straight from the browser', !/Straight from the browser/.test(line(said)), line(said));
+  console.log(`  relay, small: ${line(said)}`);
+  await typeLine(page, `curl -s -o big.bin http://${address}:${PORT}/big.bin`, 120_000);
+  said = (await side(page, 'link | cat')).o;
+  check('relay: more than 5 MB through the relay gets the warning', /Through this site's relay: [\d.]+ 6\.\d MB\./.test(line(said)) && /MB went through this site's relay\. The relay is the part that costs this site each time someone opens the link\./.test(said), said.split('\n').filter((l) => /relay/.test(l)).join(' | '));
+  console.log(`  relay, 6 MB: ${said.split('\n').filter((l) => /relay/.test(l)).join(' | ')}`);
+  await typeLine(page, 'link');
+  await page.waitForSelector('.tc-link', { timeout: 15_000 }).catch(() => null);
+  const w = await page.evaluate(() => ({ downloads: document.querySelector('.tc-link [data-part=downloads]')?.textContent, warning: document.querySelector('.tc-link [data-part=warning]')?.textContent }));
+  check('relay: the Link window shows the same line and the warning', /Through this site's relay/.test(w.downloads ?? '') && /costs this site/.test(w.warning ?? ''), JSON.stringify(w));
+  await shot(page, 'relay-link-window');
+  await ctx.close();
+  standIn.close();
+}
+
+closing = true;
 await browser.close();
 if (times.length) {
   console.log('\ntimes (ms):');

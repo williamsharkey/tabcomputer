@@ -339,6 +339,19 @@ export class ShiroTerminal {
   }
 
   /**
+   * Something the page itself says here, not a command's output (a link that
+   * was refused): on a line of its own, and at an idle prompt the prompt is
+   * drawn again under it. A terminal that is idle then still ends at its
+   * prompt, which is what session restore takes its last line for: a line
+   * left under the prompt was dropped as if it were one, and the prompt above
+   * it stayed, once more at every reload (tabcomputer#128).
+   */
+  notice(text: string): void {
+    this.term.write(`\r\n${text.replace(/\r?\n/g, '\r\n')}\r\n`);
+    if (!this.running) this.showPrompt();
+  }
+
+  /**
    * Get the iframe container for virtual servers.
    * Shows the container when called.
    */

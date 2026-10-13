@@ -17,7 +17,7 @@ An app link, `?app=<id>` or `?app=gh:owner/repo[/path]`, is the same machinery w
 | Form | Meaning |
 | --- | --- |
 | `?run=<name>` | A curated recipe, served by the site at `/recipes/<name>.sh`. The name has only `a-z`, `0-9` and `-`. |
-| `?run=gh:<owner>/<repo>[/<path>]` | A script in a GitHub repository, `.tabcomputer/run.sh` unless a path is given, fetched from `raw.githubusercontent.com` at the default branch, as a visitor. When GitHub does not give the file to a visitor (a private repository), the sign-in sheet opens; signed in, the file is fetched again through `api.github.com` with the tab's GitHub token, and shown with Run and Cancel as always. |
+| `?run=gh:<owner>/<repo>[/<path>]` | A script in a GitHub repository, `.tabcomputer/run.sh` unless a path is given, fetched from `raw.githubusercontent.com` at the default branch, as a visitor. When GitHub does not give the file to a visitor, see "A repository that is not there" below. |
 | `?run=gist:<user>/<id>[/<file>]` | A file of a public gist, its first file unless one is named, fetched from `gist.githubusercontent.com/<user>/<id>/raw[/<file>]`. `<file>` is one name, never a path. |
 | `?run=gist:<id>` | The same without the user: the owner is looked up with GitHub's API (`api.github.com/gists/<id>`), and only a plain account name is taken from the answer; the raw address is built here. |
 | `?run=sh:<base64url>` | A script carried in the link itself (UTF-8, base64url, at most 64 KB). |
@@ -78,7 +78,7 @@ From a link to working, each from a fresh profile, on a local build with the sit
 
 `link` (and System → "Share This Setup as a Link…") writes the shortest script that gets another person to where this tab is, and the address that carries it. It reads what was typed at this tab's terminals since the tab was new. It works by rules; no model reads the session.
 
-Code: `src/session-log.ts` (what is recorded), `src/link-trim.ts` (the rules, with no DOM and no filesystem), `src/net-tally.ts` (the downloads), `src/commands/link.ts` (the command), `src/link-ui.ts` (the window). Tests: `tests/tests/shiro-vitest/link-trim.test.ts` with six recorded sessions in `fixtures/link-sessions.ts`, and the `link` part of `tests/browser/link-is-computer.mjs`.
+Code: `src/session-log.ts` (what is recorded), `src/link-trim.ts` (the rules, with no DOM and no filesystem), `src/net-tally.ts` (the downloads), `src/qr.ts` (the QR code), `src/commands/link.ts` (the command), `src/link-ui.ts` (the window). `qr.test.ts` checks the encoder. Tests: `tests/tests/shiro-vitest/link-trim.test.ts` with six recorded sessions in `fixtures/link-sessions.ts`, and the `link` part of `tests/browser/link-is-computer.mjs`.
 
 ```
 link              the script, which form it fits, what it downloaded here, and the link
@@ -91,7 +91,7 @@ link FILE         the link for the script in FILE
 
 On the desktop `link` also opens a window with the script in a box. The person can change the script there; the size line and the link follow. Without a desktop, `link -o setup.sh`, an editor, and `link setup.sh` do the same. (`link FILE1 FILE2` is still link(1): a second name for a file.)
 
-**What is recorded.** The terminal records each line a person entered (`runLine` in `src/terminal.ts`): the line, the shell's folder before and after, the exit status, the start and end times, the files that changed while it ran, and what the page downloaded while it ran. The files come from the filesystem's own change events (`FileSystem.onChange`); nothing is scanned and no copy of a file is kept. The Code app says which files it saved (`noteEdited`). The log is in `sessionStorage`: a reload keeps it, and closing the tab ends it. It is never sent anywhere.
+**What is recorded.** The terminal records each line a person entered (`runLine` in `src/terminal.ts`): the line, the shell's folder before and after, the exit status, the start and end times, the files that changed while it ran, and what the page downloaded while it ran. The files come from the filesystem's own change events (`FileSystem.onChange`); nothing is scanned and no copy of a file is kept. The Code app says which files it saved (`noteEdited`), and `upload` and a drop on the Files app say which files came from the person's computer (`noteArrived`). The log is in `sessionStorage`: a reload keeps it, and closing the tab ends it. It is never sent anywhere.
 
 **The rules.**
 
@@ -104,6 +104,8 @@ On the desktop `link` also opens a window with the script in a box. The person c
 | It only looked (`ls`, `cat`, `pwd`, `git status`, `--help`, `man`, `history`, `clear`, and others without a redirect) | Dropped. |
 | It succeeded and changed nothing | Dropped. |
 | It is entered again later, word for word, in the same folder | The last one stays. |
+| It made one thing and a later line took exactly that away (`touch F` … `rm F`, `mkdir D` … `rmdir D` or `rm -r D`, `pip install X` … `pip uninstall X`, also `npm`, `pnpm`, `yarn`, `bun`, `apt`, `pkg`, `toolchain`, `app`, `gem`, `brew`) | Both are dropped, when no line between them named the thing or worked in or under it. `link --why` says "undone later (rm F)" and "it only undid an earlier line (touch F)". |
+| `upload` | Dropped: the file it brought is named under "not in the link". |
 | `cd` | Never kept as typed. Each kept line gets the folder it ran in: one `cd` where the folder changes, and one at the end for where the shell is now. A `cd` that nets out leaves nothing. |
 | An editor (`vim`, `nano`, the Code app …) | Not replayed. Each file it was started on and wrote is recorded as a here-document with what the file holds now, where it was first edited, if it is text of at most 20,000 characters. A larger or binary file is named under "not in the link". |
 | Work inside a program (`claude`, `python3` alone, `ssh`) | Dropped, and named under "not in the link" when it changed files. |
@@ -126,25 +128,46 @@ A change that belongs to no line is ignored, so a download in the background doe
 | A Vite app | 12 | 4 | 8 | 1 | 0 | readable, 306 |
 | A C lab with an edited file | 13 | 2 | 11 | 1 | 0 | readable, 429 |
 | A clone and a build | 14 | 7 | 7 | 0 | 0 | readable, 254 |
-| A session full of mistakes | 24 | 8 | 16 | 0 | 2 | readable, 214 |
+| A session full of mistakes | 24 | 6 | 18 | 0 | 0 | readable, 181 |
 | A session with a large binary file | 6 | 3 | 3 | 2 | 0 | readable, 458 |
 
-The two lines kept too many are `touch main.py` and `rm main.py`: each changed a file, and the rules do not see that together they changed nothing.
+The session full of mistakes held `touch main.py` and, later, `rm main.py`. Each changed a file, so both were kept until the rule for two lines that cancel out; now neither is.
 
-Not built: a QR code for the link, "Tidy with Claude", files that reached the tab by drag and drop or upload (they are not recorded), and a count of what a Worker downloads.
+**A pair cancels out only when it is plain that it does.** Each line must be one simple command (no `&&`, no pipe). The first must have made one thing and nothing else: the one file it changed, the folder `mkdir` named, or the packages an install named. The second must take away exactly that: the same path, or the same installer with the same names (for `npm` and its kind, in the same folder, unless `-g`). A line between them that names the thing, runs in or under it, or changes a file under it keeps both: a `cd build && cmake ..` between `mkdir build` and `rm -r build` does. An uninstall with no install before it in the session is kept: it changes the other person's computer too.
+
+**A file that came from outside.** A file put in the tab with `upload`, or dropped on the Files app, was made by no command, so no line of the script makes it. The window and `link` name it: "~/data.csv (13 KB, from your computer) is not in the link. Put it where the link's commands can fetch it, and add the line that fetches it." A file that an editor then saved as text is in the script as a here-document and is not named.
+
+**The QR code.** The window's "QR code" button shows the link as a QR code under it, for a phone's camera, and follows the script as it is edited. It is offered for a link of at most 2,953 bytes, which is what the largest code holds (version 40, error correction L, byte mode); a longer link has no button. `src/qr.ts` is the encoder: 255 lines, no dependency, byte mode and level L only. `qr.test.ts` checks it against the standard's own numbers (ISO/IEC 18004: the Reed-Solomon worked example of Annex I, the format words of table C.1, the version words of Annex D, the block and alignment tables for all 40 versions) and reads codes back with a decoder written for the test, for every version at its last byte and one byte past it. `tests/browser/link-is-computer.mjs` reads the window's code with Chrome's own reader (`BarcodeDetector`) and gets the link back, for a link of 180 characters and one of 1,856, at 1280 px and on a 390 x 844 touch screen, in both appearances. It was not scanned with a phone's camera.
+
+**The relay's bytes, checked in a browser.** `tests/browser/link-is-computer.mjs --only relay`, on a server started with the relay on for this machine's own address: `curl` of a file from a site that sends no CORS headers goes over the relay, and `link` says "Through this site's relay: 192.168.1.38 3 KB." for a file of 2,000 bytes and "… 6.0 MB." with the warning for one of 6 MB (headless Chrome 155 on a Mac). The check found one false sentence: the browser tries such a file itself first and is refused, and that refused request was counted as "Straight from the browser: 192.168.1.38 1 file". A request the browser's record gives status 0 is no longer counted (`received` in `src/net-tally.ts`).
+
+Not built: "Tidy with Claude", a QR code on the `/link` page, and a count of what a Worker downloads. A file dropped on a terminal or on the desktop itself is recorded only where that path goes through `upload` or the Files app.
 
 ## Trust
 
 A tab can hold Claude and GitHub tokens and the person's files, so a link never runs code that nobody reviewed without asking.
 
 - **Curated recipes run at once.** The Terminal first prints one line, `running recipe c-class (tabcomputer.com/recipes/c-class.sh)`. A recipe is curated only when `/recipes/index.json` on the page's own origin lists its name with the sha256 of the bytes `/recipes/<name>.sh` returned. Both are fetched with redirects refused, and an HTML answer (the app shell standing in for a missing file) is refused.
-- **`gh:`, `gist:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again. Commands written after the `#` are shown the same way; the one difference is that a second visit to commands that finished here, with no `on-open` line, runs nothing and so asks nothing ("After the #" above).
+- **`gh:`, `gist:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. The window says four things and no more: the question ("Run this script?", or "Run these commands?" for commands after the `#`), where it is from ("From github.com/someone/project, .tabcomputer/run.sh. Not reviewed by tabcomputer.", or "From this link. …"), the script, and one sentence on what it can touch: "It runs as you: it can read and change every file in this tab and use its sign-ins (Claude, GitHub)." Where it ran is said only when it ran here before. On a phone the window is the whole screen, without the desktop's menu bar and dock, with Cancel and Run as two wide buttons at the bottom. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again. Commands written after the `#` are shown the same way; the one difference is that a second visit to commands that finished here, with no `on-open` line, runs nothing and so asks nothing ("After the #" above).
 - **A script from GitHub is fetched as exactly the file asked for**: without cookies or a referrer, no redirect followed, and an HTML answer is refused. A gist is never curated, whatever it is named.
 - **The script must be what it looks like.** UTF-8 text without control characters, bidirectional overrides or invisible characters; otherwise it is refused. The prompt puts the script in with `textContent`, so markup in a script stays text.
 - **Arguments are data.** Only the names in the script's `# args:` header are passed, as `RUN_<NAME>` in the Terminal's environment; other parameters are ignored and named in the Terminal. A link can't set `PATH` or any other variable. Values are never written into shell text. A value with control characters, or longer than 2000 characters, stops the run.
 - **A framed page ignores run links**: the page around it could cover the prompt.
 
 A refused link prints `run link: <why>` in the terminal and runs nothing.
+
+### A repository that is not there
+
+GitHub answers 404 for a file in a private repository and for one that does not exist, so that a visitor cannot tell the two apart. Before the sign-in sheet is shown, the tab asks GitHub's public API two questions, as a visitor, with no token (`githubNotThere` in `src/run-url.ts`):
+
+| GitHub's answer | What the person sees |
+| --- | --- |
+| `repos/O/R` is there (a public repository) | At once, with no sheet: `run link: github.com/O/R has no .tabcomputer/run.sh`. |
+| `users/O` is not there | At once, with no sheet: `run link: github.com/O/R does not exist: GitHub has no account named O`. |
+| The account exists and the repository is not shown to a visitor | The sign-in sheet: "gh:O/R needs a GitHub sign-in. GitHub did not give this repository to a visitor who is not signed in. The repository is private, or its name is wrong." Signed in, the file is fetched again through `api.github.com` with the tab's token and shown with Run and Cancel as always. "Not now" leaves `run link: github.com/O/R, .tabcomputer/run.sh does not exist, or it is private: a private repository needs a GitHub sign-in`. |
+| The API does not answer (rate limit, no network) | The sheet, as in the row above. |
+
+The same check is in front of `?app=gh:` (`src/apps/links.ts`). `tests/browser/run-links.mjs` runs each row against a stand-in for GitHub.
 
 ### Seed and repository links
 
@@ -176,6 +199,8 @@ Anyone can make a link to a curated recipe with any argument values, and it runs
 ## Second loads
 
 A script that finishes leaves `~/run/<name>/.done-<hash of the script>`. On the next load the runner sees the marker and runs only the script's `# on-open:` line. A changed script has another hash and runs again, so recipes guard their steps (`[ -d work/.git ] || git clone ...`) to keep that cheap. A script that fails leaves no marker; the Terminal says how to run it again.
+
+A message about a link (`run link: …`, `link: …`, `app link: …`) is written to the Terminal with `ShiroTerminal.notice()`, above a new prompt. Written under the prompt instead, it was taken for the prompt when the session was saved, and each reload then added one more "the output above is from before the page reloaded" line and one more copy of the message (tabcomputer#128). A restored screen now also holds one such line, whatever was saved (`dropNotes` in `src/desktop/restore-note.ts`); `tests/browser/run-links.mjs` loads one profile nine times, each load printing a message, and counts one.
 
 The runner writes two files in the directory: `.recipe.sh` (the script) and `.run-link` (what the Terminal sources: the first line, the script in a subshell, the marker, the on-open line).
 

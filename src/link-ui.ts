@@ -42,7 +42,7 @@ const CSS = `
 .tc-link-qr { flex: none; display: flex; justify-content: center; }
 .tc-link-qr[hidden] { display: none; }
 .tc-link-qr svg { max-width: 100%; height: auto; border-radius: 6px; }
-.tc-overlay > .tc-link { height: min(600px, 100%); }
+.tc-surface.tc-overlay > .tc-link { height: min(600px, 100%); }
 `;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] {

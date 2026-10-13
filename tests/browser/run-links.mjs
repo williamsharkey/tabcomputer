@@ -1,18 +1,21 @@
 // Run links (src/run-url.ts, docs/RUN_LINKS.md) in Chromium. Needs a build and a running
 // server, no relay and no Debian:
 //   npx vite build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/run-links.mjs [http://localhost:5299/] [--shots DIR]
+//   node tests/browser/run-links.mjs [http://localhost:5299/] [--shots DIR] [--theme light|dark]
 //
 // A test recipe is added to the site's list from here (routes), with a hostile argument value.
 //   curated     ?run=<name> runs at once in a new Terminal in ~/run/<name>/ with RUN_* set, and
 //               the address loses the link; a second load only runs its on-open line
 //   refused     a name the list doesn't have, a traversal, a recipe changed after the list was
-//               made, a recipe the server redirects off the site, a run link in a frame
+//               made, a recipe the server redirects off the site, a run link in a frame; a
+//               repository of an account that does not exist and a public one without a script are
+//               said at once; one that may be private opens the sign-in sheet, and Not now leaves
+//               the plain message; one restore note after all those loads
 //   gh: / sh:   the whole script in a window with Run and Cancel (markup in it stays text);
 //               Cancel runs nothing, Run runs what was shown; it asks again on the next load
 //   safe mode   ?safe=1 skips the link
 //   terminal UI ?ui=terminal runs it in the page's terminal; the prompt is an overlay
-//   phone       the prompt fits a 360 px wide screen
+//   phone       the prompt fills a 360 px and a 390 x 844 screen
 //   shipped     the site's own claude-sandbox and untrusted-repo recipes run (no arguments)
 //
 // Exits 1 if any check fails.
@@ -28,6 +31,8 @@ const { chromium } = pw;
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
+// The desktop's appearance for the whole run: dark (the default) or light
+const theme = opt('--theme') === 'light' ? 'light' : 'dark';
 const base = args[0] || 'http://localhost:5299/';
 if (shots) mkdirSync(shots, { recursive: true });
 
@@ -66,7 +71,7 @@ const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-br
 async function newContext(options = {}) {
   const ctx = await browser.newContext(options);
   // The welcome card is not part of this check
-  await ctx.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
+  await ctx.addInitScript((theme) => { try { localStorage.setItem('tabcomputer-desktop-welcome', '1'); localStorage.setItem('tabcomputer-desktop-theme', theme); } catch {} }, theme);
   await ctx.route('**/recipes/index.json', async (route) => {
     const res = await route.fetch();
     const list = await res.json();
@@ -132,7 +137,8 @@ const mainScreen = (page) => page.evaluate(() => {
   return text.trim();
 });
 const prompt = (page) => page.locator('.tc-run-prompt');
-const shot = async (page, name) => { if (shots) await page.screenshot({ path: join(shots, `run-links-${name}.png`) }); };
+// (a sheet or a prompt slides in: its picture is taken once it is still)
+const shot = async (page, name) => { if (shots) { await page.waitForTimeout(500); await page.screenshot({ path: join(shots, `run-links-${name}.png`) }); } };
 
 // ── A curated recipe ────────────────────────────────────────────────
 {
@@ -349,8 +355,8 @@ function encodeShLinkPlaceholder() { return 'sh:' + b64url(SH_SCRIPT); }
 }
 
 // ── A phone ─────────────────────────────────────────────────────────
-for (const [name, ui] of [['desktop', ''], ['terminal UI', '&ui=terminal']]) {
-  const ctx = await newContext({ viewport: { width: 360, height: 740 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+for (const [name, ui, width, height] of [['desktop', '', 360, 740], ['terminal UI', '&ui=terminal', 360, 740], ['desktop, 390 x 844', '', 390, 844]]) {
+  const ctx = await newContext({ viewport: { width, height }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   const long = '#!/bin/sh\n' + Array.from({ length: 60 }, (_, i) => `echo "line ${i} ${'x'.repeat(40)}"`).join('\n') + '\n';
   const page = await load(ctx, `?run=sh:${b64url(long)}${ui}`);
   await prompt(page).waitFor({ timeout: 20_000 });
@@ -361,10 +367,13 @@ for (const [name, ui] of [['desktop', ''], ['terminal UI', '&ui=terminal']]) {
     const p = document.querySelector('.tc-run-prompt');
     return {
       prompt: inside(p), run: inside(p.querySelector('[data-act=run]')), cancel: inside(p.querySelector('[data-act=cancel]')),
+      // (the prompt is the screen: nothing of a desktop around the question)
+      full: (() => { const r = p.getBoundingClientRect(); return Math.round(r.left) === 0 && Math.round(r.top) === 0 && Math.round(r.right) === W && Math.round(r.bottom) === H; })(),
       scroll: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= W, pre: p.querySelector('pre').scrollHeight > p.querySelector('pre').clientHeight,
     };
   });
-  check(fit.prompt && fit.run && fit.cancel && fit.scroll, `phone (${name}): the prompt and both buttons fit 360 px`, JSON.stringify(fit));
+  check(fit.prompt && fit.run && fit.cancel && fit.scroll, `phone (${name}): the prompt and both buttons fit ${width} px`, JSON.stringify(fit));
+  check(fit.full, `phone (${name}): the prompt fills the screen`, JSON.stringify(fit));
   check(fit.pre, `phone (${name}): a long script scrolls inside the prompt`);
   await shot(page, `phone-${name.replace(/\W+/g, '-')}`);
   await prompt(page).locator('button[data-act=cancel]').tap();

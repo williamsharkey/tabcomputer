@@ -95,7 +95,13 @@ const show = (v: unknown): string => {
   return s.length > 60 ? s.slice(0, 57) + '…' : s;
 };
 const plainText = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max && !CONTROL.test(v);
-const title = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ');
+/** Words written in capitals when a name becomes a label: {json} is "JSON", {pdf_url} "PDF URL" */
+const INITIALISMS = new Set(['json', 'csv', 'url', 'pdf', 'id', 'html', 'xml', 'yaml', 'sql', 'dpi', 'api', 'ip', 'dns', 'svg', 'png', 'jpeg', 'jpg', 'gif', 'mp3', 'mp4', 'wav', 'iso', 'ocr', 'utf8']);
+/** A field's label when it says none: its name, first letter capital, _ as spaces */
+export const title = (name: string): string => {
+  const t = name.replace(/_/g, ' ').split(' ').map((w) => (INITIALISMS.has(w.toLowerCase()) ? w.toUpperCase() : w)).join(' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
 
 /** The names in `{…}` that `text` uses, in order, once each */
 export function placeholders(text: string): string[] {

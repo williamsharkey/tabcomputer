@@ -30,9 +30,8 @@ describe('the three example apps, made from nothing', () => {
     s.set('run', 'jq {filter}');
     expect(s.draft.inputs.map((i) => i.name)).toEqual(['filter']);
     s.set('stdin', '{json}');
-    expect(s.draft.inputs.map((i) => [i.name, i.label, i.type])).toEqual([['filter', 'Filter', 'text'], ['json', 'Json', 'text']]);
+    expect(s.draft.inputs.map((i) => [i.name, i.label, i.type])).toEqual([['filter', 'Filter', 'text'], ['json', 'JSON', 'text']]);
     s.setInput('filter', 'value', '.people[] | select(.age > 30) | .name');
-    s.setInput('json', 'label', 'JSON');
     s.setInput('json', 'type', 'long text');
     s.setInput('json', 'value', '{"people": [{"name": "Ada", "age": 36}, {"name": "Linus", "age": 21}, {"name": "Grace", "age": 45}]}');
     s.set('live', true);

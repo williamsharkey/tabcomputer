@@ -18,7 +18,7 @@
  * the part of the form its key belongs to (`problemField`).
  */
 import { ManifestError, idFromName, validateManifest, type AppManifest } from './manifest';
-import { placeholders, type ColumnType, type InputType, type OutputKind } from './declare';
+import { placeholders, title, type ColumnType, type InputType, type OutputKind } from './declare';
 
 export type StudioKind = 'files' | 'form' | 'table';
 
@@ -85,8 +85,6 @@ export const KNOWN_PACKAGES: Record<string, string> = {
   optipng: 'optipng', jpegoptim: 'jpegoptim', cwebp: 'webp', dwebp: 'webp', exiftool: 'libimage-exiftool-perl',
   libreoffice: 'libreoffice', soffice: 'libreoffice', ocrmypdf: 'ocrmypdf', xmllint: 'libxml2-utils',
 };
-
-const title = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1).replace(/_/g, ' ');
 
 export function blankInput(name: string, kind: StudioKind): DraftInput {
   return { name, label: title(name), type: kind === 'files' ? 'choice' : 'text', value: '', choices: '', on: '', accept: '' };

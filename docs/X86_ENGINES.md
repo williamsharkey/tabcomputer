@@ -249,11 +249,24 @@ do (small modules compiled at run time that share the memory):
   to 48 deep), instead of two trips through the interpreter loop.
 - Jumps inside a region spend a budget (1024) and check `m->attention`, so
   signals, the GIL and other threads get their turn while a loop spins.
-- Safety: code is compiled only from pages that aren't writable. Unmapping
-  such a page or changing its protection bumps a global epoch and every
-  thread drops all its regions (self-modifying code in RWX pages stays in
-  the interpreter, which rechecks instruction bytes). A pending TLB
+- Safety: unmapping a page that held code or changing its protection bumps
+  a global epoch and every thread drops all its regions. A pending TLB
   invalidation from another thread is honored at region entry.
+- Code in writable pages (a JIT's code cache: HotSpot's, V8's,
+  JavaScriptCore's) is compiled too (patch 0553). Such a page is marked in
+  its page table entry (`PAGE_WJC`) and gets no cached write translation,
+  so every store to it reaches the soft MMU's lookup; a store in compiled
+  code leaves its region and the interpreter runs it. A region records the
+  64-byte pieces of each marked page it was decoded from; a write that
+  touches one makes every thread drop the regions that depend on it before
+  it next enters compiled code. A write beside the code costs only the
+  slow path, and a page that takes more than 2048 of them in a second goes
+  back to the interpreter for a while (0.5 s, doubling). Only private
+  anonymous pages are taken; nothing is with `BLINK_GIL=0`.
+  `BLINK_WJIT_RWX=0` leaves writable pages to the interpreter, as before.
+  The rules are in wjit.c under "code on writable pages"; the design, the
+  measurements and what remains are in
+  [research/BLINK_RWX_JIT.md](research/BLINK_RWX_JIT.md).
 - `BLINK_WJIT=0` turns it off; `BLINK_WJIT_DEBUG=1` prints statistics
   (regions, compile/instantiate time, the ops still going through Blink);
   `BLINK_WJIT_OFF=<bitmask>`, `BLINK_WJIT_MAX=n` and
@@ -267,6 +280,8 @@ JIT and requires identical output, and `fixtures/x86/jit.c` for code
 rewritten after `mprotect`, in an RWX page and after `munmap`+`mmap`; signal
 handlers running while a compiled loop spins; a SIGSEGV in a compiled loop
 that the handler repairs; four threads running compiled code.
+`x86-smc.test.ts` runs `fixtures/x86/smcjit.c`, ten ways of rewriting code
+the JIT holds a compiled copy of (below, patch 0553).
 
 Where `gh --version` still spends its time (Node profile, ~3.8 s with the
 profiler): generated code ≈1.2 s (go-runewidth's `CreateLUT`, which calls
@@ -1115,6 +1130,50 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    of its span. Tests: `fixtures/x86/mmaphole.c` (reserve, trim, reserve),
    `tests/browser/java-fast.mjs` (the three commands of #122).
    [research/JAVA_SPEED.md](research/JAVA_SPEED.md).
+0553. unix/blink-rwx-jit's: the JIT compiles code in writable pages and
+   drops it when the bytes it came from are written ("The wasm JIT" above
+   has the mechanism, [research/BLINK_RWX_JIT.md](research/BLINK_RWX_JIT.md)
+   the design and the numbers).
+   - `LookupAddressFor` is `LookupAddress2` with what the caller will do
+     through the pointer (only read, write n bytes, unknown). Callers that
+     only read say so (`Load`, pops, `ReserveAddress` for reading,
+     `CopyFromUser`, `SchlepR`, `LoadStr`, a read's iovecs, the source of
+     `movs`, the aligned SSE operand as a source); everything else counts as
+     a write to the whole page. Its test of `PAGE_WJC` shares the branch of
+     the copy-on-write test, so a program with no marked page pays nothing.
+   - `MADV_DONTNEED` of a marked page reports the write.
+   - The flag crawler reads only pages code may be compiled from, and what
+     it reads in a marked page is one of the region's dependencies. It used
+     to read writable pages with nothing to notice a later change there.
+   - `WjExecute`'s chain stops when a region left for the interpreter to
+     run the instruction at `m->ip`; it entered the same block up to 64
+     times.
+   - A compile that can't take a page now (given up lately, locked by a
+     system call, a thread in the middle of an instruction without the GIL)
+     is tried again after another 200 executions instead of being marked
+     failed.
+   - `SHIRO_BLINK_PROFILE` and `BLINK_WJIT_DEBUG` print the counts: regions
+     compiled from writable pages, pages marked, writes that hit compiled
+     code or fell beside it, regions dropped, pages given up.
+   - `BLINK_WJIT_RWX=3` ignores the writes and `=4` ignores mprotect and
+     munmap too: for the tests, which need every case to fail there.
+   - Not done: munmap and mprotect of a page with code still drop every
+     region of every thread; a program can't execute from a `MAP_SHARED`
+     mapping of a memfd at all (it segfaults, with or without the JIT, on
+     Build 1014 too), so a JIT that writes through a second mapping of its
+     code doesn't run.
+   Tests: `x86-smc.test.ts` with `fixtures/x86/smcjit.c`: a hot function
+   overwritten, an immediate patched inside a hot loop by a function the
+   loop calls, code and data on one page, a store across two pages,
+   mprotect cycles, a code buffer refilled, a second thread rewriting,
+   `read()` and `pread()` into code, `MADV_DONTNEED`, and random rewrites
+   against a model. Each passes with the defaults, with
+   `BLINK_WJIT_RWX=0` and with `BLINK_WJIT=0`, and fails with
+   `BLINK_WJIT_RWX=3` (or `4` for the mprotect case).
+   `vendor/blink/build.sh` builds `tool/flock.c` for the host where there
+   is no `flock(1)` (macOS): configure built it with emcc, a wasm program
+   that locks nothing, and its parallel probes lost a `#define` in
+   `config.h` now and then.
 
    fork+exit+wait with 16 MiB of dirty heap went from 30 to 7.5 ms, and
    with 64 MiB from 104 to 12 ms (native: 3.1 ms). Test:

@@ -3,6 +3,14 @@
 2026-10-13, branch unix/java-fast. For tabcomputer#121 (`javac Hello.java`
 took 50–100 s) and #122 (the JVM exited 139 when given a tuning flag).
 
+**Since (Blink patch 0553, the same day).** The emulator now compiles what
+HotSpot generates ([BLINK_RWX_JIT.md](BLINK_RWX_JIT.md)): `java Sieve` takes
+1.6 s where it took 15.5 s, the real `javac Hello.java` 12.7 s cold where it
+took 20.9 s, `jshell` answers `1+1` in 45 s where it took 70 s (the same
+machine, measured there). What follows is as it was written before that
+patch; where it says the interpreted code "takes most of the time", that
+document's profile says a third, for javac.
+
 **Result.** After the first compile of a page load, `javac Hello.java &&
 java Hello` takes about 1.4 s and the same for a 15-line class with an
 ArrayList about 2 s (measured below). The first compile still takes about

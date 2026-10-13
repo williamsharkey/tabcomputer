@@ -3091,3 +3091,40 @@ DecompressionStream reads at 150–220 MB/s: +3.5 ms for lodash.js (0.5 MB),
 +6.4 ms for react-dom (1.1 MB), +103 ms for a 23 MB binary on the first read
 after eviction. The saving is in block-stored native binaries, and the stored
 format change touches every reader: held until storage quota is the problem.
+
+### unix/blink-rwx-jit — the x86 JIT compiles the code other JITs generate
+
+Blink's wasm JIT compiled only from pages that aren't writable, so what
+HotSpot, V8 and JavaScriptCore generate into RWX memory ran interpreted:
+95% of a Java sieve's instructions, 70% of the same loop's in Debian's node.
+Patch 0553 compiles writable pages too and drops compiled code when the
+bytes it came from are written ([research/BLINK_RWX_JIT.md](research/BLINK_RWX_JIT.md)
+has the design, the fixtures and the full table).
+
+An Apple M3, headless Chrome 155, a local build with the toolchain layers;
+"before" is the same build with Build 1014's engine. A shared machine: pages
+started at a one-minute load under 5, engines taking turns; medians (the
+fastest in brackets where the spread matters).
+
+| | before | after |
+|---|---:|---:|
+| `java Sieve` | 15.5 s | **1.6 s** |
+| `node loop.js` (Debian's node 20) | 25.6 s | **9.0 s** |
+| `javac Hello.java`, the real javac, cold | 20.9 s | **12.7 s** |
+| `jshell` to the answer of `1+1` | 70 s | **45 s** |
+| `java Hello` | 0.99 s | 1.02 s |
+| `luajit loop.lua` (W^X: compiled before too) | 3.35 s | 3.35 s |
+| `gcc -O2 jitfuzz.c` | 16.7 s (16.2) | 16.7 s (16.0) |
+| Debian's `python3`, a loop | 3.07 s (3.00) | 3.16 s (3.02) |
+| `go build` after an edit, 88 builds each | (3.51) | (3.53) |
+| `claude --x86 --version` | 0.53 s | 0.53 s |
+| `claude --x86 -p hi`, signed out, in Node | 10.76 s | 10.83 s |
+
+Programs that generate no code, in Node (the fastest of 16 runs, engines
+alternating): a store-heavy C program 1723 → 1706 ms compiled and
+1269 → 1266 ms interpreted; jitfuzz 2471 → 2443 ms and 1721 → 1666 ms.
+
+A cold javac gains less than the sieve because two thirds of its main
+thread's time was libjvm's own code, compiled all along, and because the
+bytecode interpreter, now compiled, leaves compiled code at every bytecode
+(15.4 M entries from the emulator's loop where there were 5.0 M).

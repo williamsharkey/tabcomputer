@@ -891,6 +891,232 @@ async function handleClaudeReleases(req, res, rest) {
   createReadStream(b.file).on('error', () => res.destroy()).pipe(res);
 }
 
+// --- Pyodide distribution (docs/research/PYTHON_NATIVE_WHEELS.md "Hosting") ---
+// numpy, pandas and matplotlib run in Pyodide (src/pyodide-worker/). The page
+// took it from cdn.jsdelivr.net: a school filter that allows only this site
+// broke `import numpy`, and jsdelivr saw every tab that used it.
+//   /pyodide/v<VERSION>/full/<FILE>
+// serves the same files from this origin, each fetched from the upstream once
+// and kept on disk. Not a proxy: only the versions in PYODIDE_DISTS (the one
+// src/python/pyodide-dist.ts pins), and only the core files named there and
+// the files that version's pyodide-lock.json lists. Every file is checked
+// before it is kept or served: the core files and the lock against the sha256
+// here, the rest against the sha256 the lock gives them.
+//   TABCOMPUTER_PYODIDE=0              the route is a 404; the page then uses jsdelivr
+//   TABCOMPUTER_PYODIDE_UPSTREAM       default https://cdn.jsdelivr.net/pyodide (files at <it>/v<VERSION>/full/<FILE>)
+//   TABCOMPUTER_PYODIDE_CACHE          default $TMPDIR/tabcomputer-pyodide
+//   TABCOMPUTER_PYODIDE_CACHE_MAX_MB   default 1024; past it a file is served without being kept
+// One version's whole distribution is 462 MiB (every file of 0.29.5's lock,
+// measured 2026-10-13; the largest is 73 MB); what a class uses (the
+// core, numpy, pandas, matplotlib and what they need) is about 30 MB.
+// JavaScript, wasm and JSON are also kept brotli-compressed (made once, in the
+// background) and sent that way to a browser that accepts it; wheels and zips
+// are already compressed. A file is held in memory until it is checked, so at
+// most PYODIDE_DOWNLOADS are fetched at once; the others wait.
+export const PYODIDE_DISTS = {
+  '0.29.5': {
+    'pyodide-lock.json': '14d2c2dba101277999e17135e653d8f15389ad1437f53eae213bf0c3cdff723d',
+    'pyodide.mjs': '510ca14305230018f50c40fb81be673afd68080e70ce7733fcce6600dd6a1714',
+    'pyodide.js': '7f832a350240263d9946a9c3c877f7bcdab6c37d6dc65f72cd3be5905dca62dd',
+    'pyodide.asm.js': '356c42f69e1695397e9d8670bd3c2e678248cde76e18bdae1731e848537b47d7',
+    'pyodide.asm.wasm': '54309a5a2cfd757b1f0fdbc9093c92503f7b341500110329d932487183912718',
+    'python_stdlib.zip': '831fd1e535084b972f87c6a35275de3d236efd5166f5e77ce89497710635e73c',
+  },
+};
+const PYODIDE_PATH = /^\/pyodide\/v(\d{1,3}\.\d{1,3}\.\d{1,3})\/full\/([A-Za-z0-9][A-Za-z0-9._+-]{0,199})$/;
+const PYODIDE_FILE_MAX = 128 * 1024 * 1024;
+const PYODIDE_DOWNLOADS = 4;
+const PYODIDE_TYPES = {
+  '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json',
+  '.wasm': 'application/wasm', '.zip': 'application/zip',
+};
+const PYODIDE_COMPRESSIBLE = /\.(?:mjs|js|json|wasm)$/;
+
+/** What `/pyodide/…` asks for ({ version, file }), or null when the path is not a file of a distribution's `full/` directory. */
+export function pyodideRequest(pathname) {
+  const m = PYODIDE_PATH.exec(pathname);
+  return m && !m[2].includes('..') ? { version: m[1], file: m[2] } : null;
+}
+
+export function pyodideMirrorConfig(env = process.env) {
+  const maxMb = Number(env.TABCOMPUTER_PYODIDE_CACHE_MAX_MB || 1024);
+  return {
+    enabled: env.TABCOMPUTER_PYODIDE !== '0',
+    upstream: (env.TABCOMPUTER_PYODIDE_UPSTREAM || 'https://cdn.jsdelivr.net/pyodide').replace(/\/+$/, ''),
+    cacheDir: env.TABCOMPUTER_PYODIDE_CACHE || join(tmpdir(), 'tabcomputer-pyodide'),
+    maxBytes: (Number.isFinite(maxMb) && maxMb >= 0 ? maxMb : 1024) * 1024 * 1024,
+    dists: PYODIDE_DISTS,
+  };
+}
+
+export function createPyodideMirror(cfg = pyodideMirrorConfig(), { fetchFn = (url, init) => upstreamFetch(url, init), log = console.log } = {}) {
+  const inflight = new Map(); // "version/file" → the one fetch every first request waits for
+  const lists = new Map();    // version → Promise<Map<file name, sha256>> from that version's lock
+  const packing = new Set();  // files being brotli-compressed
+  let counted = null;         // the one scan of the cache directory
+  let used = 0;               // bytes on disk, once counted
+  let fetching = 0;           // upstream fetches in flight
+  const waiting = [];
+
+  const diskUsed = async () => {
+    await (counted ??= (async () => {
+      for (const v of await readdir(cfg.cacheDir).catch(() => [])) {
+        for (const f of await readdir(join(cfg.cacheDir, v)).catch(() => [])) used += (await stat(join(cfg.cacheDir, v, f)).catch(() => ({ size: 0 }))).size;
+      }
+    })());
+    return used;
+  };
+  // A file is held in memory until it is checked: a few at a time, the rest wait their turn
+  const turn = async () => { if (fetching >= PYODIDE_DOWNLOADS) await new Promise((r) => waiting.push(r)); else fetching++; };
+  const done = () => { const next = waiting.shift(); if (next) next(); else fetching--; };
+  const keep = async (file, data) => {
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      await mkdir(file.slice(0, file.lastIndexOf('/')), { recursive: true });
+      await writeFile(tmp, data);
+      await rename(tmp, file);
+      await diskUsed();
+      used += data.length;
+      return true;
+    } catch (e) {
+      await unlink(tmp).catch(() => {});
+      log(`[pyodide] cache write failed: ${e.message}`);
+      return false;
+    }
+  };
+
+  /** The file checked and (room allowing) on disk: { file?, body?, size, sha256 } or { status, text } */
+  async function fetched(version, name, sha256) {
+    const file = join(cfg.cacheDir, version, name);
+    try { return { file, size: (await stat(file)).size, sha256 }; } catch { /* not kept yet */ }
+    const key = `${version}/${name}`;
+    let p = inflight.get(key);
+    if (!p) {
+      p = (async () => {
+        let body;
+        await turn();
+        try {
+          const r = await fetchFn(`${cfg.upstream}/v${version}/full/${name}`, { redirect: 'follow', signal: AbortSignal.timeout(5 * 60_000) });
+          if (!r.ok || !r.body) return { status: 502, text: `upstream: ${r.status}\n` };
+          const parts = [];
+          let n = 0;
+          for await (const chunk of r.body) {
+            n += chunk.length;
+            if (n > PYODIDE_FILE_MAX) return { status: 502, text: 'upstream: file too large\n' };
+            parts.push(chunk);
+          }
+          body = Buffer.concat(parts);
+        } catch (e) {
+          return { status: 502, text: `upstream: ${e.message}\n` };
+        } finally {
+          done();
+        }
+        const got = createHash('sha256').update(body).digest('hex');
+        if (got !== sha256) {
+          log(`[pyodide] ${key}: sha256 ${got}, expected ${sha256}; not served`);
+          return { status: 502, text: 'upstream: sha256 mismatch\n' };
+        }
+        if (await diskUsed() + body.length > cfg.maxBytes) {
+          log(`[pyodide] cache full (TABCOMPUTER_PYODIDE_CACHE_MAX_MB): ${key} served without being kept`);
+          return { body, size: body.length, sha256 };
+        }
+        if (!await keep(file, body)) return { body, size: body.length, sha256 };
+        log(`[pyodide] cached ${key} (${body.length} bytes)`);
+        return { file, size: body.length, sha256 };
+      })().finally(() => inflight.delete(key));
+      inflight.set(key, p);
+    }
+    return p;
+  }
+
+  /** The file names of a version's lock and their sha256 */
+  function listOf(version) {
+    let p = lists.get(version);
+    if (!p) {
+      p = (async () => {
+        const lock = await fetched(version, 'pyodide-lock.json', cfg.dists[version]['pyodide-lock.json']);
+        if (lock.status) return lock;
+        const names = new Map();
+        const text = lock.file ? await readFile(lock.file) : lock.body;
+        for (const pkg of Object.values(JSON.parse(text.toString('utf8')).packages ?? {})) {
+          if (typeof pkg?.file_name === 'string' && /^[0-9a-f]{64}$/.test(pkg.sha256 ?? '')) names.set(pkg.file_name, pkg.sha256);
+        }
+        return { names };
+      })().catch((e) => ({ status: 502, text: `pyodide-lock.json: ${e.message}\n` }));
+      lists.set(version, p);
+      p.then((r) => { if (r.status) lists.delete(version); });
+    }
+    return p;
+  }
+
+  /** `name` of `version`: the checked file, or { status, text } (404: not a file of that distribution) */
+  async function resolve(version, name) {
+    const dist = cfg.dists[version];
+    if (!dist) return { status: 404, text: `Pyodide ${version} is not served here\n` };
+    if (Object.hasOwn(dist, name)) return fetched(version, name, dist[name]);
+    const list = await listOf(version);
+    if (list.status) return list;
+    const sha256 = list.names.get(name);
+    if (!sha256) return { status: 404, text: `not a file of Pyodide ${version}\n` };
+    return fetched(version, name, sha256);
+  }
+
+  /** FILE.br beside FILE, made once; null until it exists */
+  async function brotliOf(file) {
+    try { return { file: file + '.br', size: (await stat(file + '.br')).size }; } catch { /* not made yet */ }
+    if (!packing.has(file)) {
+      packing.add(file);
+      (async () => {
+        const { brotliCompress, constants } = await import('node:zlib');
+        const data = await readFile(file);
+        const br = await new Promise((ok, fail) => brotliCompress(data, {
+          params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: data.length },
+        }, (e, out) => e ? fail(e) : ok(out)));
+        if (br.length < data.length && await diskUsed() + br.length <= cfg.maxBytes) await keep(file + '.br', br);
+      })().catch((e) => log(`[pyodide] brotli ${file}: ${e.message}`)).finally(() => packing.delete(file));
+    }
+    return null;
+  }
+
+  /** Answer `req` for what pyodideRequest() found. `extra`: the headers this host's scripts carry (isolation, a guest's policy). */
+  async function handle(req, res, what, extra = {}) {
+    const cors = { 'access-control-allow-origin': '*', 'cross-origin-resource-policy': 'cross-origin' };
+    const fail = (status, text, more = {}) => {
+      res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...cors, ...more });
+      res.end(text);
+    };
+    if (!cfg.enabled || !what) return fail(404, 'Pyodide is not served here\n');
+    if (req.method !== 'GET' && req.method !== 'HEAD') return fail(405, 'GET or HEAD only\n', { allow: 'GET, HEAD' });
+    const r = await resolve(what.version, what.file);
+    if (r.status) return fail(r.status, r.text);
+    const ext = extname(what.file);
+    const headers = {
+      'content-type': PYODIDE_TYPES[ext] || 'application/octet-stream',
+      'cache-control': 'public, max-age=31536000, immutable',
+      etag: `"sha256-${r.sha256}"`,
+      ...cors,
+      ...(ext === '.js' || ext === '.mjs' ? extra : {}),
+    };
+    let send = r.file ? { file: r.file, size: r.size } : { body: r.body, size: r.size };
+    if (PYODIDE_COMPRESSIBLE.test(what.file)) {
+      headers.vary = 'accept-encoding';
+      const br = r.file ? await brotliOf(r.file) : null;
+      if (br && /\bbr\b/.test(String(req.headers['accept-encoding'] || ''))) {
+        send = br;
+        headers['content-encoding'] = 'br';
+      }
+    }
+    headers['content-length'] = send.size;
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') return res.end();
+    if (send.file) return createReadStream(send.file).on('error', () => res.destroy()).pipe(res);
+    res.end(send.body);
+  }
+
+  return { handle, resolve, config: cfg };
+}
+const pyodideMirror = createPyodideMirror();
+
 // --- WebRTC signaling ---
 const OFFER_TTL = 5 * 60 * 1000; // 5 minutes
 
@@ -2208,6 +2434,11 @@ const server = createServer(async (req, res) => {
   }
   if (pathname.startsWith('/claude-releases/')) {
     return handleClaudeReleases(req, res, pathname.slice('/claude-releases/'.length));
+  }
+  if (pathname.startsWith('/pyodide/v')) {
+    // (only the shape of a distribution file: /pyodide/<repo> stays a repository link)
+    const what = pyodideRequest(pathname);
+    if (what) return pyodideMirror.handle(req, res, what, { ...isolationHeaders(), ...guestHeaders(guest) });
   }
   if (pathname.startsWith('/debian/pool/')) {
     // The GUI apps' .debs (src/gui/apps.ts fetches debian/<Filename>): the same mirror

@@ -231,17 +231,65 @@ Not done, or different from a desktop Python:
 - Each program starts a fresh Pyodide (about 0.3 s when one was loaded
   ahead, about 1 s otherwise).
 
-Hosting. Everything comes from `https://cdn.jsdelivr.net/pyodide/v0.29.5/full/`
-(`pyodideIndexURL` in `src/python/pyodide-dist.ts`). As served (brotli),
-measured with `curl -I`: the core is 5.3 MB (`pyodide.asm.wasm` 2.67 MB,
-`python_stdlib.zip` 2.39 MB, `pyodide.asm.js` 0.23 MB, the lock 0.03 MB);
-numpy adds 2.8 MB, pandas 5.0 MB more (with python-dateutil, pytz, six),
-matplotlib 9.0 MB more (with pillow, fonttools, contourpy, kiwisolver, cycler,
-packaging, pyparsing): 22.1 MB for a class that uses all three. scipy is
-16.3 MB, scikit-learn 5.8 MB on top of it. Moving to the site's mirror needs:
-a copy of that `full/` directory (the five core files and the wheels to be
-offered; Pyodide checks each wheel's sha256 from the lock) served from the
-page's origin with `application/wasm` for the `.wasm` and long cache
-lifetimes, and the default of `pyodideIndexURL` pointed at it (today
-localStorage `tabcomputer-pyodide-url` overrides it, for trying a mirror).
-Nothing was uploaded.
+Hosting (2026-10-13, branch `unix/pyodide-mirror`). The page takes Pyodide
+from the site itself: `/pyodide/v0.29.5/full/<file>` in `server.mjs`
+("Pyodide distribution"). A school filter that allows only tabcomputer.com no
+longer breaks `import numpy`, and jsdelivr sees the server's address, not the
+student's.
+
+- The server fetches a file from `https://cdn.jsdelivr.net/pyodide` the first
+  time any browser asks for it, checks it, writes it to
+  `TABCOMPUTER_PYODIDE_CACHE` and serves that copy from then on. Requests
+  that arrive during the first fetch share it. Nothing is uploaded by hand.
+- It is not a proxy. Only the pinned version is served. Only six core files
+  (`pyodide.mjs`, `pyodide.js`, `pyodide.asm.js`, `pyodide.asm.wasm`,
+  `python_stdlib.zip`, `pyodide-lock.json`) and the 379 file names in that
+  version's lock are served. `server.mjs` holds the sha256 of the six core
+  files (`PYODIDE_DISTS`; they equal the hashes jsdelivr publishes for the
+  npm package `pyodide@0.29.5`); the lock gives the sha256 of every other
+  file. A file that does not match is answered 502 and not kept. Bumping
+  `PYODIDE_VERSION` needs a new entry there (`pyodide-mirror.test.ts` fails
+  without it).
+- The page decides once per load, at the first thing that needs Pyodide
+  (`pyodideIndexURL` in `src/python/pyodide-dist.ts`): localStorage
+  `tabcomputer-pyodide-url` if set; else one `HEAD` for
+  `/pyodide/v0.29.5/full/pyodide-lock.json`, and the site when that answers
+  200 with JSON; else jsdelivr (a server with `TABCOMPUTER_PYODIDE=0`,
+  another product's server, or one that cannot reach jsdelivr). A `python3`
+  that stays on the built-in Python asks nothing.
+- A guest without network (`guest--NAME--x`), whose policy lets the page ask
+  only its own host, runs `pip install numpy` and `import numpy`
+  (`tests/browser/pyodide-guest.mjs`); with the route off both fail there.
+  `pip install` of a package from PyPI still fails in such a guest.
+- JavaScript, wasm and JSON are kept brotli-compressed beside the original
+  (made once, in the background, at quality 11) and sent that way to a
+  browser that accepts it: `pyodide.asm.wasm` is 8.65 MB, 2.12 MB as sent
+  (2.67 MB from jsdelivr). Wheels and zips are sent as they are.
+
+Sizes on the server's disk, measured with `du` and `ls` after
+`tests/browser/pyodide-numpy.mjs` (numpy, pandas, matplotlib and what they
+need): 30 MB in 22 files (the core 12.3 MB, its brotli copies 2.3 MB, 13
+wheels 17.2 MB). Every file of the lock together is 450 MiB (each downloaded
+once from jsdelivr and counted), 462 MiB with the core; the largest is
+python_flint at 73 MB, scipy is 16.4 MB. `TABCOMPUTER_PYODIDE_CACHE_MAX_MB`
+(1024) bounds the directory: past it a file is served without being kept.
+
+Times, same script, same machine and day (Apple M3, headless Chrome, a fresh
+profile, the server on localhost), one run each:
+
+| Step | Site, server's first fetch | Site, from its disk (upstream unreachable) | jsdelivr (`TABCOMPUTER_PYODIDE=0`) |
+| --- | --- | --- | --- |
+| `pyodide -c "import numpy"` in a fresh profile | 1.9 s | 2.2 s | 2.0 s |
+| the same again | 0.6 s | 0.9 s | 0.8 s |
+| `python3 np.py` after `pip install`, whole command | 0.5 s | 0.7 s | 0.7 s |
+| `import numpy` inside it | 0.2 s | 0.3 s | 0.3 s |
+
+The three columns are within the spread of the table above (1.8 to 2.6 s
+cold), so the route costs nothing that this measurement can see. It was not
+measured from a school network or against the droplet; there the first load
+depends on the droplet's uplink instead of jsdelivr's edge. In the second
+column the server was restarted with an upstream that refuses connections:
+the whole script passed, and a file not yet on disk (scipy) was answered 502.
+In all runs with the route on, every Pyodide request of the page and its
+Workers went to the server under test (19 file names), none to jsdelivr; the
+script fails otherwise.

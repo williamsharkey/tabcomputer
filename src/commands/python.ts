@@ -29,7 +29,7 @@ async function ensurePyodide(ctx: CommandContext): Promise<any> {
     ctx.stdout += 'Loading Python (Pyodide)... ';
 
     // Load Pyodide loader script via importScripts-like eval
-    const base = pyodideIndexURL();
+    const base = await pyodideIndexURL();
     const loaderUrl = `${base}pyodide.mjs`;
     const mod = await import(/* @vite-ignore */ loaderUrl);
     const loadPyodide = mod.loadPyodide || mod.default?.loadPyodide;

@@ -83,13 +83,14 @@ export function guestRequest(search: string): GuestRequest | null {
   return { ...(name ? { name } : {}), noNetwork: q.has('nonet') && q.get('nonet') !== '0' };
 }
 
-/** Paths main.ts never reads as /<user>/<repo> */
-export const RESERVED_PATHS = ['api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
+/** Paths main.ts never reads as /<user>/<repo> (server.mjs has the same list, REPO_LINK_RESERVED; guest.test.ts checks the two agree) */
+export const RESERVED_PATHS = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
 
 /**
  * A page address that makes boot import or run someone else's code: a shared
  * seed (/s/ID) or a repository (/USER/REPO). In a main profile these open in a
- * guest when the server has guests.
+ * guest when the server has guests; where it has none they ask first
+ * (src/inbound-link.ts). /s/ is only ever a seed.
  */
 export function inboundCodeLink(pathname: string): { kind: 'seed'; id: string } | { kind: 'repo'; user: string; repo: string } | null {
   const seed = /^\/s\/([a-z0-9]{4,16})$/.exec(pathname);

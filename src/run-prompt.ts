@@ -2,6 +2,8 @@
  * The window a run link opens for a script that isn't curated (src/run-url.ts,
  * docs/RUN_LINKS.md): the whole script, where it came from, what the link
  * sets, and Run / Cancel. Nothing runs unless the person chooses Run.
+ * A shared seed (/s/ID) and a repository link (/USER/REPO) ask in the same
+ * window, with their own words (src/inbound-link.ts).
  *
  * Everything from the link or the script is put in with textContent, so a
  * script can't add markup to its own prompt. Cancel has the focus, and Run is
@@ -48,13 +50,15 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''):
 export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void): HTMLElement {
   const root = el('div', '', 'tc-run-prompt');
   root.setAttribute('role', 'dialog');
-  root.setAttribute('aria-label', 'Run a script from a link');
-  root.append(el('h3', 'Run this script?'));
+  // (a seed or a repository link brings its own words: src/inbound-link.ts)
+  const w = info.wording;
+  root.setAttribute('aria-label', w ? w.window : 'Run a script from a link');
+  root.append(el('h3', w ? w.title : 'Run this script?'));
   root.append(el('p', `From ${info.from}. tabcomputer has not reviewed it.`));
-  root.append(el('p', 'It runs as you, in this tab: it can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run it only if you trust whoever sent the link.', 'tc-run-warn'));
+  root.append(el('p', w ? w.warn : 'It runs as you, in this tab: it can read and change the files here and use any account this tab is signed in to (Claude, GitHub). Run it only if you trust whoever sent the link.', 'tc-run-warn'));
   const pre = el('pre', info.script);
   pre.tabIndex = 0;
-  pre.setAttribute('aria-label', 'The script');
+  pre.setAttribute('aria-label', w ? w.box : 'The script');
   root.append(pre);
   const vars = Object.entries(info.env);
   if (vars.length || info.ignored.length) {
@@ -63,7 +67,7 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
     if (info.ignored.length) dl.append(el('dt', 'ignored'), el('dd', `${info.ignored.join(', ')} (not in its "# args:" header)`));
     root.append(dl);
   }
-  root.append(el('p', info.onOpenOnly === undefined
+  root.append(el('p', w ? w.where : info.onOpenOnly === undefined
     ? `It runs in ${info.dir.replace(/^\/home\/user\//, '~/')}, in a new Terminal.`
     : info.onOpenOnly
       ? `It already ran here. Run only does its on-open line: ${info.onOpenOnly}`
@@ -72,7 +76,7 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
   const cancel = el('button', 'Cancel');
   cancel.type = 'button';
   cancel.dataset.act = 'cancel';
-  const run = el('button', 'Run');
+  const run = el('button', w ? w.action : 'Run');
   run.type = 'button';
   run.dataset.act = 'run';
   run.disabled = true;
@@ -108,7 +112,7 @@ export function showRunPrompt(info: RunPromptInfo, wm: DesktopAPI | null): Promi
       const wa = wm.workArea();
       const w = win = wm.createWindow({
         // Above windows the session restores after it (they take the focus when they come back)
-        appId: 'run-link', title: 'Run link', alwaysOnTop: true, content: { kind: 'dom', element: content },
+        appId: 'run-link', title: info.wording?.window ?? 'Run link', alwaysOnTop: true, content: { kind: 'dom', element: content },
         width: Math.min(640, Math.max(280, wa.width - 40)), height: Math.min(560, Math.max(260, wa.height - 80)), minWidth: 280, minHeight: 240,
       });
       close = () => { w.close(true); };

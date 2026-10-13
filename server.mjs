@@ -500,6 +500,20 @@ export function sameSiteFrame(req) {
   return req.headers['sec-fetch-site'] === 'same-site' && ['iframe', 'frame', 'embed', 'object', 'fencedframe'].includes(dest);
 }
 
+/** First path segments the app never reads as /<user>/<repo> (src/guest.ts RESERVED_PATHS; guest.test.ts checks the two agree) */
+export const REPO_LINK_RESERVED = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
+
+/**
+ * A page address below the root that the app acts on (inboundCodeLink in
+ * src/guest.ts): a shared seed, where this server keeps them, or a
+ * repository. Only these get the app shell's base element.
+ */
+export function appLinkPath(pathname, seedShare = process.env.TABCOMPUTER_SEED_SHARE === '1') {
+  if (/^\/s\/[a-z0-9]{4,16}$/.test(pathname)) return seedShare ? 'seed' : null;
+  const m = /^\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/?$/.exec(pathname);
+  return m && !REPO_LINK_RESERVED.includes(m[1].toLowerCase()) ? 'repo' : null;
+}
+
 // --- Static file server ---
 async function handleStatic(req, res, guest = null, guests = null) {
   let pathname = new URL(req.url, 'http://localhost').pathname;
@@ -546,10 +560,10 @@ async function handleStatic(req, res, guest = null, guests = null) {
       const override = new URL(req.url, 'http://localhost').searchParams.get('profile');
       let html = brandAppShell(data.toString('utf8'), req.headers['host'], profileFor(req.headers['host'], override)?.brand);
       // The shell names its entry relative to the page ("./assets/…"): under /s/<id>
-      // that is /s/assets/…, a 404, and the app never starts. Where shared seeds are
-      // on, a base element makes it the root again. (Other nested paths, like
-      // /<user>/<repo>, are left as they are: the app does not start there.)
-      if (SEED_SHARE && /^\/s\/[a-z0-9]{4,16}$/.test(new URL(req.url, 'http://localhost').pathname) && !/<base\b/i.test(html)) {
+      // that is /s/assets/…, a 404, and the app never starts. A base element makes it
+      // the root again, for the addresses the app acts on (appLinkPath). The app asks
+      // before such a link imports or runs anything (src/inbound-link.ts, tabcomputer#116).
+      if (appLinkPath(new URL(req.url, 'http://localhost').pathname) && !/<base\b/i.test(html)) {
         html = html.replace(/<head([^>]*)>/i, '<head$1>\n  <base href="/">');
       }
       data = Buffer.from(html);

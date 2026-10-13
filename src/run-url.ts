@@ -373,6 +373,22 @@ export interface RunPromptInfo {
   dir: string;
   /** It already ran here: Run only does this line */
   onOpenOnly?: string;
+  /**
+   * A link that is not a script (src/inbound-link.ts: a shared seed, a
+   * repository): the prompt's own words. `script` is then what its box shows.
+   */
+  wording?: RunPromptWording;
+}
+
+export interface RunPromptWording {
+  /** The window's title and the question */
+  window: string; title: string;
+  /** What is at stake, in place of the script's warning */
+  warn: string;
+  /** Under the box, in place of where the script runs */
+  where: string;
+  /** The box's label and the button that agrees */
+  box: string; action: string;
 }
 
 export interface RunLinkDeps {

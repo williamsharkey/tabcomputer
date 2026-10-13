@@ -17,7 +17,7 @@ import { createTestShell, run } from './helpers';
 import type { Shell } from '@shiro/shell';
 import type { FileSystem } from '@shiro/filesystem';
 import { seedCmd } from '@shiro/commands/seed';
-import { collectSeedState, importSeedState, parseSeedNdjson, sharedSeedQuestion } from '@shiro/seed-state';
+import { collectSeedState, importSeedState, parseSeedNdjson } from '@shiro/seed-state';
 import { STORED_CREDENTIALS, API_KEY_PROVIDERS, credentialFileReason, scrubCredentialLines, storageCredentialKind } from '@shiro/credentials';
 
 const serverPath = decodeURIComponent(new URL('../../../server.mjs', import.meta.url).pathname);
@@ -494,14 +494,10 @@ describe('importing a seed', () => {
     expect(main.match(/importSeedState\(fs, /g)?.length).toBe(3);        // the two message formats and /s/:id
     expect(main).not.toMatch(/fs\.importAll\(/);
     expect(main).not.toMatch(/localStorage\.setItem\(key, value as string\)/);
-    const share = main.slice(main.indexOf('Check for shared seed URL'), main.indexOf('Check for GitHub import URL'));
-    // (asked in a main profile: where the server has guests the link went to a guest before this)
-    expect(share).toContain('if (!guest && !window.confirm(sharedSeedQuestion(');
-    expect(share.indexOf('window.confirm(')).toBeLessThan(share.indexOf('importSeedState('));
-    const q = sharedSeedQuestion('abcd1234', { files: 12, hostname: 'tabcomputer.com', timestamp: Date.UTC(2026, 9, 12) });
-    expect(q).toContain('replaces every file');
-    expect(q).toContain('12 files');
-    expect(q).toContain('can read anything this tabcomputer is signed in to');
-    expect(q).toContain('2026-10-12');
+    // (asked in a main profile, in the run links' window: inbound-links.test.ts)
+    const share = main.slice(main.indexOf('const inbound = '), main.indexOf('Initialize drag-and-drop seed GIF import'));
+    expect(share).toContain('handleInboundLink({');
+    expect(share).toContain('importSeedState(fs, ');
+    expect(main).not.toMatch(/window\.confirm\(/);
   });
 });

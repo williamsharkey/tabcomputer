@@ -107,6 +107,10 @@ What is still shared, and what a guest could do with it:
   today is a bug: the build's chunks load from `./assets/` (vite `base: './'`),
   so the app does not start at a two-segment path (`/s/assets/…` is a 404, on
   tabcomputer.com too). Fixing that bug opens the hole.
+  (Both were fixed together later, #116: the server gives the shell a base
+  element at those paths, and `src/inbound-link.ts` asks first wherever the
+  link did not land in a guest made for it. docs/RUN_LINKS.md "Seed and
+  repository links".)
   The rule the design needs: **no URL makes the main profile import or run
   code without a click in the main profile.** With guests on, such links open
   in a guest.
@@ -184,8 +188,8 @@ kept in a query parameter or in storage would be the guest's to edit.
   the gallery's `claude-sandbox` and `untrusted-repo` links carry `&guest`.
 - `/s/<id>` and `/<user>/<repo>` on the main origin open in a guest when the
   server has guests (a seed in a kept guest named after it, a repository in a
-  thrown-away one). `bootGuest` does this; it cannot be seen working until
-  the app starts at those paths again (above).
+  thrown-away one). `bootGuest` does this. A guest kept under another name
+  is asked first, like a main profile (`linkNeedsConsent`).
 
 **No network** can truthfully mean this, and no more:
 - Linux and WASM programs have no route out: the page gives the kernel no
@@ -286,8 +290,8 @@ the mode (`/guest/config.json`), so it says less when less is true:
 - Device-code phishing by a guest with network.
 - The Claude credential an agent needs lives in the guest.
 - `/oauth/callback` on the main origin takes parameters from any opener.
-- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` would
-  import and run in the main profile once the app starts at those paths.
+- Without guests enabled on the server, `/s/<id>` and `/<user>/<repo>` land
+  in the main profile. They ask first there (#116, `src/inbound-link.ts`).
 - Relay use by a guest counts against the user's IP.
 
 ## Owner decisions

@@ -40,6 +40,19 @@ A tab can hold Claude and GitHub tokens and the person's files, so a link never 
 
 A refused link prints `run link: <why>` in the terminal and runs nothing.
 
+### Seed and repository links
+
+Two older kinds of link name what to load in the path instead of `?run=`, and follow the same rule (`src/inbound-link.ts`, tabcomputer#116):
+
+- `/s/<id>` loads a shared seed: it replaces every file with the seed's. (Only a server with `TABCOMPUTER_SEED_SHARE=1` keeps shared seeds; tabcomputer.com does not.)
+- `/<user>/<repo>` clones `github.com/<user>/<repo>` into `~/<repo>` and starts the project (`src/github-player`): a web page is served, a Node project gets `npm install`, and so on.
+
+Where the server has guests, the page goes to a guest before anything is fetched: a seed to the kept guest `seed<id>`, a repository to a thrown-away one. Nothing of yours is there, so those go ahead without a question. Everywhere else (a main profile on a server without guests, or a guest you keep under another name, which may hold work and sign-ins) the same Run / Cancel window asks first. For a seed it lists the files it holds, with the startup files (`~/.profile` …) and the browser settings it sets first; for a repository it shows the clone command and what starting it does. Cancel changes nothing.
+
+The link leaves the address before it is handled, a framed page ignores it, `?safe=1` ignores it, and a link that asked for a guest on a server without guests does nothing. A repository whose name starts with a dot is refused (it would be cloned over `~/.claude`, `~/.ssh` …). One with a dot elsewhere in its name (`socket.io`) does not open from a link: the server answers a path with a file extension with 404, not the app. A refused link prints `link: <why>`.
+
+server.mjs gives the app shell a `<base href="/">` at exactly these addresses (`appLinkPath`): the shell names its entry relative to the page, so without it the app never started there. That was all that kept such a link from importing or running code in a signed-in profile with no question. The two changes belong together: do not add an address the app acts on without a question in front of it.
+
 ### In a guest
 
 `&guest` on a run link opens it in a guest (docs/research/GUEST_PROFILE.md): tabcomputer on a separate origin that cannot read the main profile's files or sign-ins. `&guest=NAME` keeps the guest under that name, `&nonet` gives it no network. The page goes to the guest before anything is fetched, and the rest of the link goes along, so the prompt and the script appear there. When the server has no guests the link runs nothing and the Terminal says so. `guest` and `nonet` are the page's own parameters, never arguments.

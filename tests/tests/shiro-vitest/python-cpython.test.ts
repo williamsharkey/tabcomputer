@@ -19,6 +19,9 @@ import { NetStack, installNet } from '@shiro/kernel/net';
 import { kernelForContext } from '@shiro/wasi/run-command';
 import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { cpython3Cmd, cpythonCmd, cpipCmd } from '@shiro/commands/python-default';
+import { pipMain, systemTarget } from '@shiro/commands/pip';
+import { OPTIONAL_EXTENSIONS } from '@shiro/commands/pip-sdist';
+import { fakeSdistIndex, SAFEMARK } from './pip-sdist-helpers';
 
 /** A terminal stand-in with a pty session (as in pkg.test.ts). */
 function fakeTerminal() {
@@ -215,6 +218,94 @@ except FileNotFoundError as e:
     expect(r.err).toBe('');
     expect(r.out).toBe("['OpenSSL', '3.5.4'] 2d711642 True\n");
   }, 60_000);
+
+  /** pip into the package's site-packages, as `pip install` at the prompt does. */
+  async function pip(args: string[], fetchFn: typeof fetch) {
+    const ctx = { fs, cwd: '/tmp', env: {}, stdout: '', stderr: '', args } as any;
+    const code = await pipMain(ctx, args, systemTarget(), fetchFn);
+    return { code, out: ctx.stdout as string, err: ctx.stderr as string };
+  }
+
+  it('cannot load extension modules: dlopen is the stub wasi-libc has for a static executable (#125)', async () => {
+    // configure found dlopen, so the import machinery looks for .so files; loading one fails
+    await fs.mkdir('/tmp/ext', { recursive: true });
+    await fs.writeFile('/tmp/ext/spam.cpython-313-wasm32-wasi.so', new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]));
+    const r = await sh(shell, `cd /tmp/ext && python3 -c '
+import _imp, importlib.machinery as m
+print(m.EXTENSION_SUFFIXES, hasattr(_imp, "create_dynamic"))
+try:
+    import spam
+except ImportError as e:
+    print("ImportError:", e)
+'`);
+    expect(r.err).toBe('');
+    expect(r.out).toBe("['.cpython-313-wasm32-wasi.so', '.abi3.so', '.so'] True\nImportError: dlopen not implemented\n");
+    // and the module itself: one static executable, nothing a side module could link against
+    const mod = new WebAssembly.Module(readFileSync(`${REPO}/public/pkg/python3/3.13.7-2/python3.wasm`));
+    expect(WebAssembly.Module.exports(mod).map((e) => e.name).sort()).toEqual(['_start', 'memory']);
+    expect(WebAssembly.Module.customSections(mod, 'dylink.0')).toEqual([]);
+    expect(WebAssembly.Module.imports(mod).some((i) => i.module === 'env' || i.kind === 'table')).toBe(false);
+  }, 60_000);
+
+  it('a package built from its sdist without the extension runs its Python fallback (#125)', async () => {
+    OPTIONAL_EXTENSIONS.add('safemark');
+    const r = await pip(['install', 'safemark'], fakeSdistIndex([SAFEMARK]).fetch);
+    OPTIONAL_EXTENSIONS.delete('safemark');
+    expect(r.err).toBe('');
+    const py = await sh(shell, `python3 -c 'import safemark; print(safemark.FAST, safemark.escape("a<b"))'`);
+    expect(py.err).toBe('');
+    expect(py.out).toBe('False a&lt;b\n');
+    await pip(['uninstall', '-y', 'safemark'], fakeSdistIndex([]).fetch);
+  }, 60_000);
+
+  describe.skipIf(!process.env.TABCOMPUTER_PIP_NET)('packages from pypi.org (TABCOMPUTER_PIP_NET=1, #125)', () => {
+    it('pip install flask: a hello-world app answers requests', async () => {
+      const t = Date.now();
+      const r = await pip(['install', 'flask'], realFetch);
+      console.log(`pip install flask: ${Date.now() - t} ms`);
+      expect(r.err).toBe('');
+      const stack = new NetStack();
+      stack.configure({ relayUrl: null, tokenUrl: null, dohUrl: null, portHost: null });
+      const off = installNet(kernelForContext({ fs, shell } as any), stack);
+      await fs.mkdir('/tmp/flaskapp', { recursive: true });
+      await fs.writeFile('/tmp/flaskapp/app.py', [
+        'from flask import Flask, render_template_string',
+        'app = Flask(__name__)',
+        '@app.route("/")',
+        'def hello():',
+        '    return render_template_string("<p>Hello, {{ who }}!</p>", who="<class>")',
+        'if __name__ == "__main__":',
+        '    app.run(host="127.0.0.1", port=8765)',
+        '',
+      ].join('\n'));
+      await sh(shell, 'cd /tmp/flaskapp && python3 app.py > /tmp/flask.log 2>&1 &');
+      const get = `python3 -c 'import urllib.request as u; print(u.urlopen("http://127.0.0.1:8765/", timeout=10).read().decode(), end="")'`;
+      let first = { out: '', err: '', exitCode: 1 };
+      const t0 = Date.now();
+      for (let i = 0; i < 150 && first.exitCode !== 0; i++) {
+        await new Promise((res) => setTimeout(res, 100));
+        first = await sh(shell, get);
+      }
+      console.log(`flask answered after ${Date.now() - t0} ms`);
+      expect(first.out, first.err + (await sh(shell, 'cat /tmp/flask.log')).out).toBe('<p>Hello, &lt;class&gt;!</p>');
+      expect((await sh(shell, get)).out).toBe('<p>Hello, &lt;class&gt;!</p>');
+      await sh(shell, 'pkill -f app.py');
+      off?.();
+    }, 180_000);
+
+    it('pip install pyyaml tornado msgpack: they import and work without their extensions', async () => {
+      const r = await pip(['install', 'pyyaml', 'tornado', 'msgpack'], realFetch);
+      expect(r.err).toBe('');
+      const py = await sh(shell, `python3 -c '
+import yaml, msgpack, tornado, tornado.web, tornado.util
+print(yaml.__with_libyaml__, yaml.safe_load("a: [1, 2]"), yaml.safe_dump({"b": 1}).strip())
+print(msgpack.unpackb(msgpack.packb({"k": [1, 2]})), msgpack.Packer.__module__)
+print(tornado.version_info[0] >= 6, tornado.util._websocket_mask.__name__)
+'`);
+      expect(py.err).toBe('');
+      expect(py.out).toBe("False {'a': [1, 2]} b: 1\n{'k': [1, 2]} msgpack.fallback\nTrue _websocket_mask_python\n");
+    }, 180_000);
+  });
 
   describe('through the TCP relay', () => {
     let P: Harness;

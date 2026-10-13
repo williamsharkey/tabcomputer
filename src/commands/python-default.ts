@@ -41,7 +41,7 @@ function cpython(name: string): Command {
 function cpip(name: string): Command {
   return {
     name,
-    description: 'Install Python packages for CPython (pure-Python wheels from PyPI)',
+    description: 'Install Python packages for CPython (pure-Python wheels and sources from PyPI)',
     async exec(ctx) {
       const rc = await ensureCPython(ctx, name);
       if (rc) return rc;

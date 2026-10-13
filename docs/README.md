@@ -54,5 +54,6 @@ These record measurements. Each says how it was produced; rerun the tool to upda
 - [research/TLS_IN_TAB.md](research/TLS_IN_TAB.md): a design note: why the model, GitHub and git proxies end TLS at the server, and what it would take to do TLS in the tab over the relay instead (not implemented).
 - [research/APP_MAKER.md](research/APP_MAKER.md): one app built in user space (`serve`, `become`, a node backend) and hardwired, measured; the gaps, and the app layer it proposed, built since as [APPS.md](APPS.md) and re-measured (2026-10-12).
 - [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md): snapshots of started GUI apps (a process's image, its descriptors and its X client restored in a later page load): the design, what is built behind a setting, measurements, open problems (2026-10-12).
+- [research/PYTHON_NATIVE_WHEELS.md](research/PYTHON_NATIVE_WHEELS.md): compiled Python packages on the built-in Python (#125): why it can't load extensions, what `pip` installs from sdists instead, why Pyodide's wheels don't fit, and the plan for numpy (not built; 2026-10-12).
 - [research/OPPORTUNITIES.md](research/OPPORTUNITIES.md): things people can't easily do without installing software, checked in tabcomputer.
 - [upstream/vim-inchar-negative-wait.md](upstream/vim-inchar-negative-wait.md): a vim fix drafted for upstream.

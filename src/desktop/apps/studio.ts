@@ -53,6 +53,8 @@ const STYLE = `
 .st-run { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .st-frame { flex: 1; min-height: 0; position: relative; }
 .st-frame iframe { position: absolute; inset: 0; }
+.st-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--sd-text-2); }
+.st-empty[hidden] { display: none; }
 .st-say { flex: none; margin: 0; padding: 6px 12px; color: var(--sd-text-2); border-top: 1px solid var(--sd-sep); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .st-say:empty { display: none; }
 .st-field { margin: 0 0 12px; }
@@ -320,7 +322,15 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   const form = h('div', 'st-form');
   const runBox = h('div', 'st-run');
   const frameBox = h('div', 'st-frame');
+  /** What the place of the app says before the draft is an app */
+  const empty = h('p', 'st-empty');
+  frameBox.append(empty);
   runBox.append(frameBox, sayEl);
+  const waiting = () => {
+    const k = state.kind;
+    empty.hidden = !!preview?.inst || !k;
+    empty.textContent = k === 'table' ? 'The app shows here once it has a column.' : k === 'files' ? 'The app shows here once the command has {in}.' : 'The app shows here once it has a command.';
+  };
   const bar = h('div', 'st-bar');
 
   function edit(): void {
@@ -335,7 +345,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     say('');
     preview ??= new Preview(frameBox, ctx, (t) => say(t));
     // (a new draft's try-out starts with nothing)
-    void preview.restart(state.preview());
+    void preview.restart(state.preview()).then(waiting);
+    waiting();
   }
 
   function drawBar(): void {
@@ -571,7 +582,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   function changed(): void {
     if (shapeOf() !== shape) draw(); else problems();
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; void preview?.show(state.preview()); }, 350);
+    timer = setTimeout(() => { timer = null; void preview?.show(state.preview()).then(waiting); }, 350);
     gistLink = '';
   }
 

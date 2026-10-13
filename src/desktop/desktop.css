@@ -415,8 +415,9 @@ body.sd-active #shiro-layout { display: none; }
 .sd-meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--sd-accent-2), var(--sd-accent)); border-radius: 3px; transition: width .4s var(--sd-ease); }
 
 /* ── Sheet (network sign-in) and popovers ── */
+/* A sheet asks a question: above the welcome card and the toasts, which only inform */
 .sd-sheet {
-  position: absolute; top: calc(var(--sd-menubar-h) + 10px); left: 50%; z-index: 100001;
+  position: absolute; top: calc(var(--sd-menubar-h) + 10px); left: 50%; z-index: 100002;
   width: min(420px, calc(100vw - 24px)); transform: translateX(-50%);
   background: var(--sd-material-strong); color: var(--sd-text); border: 1px solid var(--sd-window-border);
   -webkit-backdrop-filter: saturate(180%) blur(30px); backdrop-filter: saturate(180%) blur(30px);

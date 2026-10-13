@@ -971,11 +971,13 @@ Status (2026-10-09, see "Agent CLIs" below): with Blink's SSE4.1/4.2
 the Anthropic API. The glibc build starts too since Blink patch 0044. Before
 patch 0040 both died of SIGILL on `pinsrq`.
 
-On the tabcomputer profile the native build is now the default
-(`shims.claude: native`): plain `claude`, `claude install` and
-`claude update` mean native, and `claude --npm` runs the pinned npm build.
-The shiro profile keeps npm as the default, with `--native` as the opt-in
-described here:
+On the tabcomputer profile the native build is the default
+(`shims.claude: native`): `claude install` and `claude update` fetch it, and
+`claude --npm` runs the pinned npm build. Since Build 985 plain `claude` runs
+the native build's JavaScript on the Node runtime (`--vm`,
+[CLAUDE_VM.md](CLAUDE_VM.md)), not the binary; `claude --x86` (or `--native`,
+or `CLAUDE_X86=1`) runs the binary in Blink, which is what the rest of this
+section and its timings describe. The shiro profile keeps npm as the default:
 
 - `claude install --native [VERSION]` (`src/commands/claude-native.ts`)
   downloads from inside the guest with the `curl` package (x86-64, its own
@@ -1071,7 +1073,7 @@ real account takes over (the sign-in page opens and the CLI waits for the code).
 
 | Tool | Version | Install | `--version` | First screen | API with a dummy key | Sign-in | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code, native (default) | 2.1.296 | `claude install` 140 s | 3 s | 52 s | `-p`: "Invalid API key", ~100 s | `claude login` → `claude auth login`: the sign-in page opens in a tab (or an Open card), then "Paste code here" | Startup is ~48–52 s offline, mostly compiled guest code (perf-blink's profiles). In worker mode: same. |
+| Claude Code, native binary (`claude --x86`; plain `claude` is `--vm`, CLAUDE_VM.md) | 2.1.296 | `claude install` 140 s | 3 s | 52 s | `-p`: "Invalid API key", ~100 s | `claude login` → `claude auth login`: the sign-in page opens in a tab (or an Open card), then "Paste code here" | Startup is ~48–52 s offline, mostly compiled guest code (perf-blink's profiles). In worker mode: same. |
 | Claude Code, `--npm` | 2.1.112 (reports 2.1.280) | installed at boot | 5–7 s | 14 s | `-p`: "Invalid API key", 4 s | `claude --npm login` → the in-session `/login` (URL, paste prompt) | 2.1.112's `auth login` has no paste prompt and could never finish here; fixed (ad91c0e). In worker mode (the default) it starts onboarded too (8e78beb8). |
 | OpenAI Codex | 0.162.1 | GitHub release tarball with the real curl (`pkg install curl`): 65 s; `npm i -g @openai/codex` 8–11 s (the `linux-x64` package installs since f86aded) | 4.7 s (tarball), 12 s (npm launcher) | — | `exec`: 401 on `wss://` then `https://api.openai.com`, ~40–50 s (tarball and, on ed8a01c, the npm launcher) | not tried (ChatGPT sign-in) | After the 401s, `exec` could hang until Ctrl-C (the npm launcher on ed8a01c; one of three tarball runs). That was codex retrying failed HTTPS without limit (`codex-rs/core/src/responses_retry.rs`), not a kernel deadlock; the likely cause of the failures was the missing CA bundle: its TLS (OpenSSL through native-tls/openssl-probe, and rustls with rustls-native-certs) needs `/etc/ssl/certs/ca-certificates.crt`, `/etc/ssl/cert.pem` or `SSL_CERT_FILE`, and plain mode had none unless `pkg install curl` or `ca-certificates` had run (the tarball route did, the npm route didn't). Both profiles now preinstall `ca-certificates` at boot (81be3dc6). Fixed since, also not re-run with codex: a "turn interrupted" SIGINT after codex's 30 s timeout killed a `git fetch` child (killing a program's `sh -c` child signalled the page shell's foreground group; 6e50918c), and, after `debian install`, a hang in its startup plugin sync (`git fetch --depth 1 --no-tags` of github.com/openai/plugins: the built-in git took Debian mode's `/usr/bin/git` shim for the full git and ran itself without end; 48e4e8c0 installs the full git over the shim). Through npm, the terminal used to freeze after `codex --version` (fixed in 102fc13), and `exec` used to wait on stdin (compat-tools' stdio-inherit fix). |
 | Grok Build (xAI) | 1.0.50 | `x.ai/cli/install.sh` after `pkg install curl`: 118 s | 2.4 s | — | `-p`: 400 "Incorrect API key", 25 s (148 s on 2026-10-09) | not tried | The builtin `curl` can't fetch the binary (browser fetch); the real curl goes through the relay. The dock's Grok entry installs the real curl first, and finds the program under `~` when the installer's directory isn't on PATH. |

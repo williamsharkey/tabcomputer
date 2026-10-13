@@ -522,7 +522,7 @@ git pull && git push</pre></div>
 
       <!-- ===== Claude Code ===== -->
       <h2 id="claude-code">Claude Code</h2>
-      <p>The real <code>@anthropic-ai/claude-code</code> CLI runs inside tabcomputer's Node.js runtime. It can read, write, edit, and search files in the virtual filesystem.</p>
+      <p>The real Claude Code CLI runs on tabcomputer's Node.js runtime, in this page's JavaScript engine. It can read, write, edit, and search files in the virtual filesystem.</p>
 
       <h3>Setup</h3>
       <p>Claude Code is installed in the background when tabcomputer first boots. Run <code>claude</code>: if you aren't signed in, a panel opens with a button for the sign-in page and a box for the code it gives you. Credentials persist in IndexedDB, and <code>claude login</code> or <code>setup</code> signs in again.</p>
@@ -553,19 +553,25 @@ claude-window</pre></div>
       <h3>Limitations</h3>
       <ul>
         <li>Tree-sitter WASM doesn't load (syntax highlighting disabled)</li>
-        <li>The default <code>claude</code> is the pinned JavaScript build; Claude Code's own native binary runs too, slowly (below)</li>
+        <li>Which build <code>claude</code> runs is described below</li>
         <li>Claude's bundled ripgrep is shimmed to tabcomputer's <code>rg</code></li>
         <li>API calls route through a CORS proxy on tabcomputer.com</li>
       </ul>
 
-      <h3>Native build (experimental)</h3>
-      <p>Anthropic's native Claude Code binary runs in tabcomputer's x86-64 emulator. It is about 2 minutes per request today, so the JavaScript build stays the default.</p>
-      <div class="code-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><pre><span class="c"># Download it (238 MB, checked against the release's sha256) and musl's loader</span>
-claude install --native
+      <h3>Builds</h3>
+      <p>On tabcomputer.com plain <code>claude</code> runs Anthropic's current release: <code>claude install</code> downloads its Linux build (about 240 MB, checked against the release's sha256), and <code>claude</code> runs that build's own JavaScript on the Node.js runtime, which takes a few seconds to reach its prompt. Two other builds are a flag away.</p>
+      <div class="code-block"><button class="copy-btn" onclick="copyBlock(this)">Copy</button><pre><span class="c"># Download Anthropic's current build (once; claude update fetches a newer one)</span>
+claude install
 
-<span class="c"># Run it instead of the default build (or set CLAUDE_NATIVE=1)</span>
-claude --native -p "say hi"</pre></div>
-      <p>The download happens inside the VM through the server's network relay (it takes about 3 minutes). On a server without the relay, <code>claude install --native</code> says so and stops.</p>
+<span class="c"># The default: that build's JavaScript on this page's engine (the same as claude --vm)</span>
+claude
+
+<span class="c"># The pinned JavaScript release from npm: installed at boot, no download</span>
+claude --npm
+
+<span class="c"># The downloaded binary in the x86-64 emulator: much slower, most of a minute to its prompt</span>
+claude --x86</pre></div>
+      <p>The download comes from this site when its server mirrors the releases, and otherwise through the server's network relay. On a server with neither, <code>claude install</code> says so and stops; <code>claude --npm</code> needs no download.</p>
 
       <!-- ===== Other coding agents ===== -->
       <h2 id="agent-clis">Other Coding Agents</h2>

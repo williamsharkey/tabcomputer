@@ -87,7 +87,7 @@ export const KNOWN_ISSUES: { issue: string; workaround?: string }[] = [
     issue: "node's ES module imports are copies, not live bindings, and an entry module in an import cycle runs twice (tabcomputer#35); vitest 4 can't run tests (tabcomputer#32).",
   },
   {
-    issue: 'Native Claude Code sometimes stops between a tool result and its next request, and ignores SIGTERM (tabcomputer#19).',
+    issue: 'Claude Code in the x86-64 emulator (`claude --x86`) has stopped between a tool result and its next request, and ignored SIGTERM (tabcomputer#19; reported before plain `claude` became `--vm`, cause not found).',
     workaround: '`kill -9` it, or reload the page, then `claude --resume`.',
   },
 ];
@@ -111,8 +111,9 @@ export function buildAgentsMd(ctx: ShiroRuntimeContext): string {
 - \`claude --npm\` runs the pinned pure-JavaScript build on ${name}'s Node runtime
   instead: installed at boot, starts fast.`
     : `- Plain \`claude\` runs the pinned pure-JavaScript build on ${name}'s Node runtime.
-- \`claude install --native\` then \`claude --native\` runs Anthropic's native build in
-  the x86-64 emulator (about 240 MB; one request takes a minute or two).`;
+- \`claude install --native\` downloads Anthropic's native build (about 240 MB). Then
+  \`claude --vm\` runs its JavaScript on this page's JS engine, and \`claude --x86\` runs
+  the binary in the x86-64 emulator, which is much slower.`;
   return `# AGENTS.md
 
 You are on ${name} (${site}): a computer that lives in a browser tab. You are a

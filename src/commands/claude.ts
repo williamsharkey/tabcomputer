@@ -268,8 +268,8 @@ export const claudeCmd: Command = {
       ctx.stdout += `Claude Code in tabcomputer is pinned to ${CLAUDE_CODE_VERSION}, the last release that ships as JavaScript\n`
         + `(later releases are native binaries). It reports itself as ${CLAUDE_CODE_REPORTED_VERSION} so current models work.\n`
         + (activeProfile().shims.claude === 'native'
-          ? 'Plain `claude` runs the native build; `claude --npm` runs this one.\n'
-          : 'The native build can run in the x86-64 emulator (experimental, slow): claude install --native, then claude --native.\n');
+          ? 'Plain `claude` runs Anthropic\'s current build (`claude install` downloads it); `claude --npm` runs this one.\n'
+          : 'Anthropic\'s current build runs too: claude install --native, then claude --vm (its JavaScript on this page\'s engine)\nor claude --x86 (the binary in the x86-64 emulator, much slower).\n');
       return 0;
     }
 

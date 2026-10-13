@@ -161,11 +161,17 @@ export async function loadSnapshot(app: string): Promise<StoredSnapshot | null> 
   } catch { return null; }
 }
 
-/** Keep `snap`, then drop the least recently used ones until the total is within the cap. Returns the apps dropped (`snap`'s own when it alone is over). */
+/**
+ * Keep `snap`, then drop the least recently used ones until the total is
+ * within the cap. Returns the apps dropped. One that is over the cap alone
+ * is not kept (the answer is its own app), and the others stay.
+ */
 export async function saveSnapshot(snap: StoredSnapshot, cap?: number): Promise<string[]> {
   const app = snap.meta.app;
+  cap ??= await snapshotCap();
+  if (snap.meta.sizes.stored > cap) { await dropSnapshot(app); return [app]; }
   await tx('readwrite', (s, i) => { s.put({ images: snap.images, x: snap.x }, app); return i.put({ meta: snap.meta, used: Date.now() } satisfies IndexEntry, app); });
-  const drop = evictions(await listSnapshots(), cap ?? await snapshotCap(), app);
+  const drop = evictions(await listSnapshots(), cap, app);
   for (const a of drop) { await dropSnapshot(a); releaseClientNumber(a); }
   return drop;
 }
@@ -175,16 +181,22 @@ export const dropAllSnapshots = (): Promise<unknown> => tx('readwrite', (s, i) =
 
 /** `app`'s snapshot was used now (a restore): the least recently used go first when space is needed */
 export async function touchSnapshot(app: string): Promise<void> {
-  const entry = await snapshotEntry(app);
-  if (entry) await tx('readwrite', (_s, i) => i.put({ ...entry, used: Date.now() }, app)).catch(() => undefined);
+  // (one transaction: a snapshot that was dropped meanwhile is not put back)
+  await tx('readwrite', (_s, i) => {
+    const got = i.get(app) as IDBRequest<IndexEntry | undefined>;
+    got.onsuccess = () => { if (got.result) i.put({ ...got.result, used: Date.now() }, app); };
+    return null;
+  }).catch(() => undefined);
 }
 
 /**
  * Which snapshots go so that the rest fit in `cap` bytes: the least recently
- * used first, the one just kept (`keep`) last, and that one too when it is
- * over the cap alone.
+ * used first, the one just kept (`keep`) last. When that one is over the cap
+ * alone, it goes and the others stay.
  */
 export function evictions(entries: IndexEntry[], cap: number, keep?: string): string[] {
+  const kept = keep === undefined ? undefined : entries.find((e) => e.meta.app === keep);
+  if (kept && kept.meta.sizes.stored > cap) return evictions(entries.filter((e) => e !== kept), cap).concat(keep!);
   let total = entries.reduce((a, e) => a + e.meta.sizes.stored, 0);
   const out: string[] = [];
   const order = [...entries].sort((a, b) => (a.meta.app === keep ? 1 : b.meta.app === keep ? -1 : a.used - b.used));

@@ -742,9 +742,9 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   const launched: LaunchedApp = { pid: first.pid, output: () => out.text(), exited: Promise.resolve(0) };
   launched.exited = (async () => {
     let st = await exitOf(kernel, first);
-    // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again, and
-    // no other is taken until something it was made from changes. The person asked for the app: it is
-    // started the usual way now
+    // An image that doesn't run (it ends within seconds, and not by a clean exit) is dropped, and none is
+    // taken in the background until something it was made from changes (the next start the person makes
+    // keeps a new one). The person asked for the app: it is started the usual way now
     if (restoredAt && plan && st !== 0 && Date.now() - restoredAt < 5000) {
       const why = `the restored process ended at once (${st})`;
       snapshotLog(name, { restored: false, why });

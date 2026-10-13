@@ -336,7 +336,9 @@ describe('GUI snapshots: storage', () => {
     expect(evictions(all, 160)).toEqual(['xeyes', 'gimp']);                 // 175 → 172 → 87
     expect(evictions(all, 160, 'xeyes')).toEqual(['gimp']);                 // the new one is spared while others can go
     expect(evictions(all, 30)).toEqual(['xeyes', 'gimp', 'inkscape']);
-    expect(evictions(all, 10, 'geany')).toEqual(['xeyes', 'gimp', 'inkscape', 'geany']);
+    // the new one is over the cap alone: it goes, and the others are not dropped for it
+    expect(evictions(all, 84, 'gimp')).toEqual(['xeyes', 'inkscape', 'gimp']);      // (the rest still has to fit: 90 → 87 → 20)
+    expect(evictions([entry('gimp', 85, 100), entry('geany', 20, 300)], 50, 'gimp')).toEqual(['gimp']);
     expect(evictions([], 10)).toEqual([]);
   });
 
@@ -374,6 +376,10 @@ describe('GUI snapshots: storage', () => {
     // one that is over the cap alone is not kept
     expect(await S.saveSnapshot(snap('huge', 5000), 1000)).toContain('huge');
     expect(await S.loadSnapshot('huge')).toBeNull();
+    // a use noted for a snapshot that was dropped meanwhile does not bring its entry back
+    await S.dropSnapshot('one');
+    await Promise.all([S.touchSnapshot('one'), S.touchSnapshot('three')]);
+    expect((await S.listSnapshots()).map((e) => e.meta.app)).toEqual(['three']);
     await S.dropAllSnapshots();
     expect(await S.listSnapshots()).toEqual([]);
   });

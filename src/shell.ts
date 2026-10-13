@@ -19,7 +19,7 @@ import { notFoundHint } from './command-hints';
 import type { KernelStdio } from './shell-stdio';
 import type { OpenFile } from './kernel/fd';
 import { getCompiledModule } from './wasi-packages';
-import { builtinIndex, findEntry, packageStatus, packageShadows, pkgOwnShadows, loadPackageShadows, packageOfPath, runPackageBinary, PKG_BIN_DIR } from './pkg-manager';
+import { builtinIndex, findEntry, packageStatus, refreshRuntimeMode, packageShadows, pkgOwnShadows, loadPackageShadows, packageOfPath, runPackageBinary, PKG_BIN_DIR } from './pkg-manager';
 import { activeProfile } from './profile';
 import { BUILTIN_SHIM_INTERP } from './path-shims';
 import { parseShellArgs } from './shell-args';
@@ -5161,6 +5161,8 @@ export class Shell {
             // the pipeline still runs, as in bash: `nosuch | cat`)
             ctx.stderr += `tabcomputer: command not found: ${effectiveCmdName}\n`;
             if (provider && Object.prototype.hasOwnProperty.call(provider.bin, effectiveCmdName)) {
+              // (what the kernel has is known once looked up: before any pkg command, x86 counted as missing)
+              await refreshRuntimeMode();
               ctx.stderr += `  it can be installed with: pkg install ${provider.name}` +
                 (packageStatus(provider) === 'blocked' ? ` (needs kernel support tabcomputer doesn't have yet)` : '') + '\n';
             }

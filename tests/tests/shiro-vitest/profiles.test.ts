@@ -71,6 +71,7 @@ describe('profile selection', () => {
     expect(r.shiroOnTab).toBe('<head><title>shiro</title><link rel="icon" type="image/svg+xml" href="/favicon.svg" /></head>');
     expect(r.tab).toContain('<title>tabcomputer</title>');
     expect(r.tab).toContain('href="/tabcomputer-favicon.svg"'); // the otter
+    expect(r.tab).toContain('<meta property="og:image" content="https://tabcomputer.com/og.jpg" />');
   });
 
   it('every profile declares every field', () => {

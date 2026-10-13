@@ -18,6 +18,13 @@ internet.
 - **Coding agents.** Claude Code (Anthropic's current build or the pinned npm one) runs in the tab. Codex, Grok Build, Gemini
   CLI and aider reach their APIs too ([docs/COMPAT.md](docs/COMPAT.md#agent-clis-unixagent-clis)).
 
+- **A link is a computer.** Commands or a one-file app can be written after the `#` of the
+  address, and the link opens them: [`tabcomputer.com/#python3 -c "print(2**100)"`](https://tabcomputer.com/#python3%20-c%20%22print(2**100)%22)
+  runs Python after one Run button, and [an expenses table](https://tabcomputer.com/#name=Expenses&table=expenses.csv&columns=Date:date,What,Category:Food%7CTravel%7CHome%7COther,Amount:number)
+  is a whole app in 101 characters. The browser never sends that part to the server. Studio makes
+  such an app from a short form; [/link](https://tabcomputer.com/link) turns typed commands into one
+  ([docs/RUN_LINKS.md](docs/RUN_LINKS.md#after-the-), [docs/APPS.md](docs/APPS.md)).
+
 **Live:** [tabcomputer.com](https://tabcomputer.com). Nothing to install. Your files stay in
 this browser's storage for this site.
 

@@ -38,7 +38,8 @@ export const DEMOS: Demo[] = [
   { id: 'python', title: 'Write some Python', detail: 'python3, built in', glyph: 'python3', command: `python3 -c "import sys, platform; print('Python', sys.version.split()[0], 'on', platform.machine())"` },
   { id: 'claude', title: 'Code with Claude', detail: 'claude, signed in from Accounts', glyph: 'claude', command: 'claude' },
   { id: 'gui', title: 'Open a Linux GUI app', detail: 'GIMP, xeyes… from Apps', glyph: 'apps', run: (ctx) => void ctx.wm.openApp('apps') },
-  { id: 'settings', title: 'Make it yours', detail: 'Icons, theme, accounts', glyph: 'settings', run: (ctx) => void ctx.wm.openApp('settings', { pane: 'dock' }) },
+  // Studio (docs/APPS.md "Studio"): an app made from a short form, shared as a link (#164)
+  { id: 'studio', title: 'Make an app', detail: 'Studio, then share it as a link', glyph: 'studio', run: (ctx) => void ctx.wm.openApp('studio') },
 ];
 
 const svg = (d: string) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path class="sd-ic-c" d="M1.5 12h21M12 1.5v21"/><path class="sd-ic-g" d="${d}"/></svg>`;

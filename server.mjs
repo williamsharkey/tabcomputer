@@ -43,7 +43,7 @@ export function isolationHeaders() {
 // --- MIME types ---
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.mjs': 'application/javascript',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon', '.wasm': 'application/wasm', '.txt': 'text/plain', '.sh': 'text/plain; charset=utf-8',
   '.map': 'application/json', '.mjs': 'application/javascript',
 };
@@ -384,7 +384,9 @@ export function brandAppShell(html, host, brand = profileFor(host)?.brand) {
     `<meta property="og:url" content="${esc(url)}" />`,
     `<meta property="og:type" content="website" />`,
     `<meta property="og:site_name" content="${esc(brand.name)}" />`,
-    `<meta name="twitter:card" content="summary" />`,
+    // A picture of the desktop for chat apps' link previews (they never see the part after #)
+    ...(brand.image ? [`<meta property="og:image" content="${esc(new URL(brand.image, url).href)}" />`] : []),
+    `<meta name="twitter:card" content="${brand.image ? 'summary_large_image' : 'summary'}" />`,
     `<meta name="application-name" content="${esc(brand.name)}" />`,
     `<meta name="apple-mobile-web-app-title" content="${esc(brand.name)}" />`,
   ].join('\n  ');

@@ -237,6 +237,8 @@ export interface MenuItem {
   disabled?: boolean;
   checked?: boolean;
   action?: () => void;
+  /** false: not in the phone layout's menu sheet (moving and tiling windows). Additive (API v1.7). */
+  phone?: boolean;
 }
 export interface MenuSpec { title: string; items: (MenuItem | 'separator')[] }
 
@@ -315,6 +317,11 @@ export class WindowManager implements DesktopAPI {
   workAreaFn: () => Geometry;
   /** Narrow screens: every window fills the work area. */
   compact = false;
+  /**
+   * The phone layout (phone.ts, docs/DESKTOP.md "Phone layout"): an app is the
+   * whole work area, with no title bar. Set by the desktop shell; implies `compact`.
+   */
+  phone = false;
   /** App launches in progress (docs/DESKTOP.md "Launch feedback") */
   readonly launches = launches;
 
@@ -565,7 +572,7 @@ export class WindowManager implements DesktopAPI {
   }
 
   relayout(): void {
-    const compact = compactViewport();
+    const compact = this.phone || compactViewport();
     if (compact !== this.compact) {
       this.compact = compact;
       this.root.classList.toggle('sd-compact', compact);
@@ -723,7 +730,8 @@ class WindowImpl implements DesktopWindow {
   }
 
   private chromeHeight(): number {
-    return this.decorated ? TITLEBAR_H : 0;
+    // (the phone layout draws no title bar)
+    return this.decorated && !this.wm.phone ? TITLEBAR_H : 0;
   }
 
   /** Frame rect in work-area coordinates for the current state. */

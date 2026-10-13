@@ -9,6 +9,8 @@
  * no room for a desktop around a question.
  */
 
+import { phoneLayoutNow } from '../phone-rule';
+
 type Theme = 'light' | 'dark';
 interface ThemedDesktop { theme(): Theme; on(ev: 'theme-changed', cb: () => void): () => void; compact?: boolean }
 const desktop = (): ThemedDesktop | undefined => (globalThis as { __shiroDesktop?: ThemedDesktop }).__shiroDesktop;
@@ -31,15 +33,12 @@ export const appTheme = {
 };
 
 /**
- * A phone: the desktop's compact layout (wm.ts `compactViewport`, repeated
- * here so that a prompt does not load the desktop) on a screen that is
- * touched. An app link opens as the app there, and a prompt fills the screen.
+ * A phone: the screen the desktop gives its phone layout (src/phone-rule.ts,
+ * asked here so that a prompt does not load the desktop). A prompt fills the
+ * screen there, and an app link opens as the app.
  */
 export function phoneScreen(): boolean {
-  if (typeof matchMedia !== 'function' || !matchMedia('(pointer: coarse)').matches) return false;
-  if (window.innerWidth <= 640) return true;
-  const s = typeof screen === 'object' ? Math.min(screen.width, screen.height) : 0;
-  return s > 0 && s <= 500 && window.innerHeight <= 500;
+  return phoneLayoutNow();
 }
 
 const STYLE_ID = 'tc-surface-style';

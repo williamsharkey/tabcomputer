@@ -31,6 +31,9 @@ import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
 import { flushStorage, reloadAfterFlush } from '../storage';
 import { fragmentAtLoad } from '../link-capture';
+import { onLayoutChoice, phoneLayoutNow } from '../phone-rule';
+import { phoneFont, pillStrip } from './phone-model';
+import type { PhoneUI } from './phone';
 
 /**
  * The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts),
@@ -62,6 +65,8 @@ export interface AppContext {
   onIconSet(cb: (id: IconSetId) => void): () => void;
   /** A menu at a point (the menu bar's look), for apps' own pop-up menus */
   openMenu?: (spec: MenuSpec, x: number, y: number, above?: boolean) => void;
+  /** The phone layout, once it has been on (phone.ts): is it on now, and go to Home */
+  phone?: { active(): boolean; home(): void };
 }
 
 /** Phone layout inputs (src/desktop/mobile.ts sets them from the visual viewport) */
@@ -75,6 +80,12 @@ export interface DesktopLayout {
   /** Visible height (visualViewport), or null for window.innerHeight */
   viewportH: number | null;
   relayout(): void;
+  /** The phone layout is on (docs/DESKTOP.md "Phone layout"): set here, read by phone.ts and mobile.ts */
+  phone: boolean;
+  /** env(safe-area-inset-*), read by phone.ts: the phone layout keeps apps inside them */
+  insets: { top: number; right: number; bottom: number; left: number };
+  /** Set by mobile.ts: measure the visual viewport again, then relayout */
+  refresh?: () => void;
 }
 
 export interface Desktop {
@@ -179,8 +190,20 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   // From the CSS sizes (--sd-menubar-h, --sd-dock-h, --sd-dock-gap), not layout reads:
   // measuring here would force a full style and layout pass before the terminal exists
   const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-  const layout: DesktopLayout = { keybarH: 0, dockHidden: false, topInset: 0, viewportH: null, relayout: () => {} };
+  // The phone layout (src/phone-rule.ts): decided now, and again when the window's size crosses the rule
+  let phoneOn = phoneLayoutNow();
+  let phoneUI: PhoneUI | null = null;
+  const layout: DesktopLayout = { keybarH: 0, dockHidden: false, topInset: 0, viewportH: null, relayout: () => {}, phone: phoneOn, insets: { top: 0, right: 0, bottom: 0, left: 0 } };
   const workArea = (): Geometry => {
+    if (phoneOn) {
+      // An app is the whole screen inside the safe areas, down to the pill's strip. The on-screen
+      // keyboard changes nothing here: mobile.ts keeps `viewportH` at the height without it.
+      const i = layout.insets, h = layout.viewportH ?? window.innerHeight;
+      const strip = pillStrip(h, i.bottom);
+      root.style.setProperty('--sd-keybar-h', '0px');
+      root.style.setProperty('--sd-pill-h', `${strip}px`);
+      return { x: i.left, y: i.top, width: Math.max(120, window.innerWidth - i.left - i.right), height: Math.max(120, h - i.top - strip) };
+    }
     const compact = compactViewport();
     const top = (compact ? 34 : 30) + layout.topInset;
     const gap = compact ? 6 : 8;
@@ -195,6 +218,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     return { x: 0, y: top, width: window.innerWidth, height: bottom - top };
   };
   const wm = new WindowManager(root, { workArea });
+  wm.phone = phoneOn;
+  root.classList.toggle('sd-phone', phoneOn);
   wm.relayout();
   (globalThis as any).__shiroDesktop = wm;
   // Launches in progress (launch-state.ts): the dock marks them; a slow app's placeholder
@@ -256,7 +281,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   (globalThis as any).__shiroDesktopCtx = ctx;
 
   // Terminals start in the desktop's palette and font (no re-theme, re-measure later)
-  ShiroTerminal.optionOverrides = { theme: terminalTheme(wm.theme()), fontFamily: TERMINAL_FONT };
+  ShiroTerminal.optionOverrides = { theme: terminalTheme(wm.theme()), fontFamily: TERMINAL_FONT, ...(phoneOn ? { fontSize: phoneFont() } : {}) };
 
   // The first window: the main terminal, front and center (or where it was last time)
   // (a phone shows one window at a time: of the last session only the apps that were open come back, docs/APPS.md "Lifecycle")
@@ -399,6 +424,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   let openStackEl: HTMLElement | null = null;
   const closeStack = () => { openStackEl?.remove(); openStackEl = null; };
   const renderDock = () => {
+    // The phone layout has no dock: Home shows the apps (phone.ts)
+    if (phoneOn) { closeStack(); phoneUI?.refresh(); return; }
     dock.textContent = '';
     closeStack();
     const running = new Set(wm.windows().filter(w => w.state !== 'closed' && !w.options.override && !w.options.skipTaskbar).map(w => w.appId));
@@ -735,15 +762,15 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       { label: 'Match System', checked: pref === 'system', action: () => wm.setTheme('system') },
     ] };
     const windowMenu: MenuSpec = { title: 'Window', items: [
-      { label: 'Minimize', shortcut: 'Alt+Shift+M', disabled: !w, action: () => w?.minimize() },
-      { label: 'Zoom', shortcut: 'Alt+Shift+↑', disabled: !w, action: () => w?.zoom() },
-      { label: 'Tile Left', shortcut: 'Alt+Shift+←', disabled: !w, action: () => w?.snap('left') },
-      { label: 'Tile Right', shortcut: 'Alt+Shift+→', disabled: !w, action: () => w?.snap('right') },
-      { label: 'Top Left Quarter', shortcut: 'Ctrl+Alt+U', disabled: !w, action: () => w?.snap('top-left') },
-      { label: 'Top Right Quarter', shortcut: 'Ctrl+Alt+I', disabled: !w, action: () => w?.snap('top-right') },
-      { label: 'Bottom Left Quarter', shortcut: 'Ctrl+Alt+J', disabled: !w, action: () => w?.snap('bottom-left') },
-      { label: 'Bottom Right Quarter', shortcut: 'Ctrl+Alt+K', disabled: !w, action: () => w?.snap('bottom-right') },
-      { label: 'Cycle Windows', shortcut: 'Alt+`', action: () => wm.cycle() },
+      { label: 'Minimize', phone: false, shortcut: 'Alt+Shift+M', disabled: !w, action: () => w?.minimize() },
+      { label: 'Zoom', phone: false, shortcut: 'Alt+Shift+↑', disabled: !w, action: () => w?.zoom() },
+      { label: 'Tile Left', phone: false, shortcut: 'Alt+Shift+←', disabled: !w, action: () => w?.snap('left') },
+      { label: 'Tile Right', phone: false, shortcut: 'Alt+Shift+→', disabled: !w, action: () => w?.snap('right') },
+      { label: 'Top Left Quarter', phone: false, shortcut: 'Ctrl+Alt+U', disabled: !w, action: () => w?.snap('top-left') },
+      { label: 'Top Right Quarter', phone: false, shortcut: 'Ctrl+Alt+I', disabled: !w, action: () => w?.snap('top-right') },
+      { label: 'Bottom Left Quarter', phone: false, shortcut: 'Ctrl+Alt+J', disabled: !w, action: () => w?.snap('bottom-left') },
+      { label: 'Bottom Right Quarter', phone: false, shortcut: 'Ctrl+Alt+K', disabled: !w, action: () => w?.snap('bottom-right') },
+      { label: 'Cycle Windows', phone: false, shortcut: 'Alt+`', action: () => wm.cycle() },
       'separator',
       ...wm.visibleOrder().map(x => ({ label: x.title || x.appId || x.id, checked: x === w, action: () => x.focus() })),
     ] };
@@ -752,7 +779,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       { label: 'Welcome', action: () => void import('./welcome').then(m => m.showWelcome(ctx)) },
       { label: 'Getting Started', action: () => openTerminal({ command: 'help' }) },
       { label: 'How Your Data Flows', action: () => void wm.openApp('dataflow') },
-      { label: 'Keyboard Shortcuts', action: () => showToast(root, SHORTCUTS_HTML, 9000) },
+      { label: 'Keyboard Shortcuts', phone: false, action: () => showToast(root, SHORTCUTS_HTML, 9000) },
       { label: 'Desktop & /dom docs', action: () => window.open('https://github.com/williamsharkey/tabcomputer/blob/main/docs/DESKTOP.md', '_blank', 'noopener') },
     ] };
     return [file, edit, view, windowMenu, ...(focusedApp()?.menus?.() ?? []), help];
@@ -917,6 +944,31 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   const openSpotlight = () => { void import('./spotlight').then(m => m.toggleSpotlight(ctx)); };
   searchBtn.addEventListener('click', (e) => { e.stopPropagation(); openSpotlight(); });
 
+  // ── The phone layout: Home, the pill and the switcher (phone.ts, its own chunk, loaded when the rule first says phone) ──
+  const badge = (id: string): 'installing' | 'missing' | null =>
+    toolInstalling.has(id) ? 'installing' : toolMissing.has(id) || (FEATURED_PACKAGES.some(p => p.pkg === id) && !installed.has(id)) ? 'missing' : null;
+  let phoneLoad: Promise<void> | null = null;
+  const applyLayoutMode = (atBoot = false) => {
+    const on = phoneLayoutNow();
+    if (on === phoneOn && !atBoot) return;
+    phoneOn = layout.phone = wm.phone = on;
+    root.classList.toggle('sd-phone', on);
+    if (on && !phoneUI) {
+      phoneLoad ??= import('./phone').then((m) => {
+        phoneUI = m.initPhone({
+          ctx, layout, menus, systemMenu, badge, search: openSpotlight, revealed: () => revealed,
+          status: [themeBtn, netBtn], restoreStatus: () => { menubar.insertBefore(themeBtn, clock); menubar.insertBefore(netBtn, clock); },
+        });
+        phoneUI.setActive(phoneOn, atBoot);
+      }).catch((e) => console.warn('[phone]', e));
+      hold(phoneLoad);
+    } else phoneUI?.setActive(on, false);
+    (layout.refresh ?? layout.relayout)();
+  };
+  if (phoneOn) applyLayoutMode(true);
+  window.addEventListener('resize', () => applyLayoutMode());
+  onLayoutChoice(() => applyLayoutMode());
+
   deps.fs.onStorageFull((full) => {
     if (full) showToast(root, '<b>Storage is full</b><div class="sd-small">The browser refused to save more. Delete files (or apt clean) to free space; Settings → Storage shows usage.</div>', 12000);
   });
@@ -967,7 +1019,10 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         root.classList.remove('sd-booting');
         document.getElementById('boot-mark')?.remove();
         // the keyboard goes to the focused window (a DOM focus on the main terminal would raise it)
-        if (restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed') restoredFocus.focus();
+        const back = restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed' ? restoredFocus : null;
+        // The phone layout starts at Home, or in the app a reload came back to
+        if (phoneOn && phoneUI) phoneUI.arrive(back);
+        else if (back) back.focus();
         else term.term.focus();
         performance.mark('shiro:desktop:revealed');
         // A first visit gets the tour
@@ -1025,8 +1080,9 @@ function drawWelcome(t: ShiroTerminal): void {
   const link = (text: string, cmd = text) => `\x1b]8;;shiro://cmd/${encodeURIComponent(cmd)}\x07\x1b[38;5;117m${text}\x1b[0m\x1b]8;;\x07`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
   const narrow = t.term.cols < 72;
+  // (under 50 columns, a phone: one suggestion fewer, so the second line does not wrap inside a word)
   t.term.write(`\x1b[1m${BRAND.domain}\x1b[0m ${dim(narrow ? '— Unix in a browser tab.' : `— ${BRAND.tagline}. Real shell, real packages.`)}\r\n`);
-  t.term.write(`${dim('try:')} ${link('apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`)} ${dim('·')} ${link('htop', 'apt install htop && htop')} ${dim('·')} ${link('python3', 'apt install python3 && python3')} ${dim('·')} ${link('ls /dom')} ${dim('·')} ${link('help')}\r\n\r\n`);
+  t.term.write(`${dim('try:')} ${link('apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`)} ${dim('·')} ${link('htop', 'apt install htop && htop')} ${dim('·')} ${link('python3', 'apt install python3 && python3')} ${t.term.cols < 50 ? '' : `${dim('·')} ${link('ls /dom')} `}${dim('·')} ${link('help')}\r\n\r\n`);
 }
 
 /**

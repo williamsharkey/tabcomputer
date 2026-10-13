@@ -66,6 +66,9 @@ let current: HTMLElement | null = null;
 /** Show the welcome card (again, from the Help menu) */
 export function showWelcome(ctx: AppContext): void {
   current?.remove();
+  // The phone layout: a sheet over Home that a choice closes, never a box over an app
+  const phone = !!ctx.phone?.active();
+  if (phone) ctx.phone!.home();
   const el = document.createElement('section');
   el.className = 'sd-welcome';
   el.setAttribute('role', 'dialog');
@@ -94,12 +97,13 @@ export function showWelcome(ctx: AppContext): void {
     const t = e.target as HTMLElement;
     if (t.closest('[data-act=close]')) { close(); return; }
     // The explainer (docs/DATA_FLOW.md) opens beside the card, which stays up
-    if (t.closest('[data-act=dataflow]')) { void ctx.wm.openApp('dataflow'); return; }
+    if (t.closest('[data-act=dataflow]')) { if (phone) close(); void ctx.wm.openApp('dataflow'); return; }
     const id = t.closest<HTMLElement>('[data-demo]')?.dataset.demo;
     const demo = DEMOS.find(d => d.id === id);
     if (!demo) return;
     // Trying something counts as having seen this; it stays up until closed
     try { localStorage.setItem(WELCOME_KEY, String(Date.now())); } catch {}
+    if (phone) close();
     if (demo.run) demo.run(ctx);
     else if (demo.command) {
       typeIntoTerminal(ctx, demo.command, demo.title);

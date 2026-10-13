@@ -1,0 +1,249 @@
+/* The phone layout (phone.ts, docs/DESKTOP.md "Phone layout"). Everything is
+   under .sd-phone, which the desktop shell sets on its root while the rule
+   (src/phone-rule.ts) says phone: nothing here touches the windowed desktop. */
+
+/* ── No dock, no menu bar, no window frames ── */
+.sd-phone .sd-menubar, .sd-phone .sd-dock-wrap, .sd-phone .sd-wordmark, .sd-phone .sd-titlebar,
+.sd-phone .sd-resize, .sd-phone .sd-snap-preview, .sd-phone .sd-tabs { display: none !important; }
+.sd-phone .sd-win, .sd-phone .sd-win.sd-focused { border-radius: 0; box-shadow: none; transition: none; }
+.sd-phone .sd-win .sd-body { border-radius: 0; }
+/* One app paints: the one in front (the switcher shows them all) */
+.sd-phone .sd-win:not(.sd-focused):not(.sd-override) { visibility: hidden; }
+.sd-phone.sd-at-home .sd-layer { visibility: hidden; }
+/* The Browser's toolbar lives in its title bar: it stays, as the app's own bar */
+.sd-phone .sd-br-win > .sd-titlebar { display: flex !important; border-radius: 0; padding: 0 6px; }
+.sd-phone .sd-br-win > .sd-titlebar > .sd-lights, .sd-phone .sd-br-win > .sd-titlebar > .sd-title { display: none; }
+.sd-phone .sd-br-win > .sd-titlebar > .sd-titlebar-extra { margin-left: 0; flex: 1; min-width: 0; }
+
+/* Behind the app: its own color, to the screen's edges and under the pill */
+.sd-phone-back { position: absolute; inset: 0; z-index: 1; background: var(--sd-window); display: none; }
+.sd-phone:not(.sd-at-home):not(.sd-switching) .sd-phone-back { display: block; }
+.sd-phone:has(.sd-win.sd-focused .sd-term) .sd-phone-back { background: var(--sd-term-bg); }
+
+/* ── The terminal: to the edges, one-finger scrolling, no scroll bar taking columns ── */
+.sd-phone .sd-term-pane { inset: 4px 2px 0 6px; }
+.sd-phone .sd-term .xterm .xterm-viewport::-webkit-scrollbar { width: 2px; }
+.sd-phone .sd-term .xterm .xterm-viewport { overscroll-behavior: contain; }
+/* (a browser whose scroll bars take no room: xterm's fit sets 15 px aside for one all the same) */
+.sd-phone.sd-overlay-scroll .sd-term-pane { right: -13px; }
+/* (above what is behind the app; windows keep their own order inside) */
+.sd-phone .sd-layer { z-index: 2; }
+/* The on-screen keyboard is up: the terminal keeps its size and moves, so the cursor's line shows */
+.sd-phone.sd-kb-open:not(.sd-switching) .sd-layer { transform: translateY(calc(-1 * var(--sd-kb-shift, 0px))); }
+/* Any other app ends at the keyboard */
+.sd-phone.sd-kb-open .sd-win.sd-focused:not(:has(.sd-term, .sd-surface)) { max-height: var(--sd-kb-visible, none); }
+
+/* ── The key row: one row on top of the keyboard ── */
+.sd-phone .sd-keybar { flex-direction: row; gap: 0; padding: 4px 4px; bottom: auto; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; z-index: 100001; }
+.sd-phone .sd-keybar::-webkit-scrollbar { display: none; }
+.sd-phone .sd-keyrow { display: flex; gap: 5px; grid-template-columns: none; }
+.sd-phone .sd-key { flex: none; min-width: 44px; height: 44px; padding: 0 6px; }
+
+/* ── Home ── */
+.sd-home {
+  position: absolute; inset: 0; z-index: 90000; display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) var(--sd-pill-h, 22px) env(safe-area-inset-left);
+  visibility: hidden; pointer-events: none; color: var(--sd-text);
+}
+.sd-phone.sd-at-home:not(.sd-switching) .sd-home { visibility: visible; pointer-events: auto; }
+.sd-home-top { flex: none; display: flex; flex-direction: column; }
+.sd-home-status { display: flex; align-items: center; min-height: 44px; padding: 0 4px 0 18px; font-size: 12px; color: var(--sd-text-2); }
+.sd-home-net { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-home-grow { flex: 1; }
+.sd-home-tools { display: flex; flex: none; }
+.sd-home-tools .sd-mb-item { width: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 12px; }
+.sd-home-tools .sd-mb-status svg { width: 18px; height: 18px; }
+.sd-home-tools .sd-net-dot { right: 10px; bottom: 10px; box-shadow: none; }
+.sd-home-search {
+  display: flex; align-items: center; gap: 9px; height: 44px; margin: 0 16px 8px; padding: 0 14px;
+  border-radius: 13px; border: 1px solid var(--sd-bar-border); background: var(--sd-material); color: var(--sd-text-2);
+  font: 400 15px/1 var(--sd-font); text-align: left;
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+}
+.sd-home-search svg { width: 17px; height: 17px; flex: none; }
+.sd-home-pager {
+  flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; outline: none;
+  scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.sd-home-pager::-webkit-scrollbar { display: none; }
+.sd-home-page {
+  flex: 0 0 100%; min-width: 0; scroll-snap-align: start; scroll-snap-stop: always; display: grid; align-content: start;
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); grid-auto-rows: calc(100% / var(--rows, 6)); padding: 0 10px;
+}
+.sd-home-app {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; padding: 8px 2px 0;
+  border: 0; background: none; color: inherit; font: 500 11.5px/1.25 var(--sd-font); cursor: default;
+  touch-action: pan-x; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
+}
+.sd-folder .sd-home-app { touch-action: pan-y; padding-bottom: 8px; }
+.sd-home-app:active .sd-home-icon { filter: brightness(.8); }
+.sd-home-app:focus-visible { outline: 2px solid var(--sd-accent); outline-offset: -2px; border-radius: 14px; }
+.sd-home-icon { position: relative; display: block; width: 60px; height: 60px; flex: none; }
+.sd-home-icon > .sd-tile, .sd-home-icon > .sd-ic { width: 100%; height: 100%; margin: 0; }
+.sd-home-icon > img, .sd-home-icon > svg { width: 100%; height: 100%; display: block; }
+.sd-home-icon > .sd-stack-grid { width: 100%; height: 100%; margin: 0; padding: 6px; gap: 4px; }
+.sd-home-name {
+  max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  text-align: center; overflow-wrap: anywhere;
+}
+.sd-phone[data-theme='dark'] .sd-home-name { text-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
+/* Open: a dot before its name. Not installed yet: the dock's badge. Starting: a ring that pulses. */
+.sd-home-app.sd-running .sd-home-name::before { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 4px 2px 0; border-radius: 50%; background: currentColor; opacity: .7; }
+.sd-home-app.sd-not-installed .sd-home-icon > * { opacity: .6; }
+.sd-home-app.sd-not-installed .sd-home-icon::after {
+  content: '↓'; position: absolute; right: -3px; top: -3px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--sd-accent); color: #fff; font: 700 11px/18px var(--sd-font); text-align: center;
+}
+.sd-home-app.sd-starting .sd-home-icon::before {
+  content: ''; position: absolute; inset: -4px; border-radius: 28%; border: 2px solid var(--sd-accent);
+  animation: sd-home-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sd-home-pulse { 50% { opacity: .25; } }
+.sd-home-dots { flex: none; display: flex; justify-content: center; height: 30px; }
+.sd-home-dot { position: relative; width: 44px; height: 44px; margin: -7px -14px; padding: 0; border: 0; background: none; }
+.sd-home-dot::after { content: ''; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px; border-radius: 50%; background: var(--sd-text); opacity: .3; }
+.sd-home-dot[aria-current='true']::after { opacity: .9; }
+.sd-home-dots[data-pages='1'] { visibility: hidden; }
+/* A phone on its side: the status line beside the search field */
+@media (max-height: 500px) {
+  .sd-home-top { flex-direction: row-reverse; align-items: center; }
+  .sd-home-status { flex: none; max-width: 55%; padding-left: 4px; }
+  .sd-home-search { flex: 1; margin: 0 4px 0 16px; }
+  .sd-home-app { padding-top: 4px; gap: 3px; }
+  .sd-home-icon { width: 50px; height: 50px; }
+  .sd-home-dots { height: 20px; }
+  .sd-home-dot { margin: -12px -14px; }
+}
+
+/* A folder: its apps over a dimmed Home */
+.sd-folder-veil {
+  position: absolute; inset: 0; z-index: 90010; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(var(--sd-pill-h, 22px) + 16px); color: var(--sd-text);
+  background: color-mix(in srgb, var(--sd-window) 45%, transparent);
+  -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); animation: sd-fade-in .16s ease-out;
+}
+.sd-folder-veil h2 { flex: none; font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 12px; }
+.sd-folder {
+  width: min(380px, 100%); max-height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 8px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-radius: 26px;
+  background: var(--sd-material-strong); border: 1px solid var(--sd-window-border); box-shadow: var(--sd-shadow-blur);
+}
+@media (max-height: 500px) { .sd-folder { width: min(640px, 100%); grid-template-columns: repeat(6, minmax(0, 1fr)); } .sd-folder-veil h2 { font-size: 17px; margin-bottom: 6px; } }
+@keyframes sd-fade-in { from { opacity: 0; } }
+
+/* ── The pill ── */
+.sd-pill {
+  position: absolute; left: 50%; bottom: 0; z-index: 100006; width: 180px; height: 44px; margin-left: -90px; padding: 0;
+  border: 0; background: none; touch-action: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; cursor: default;
+}
+.sd-pill > i {
+  position: absolute; left: 50%; bottom: calc(var(--sd-pill-h, 22px) - 13px); width: 134px; height: 5px; margin-left: -67px;
+  border-radius: 3px; background: var(--sd-text); opacity: .55; transition: opacity .15s, transform .15s;
+}
+.sd-pill:active > i { opacity: .9; transform: scaleX(1.06); }
+.sd-pill:focus-visible { outline: none; }
+.sd-pill:focus-visible > i { box-shadow: 0 0 0 2px var(--sd-accent); }
+
+/* ── The switcher: the open apps as cards in a row ── */
+.sd-phone.sd-switching .sd-layer {
+  z-index: 95000; visibility: visible; pointer-events: auto; display: flex; align-items: flex-start;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior: contain;
+  padding: var(--sw-top, 60px) 0 0 var(--sw-pad, 40px);
+  background: color-mix(in srgb, var(--sd-window) 55%, transparent);
+  -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px);
+}
+.sd-phone.sd-switching .sd-layer::-webkit-scrollbar { display: none; }
+.sd-phone.sd-switching .sd-win:not([data-phone-card]) { display: none !important; }
+.sd-phone.sd-switching .sd-win[data-phone-card] {
+  position: relative !important; left: auto !important; top: auto !important; display: flex !important; flex: none; visibility: visible;
+  transform: translateY(var(--sw-dy, 0px)) scale(var(--sw-s, .64)); transform-origin: 0 0;
+  margin: 0 calc(var(--sw-w) * (var(--sw-s) - 1) + 16px) calc(var(--sw-h) * (var(--sw-s) - 1)) 0;
+  border-radius: calc(14px / var(--sw-s)); box-shadow: 0 calc(10px / var(--sw-s)) calc(30px / var(--sw-s)) rgba(0, 0, 0, .35);
+  touch-action: pan-x; opacity: var(--sw-o, 1); cursor: default;
+}
+.sd-phone.sd-switching .sd-win[data-phone-card] > * { pointer-events: none; }
+.sd-phone.sd-switching .sd-win[data-phone-card] > .sd-body { border-radius: calc(14px / var(--sw-s)); }
+/* Its name above it, and a mark when it is busy */
+.sd-phone.sd-switching .sd-win[data-phone-card]::before {
+  content: attr(data-phone-card); position: absolute; left: 0; right: 0; bottom: 100%; padding: 0 0 calc(8px / var(--sw-s)) calc(4px / var(--sw-s));
+  font: 600 calc(14px / var(--sw-s))/1.3 var(--sd-font); color: var(--sd-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sd-phone.sd-switching .sd-win[data-phone-busy]::after {
+  content: ''; position: absolute; right: calc(2px / var(--sw-s)); bottom: calc(100% + 11px / var(--sw-s)); width: calc(12px / var(--sw-s)); height: calc(12px / var(--sw-s));
+  box-sizing: border-box; border-radius: 50%; border: calc(2px / var(--sw-s)) solid color-mix(in srgb, var(--sd-accent) 30%, transparent); border-top-color: var(--sd-accent);
+  animation: sd-spin .9s linear infinite;
+}
+.sd-phone.sd-switching .sd-win[data-phone-busy]::before { right: calc(22px / var(--sw-s)); }
+.sd-phone.sd-switching .sd-win.sd-switch-snap { transition: transform .18s ease-out, opacity .18s ease-out; }
+.sd-phone.sd-switching .sd-win.sd-closing, .sd-phone.sd-switching .sd-win.sd-switch-out { --sw-dy: -120vh; --sw-o: 0; transition: transform .2s ease-in, opacity .2s ease-in; }
+.sd-switch-end { flex: 0 0 var(--sw-pad, 40px); align-self: stretch; }
+.sd-switch-empty { position: absolute; inset: 0; z-index: 95001; display: grid; place-items: center; font-size: 15px; color: var(--sd-text-2); pointer-events: none; }
+
+/* ── Sheets from the bottom ── */
+.sd-psheet-veil { position: absolute; inset: 0; z-index: 100004; display: flex; align-items: flex-end; justify-content: center; background: rgba(0, 0, 0, .32); animation: sd-fade-in .16s ease-out; }
+.sd-psheet {
+  width: min(520px, 100%); max-height: min(86%, 640px); overflow-y: auto; overscroll-behavior: contain;
+  padding: 8px 12px calc(var(--sd-pill-h, 22px) + env(safe-area-inset-bottom) + 6px); border-radius: 18px 18px 0 0; color: var(--sd-text);
+  background: var(--sd-material-strong); border: 1px solid var(--sd-window-border); border-bottom: 0;
+  -webkit-backdrop-filter: saturate(180%) blur(30px); backdrop-filter: saturate(180%) blur(30px);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, .3); animation: sd-psheet-in .22s var(--sd-ease);
+}
+@keyframes sd-psheet-in { from { transform: translateY(40%); opacity: 0; } }
+.sd-psheet-grab { width: 36px; height: 5px; margin: 0 auto 8px; border-radius: 3px; background: var(--sd-text-3); opacity: .5; }
+.sd-psheet h2 { font-size: 17px; font-weight: 650; padding: 2px 8px 6px; }
+.sd-psheet h3 { font-size: 12px; font-weight: 600; color: var(--sd-text-2); padding: 12px 8px 4px; }
+.sd-psheet p { font-size: 14px; line-height: 1.45; color: var(--sd-text-2); padding: 2px 8px 6px; user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
+.sd-psheet-list { border-radius: 12px; background: var(--sd-field); overflow: hidden; }
+.sd-psheet-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 6px 14px; border: 0; background: none;
+  color: inherit; font: 400 15px/1.3 var(--sd-font); text-align: left; -webkit-tap-highlight-color: transparent;
+}
+.sd-psheet-item + .sd-psheet-item { border-top: 1px solid var(--sd-sep); }
+.sd-psheet-item:active:not(:disabled) { background: var(--sd-active); }
+.sd-psheet-item:focus-visible { outline: 2px solid var(--sd-accent); outline-offset: -2px; }
+.sd-psheet-item:disabled { opacity: .4; }
+.sd-psheet-item.sd-danger { color: #e5484d; }
+.sd-psheet-item .sd-grow { flex: 1; min-width: 0; }
+.sd-psheet-item .sd-check { flex: none; color: var(--sd-accent); font-weight: 700; }
+
+/* A line said once, at the top (the terminal's number, a Linux app's note) */
+.sd-phone-note {
+  position: absolute; left: 50%; top: calc(env(safe-area-inset-top) + 10px); z-index: 100005; transform: translateX(-50%);
+  max-width: calc(100% - 24px); padding: 8px 14px; border-radius: 14px; font-size: 13px; line-height: 1.35; text-align: center; pointer-events: none;
+  background: var(--sd-material-strong); color: var(--sd-text); border: 1px solid var(--sd-window-border); box-shadow: var(--sd-shadow-blur);
+  animation: sd-fade-in .16s ease-out;
+}
+
+/* ── The desktop's own sheets, cards and lists, where a thumb reaches them ── */
+.sd-phone .sd-sheet {
+  top: auto; bottom: 0; left: 0; right: 0; width: auto; transform: none; border-radius: 18px 18px 0 0; border-bottom: 0;
+  padding: 18px 18px calc(var(--sd-pill-h, 22px) + env(safe-area-inset-bottom) + 12px); max-height: 88%; overflow-y: auto; animation: sd-psheet-in .22s var(--sd-ease);
+}
+.sd-phone .sd-sheet.sd-leaving { animation: sd-fade-out .16s ease-in forwards; }
+@keyframes sd-fade-out { to { opacity: 0; } }
+.sd-phone .sd-sheet .sd-btn, .sd-phone .sd-welcome .sd-btn, .sd-phone .sd-popover .sd-btn { min-height: 44px; padding: 0 16px; }
+.sd-phone .sd-sheet .sd-input { height: 44px; font-size: 16px; }
+.sd-phone .sd-sheet-actions { flex-wrap: wrap; justify-content: flex-end; }
+.sd-phone .sd-sheet .sd-btn { white-space: nowrap; }
+.sd-phone .sd-sheet .sd-link, .sd-phone .sd-popover .sd-link { display: inline-flex; align-items: center; min-height: 44px; }
+.sd-phone .sd-toast { left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 10px); max-width: none; }
+.sd-phone .sd-menu { min-width: 240px; max-width: calc(100vw - 12px); }
+.sd-phone .sd-menu-item { height: 44px; font-size: 15px; }
+.sd-phone .sd-popover { width: min(320px, calc(100vw - 16px)); }
+.sd-phone .sd-spot { top: calc(env(safe-area-inset-top) + 8px); width: calc(100vw - 16px); border-radius: 14px; }
+.sd-phone .sd-spot-field { padding: 10px 14px; }
+.sd-phone .sd-spot-field input { font-size: 17px; height: 28px; }
+.sd-phone .sd-spot-list { max-height: min(420px, calc(var(--sd-kb-visible, 70vh) - 110px)); }
+.sd-phone .sd-spot-item { height: 46px; }
+.sd-phone .sd-spot-foot { display: none; }
+/* The Welcome: a sheet over Home that a tap on a demo closes, never a box over an app */
+.sd-phone .sd-welcome {
+  left: 0; right: 0; bottom: 0; width: auto; max-height: 86%; cursor: auto; border-radius: 18px 18px 0 0; border-bottom: 0;
+  padding: 18px 14px calc(var(--sd-pill-h, 22px) + env(safe-area-inset-bottom) + 10px); animation: sd-psheet-in .22s var(--sd-ease);
+}
+.sd-phone .sd-welcome-x { width: 44px; height: 44px; top: 4px; right: 4px; }
+.sd-phone .sd-welcome-demo { min-height: 52px; }
+.sd-phone .sd-welcome-demos { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+@media (min-width: 560px) { .sd-phone .sd-welcome-demos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sd-phone .sd-welcome-foot > span { display: none; }
+.sd-phone .sd-welcome-foot { justify-content: flex-end; }

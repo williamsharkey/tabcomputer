@@ -8,6 +8,7 @@
 
 import { restoreEnabled, setRestoreEnabled } from '../session';
 import { keybarMode, setKeybarMode, type KeybarMode } from '../mobile';
+import { savedLayout, setLayoutChoice, type LayoutChoice } from '../../phone-rule';
 import type { AppContext } from '../index';
 import type { DesktopWindow } from '../wm';
 import { GLYPHS, ICONS } from '../icons';
@@ -115,10 +116,14 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
           <button data-theme="light" role="radio">Light</button><button data-theme="dark" role="radio">Dark</button><button data-theme="system" role="radio">System</button>
         </div></div></div>
       <h3>Interface</h3>
-      ${touch ? `<div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Extra keys<div class="sd-small sd-muted">Esc, Tab, Ctrl, arrows… above the dock. Auto hides them while the keyboard is open.</div></span>
+      ${touch ? `<div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Extra keys<div class="sd-small sd-muted">${wm.phone ? 'Esc, Tab, Ctrl, arrows… in one row on top of the keyboard, while it is up.' : 'Esc, Tab, Ctrl, arrows… above the dock. Auto hides them while the keyboard is open.'}</div></span>
         <div class="sd-seg" role="radiogroup" aria-label="Extra keys">
           <button data-keybar="off" role="radio">Off</button><button data-keybar="auto" role="radio">Auto</button><button data-keybar="pinned" role="radio">Always</button>
         </div></div></div>` : ''}
+      <div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Layout<div class="sd-small sd-muted">Automatic gives a phone a home screen of apps with one app on the whole screen, and a larger screen the desktop.</div></span>
+        <div class="sd-seg" role="radiogroup" aria-label="Layout">
+          <button data-layout="auto" role="radio">Automatic</button><button data-layout="phone" role="radio">Phone</button><button data-layout="desktop" role="radio">Desktop</button>
+        </div></div></div>
       <div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Restore session on reload<div class="sd-small sd-muted">Terminals come back with their folder, variables and scrollback, and the windows that were open. A command that was running is offered again, not run (servers and Claude Code resume).</div></span>
         <div class="sd-seg" role="radiogroup" aria-label="Restore session on reload">
           <button data-restore="1" role="radio">On</button><button data-restore="0" role="radio">Off</button>
@@ -132,6 +137,13 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       b.classList.toggle('sd-active', on);
       b.setAttribute('aria-checked', String(on));
       b.addEventListener('click', () => { wm.setTheme(b.dataset.theme as 'light' | 'dark' | 'system'); appearance(); });
+    }
+    const lay = savedLayout();
+    for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-layout]')) {
+      const on = b.dataset.layout === lay;
+      b.classList.toggle('sd-active', on);
+      b.setAttribute('aria-checked', String(on));
+      b.addEventListener('click', () => { setLayoutChoice(b.dataset.layout as LayoutChoice); appearance(); });
     }
     const kb = keybarMode();
     for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-keybar]')) {

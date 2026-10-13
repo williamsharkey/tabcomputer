@@ -97,7 +97,7 @@ import { closeSplitView } from './split-view';
 import { initFileAssociations } from './file-associations';
 import { setActiveTerminal } from './active-terminal';
 import { initPanes } from './panes';
-import { uiMode } from './ui-mode';
+import { uiMode, PHONE_APP_KEY } from './ui-mode';
 import { activeProfile } from './profile';
 import type { Desktop } from './desktop/index';
 import { installDomFs } from './dom-fs';
@@ -990,6 +990,19 @@ async function main() {
       // Pathname doesn't match slug — show terminal (stale config)
       document.body.classList.remove('become-active');
     }
+  }
+
+  // A tab an earlier build's app link turned into the app, on a phone: the phone layout opens the app (ui-mode.ts)
+  let phoneApp: string | null = null;
+  try { phoneApp = sessionStorage.getItem(PHONE_APP_KEY); sessionStorage.removeItem(PHONE_APP_KEY); } catch { /* no storage */ }
+  if (phoneApp && desktop && !safe) {
+    if (location.pathname !== '/') history.replaceState({}, '', '/');
+    void (async () => {
+      // (once the desktop is on screen: it arrives at Home, and the app then opens over it)
+      for (let i = 0; document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
+      await appsCore();
+      await (await import('./apps/window')).openInstalled(phoneApp!);
+    })().catch((e) => console.warn('[apps]', e));
   }
 
   // A run link (?run=, src/run-url.ts, docs/RUN_LINKS.md): its script in a new Terminal

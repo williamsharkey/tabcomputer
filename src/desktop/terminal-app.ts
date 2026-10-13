@@ -240,6 +240,19 @@ export class TerminalView {
     if (this.active === tab) this.win.setTitle(title);
   }
 
+  /**
+   * The next (1) or previous (-1) tab, wrapping: the phone layout has no tab
+   * bar, a sideways swipe with two fingers moves between terminals. Returns
+   * the tab now shown, counted from 1, and how many there are.
+   */
+  cycleTab(delta: number): { index: number; count: number } {
+    const n = this.tabs.length;
+    if (!n) return { index: 0, count: 0 };
+    const i = ((this.active ? this.tabs.indexOf(this.active) : 0) + delta + n) % n;
+    this.select(this.tabs[i]);
+    return { index: i + 1, count: n };
+  }
+
   terminals(): ShiroTerminal[] {
     return this.tabs.map(t => t.term).filter((t): t is ShiroTerminal => !!t);
   }

@@ -305,7 +305,7 @@ async function codeFlow(s, app, id, template, name, opts = {}) {
   await page.keyboard.press('ControlOrMeta+S'); c.keys++;
   const h1 = await until(page, async () => { const f = await inner(page, id); const t = await f?.evaluate(() => document.querySelector('main h1')?.textContent); return t === name ? t : null; });
   check(`${D} code ${app}: saving reloads the app in the pane`, h1 === name, h1);
-  const bar = await until(page, () => f.$eval('#lab-name', (e) => (e.textContent === name ? e.textContent : null)), 5000);
+  const bar = await until(page, () => f.$eval('#lab-name', (e, n) => (e.textContent === n ? e.textContent : null), name), 5000);
   check(`${D} code ${app}: the bar names the app`, bar === name, bar);
   check(`${D} code ${app}: no problem is underlined`, await f.$('.cm-app-problem') === null);
   await f.click('#lab-app-share'); c.taps++;

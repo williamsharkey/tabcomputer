@@ -4,7 +4,7 @@
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/app-toolkit.mjs [URL] [--shots DIR] [--only NAME]
 //
-//   loop      app new → app dev (a window on its own origin, the page reloads on save) →
+//   loop      app new --page → app dev (a window on its own origin, the page reloads on save) →
 //             app install → the dock entry → open → drop a file → the result → download
 //   boundary  the app's page cannot read the tab's localStorage or script, cannot fetch the
 //             tab's origin, and tab.js refuses what the manifest does not list
@@ -147,7 +147,7 @@ if (wants('loop') || wants('boundary')) {
   await page.evaluate(() => { localStorage.setItem('shiro_github_token', 'CANARY-TOKEN'); });
   await put(page, { '/home/user/.claude/.credentials.json': '{"secret":"CANARY-FILE"}' });
 
-  const made = await side(page, 'cd /home/user && app new shrink --template file-tool --name "Shrink"');
+  const made = await side(page, 'cd /home/user && app new shrink --page --name "Shrink"');
   check('app new: a folder from the template', made.code === 0 && /Created shrink in ~\/shrink/.test(made.o), made.o.trim().split('\n')[0]);
 
   // app dev: runs until its window closes; its output is the log
@@ -262,7 +262,7 @@ if (wants('backend')) {
   await page.goto(url);
   await booted(page);
   await makePinger(page);
-  await side(page, 'cd /home/user && app new shrink --template file-tool --name Shrink && app install shrink');
+  await side(page, 'cd /home/user && app new shrink --page --name Shrink && app install shrink');
   const inst = await side(page, 'app install /home/user/pinger');
   check('an app with a backend installs', inst.code === 0, inst.o.trim().split('\n')[0]);
   const t0 = Date.now();
@@ -426,7 +426,7 @@ if (wants('share')) {
     const el = document.querySelector(P);
     return el ? { title: el.querySelector('h3')?.textContent, text: el.textContent, focus: document.activeElement?.getAttribute('data-act'), installDisabled: el.querySelector('[data-act=install]').disabled, guest: !!el.querySelector('[data-act=guest]') } : null;
   }, P);
-  check('the link asks first in a profile that never saw the app', shown?.title === 'Install Shared Table?' && /From a link that carries the app's own files \(\d+ files, \d+ KB\)\. tabcomputer has not reviewed it/.test(shown.text) && shown.focus === 'cancel' && shown.installDisabled === true, shown?.title);
+  check('the link asks first in a profile that never saw the app', shown?.title === 'Install Shared Table?' && /From a link that carries the app's own files \(\d+ files?, \d+ KB\)\. tabcomputer has not reviewed it/.test(shown.text) && shown.focus === 'cancel' && shown.installDisabled === true, shown?.title);
   check('the address is cleaned, and the app\'s files went to no server', !/app=/.test(other.url()) && !new URL(other.url()).hash && !requests.some((u) => u.includes(link.split('#app=')[1].slice(0, 40))), other.url());
   if (shots) await other.screenshot({ path: join(shots, 'toolkit-share-prompt.png') });
   await other.waitForTimeout(900);
@@ -475,7 +475,7 @@ if (wants('phone')) {
   const page = await newTab({ width: 360, height: 740 });
   await page.goto(url);
   await booted(page);
-  await side(page, 'cd /home/user && app new shrink --template file-tool --name Shrink && app install shrink && app new sheet --template table && app install sheet && app new ask --template form && app install ask');
+  await side(page, 'cd /home/user && app new shrink --page --name Shrink && app install shrink && app new sheet --template table && app install sheet && app new ask --template form && app install ask');
   await side(page, 'app open shrink');
   let f = await ready(page, WIN('shrink'));
   const m = f ? await f.evaluate(() => ({ w: innerWidth, sw: document.documentElement.scrollWidth, btn: Math.min(...[...document.querySelectorAll('.btn')].filter((b) => b.offsetParent).map((b) => b.getBoundingClientRect().height)) })) : null;
@@ -495,8 +495,8 @@ if (wants('phone')) {
   await side(page, 'app open sheet');
   f = await inner(page, WIN('sheet'));
   await clickIn(page, WIN('sheet'), f, '#add');
-  check('the table template saves to its CSV file', await until(page, () => f.evaluate(() => window.__app.saves >= 1)) && /Grace Hopper/.test((await side(page, 'cat /home/user/.local/share/apps/sheet/table.csv')).o));
-  await side(page, "echo 'Ada,ada@example.com,from a terminal' >> /home/user/.local/share/apps/sheet/table.csv");
+  check('the table template saves to its CSV file', await until(page, () => f.evaluate(() => window.__app.saves >= 1)) && /^Name,Email,Joined,Member\n,,,\n$/.test((await side(page, 'cat /home/user/.local/share/apps/sheet/people.csv')).o));
+  await side(page, "echo 'Ada,ada@example.com,2024-01-02,yes' >> /home/user/.local/share/apps/sheet/people.csv");
   check('the table reloads when something else changes the file', await until(page, () => f.evaluate(() => window.__app.rows.some((r) => r[0] === 'Ada'))));
 
   await page.evaluate(() => {

@@ -47,13 +47,14 @@ legend { padding: 0; font-weight: 600; margin-bottom: 6px; }
 .drop p { font-size: 18px; }
 .drop .row { justify-content: center; }
 .bar { justify-content: space-between; margin: 18px 0 6px; }
-[role=status] { min-height: 24px; }
+[role=status] { min-height: 24px; margin: 10px 0 0; }
+.bar [role=status] { margin: 0; }
 ul { list-style: none; margin: 0; padding: 0; }
 li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
 li .name { flex: 1 1 180px; overflow-wrap: anywhere; }
 li .state { color: var(--dim); }
 li.done .state { color: var(--ok); }
-li.failed .state, li.skipped .state { color: var(--bad); }
+li.failed .state { color: var(--bad); }
 li .why { flex: 1 1 100%; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; }
 pre, .rendered, iframe.rendered { margin: 12px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
 pre { min-height: 80px; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.45 ui-monospace, monospace; }
@@ -74,7 +75,8 @@ thead th { border-top: 0; white-space: nowrap; }
 thead button { min-height: 36px; padding: 4px 8px; border-color: transparent; background: none; font-weight: 600; }
 td input[type=text], td input[type=number], td input[type=date], td select { min-width: 96px; border-color: transparent; background: none; }
 td input:hover, td select:hover, td input:focus, td select:focus { border-color: var(--line); background: var(--field); }
-td.num input { text-align: right; }
+td.num input { text-align: right; appearance: textfield; -moz-appearance: textfield; }
+td.num input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 td.act { width: 1%; }
 tfoot td { font-weight: 600; padding: 10px 14px 10px 4px; }
 tfoot td.num { text-align: right; }
@@ -84,7 +86,8 @@ tfoot td.num { text-align: right; }
   table, tbody, tfoot, tr, td { display: block; }
   thead { display: none; }
   tbody tr, tfoot tr { border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin: 0 0 10px; }
-  td { display: flex; align-items: center; gap: 10px; border: 0; padding: 2px 0; }
+  td { display: flex; align-items: center; gap: 10px; border: 0; padding: 2px 0; width: auto !important; }
+  td > input:not([type=checkbox]), td > select { flex: 1; min-width: 0; }
   td::before { content: attr(data-label); flex: 0 0 34%; font-size: 14px; color: var(--dim); overflow-wrap: anywhere; }
   td.act { width: auto; justify-content: flex-end; }
   td.act::before, tfoot td.blank { display: none; }
@@ -173,15 +176,15 @@ tfoot td.num { text-align: right; }
     const options = controls(m.options);
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const rows = el('ul', { 'aria-label': 'Files' });
-    const all = el('button', { type: 'button', class: 'main', text: 'Download all', disabled: true, onclick: () => tab.download(state.dirs.out, { zip: true, name: `${app.id}.zip` }) });
+    const all = el('button', { type: 'button', id: 'all', class: 'main', text: 'Download all', disabled: true, onclick: () => tab.download(state.dirs.out, { zip: true, name: `${app.id}.zip` }) });
     const work = el('section', { hidden: true }, el('div', { class: 'row bar' }, status, all), rows);
     const accept = m.accept.join(',');
     const pick = (directory) => tab.files.pick({ directory, accept: directory ? '' : accept, dir: nextDir() }).then(take);
     const drop = el('section', { class: 'drop', 'aria-label': 'Files to work on' },
       touch ? null : el('p', { text: folders ? 'Drop files or a folder here' : 'Drop files here' }),
       el('div', { class: 'row' },
-        el('button', { type: 'button', class: 'main', text: 'Choose files', onclick: () => pick(false) }),
-        folders ? el('button', { type: 'button', text: 'Choose a folder', onclick: () => pick(true) }) : null));
+        el('button', { type: 'button', id: 'pick', class: 'main', text: 'Choose files', onclick: () => pick(false) }),
+        folders ? el('button', { type: 'button', id: 'pickdir', text: 'Choose a folder', onclick: () => pick(true) }) : null));
     if (m.options.length) main.append(el('fieldset', {}, el('legend', { text: 'Options' }), ...options.els));
     main.append(drop, work, el('p', { class: 'note', text: 'Your files stay on this computer.' }));
 
@@ -225,8 +228,10 @@ tfoot td.num { text-align: right; }
         active++;
         set(row, 'working');
         tab.job({ files, values: options.values() }).then((res) => {
+          // (the program names the file by where the tab keeps it: the person knows it by its name)
+          const said = files.reduce((s, f) => s.split(f.path).join(f.rel), lastLine(res.stderr) || res.said);
           if (res.out) set(row, 'done', '', res);
-          else set(row, 'failed', lastLine(res.stderr) || res.said || (res.code ? `The program ended with status ${res.code}.` : 'The program made no result.'));
+          else set(row, 'failed', said || (res.code ? `The program ended with status ${res.code}.` : 'The program made no result.'));
         }, (e) => set(row, 'failed', e.message)).then(() => { active--; pump(); });
       }
     }
@@ -300,16 +305,16 @@ tfoot td.num { text-align: right; }
     Object.assign(state, { runs: 0, code: null, output: '', running: false });
     state.dirs = await tab.job.start();
     const fields = controls(m.fields);
-    const run = el('button', { type: 'submit', class: 'main', text: 'Run' });
-    const stop = el('button', { type: 'button', text: 'Stop', disabled: true, onclick: () => current && current.kill() });
+    const run = el('button', { type: 'submit', id: 'run', class: 'main', text: 'Run' });
+    const stop = el('button', { type: 'button', id: 'stop', text: 'Stop', disabled: true, onclick: () => current && current.kill() });
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
-    const save = el('button', { type: 'button', class: 'main', hidden: true });
+    const save = el('button', { type: 'button', id: 'save', class: 'main', hidden: true });
     const out = el('pre', { tabIndex: 0, 'aria-label': 'Output' });
     const shown = el('div', { 'aria-label': 'Result' });
     const errs = el('pre', { class: 'err', hidden: true, 'aria-label': 'Messages' });
     const plain = m.output === 'text' || m.output === 'file';
     const form = el('form', { onsubmit: (e) => { e.preventDefault(); start(); } }, ...fields.els, el('div', { class: 'row' }, run, stop, save));
-    main.append(form, status, plain ? out : shown, plain ? null : errs);
+    main.append(form, status, ...(plain ? [out] : [shown, errs]));
     if (m.fields.some((f) => f.type === 'file')) main.append(el('p', { class: 'note', text: 'Your files stay on this computer.' }));
 
     let current = null, token = 0;
@@ -454,8 +459,8 @@ tfoot td.num { text-align: right; }
       el('div', { class: 'row tools' },
         el('div', { class: 'grow' }, el('label', { for: filterId, text: 'Filter the rows' }), filter),
         el('div', { class: 'sortby' }, el('label', { for: sortId, text: 'Sort by' }), sortBy),
-        el('button', { type: 'button', class: 'main', text: 'Add a row', onclick: add }),
-        el('button', { type: 'button', text: 'Download CSV', onclick: async () => tab.download(await store.exported(), { name: m.table.replace(/\.[a-z]+$/, '.csv') }) })),
+        el('button', { type: 'button', id: 'add', class: 'main', text: 'Add a row', onclick: add }),
+        el('button', { type: 'button', id: 'export', text: 'Download CSV', onclick: async () => tab.download(await store.exported(), { name: m.table.replace(/\.[a-z]+$/, '.csv') }) })),
       el('div', { class: 'scroll' }, table), status,
       el('p', { class: 'note', text: `The table is kept on this computer, in ${file.replace(app.home, '~')}.` }));
 
@@ -507,7 +512,8 @@ tfoot td.num { text-align: right; }
         box = el('input', { type: col.type === 'text' ? 'text' : col.type, value: now, 'aria-label': label, onchange: () => set(box.value), ...(col.type === 'number' ? { step: 'any' } : {}) });
         box.addEventListener('keydown', (e) => { if (e.key === 'Enter') box.blur(); });
       }
-      return el('td', { class: col.type === 'number' ? 'num' : '', 'data-label': col.name }, box);
+      // (text gets the room: the other kinds are as wide as what they hold)
+      return el('td', { class: col.type === 'number' ? 'num' : '', 'data-label': col.name, style: col.type === 'text' ? `width: ${Math.round(70 / state.cols.filter((x) => x.type === 'text').length)}%` : '' }, box);
     }
     function totals() {
       const ix = view();
@@ -522,7 +528,7 @@ tfoot td.num { text-align: right; }
     function draw() {
       const ix = view();
       table.tHead.replaceChildren(el('tr', {}, ...state.cols.map((c, i) => el('th', { scope: 'col', 'aria-sort': state.sort === i ? (state.down ? 'descending' : 'ascending') : 'none' },
-        el('button', { type: 'button', text: c.name + (state.sort === i ? (state.down ? ' (Z to A)' : ' (A to Z)') : ''), title: `Sort by ${c.name}`, onclick: () => { state.down = state.sort === i && !state.down; state.sort = i; draw(); } }))),
+        el('button', { type: 'button', text: c.name + (state.sort === i ? (state.down ? ' \u2193' : ' \u2191') : ''), title: `Sort by ${c.name}`, onclick: () => { state.down = state.sort === i && !state.down; state.sort = i; draw(); } }))),
       el('th', {}, el('span', { class: 'dim', text: `${ix.length} of ${state.rows.length}`, hidden: ix.length === state.rows.length }))));
       sortBy.replaceChildren(el('option', { value: '-1', text: 'Sort by: as entered' }), ...state.cols.map((c, i) => el('option', { value: String(i), text: `Sort by: ${c.name}`, selected: state.sort === i })));
       table.tBodies[0].replaceChildren(...ix.map((r, n) => el('tr', {}, ...state.cols.map((_, c) => cell(r, c, n + 1)),

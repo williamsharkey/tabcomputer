@@ -21,7 +21,7 @@
  */
 import { MANIFEST_FILE, MANIFEST_MAX, ManifestError, parseManifest, APP_ID, RESERVED_IDS, type AppManifest, type ManifestHint } from './manifest';
 import { AppError, FETCHED_BYTES_MAX, FETCHED_FILES_MAX, pageBeside } from './registry';
-import { LINK_APP, unpackApp } from './share';
+import { LINK_APP, unpackLink } from './share';
 import { RunLinkError, GH_OWNER, GH_REPO, GH_SEGMENT, PAGE_PARAMS, fetchSiteFile, fetchRaw, githubMissing, githubTokenFetch, sha256Hex, plain, type Fetch } from '../run-url';
 
 export type AppTarget =
@@ -308,10 +308,11 @@ export function archiveApp(files: Map<string, Uint8Array>, url: string): Fetched
  */
 export async function linkApp(payload: string): Promise<FetchedApp> {
   let files: Map<string, Uint8Array>;
-  try { files = await unpackApp(payload); } catch (e) {
+  let hint: string;
+  try { ({ files, id: hint } = await unpackLink(payload)); } catch (e) {
     throw new AppLinkError(e instanceof AppError ? e.message : 'the link does not hold an app');
   }
-  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!, { page: pageBeside((rel) => files.has(rel)) });
+  const { manifest, text } = manifestFrom(files.get(MANIFEST_FILE)!, { id: APP_ID.test(hint) ? hint : undefined, page: pageBeside((rel) => files.has(rel)) });
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
   const id = (await sha256Hex(new TextEncoder().encode(payload))).slice(0, 16);

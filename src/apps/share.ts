@@ -68,8 +68,12 @@ async function pipe(bytes: Uint8Array, stream: { readable: ReadableStream<Uint8A
   return out;
 }
 
-/** An app's files as the text a link carries */
-export async function packApp(files: Map<string, Uint8Array>): Promise<string> {
+/**
+ * An app's files as the text a link carries. `id`: the app's id where its
+ * app.json leaves it to the folder's name, so the copy made from the link is
+ * the same app under the same id.
+ */
+export async function packApp(files: Map<string, Uint8Array>, id?: string): Promise<string> {
   const t: Record<string, string> = {};
   const b: Record<string, string> = {};
   const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -78,14 +82,19 @@ export async function packApp(files: Map<string, Uint8Array>): Promise<string> {
     // Text goes in as text (it compresses better); anything else as base64
     try { t[rel] = utf8.decode(bytes); } catch { b[rel] = b64(bytes); }
   }
-  const json = new TextEncoder().encode(JSON.stringify({ v: 1, t, b }));
+  const json = new TextEncoder().encode(JSON.stringify({ v: 1, ...(id ? { id } : {}), t, b }));
   return toUrl(b64(await pipe(json, new CompressionStream('gzip') as never, 64 << 20)));
 }
 
 /** The files a link carries. Throws AppError for anything that is not a packed app. */
 export async function unpackApp(payload: string): Promise<Map<string, Uint8Array>> {
+  return (await unpackLink(payload)).files;
+}
+
+/** The files a link carries, and the id it names for an app.json that has none ('' without one) */
+export async function unpackLink(payload: string): Promise<{ files: Map<string, Uint8Array>; id: string }> {
   if (!payload || payload.length > SHARE_PAYLOAD_MAX * 2 || !PAYLOAD.test(payload)) throw new AppError('the link does not hold an app (it may have been cut short when it was copied)');
-  let doc: { v?: unknown; t?: unknown; b?: unknown };
+  let doc: { v?: unknown; id?: unknown; t?: unknown; b?: unknown };
   try {
     const raw = await pipe(unb64(fromUrl(payload)), new DecompressionStream('gzip') as never, SHARE_UNPACKED_MAX);
     doc = JSON.parse(new TextDecoder().decode(raw));
@@ -109,7 +118,8 @@ export async function unpackApp(payload: string): Promise<Map<string, Uint8Array
   take(doc.b, unb64);
   if (!out.has(MANIFEST_FILE)) throw new AppError(`the app in the link has no ${MANIFEST_FILE}`);
   if (out.size > FETCHED_FILES_MAX) throw new AppError('the app in the link has too many files');
-  return out;
+  // (only a hint: the manifest's own id wins, and what is not an id is ignored where it is used)
+  return { files: out, id: typeof doc.id === 'string' ? doc.id.slice(0, 64) : '' };
 }
 
 /** Every file of an installed app's folder (links and the repository's own metadata left out) */
@@ -163,7 +173,9 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
   if (!files.has(MANIFEST_FILE)) throw new AppError(`${app.name} has no ${MANIFEST_FILE} in ${app.dir}`);
   let bytes = 0;
   for (const b of files.values()) bytes += b.length;
-  const payload = await packApp(files);
+  let named = false;
+  try { named = typeof JSON.parse(new TextDecoder().decode(files.get(MANIFEST_FILE)!)).id === 'string'; } catch { /* not valid: the person who opens the link is told */ }
+  const payload = await packApp(files, named ? undefined : app.id);
   if (payload.length > SHARE_PAYLOAD_MAX) {
     throw new AppError(`${app.name} is too large for a link: its ${files.size} files pack to ${Math.ceil(payload.length / 1000)} KB and a link holds ${SHARE_PAYLOAD_MAX / 1000} KB. `
       + `Put its folder in a public GitHub repository and share ${origin}/?app=gh:OWNER/REPO instead`);

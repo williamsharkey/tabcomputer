@@ -320,7 +320,7 @@ async function dev(
   const signal: AbortSignal | undefined = ctx.shell?.abortController?.signal ?? ctx.shell?.inheritedAbort?.signal;
 
   out(`app dev: ${manifest.name} (${manifest.id}) from ${tilde(dir)}`);
-  out(`  page     ${manifest.entry ? `${manifest.entry === '.' ? 'this folder' : manifest.entry}` : 'served by the backend'}`);
+  out(`  page     ${manifest.kind !== 'page' ? 'tabcomputer\'s, from app.json' : manifest.entry ? `${manifest.entry === '.' ? 'this folder' : manifest.entry}` : 'served by the backend'}`);
   out(`  backend  ${inst.supervisor ? `${manifest.backend!.start}  (port ${inst.supervisor.port})` : 'none'}`);
   out('  A change to a file reloads the page; a change outside the page\'s folder restarts the backend first. Ctrl-C stops.');
 

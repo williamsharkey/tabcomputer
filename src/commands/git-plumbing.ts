@@ -365,13 +365,27 @@ class Graph {
     if (parents.length) {
       const j = this.lanes.findIndex((o, k) => o === this.lanes[i] && k !== i);
       if (j >= 0) {
-        const k = Math.max(i, j);
+        const k = Math.max(i, j), to = Math.min(i, j);
         this.lanes.splice(k, 1);
-        out.push((this.bars(k - 1) + '|/' + ' /'.repeat(this.lanes.length - k)).padEnd(width));
+        for (const row of this.joinRows(k, to, this.lanes.length - k)) out.push(row.padEnd(width));
       }
     }
     if (multiline) out.push(this.bars(this.lanes.length).replace(/\s+$/, ''));
     return out.join('\n');
+  }
+  /**
+   * Lane `k` joining lane `to` on its left, with `right` lanes beyond it moving one
+   * place left. Next to it: `|/`. Over one lane: a second row where it crosses,
+   * `| |/` then `|/|`. Over more: git runs it along the bottom of the first row,
+   * `| |_|_|/` then `|/| | |`.
+   */
+  private joinRows(k: number, to: number, right: number): string[] {
+    const over = k - to - 1;
+    if (over <= 0) return [this.bars(k - 1) + '|/' + ' /'.repeat(right)];
+    return [
+      this.bars(to + 1) + '|_'.repeat(over - 1) + '|/' + ' /'.repeat(right),
+      this.bars(to) + '|/|' + ' |'.repeat(over - 1 + right),
+    ];
   }
 }
 
@@ -958,22 +972,26 @@ export async function gitPlumbing(ctx: CommandContext, fs: Fs, dir: string, work
         let oid: string;
         try { oid = await (await peel(fs, dir, await rev(fs, dir, spec))).oid; }
         catch { return fail(`Not a valid object name ${spec}`); }
-        const tags: { name: string; commit: string; annotated: boolean }[] = [];
+        const tags: { name: string; commit: string; annotated: boolean; date: number }[] = [];
         for (const t of await git.listTags({ fs, dir }).catch(() => [] as string[])) {
           const toid = await git.resolveRef({ fs, dir, ref: `refs/tags/${t}` }).catch(() => null);
           if (!toid) continue;
           const annotated = (await objectType(fs, dir, toid)) === 'tag';
-          tags.push({ name: t, commit: (await peel(fs, dir, toid)).oid, annotated });
+          const date = annotated ? (await git.readTag({ fs, dir, oid: toid }).catch(() => null))?.tag.tagger?.timestamp ?? 0 : 0;
+          tags.push({ name: t, commit: (await peel(fs, dir, toid)).oid, annotated, date });
         }
         const usable = tags.filter((t) => tagsToo || t.annotated);
         const mine = await ancestors(fs, dir, [oid], cache);
-        let best: { name: string; depth: number } | null = null;
+        let best: { name: string; depth: number; annotated: boolean; date: number } | null = null;
+        // as near, git's order: an annotated tag before a lightweight one, the newer of two annotated ones, then the name
+        const before = (t: typeof tags[number], b: NonNullable<typeof best>) =>
+          t.annotated !== b.annotated ? t.annotated : t.date !== b.date ? t.date > b.date : t.name < b.name;
         for (const t of usable) {
           if (!mine.has(t.commit)) continue;
           const theirs = await ancestors(fs, dir, [t.commit], cache);
           let depth = 0;
           for (const c of mine) if (!theirs.has(c)) depth++;
-          if (!best || depth < best.depth || (depth === best.depth && t.name < best.name)) best = { name: t.name, depth };
+          if (!best || depth < best.depth || (depth === best.depth && before(t, best))) best = { name: t.name, depth, annotated: t.annotated, date: t.date };
         }
         const dirty = dirtyMark !== null && (await statusList(fs, dir, 'no')).length ? dirtyMark : '';
         if (best && (best.depth === 0 || !exact)) {

@@ -63,6 +63,21 @@ const CASES: [string, string][] = [
     ".gitignore:1:*.log\tx.log\n1\n"],
   ["r; for i in 1 2 3; do echo $i > b.csv; git add b.csv; git commit -qm c$i; done; git log --oneline | wc -l",
     "4\n"],
+  // tabcomputer#88: describe prefers an annotated tag; log --graph draws a lane that crosses another
+  ["r; git tag v1; git tag -a v2 -m two; echo x >> a.txt; git commit -qam two; git describe --tags; git describe",
+    "v2-1-g232fb47\nv2-1-g232fb47\n"],
+  ["r; git tag -a v2 -m two; git tag v1; git describe --tags; git describe --tags --long",
+    "v2\nv2-0-ga72aee8\n"],
+  ["r; git tag -a va -m a; GIT_COMMITTER_DATE='1700000100 +0000' git tag -a vb -m b; git describe; git describe --tags",
+    "vb\nvb\n"],
+  ["r; git tag v2; git tag v1; git describe --tags",
+    "v1\n"],
+  ["c() { export GIT_COMMITTER_DATE=\"$2 +0000\"; echo \"$1\" >> \"$3\"; git commit -qam \"$1\"; }; r; git checkout -qb feat; c feat1 1700000090 a.txt; git checkout -q main; c main2 1700000010 h.txt; git checkout -qb side; c side1 1700000080 b.csv; git checkout -q main; c main3 1700000100 h.txt; git log --graph --oneline --all",
+    "* a6cc006 main3\n| * 05a131f feat1\n| | * f426789 side1\n| |/  \n|/|   \n* | 6862f1d main2\n|/  \n* a72aee8 init\n"],
+  ["c() { export GIT_COMMITTER_DATE=\"$2 +0000\"; echo \"$1\" >> \"$3\"; git commit -qam \"$1\"; }; r; git checkout -qb fa; c a1 1700000090 a.txt; git checkout -q main; c m2 1700000010 h.txt; git checkout -qb fb; c b1 1700000080 b.csv; git checkout -q main; c m3 1700000020 h.txt; git checkout -qb side; c side1 1700000070 nums.txt; git checkout -q main; c m4 1700000100 h.txt; git log --graph --all --format=%s",
+    "* m4\n| * a1\n| | * b1\n| | | * side1\n| |_|/  \n|/| |   \n* | | m3\n| |/  \n|/|   \n* | m2\n|/  \n* init\n"],
+  ["c() { export GIT_COMMITTER_DATE=\"$2 +0000\"; echo \"$1\" >> \"$3\"; git commit -qam \"$1\"; }; r; git checkout -qb fa; c a1 1700000090 a.txt; git checkout -q main; c m2 1700000010 h.txt; git checkout -qb fb; c b1 1700000080 b.csv; git checkout -q main; c m3 1700000020 h.txt; git checkout -qb fc; c c1 1700000075 ver.txt; git checkout -q main; c m4 1700000030 h.txt; git checkout -qb side; c side1 1700000070 nums.txt; git checkout -q main; c m5 1700000100 h.txt; git log --graph --all --format=%s",
+    "* m5\n| * a1\n| | * b1\n| | | * c1\n| | | | * side1\n| |_|_|/  \n|/| | |   \n* | | | m4\n| |_|/  \n|/| |   \n* | | m3\n| |/  \n|/|   \n* | m2\n|/  \n* init\n"],
 ];
 
 let shell: Shell;

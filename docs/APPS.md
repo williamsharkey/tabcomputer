@@ -186,7 +186,7 @@ The supplied pages work at 360 px, by keyboard and with a screen reader (every c
 | `backend.lazy` | Start on the page's first request to the backend, not when the window opens. Needs an `entry`. | `false` |
 | `backend.keepAlive` | Keep running when the last window closes. | `false` |
 | `toolchains` | Sets `toolchain install` applies before the first start (`toolchain list`). | none |
-| `needs` | Debian packages installed before the first start (Debian itself first, if it is not there), with the launch placeholder's sentences: the layer of the set when the server has or builds one, else `apt-get install`. | none |
+| `needs` | Debian packages installed before the first start (Debian itself first, if it is not there), with the launch placeholder's sentences: the layer of the set when the server has or builds one, else `apt-get install`. A name is a Debian package's name and ends in a letter, a digit or `+` (`coreutils-` is refused: to apt it means "remove coreutils"). | none |
 | `files` | Paths that must exist before it starts. One ending in `/` is a folder, made if missing. Others must be there, or the app does not start and says which is missing. Absolute, under `~`, or relative to the app's folder. | none |
 | `access.fs` | Folders the page may read and write through `tab.js`: absolute or under `~`, never `/`. `{ "path", "mode": "read" }` is read only. The app's data folder is always allowed; its own folder is readable. | none |
 | `access.network` | `false`: the page is kept from other sites. | `false` |

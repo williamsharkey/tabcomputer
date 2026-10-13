@@ -97,6 +97,51 @@ describe('a set\'s key and names', () => {
     expect(r[17]).toMatchObject({ ok: true });
   });
 
+  it('a name ends in a letter, a digit or +, in every copy of the grammar', async () => {
+    // to apt, `name-` is "remove name"; no Debian package's name ends in - or .
+    const r = inServer(`[m.packageSetNames(['jq-']), m.packageSetNames(['jq.']), m.packageSetNames(['jq', 'coreutils-']), m.packageSetNames(['g++']), m.packageSetNames(['a+']), m.packageSetNames(['x'.repeat(63)]), m.PACKAGE_NAME.source]`) as any[];
+    for (const bad of r.slice(0, 3)) expect(bad).toMatchObject({ ok: false, reason: 'bad-name' });
+    for (const good of r.slice(3, 6)) expect(good).toMatchObject({ ok: true });
+    const grammar = r[6] as string;
+    expect(grammar).toBe('^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$');
+    // the builder's key script, the builder itself, and the tab
+    expect(inModule('scripts/debian/set-key.mjs', 'm.PACKAGE_NAME.source')).toBe(grammar);
+    const builder = readFileSync(join(ROOT, 'scripts/debian/build-set.sh'), 'utf8');
+    expect(builder).toContain(`[[ "$p" =~ ${grammar} ]]`);
+    const { PACKAGE_NAME, plainInstall } = await import('@shiro/debian/package-sets');
+    expect(PACKAGE_NAME.source).toBe(grammar);
+    // an app's `needs` takes the same names, and a toolchain set's one letter
+    const { PACKAGE, validateManifest } = await import('@shiro/apps/manifest');
+    for (const n of ['jq', 'g++', 'libstdc++6', 'python3.13', 'c', 'x'.repeat(63)]) expect(PACKAGE.test(n), n).toBe(true);
+    for (const n of ['jq-', 'jq.', '-', '.', '+', 'x'.repeat(64), 'Jq', '']) expect(PACKAGE.test(n), n).toBe(false);
+    for (const n of ['jq', 'g++', 'tesseract-ocr', 'jq-', 'jq.', 'a', 'x'.repeat(63), 'x'.repeat(64)]) expect(PACKAGE.test(n), n).toBe(n.length === 1 || PACKAGE_NAME.test(n));
+    expect(() => validateManifest({ name: 'Tidy', run: 'jq . {in}', needs: ['coreutils-'] })).toThrow(/needs\[0\] must be the name of a Debian package/);
+    // typed at the prompt, `apt install jq-` is apt's own business (a removal), never a set
+    expect(plainInstall(['install', 'jq-'])).toBeNull();
+    expect(plainInstall(['install', 'jq', 'g++'])).toEqual(['jq', 'g++']);
+    // names after `--` (how tabcomputer's own fallbacks hand them to apt) are still a plain install
+    expect(plainInstall(['install', '-y', '--', 'jq', 'g++'])).toEqual(['jq', 'g++']);
+    expect(plainInstall(['install', '--', '-y'])).toBeNull();
+  });
+
+  it('the builder checks each name against the snapshot before apt sees it, and the tab hands apt names after --', () => {
+    const builder = readFileSync(join(ROOT, 'scripts/debian/build-set.sh'), 'utf8');
+    const check = builder.indexOf('grep -qxF -- "$p" "$WORK/names.now"');
+    const firstInstall = builder.indexOf('apt-get "${APT_OPTS[@]}" -o Dir::Cache::archives=/var/tmp/tc-none install');
+    expect(check).toBeGreaterThan(0);
+    expect(firstInstall).toBeGreaterThan(check);
+    expect(builder.slice(check, firstInstall)).toContain('::tc:: refused unknown-package');
+    // every install line of the builder and of the tab's apt fallbacks ends its options first
+    const installs = builder.split('\n').filter((l) => /apt-get .* install /.test(l));
+    expect(installs).toHaveLength(3);
+    for (const l of installs) expect(l).toMatch(/ -- "\$\{PKGS\[@\]\}"/);
+    for (const [file, names] of [['src/apps/runtime.ts', 'names'], ['src/commands/toolchain.ts', 'packages'], ['src/commands/pkg.ts', 'other']]) {
+      const line = readFileSync(join(ROOT, file), 'utf8').split('\n').filter((l) => l.includes('apt-get install -y'));
+      expect(line, file).toHaveLength(1);
+      expect(line[0], file).toContain(`apt-get install -y -- \${${names}.join(' ')}`);
+    }
+  });
+
   it('the builder is a transient systemd unit that is given the key and a file, never a name', () => {
     const c = inServer(`m.packageBuildCommand(m.packageLayersConfig({ TABCOMPUTER_DEBIAN_LAYERS: '/l', TABCOMPUTER_LAYER_BUILDER: '1', STATIC_DIR: '/s' }), 'p-0123456789abcdef01234567', '/w/specs/p-0123456789abcdef01234567.json')`);
     expect(c.file).toBe('systemd-run');

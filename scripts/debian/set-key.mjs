@@ -14,8 +14,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** A Debian binary package name (Debian policy 5.6.1), at most 63 characters. */
-export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{1,62}$/;
+/** A Debian binary package name (Debian policy 5.6.1), at most 63 characters, ending in a letter, a digit or `+` (server.mjs). */
+export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$/;
 
 export function setKey(baseId, snapshot, names) {
   return 'p-' + createHash('sha256').update(`${baseId}\n${snapshot}\n${[...names].sort().join(' ')}\n`).digest('hex').slice(0, 24);

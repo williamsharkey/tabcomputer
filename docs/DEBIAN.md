@@ -515,14 +515,22 @@ names. Sets live in `TABCOMPUTER_DEBIAN_LAYERS/sets/<key>/` with their own
 `sets/chunks/`, served at `/debian/layers/sets/`. What a request can cause:
 
 - Names must match Debian's grammar for package names (`PACKAGE_NAME`). No
-  version, file, path or option gets through.
+  version, file, path or option gets through. A name ends in a letter, a
+  digit or `+`: to apt a last `-` means "remove". The grammar is written in
+  five places that a test holds equal: `server.mjs`, `scripts/debian/set-key.mjs`,
+  `scripts/debian/build-set.sh`, `src/debian/package-sets.ts` and, for an
+  app's `needs`, `src/apps/manifest.ts`.
 - At most 12 names. Packages that act on the machine they are configured on
   are refused by name (`PACKAGE_REFUSED`: kernels, boot loaders, init, udev,
   kernel modules, storage and container managers, firmware), and the builder
   refuses a set when anything it would install matches.
 - Once the builder has listed the archive (`sets/names.txt`), a name the
   pinned snapshot's main archive does not have is answered at once, with the
-  names, and no build starts.
+  names, and no build starts. The builder checks again itself: each name must
+  be a package name of the snapshot, exactly, before apt is given it, and apt
+  gets the names after `--`. The tab's own apt fallbacks (an app's `needs`,
+  `toolchain install`, `apt install` before Debian mode) pass names after
+  `--` too.
 - The names reach the builder in a JSON file. Its command line carries the
   key and nothing else of the request.
 - One build at a time. At most 8 wait. One address has at most 2 builds

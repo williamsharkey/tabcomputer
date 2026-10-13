@@ -164,8 +164,9 @@ const realPackages: Packages = {
       const code = await sh('sudo apt-get update');
       if (code) return code;
     }
-    // (TABCOMPUTER_APT_LAYERS=0: the question was just asked; apt itself does not ask again)
-    return sh(`sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y ${names.join(' ')}`);
+    // (TABCOMPUTER_APT_LAYERS=0: the question was just asked; apt itself does not ask again.
+    // After `--` every word is a package name: none is read as an option)
+    return sh(`sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y -- ${names.join(' ')}`);
   },
 };
 

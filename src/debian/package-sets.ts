@@ -20,8 +20,11 @@ import { applyLayerInfo, type ApplyResult, type LayerInfo } from './layers';
 import { defaultRootfsBase, installedRootfs, warmChunks } from './rootfs';
 import { PAGE_SET_TIMEOUT } from '../node-compat/page-globals';
 
-/** A Debian binary package name (Debian policy 5.6.1), as server.mjs takes it. */
-export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{1,62}$/;
+/**
+ * A Debian binary package name (Debian policy 5.6.1), as server.mjs takes it.
+ * It ends in a letter, a digit or `+`: to apt a last `-` means "remove".
+ */
+export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$/;
 
 /** What the server says about a set (server.mjs "Package layers"). */
 export interface SetAnswer {
@@ -219,11 +222,14 @@ const PLAIN_FLAGS = new Set(['-y', '--yes', '--assume-yes', '-q', '-qq', '--quie
  */
 export function plainInstall(args: string[]): string[] | null {
   let seen = false;
+  // (after `--` every word is a name, as apt reads it)
+  let ended = false;
   const names: string[] = [];
   for (const a of args) {
-    if (a.startsWith('-')) { if (!PLAIN_FLAGS.has(a)) return null; continue; }
+    if (a === '--' && !ended) { ended = true; continue; }
+    if (a.startsWith('-') && !ended) { if (!PLAIN_FLAGS.has(a)) return null; continue; }
     if (!seen) { if (a !== 'install') return null; seen = true; continue; }
-    if (!PACKAGE_NAME.test(a) || a.endsWith('-')) return null;
+    if (!PACKAGE_NAME.test(a)) return null;
     names.push(a);
   }
   return seen && names.length ? names : null;

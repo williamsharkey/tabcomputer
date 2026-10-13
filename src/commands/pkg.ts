@@ -125,7 +125,7 @@ async function aptInstallAnywhere(ctx: CommandContext, args: string[]): Promise<
     if (code) return code;
   }
   // Debian's apt from here on (src/commands/debian.ts): a layer when the server has one, else apt itself
-  const code = await run(`/usr/bin/apt-get install -y ${other.join(' ')}`);
+  const code = await run(`/usr/bin/apt-get install -y -- ${other.join(' ')}`);
   return rc || code;
 }
 

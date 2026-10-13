@@ -110,8 +110,11 @@ const ICON_EXT = /\.(svg|png|jpe?g|webp)$/i;
 const TOOLCHAIN = /^[a-z][a-z0-9-]{0,31}$/;
 const COMMAND = /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}$/;
 
-/** A Debian package's name, or a toolchain set's (`needs: ["c"]`, runtime.ts): a set may have one letter */
-const PACKAGE = /^[a-z0-9][a-z0-9+.-]{0,62}$/;
+/**
+ * A Debian package's name, or a toolchain set's (`needs: ["c"]`, runtime.ts): a set may have one letter.
+ * It ends in a letter, a digit or `+`, as server.mjs's PACKAGE_NAME does: to apt, `name-` means "remove name".
+ */
+export const PACKAGE = /^[a-z0-9](?:[a-z0-9+.-]{0,61}[a-z0-9+])?$/;
 
 /** Keys every app may have; a page app also has PAGE_KEYS, a declared one its kind's (declare.ts) */
 const COMMON_KEYS = ['manifest', 'id', 'name', 'about', 'description', 'version', 'icon', 'window', 'toolchains', 'needs'];

@@ -215,5 +215,5 @@ async function aptInstall(ctx: CommandContext, packages: string[], out: (s: stri
     if (code) return code;
   }
   // (TABCOMPUTER_APT_LAYERS=0: the caller has already asked for a layer, or was told to use apt)
-  return runShell(ctx, `sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y ${packages.join(' ')}`, out, err);
+  return runShell(ctx, `sudo DEBIAN_FRONTEND=noninteractive TABCOMPUTER_APT_LAYERS=0 apt-get install -y -- ${packages.join(' ')}`, out, err);
 }

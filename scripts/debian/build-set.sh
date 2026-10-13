@@ -76,7 +76,8 @@ if ! flock -n 8; then echo "::tc:: waiting"; flock 8; fi
 
 BASE_ID=$(node -p 'require(process.argv[1]).id' "$BASE/rootfs.json")
 # The names, one a line, from the spec file. They go to apt as words, so each
-# must be a Debian package name (policy 5.6.1) and nothing else.
+# must be a Debian package name (policy 5.6.1) and nothing else: it ends in a
+# letter, a digit or +, since apt reads a last - as "remove".
 mapfile -t PKGS < <(node -e '
   const [file, id] = process.argv.slice(1);
   const l = require(file).layers[id];
@@ -85,7 +86,7 @@ mapfile -t PKGS < <(node -e '
 ' "$SPEC" "$id")
 [ ${#PKGS[@]} -gt 0 ] || { echo "build-set.sh: $SPEC has no packages for $id" >&2; exit 2; }
 for p in "${PKGS[@]}"; do
-  if ! [[ "$p" =~ ^[a-z0-9][a-z0-9+.-]{1,62}$ ]]; then
+  if ! [[ "$p" =~ ^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$ ]]; then
     echo "::tc:: refused bad-name A name in this set is not a Debian package name."
     exit 4
   fi
@@ -184,22 +185,31 @@ mkdir -p "$ROOT"/usr/share/man/man{1..8}
 cp -L "$CA_BUNDLE" "$ROOT/etc/apt/build-ca.crt"
 in_root apt-get "${APT_OPTS[@]}" -o APT::Update::Error-Mode=any update
 # Which names the archive has, for server.mjs to answer from at once
+in_root apt-cache pkgnames | LC_ALL=C sort > "$WORK/names.now"
 if [ ! -s "$OUT/names.txt" ] || [ "$OUT/names.txt" -ot "$BASE/rootfs.json" ]; then
-  in_root apt-cache pkgnames | LC_ALL=C sort > "$OUT/names.txt.tmp"
+  cp "$WORK/names.now" "$OUT/names.txt.tmp"
   mv "$OUT/names.txt.tmp" "$OUT/names.txt"
 fi
+# Each name must be a package of this snapshot, exactly: apt would otherwise
+# read a name it does not have as a pattern and install what matches
+for p in "${PKGS[@]}"; do
+  if ! grep -qxF -- "$p" "$WORK/names.now"; then
+    echo "::tc:: refused unknown-package A name in this set is not in Debian's main archive."
+    exit 4
+  fi
+done
 # What the set installs, dependencies included, against the limits: before
 # anything is downloaded or run. (An empty archive directory, so packages
 # already downloaded for another set are counted too.)
 mkdir -p "$ROOT/var/tmp/tc-none/partial"
-in_root apt-get "${APT_OPTS[@]}" -o Dir::Cache::archives=/var/tmp/tc-none install -y --print-uris "${PKGS[@]}" > "$WORK/uris.txt"
+in_root apt-get "${APT_OPTS[@]}" -o Dir::Cache::archives=/var/tmp/tc-none install -y --print-uris -- "${PKGS[@]}" > "$WORK/uris.txt"
 rm -rf "$ROOT/var/tmp/tc-none"
 node "$HERE/set-limits.mjs" < "$WORK/uris.txt"
 
 echo "::tc:: phase downloading"
-in_root apt-get "${APT_OPTS[@]}" -o APT::Keep-Downloaded-Packages=true install -y --download-only "${PKGS[@]}"
+in_root apt-get "${APT_OPTS[@]}" -o APT::Keep-Downloaded-Packages=true install -y --download-only -- "${PKGS[@]}"
 echo "::tc:: phase installing"
-in_root apt-get "${APT_OPTS[@]}" -o APT::Keep-Downloaded-Packages=true install -y "${PKGS[@]}"
+in_root apt-get "${APT_OPTS[@]}" -o APT::Keep-Downloaded-Packages=true install -y -- "${PKGS[@]}"
 in_root ldconfig
 # A layer ships with nothing left for dpkg to do (#109), as in build-layers.sh
 in_root dpkg --configure --pending

@@ -676,8 +676,12 @@ async function handleDebianLayers(req, res, rel) {
 //   TABCOMPUTER_LAYER_PER_ADDRESS_HOUR      6      builds one address starts in an hour
 //   TABCOMPUTER_LAYER_BUILD_SECONDS         900    a build's time limit
 
-/** A Debian binary package name (Debian policy 5.6.1), at most 63 characters. */
-export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{1,62}$/;
+/**
+ * A Debian binary package name (Debian policy 5.6.1), at most 63 characters.
+ * It ends in a letter, a digit or `+`: to apt a last `-` means "remove", and
+ * no package's name ends in `-` or `.`.
+ */
+export const PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$/;
 /**
  * Packages never built on request: they act on the machine they are
  * configured on (kernels, boot loaders, init, device and storage managers,

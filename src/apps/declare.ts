@@ -360,7 +360,7 @@ export function validateKind(raw: Record<string, unknown>, kind: Exclude<AppKind
       else k.output = raw.output as OutputKind;
     }
     if (raw.stdin !== undefined) {
-      if (typeof raw.stdin !== 'string' || raw.stdin.length > 2000) bad(`stdin must be text: what the program reads, with {fields} filled in (got ${show(raw.stdin)})`);
+      if (typeof raw.stdin !== 'string' || raw.stdin.length > 2000 || CONTROL.test(raw.stdin.replace(/[\n\t]/g, ' '))) bad(`stdin must be text: what the program reads, with {fields} filled in (got ${show(raw.stdin)})`);
       else k.stdin = raw.stdin;
     }
   }
@@ -408,6 +408,38 @@ export function validateKind(raw: Record<string, unknown>, kind: Exclude<AppKind
   return { ...k, commands };
 }
 
+/**
+ * Programs that run text they are given: shells, script languages, and tools
+ * that start what their input names. With one of these in `run`, what fills
+ * the command is a program, not data.
+ */
+const INTERPRETER = /^(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl[0-9.]*|ruby[0-9.]*|php[0-9.]*|lua[0-9.]*|tclsh|Rscript|awk|gawk|mawk|nawk|sed|make|env|xargs|eval|sqlite3|psql)$/;
+
+/** The first interpreter `run` names, as a word of the command or anywhere in a shell line; '' when it names none */
+export function interpreterIn(k: Pick<KindKeys, 'run' | 'shell'>): string {
+  let words: string[];
+  if (k.shell) words = k.run.split(/[\s;|&()<>`$'"=]+/);
+  else { try { words = splitRun(k.run); } catch { words = k.run.split(/\s+/); } }
+  return words.map((w) => w.slice(w.lastIndexOf('/') + 1)).find((w) => INTERPRETER.test(w)) ?? '';
+}
+
+/**
+ * Everything a declared app's manifest puts into its command besides `run`
+ * itself: the text the program reads, what each field holds at first, and
+ * what each choice and each ticked box becomes. A field that starts empty
+ * holds only what the person types, so it is not listed.
+ */
+export function fillsOf(k: KindKeys): [string, string][] {
+  const out: [string, string][] = [];
+  if (k.stdin) out.push(['The program reads this text', k.stdin]);
+  for (const i of [...k.options, ...k.fields]) {
+    if (i.type === 'choice') out.push([`{${i.name}} is one of`, i.choices.map((c) => `${c.label === c.value ? c.value : `${c.label}: ${c.value}`}${c.label === i.value ? '   (at first)' : ''}`).join('\n')]);
+    else if (i.type === 'checkbox') out.push([`{${i.name}} when ticked${i.value ? ' (ticked at first)' : ''}`, i.on]);
+    else if (i.value) out.push([`{${i.name}} starts as`, i.value]);
+  }
+  return out;
+}
+
 const list = (items: string[]): string => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 /** A declared app, said in parts: the install prompt shows the first five, and the rest on request */
@@ -418,6 +450,10 @@ export interface KindSaid {
   does: string;
   /** The exact command ('' for a table) */
   run: string;
+  /** What the manifest puts into the command: a label and the text, as written (`fillsOf`) */
+  fills: [string, string][];
+  /** That what fills the command is a program ('' when `run` names no interpreter, or nothing fills it) */
+  program: string;
   /** What is installed before its first start ('' when nothing is) */
   installs: string;
   /** The one sentence on what it can touch: the program's reach, or that it runs none */
@@ -429,7 +465,7 @@ export interface KindSaid {
 }
 
 export function kindSaid(m: KindKeys & { name: string; description: string; needs: string[]; toolchains: string[] }): KindSaid {
-  const s: KindSaid = { about: m.description, does: '', run: '', installs: '', touches: '', named: '', page: 'Its page may use only its own data folder, and is kept from other sites.' };
+  const s: KindSaid = { about: m.description, does: '', run: '', fills: [], program: '', installs: '', touches: '', named: '', page: 'Its page may use only its own data folder, and is kept from other sites.' };
   if (m.kind === 'table') {
     s.does = `${m.name} keeps a table in ${m.table}, in its own data folder.`;
     s.touches = m.table.endsWith('.sqlite') ? 'It runs the program sqlite3 on that file, and no other program.' : 'It runs no program.';
@@ -437,6 +473,9 @@ export function kindSaid(m: KindKeys & { name: string; description: string; need
     const when = m.kind === 'files' ? (m.each ? 'once for each file you give it' : 'once, with all the files you give it') : m.live ? 'as you type' : 'when you choose Run';
     s.does = `${m.name} runs this ${m.shell ? 'shell line' : 'command'} ${when}`;
     s.run = m.run;
+    s.fills = fillsOf(m);
+    const interpreter = interpreterIn(m);
+    if (interpreter && s.fills.length) s.program = `${interpreter} runs the text it is given as a program. The text below is that program:`;
     // (without `out` a result keeps its file's name, with the extension of what the program made: host.ts)
     if (m.kind === 'files') s.named = m.each ? `Each result is named ${m.out || 'after the file it came from'}.` : `The result is named ${m.out}.`;
     else if (m.output === 'file') s.named = `The result is named ${m.out}.`;

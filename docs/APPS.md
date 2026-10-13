@@ -359,7 +359,18 @@ The prompt says the fewest things a careful person needs (`promptWords` in `src/
 > Before its first start it installs the Debian package tesseract-ocr.
 > tesseract is an ordinary program in this tab: it can read and change every file here.
 
-That is: the name as a question, where it comes from (for GitHub, the commit; for a gist, the revision), the app's own `about`, the exact command, what it installs, and one sentence on what it can touch that is true of this app. For a table kept as CSV that sentence is "It runs no program, and its page may use only its own data folder."; where the server gives app pages no origin of their own it is that. For an app with a page of its own, the lines that ask for something are listed (what it runs, what it installs, the commands and folders its page may use, other sites), then the one sentence: "What it runs are ordinary programs in this tab: they can read and change every file here and use its sign-ins (Claude, GitHub).", or, for an app that is only a page, that its page cannot read this tab's files or sign-ins.
+That is: the name as a question, where it comes from (for GitHub, the commit; for a gist, the revision), the app's own `about`, the exact command with what fills it, what it installs, and one sentence on what it can touch that is true of this app. For a table kept as CSV that sentence is "It runs no program, and its page may use only its own data folder."; where the server gives app pages no origin of their own it is that. For an app with a page of its own, the lines that ask for something are listed (what it runs, what it installs, the commands and folders its page may use, other sites), then the one sentence: "What it runs are ordinary programs in this tab: they can read and change every file here and use its sign-ins (Claude, GitHub).", or, for an app that is only a page, that its page cannot read this tab's files or sign-ins.
+
+**The app's own words are quoted.** `about` can say anything, so the prompt shows it under "The app says:", set apart by a rule at its side and in italics. It never reads as one of the prompt's own sentences.
+
+**Everything that fills the command is shown under it** (`fillsOf` in `src/apps/declare.ts`), as written, in the command's type: the text the program reads (`stdin`), what each field holds at first, each choice with what it becomes, and what a ticked box becomes. A field that starts empty holds only what the person types, so it is not listed. The list is headed "The app fills the command with these:". When the command names a program that runs text it is given (`sh`, `bash`, `dash`, `python3`, `node`, `perl`, `ruby`, `awk`, `sed`, `env` and their kin: `interpreterIn`), the heading says so instead:
+
+> Greeter runs this command when you choose Run: `sh`
+> sh runs the text it is given as a program. The text below is that program:
+> The program reads this text: `echo "hello {who}"`
+> {who} starts as: `World`
+
+`stdin`, like a field's value, is refused when it holds control or invisible characters other than a line break or a tab.
 
 The rest is one click away, under two disclosures. "What it can reach" has every line (how results are named, what the page may use, that the page is on an address of its own) and, where the server has guests, a link in a sentence: "To keep it away from your files and sign-ins, open it in a guest". A guest is not a button beside Install: it adds a step and has none of the tab's sign-ins. "app.json, as it will be installed" is the manifest itself.
 

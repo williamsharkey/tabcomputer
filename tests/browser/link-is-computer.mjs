@@ -251,7 +251,7 @@ if (wants('app')) for (const device of DEVICES) {
   time(`${D} app: link to the install prompt (fresh profile)`, Date.now() - t0);
   let p = await promptOf(page, APP);
   check(`${D} app: the prompt shows the app's sentences: where from, the exact command`, !!p && p.title === "Install Jq two?"
-    && p.says.join(' | ') === `From this link. Not reviewed by tabcomputer. | Try a jq filter. ${mark} | Jq two runs this command as you type: jq {filter} | jq is an ordinary program in this tab: it can read and change every file here.`, p?.says.join(' | '));
+    && p.says.join(' | ') === `From this link. Not reviewed by tabcomputer. | The app says: Try a jq filter. ${mark} | Jq two runs this command as you type: jq {filter} | The app fills the command with these: | jq is an ordinary program in this tab: it can read and change every file here.`, p?.says.join(' | '));
   // two buttons; the rest, and a guest where the server has them, is one click away
   check(`${D} app: Cancel and Install are the only buttons, and the rest is under two disclosures`, !!p && p.buttons.join() === 'Cancel,Install' && p.more.join(' | ') === 'What it can reach | app.json, as it will be installed' && (p.guest === '' || p.guest === 'open it in a guest'), JSON.stringify(p && { buttons: p.buttons, more: p.more, guest: p.guest }));
   if (phone) check('phone app: the prompt fills the screen, with nothing of the desktop around it', !!p && p.left === 0 && p.right === device.viewport.width && p.top === 0 && p.bottom === device.viewport.height, JSON.stringify(p && { left: p.left, right: p.right, top: p.top, bottom: p.bottom }));

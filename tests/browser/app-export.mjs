@@ -185,7 +185,7 @@ for (const device of [WIDE, PHONE]) {
   await page.waitForSelector('.tc-app-prompt', { timeout: 15_000 }).catch(() => null);
   q = await prompt(page);
   check(`${D} import: an app that is not this site's is shown first, from the file it came in`, !!q && q.title === 'Install Reading notes?' && q.says.join(' | ') === [
-    'From the file notes.app.zip. Not reviewed by tabcomputer.', 'Books, and what I thought of them.', 'Reading notes keeps a table in books.csv, in its own data folder.', 'It runs no program, and its page may use only its own data folder.',
+    'From the file notes.app.zip. Not reviewed by tabcomputer.', 'The app says: Books, and what I thought of them.', 'Reading notes keeps a table in books.csv, in its own data folder.', 'It runs no program, and its page may use only its own data folder.',
   ].join(' | ') && q.buttons.join() === 'Cancel,Install' && q.focus === 'Cancel', JSON.stringify(q));
   await shot(page, `${D}-import-prompt`);
   await agree(page);

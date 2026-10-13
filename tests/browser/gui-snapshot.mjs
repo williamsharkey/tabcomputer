@@ -13,6 +13,7 @@
 // Exits 1 when an app that was snapshotted doesn't come back working.
 import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
 for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_modules/playwright', 'playwright-core'].filter(Boolean)) {
@@ -25,7 +26,7 @@ const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined :
 const jsonOut = opt('--json');
 const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 const apps = args.length ? args : ['xeyes'];
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 /** Apps whose first windows aren't the usable one: the title of the window that is */
 const READY = { gimp: 'GNU Image Manipulation Program' };

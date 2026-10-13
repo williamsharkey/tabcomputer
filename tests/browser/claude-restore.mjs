@@ -17,12 +17,13 @@
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import os from 'node:os';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const url = process.argv[2] ?? 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const build = ['native', 'vm'].includes(process.env.CLAUDE_BUILD) ? process.env.CLAUDE_BUILD : 'npm';
 const START_MS = build === 'native' ? 240_000 : build === 'vm' ? 150_000 : 60_000; // (vm: the first start extracts)
 const REPLY = 'pong-from-the-stand-in';

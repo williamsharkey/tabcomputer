@@ -13,9 +13,10 @@
 // in the cloud containers) and Chromium (CHROMIUM, default the pre-installed one).
 import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -25,7 +26,7 @@ const noWarm = flag('--no-warm');
 const debs = opt('--debs'); // e.g. https://tabcomputer.com/debian/: the .debs from there (a real network), the rest local
 const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 const apps = args.length ? args : ['l3afpad', 'mousepad', 'ristretto', 'gimp'];
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 
 /** Apps whose first window is a splash: the title of the window that means "ready" */

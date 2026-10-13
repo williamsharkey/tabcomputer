@@ -20,11 +20,10 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium } = pw;
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -61,7 +60,7 @@ echo "gh ran for $RUN_WHO" >> log
 `;
 const SH_SCRIPT = 'echo "sh ran" >> log\n';
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 
 /** A fresh profile whose site has the test recipes besides its own */
 async function newContext(options = {}) {

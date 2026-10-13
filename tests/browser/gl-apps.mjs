@@ -24,6 +24,7 @@
 import { createRequire } from 'node:module';
 import { readdirSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
 for (const m of ['playwright', 'playwright-core', '/opt/node-tools/node_modules/playwright']) { try { ({ chromium } = require(m)); break; } catch { /* next */ } }
@@ -60,7 +61,7 @@ const profileSeconds = Number(opt('--profile') ?? 0); // also: the page's busies
 const url = args[0] ?? 'http://localhost:5299/';
 const root = process.env.GL_PROBE_ROOT;
 if (!root) { console.error('GL_PROBE_ROOT is not set'); process.exit(2); }
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 
 /** The rootfs as [path, base64 | {link}] without docs, locales and gconv */
 function collect(host, guest, out) {

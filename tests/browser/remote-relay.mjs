@@ -14,13 +14,14 @@
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const base = process.argv[2] || 'http://localhost:5299/';
 const origin = new URL(base).origin;
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const mcpPath = fileURLToPath(new URL('../../shiro-mcp/dist/index.js', import.meta.url));
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const context = await browser.newContext();

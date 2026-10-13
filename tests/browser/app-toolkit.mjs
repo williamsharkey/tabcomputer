@@ -18,6 +18,7 @@
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
 for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_modules/playwright', 'playwright-core'].filter(Boolean)) {
@@ -35,7 +36,7 @@ const results = [];
 const check = (name, ok, detail = '') => { results.push(!!ok); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`); };
 const wants = (name) => !only || only === name;
 
-const browser = await pw.chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 
 // ── a stand-in for GitHub: one repository holding an app with a backend ──
 const COMMIT = 'c0ffee'.padEnd(40, '1');

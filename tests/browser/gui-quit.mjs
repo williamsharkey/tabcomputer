@@ -8,6 +8,7 @@
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools. Exits 1 on a failure.
 import { createRequire } from 'node:module';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
 for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_modules/playwright', 'playwright-core'].filter(Boolean)) {
@@ -17,7 +18,7 @@ if (!pw) { console.error('playwright not found (set PLAYWRIGHT)'); process.exit(
 const args = process.argv.slice(2);
 const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 const apps = args.length ? args : ['xeyes', 'geany'];
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const WAYS = { geany: ['close button', 'Ctrl+Q', 'File → Quit'] };
 
 const browser = await pw.chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });

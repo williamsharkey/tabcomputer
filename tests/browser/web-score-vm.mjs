@@ -9,6 +9,7 @@
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chromiumPath } from './_browser.mjs';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -39,7 +40,7 @@ const only = opt('--sites', '');
 const sites = Object.entries(SITES).filter(([id]) => !only || only.split(',').includes(id));
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
 await page.addInitScript(() => { try { localStorage.setItem('shiro-desktop-tour', '1'); } catch {} });
 await page.goto(`${APP}/?ui=desktop`);

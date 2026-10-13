@@ -7,12 +7,13 @@
 //
 // Prints one line per case with its time; exits 1 if a case fails or a CDN was asked.
 import { createRequire } from 'node:module';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const url = process.argv[2] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
+const exe = chromiumPath('/opt/pw-browsers/chromium');
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const context = await browser.newContext();
 const cdn = [];

@@ -13,15 +13,16 @@
 // failure. External requests go through $HTTPS_PROXY when it is set.
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
 const url = args[0] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
+const exe = chromiumPath('/opt/pw-browsers/chromium');
 const LIMIT = Number(process.env.STEP_LIMIT_MS || 600_000);
 // VITE=7 for vite 7's template (esbuild and Rollup as their WebAssembly builds)
 const VITE = process.env.VITE || 'latest';

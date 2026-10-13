@@ -17,9 +17,10 @@
 // (clock_gettime) never reaches the kernel: Blink keeps it. Exits 1 if any
 // round stalled.
 import { createRequire } from 'node:module';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
@@ -28,7 +29,7 @@ const runs = Number(opt('--runs') ?? 30);
 const wait = Number(opt('--wait') ?? 8000);
 const trace = flag('--trace');
 const url = args[0] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 const page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage();

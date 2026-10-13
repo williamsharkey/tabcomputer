@@ -21,11 +21,10 @@
 //
 // Exits 1 if any check fails.
 import { createRequire } from 'node:module';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
-try { pw = require('playwright'); } catch {
-  try { pw = require('/opt/node-tools/node_modules/playwright'); } catch { pw = require('playwright-core'); }
-}
+pw = loadPlaywright();
 const { chromium } = pw;
 const base = process.argv[2] || 'http://app.localhost:5299/';
 
@@ -83,7 +82,7 @@ probe().then((out) => {
 });
 `;
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+const browser = await chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
 const ctx = await browser.newContext();
 // The welcome card is not part of this check
 await ctx.addInitScript(() => { try { localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });

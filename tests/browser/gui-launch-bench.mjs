@@ -22,6 +22,7 @@
 import { createRequire } from 'node:module';
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { chromiumPath } from './_browser.mjs';
 const require = createRequire(import.meta.url);
 let pw;
 for (const name of [process.env.PLAYWRIGHT, 'playwright', '/opt/node-tools/node_modules/playwright', 'playwright-core'].filter(Boolean)) {
@@ -44,7 +45,7 @@ const url = args[0]?.includes('://') ? args.shift() : 'http://localhost:5299/';
 /** The corpus: bare X11, small GTK 3, GTK 2, heavy GTK, Qt 5, FLTK (docs/GUI_LAUNCH.md) */
 const CORPUS = ['xeyes', 'xclock', 'xterm', 'dillo', 'l3afpad', 'galculator', 'geany', 'mousepad', 'gpicview', 'featherpad', 'qterminal', 'gimp', 'inkscape'];
 const apps = args.length ? args : CORPUS;
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 
 /** Apps whose first windows aren't the usable one: the title of the window that is */

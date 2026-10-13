@@ -5,16 +5,17 @@
 // Needs playwright (NODE_PATH=/opt/node-tools/node_modules in the cloud
 // containers) and Chromium (CHROMIUM, default /opt/pw-browsers/chromium).
 import { createRequire } from 'node:module';
+import { chromiumPath, loadPlaywright } from '../tests/browser/_browser.mjs';
 const require = createRequire(import.meta.url);
 let chromium;
-try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
+({ chromium } = loadPlaywright());
 
 // --upload LOCAL_DIR=TABCOMPUTER_DIR copies a local tree into Shiro's filesystem first
 const argv = process.argv.slice(2);
 const uploads = [];
 for (let i = argv.indexOf('--upload'); i >= 0; i = argv.indexOf('--upload')) { uploads.push(argv[i + 1].split('=')); argv.splice(i, 2); }
 const [url = 'http://localhost:5299/', ...cmds] = argv;
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 // Containers that reach the internet through a proxy: the browser uses it too
 // (https only: plain-http requests to the local server go direct)
 const proxy = process.env.HTTPS_PROXY ? process.env.HTTPS_PROXY.replace(/^\w+:\/\//, '').replace(/\/$/, '') : '';

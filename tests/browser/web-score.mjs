@@ -18,6 +18,7 @@
 // Needs playwright-core (NODE_PATH=/opt/node-tools/node_modules) and Chromium.
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chromiumPath } from './_browser.mjs';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -39,7 +40,7 @@ const WPT = flag('--wpt');
 const SKIP_SITES = flag('--skip-sites');
 const FROM_JSON = opt('--from-json', '');
 const LOAD_MS = Number(opt('--load-timeout', '45000'));
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium';
+const exe = chromiumPath('/opt/pw-browsers/chromium');
 
 // kind: search (fill + Enter must navigate or change the page), link (a click
 // must navigate), login (the sign-in form must appear). Selectors are hints;

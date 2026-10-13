@@ -8,9 +8,10 @@
 // controlled from the start. At exit it prints how many responses outside
 // /__vm/ (and preview-sw.js's /__preview/) came from a service worker (there should be none).
 import { createRequire } from 'node:module';
+import { loadPlaywright } from './_browser.mjs';
 const require = createRequire(new URL('./x.mjs', import.meta.url));
 let pw;
-try { pw = require('playwright'); } catch { pw = require('/opt/node-tools/node_modules/playwright'); }
+pw = loadPlaywright();
 
 let viaWorker = 0, pages = 0, controlledLoads = 0;
 const register = () => {

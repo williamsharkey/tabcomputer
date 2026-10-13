@@ -180,7 +180,10 @@ destroyed), and the next Terminal window adopts it again.
   path sheet, `codesheet.ts`, that runs `code PATH`). The first window
   shows a one-line hint (File ▸ Open…, Ctrl+S, the ☰ file list, Ctrl+F);
   there is no command palette. In the classic terminal UI it keeps its
-  floating server window.
+  floating server window. A folder with `.tabcomputer/lab.json` gets Run,
+  Test and Submit above the editor, and a clone of a GitHub repository
+  shows "Saved to GitHub" or "Not saved to GitHub yet" in the status bar and
+  the window's title (`src/lab.ts`, [CLASSROOM.md](CLASSROOM.md)).
 - **About This Computer** lists measured status with the document that
   records each number (`STATUS` in `apps/about.ts`: keep it in step with
   DEBIAN_SCORE.md and CONFORMANCE.md), and what is real, emulated and absent.

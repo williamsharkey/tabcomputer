@@ -17,6 +17,7 @@ import { githubCloneSize, githubRepo, pageCloneLimit, mb } from './git-clone-siz
 import { splitShortOptions, unknownOption, realGit, PREFER_REAL } from './git-route';
 import { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig } from './git-config';
 import { gitHttpFor } from './git-transport';
+import { retrySignedIn } from '../github-needed';
 import { apiCloneOp, apiFetchOp, apiPullOp, apiPushOp } from './git-api-ops';
 
 // git clone's pack indexing in a worker (vite-plugin-isogit.ts calls it from fromPack)
@@ -24,16 +25,24 @@ installPackIndexer();
 
 // --- Main command ---
 
+const GITHUB_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull', 'push', 'ls-remote']);
+
 export const gitCmd: Command = {
   name: 'git',
   description: 'Version control system',
   // one isomorphic-git cache per command (see git-cached.ts)
-  exec: (ctx: CommandContext) => withGitCache(async () => {
-    const reflog: ReflogHook = {};
-    const code = await gitMain(ctx, reflog);
-    await reflog.finish?.(code);
-    return code;
-  }),
+  // (clone, fetch, pull, push and ls-remote that fail for want of a GitHub sign-in ask for one and
+  //  run again: github-needed.ts. They fail before they change anything.)
+  exec: (ctx: CommandContext) => {
+    const once = () => withGitCache(async () => {
+      const reflog: ReflogHook = {};
+      const code = await gitMain(ctx, reflog);
+      await reflog.finish?.(code);
+      return code;
+    });
+    const sub = ctx.args.find((a) => GITHUB_SUBCOMMANDS.has(a));
+    return sub ? retrySignedIn(ctx, `git ${sub}`, once) : once();
+  },
   keepOverPackage: builtinCloneHandles,
 };
 

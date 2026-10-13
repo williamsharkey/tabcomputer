@@ -1,3 +1,4 @@
+import { retrySignedIn } from '../github-needed';
 import git from './git-cached';
 import { guestInfo } from '../guest';
 import { Command, CommandContext } from './index';
@@ -173,7 +174,11 @@ export const ghCmd: Command = {
   name: 'gh',
   description: 'GitHub CLI',
   // (TABCOMPUTER_NETWORK_MODE=proxy gh ...: the variable reaches ghApi; net-mode.ts)
-  exec: (ctx: CommandContext) => withCommandEnv(ctx.env, () => ghMain(ctx)),
+  // (a command that fails for want of a sign-in asks for one and runs again: github-needed.ts;
+  //  gh auth says how things stand and is left alone)
+  exec: (ctx: CommandContext) => withCommandEnv(ctx.env, () => (ctx.args[0] === 'auth'
+    ? ghMain(ctx)
+    : retrySignedIn(ctx, ['gh', ...ctx.args.filter((a) => !a.startsWith('-')).slice(0, 2)].join(' '), () => ghMain(ctx)))),
 };
 
 async function ghMain(ctx: CommandContext): Promise<number> {

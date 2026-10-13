@@ -405,6 +405,38 @@ describe('server.mjs and shared seeds', () => {
   }, 30_000);
 });
 
+describe('server.mjs: the upload limit counts the address the proxy appended', () => {
+  const procs: ChildProcess[] = [];
+  const dirs: string[] = [];
+  afterAll(() => { for (const p of procs) p.kill(); for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  it('a client cannot be many addresses by writing its own X-Forwarded-For', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'seed-rate-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'dist', 'index.html'), '<!doctype html><title>t</title>');
+    const proc = spawn(process.execPath, [serverPath], { env: { ...process.env, PORT: '0', STATIC_DIR: join(dir, 'dist'), SEED_DIR: join(dir, 'seeds'), TABCOMPUTER_SEED_SHARE: '1', TABCOMPUTER_SEED_RATE: '2' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    procs.push(proc);
+    const port = await new Promise<number>((resolve, reject) => {
+      proc.once('exit', (c) => reject(new Error(`server exited (${c})`)));
+      proc.stdout!.on('data', (d) => { const m = /listening on :(\d+)/.exec(String(d)); if (m) resolve(Number(m[1])); });
+    });
+    // as nginx sends it on: what the client wrote, then the address nginx saw
+    const upload = (forwarded: string) => realFetch(`http://127.0.0.1:${port}/api/seed`, { method: 'POST', body: new Uint8Array([31, 139, 8, 0]), headers: { 'x-forwarded-for': forwarded } });
+    const first = await upload('198.51.100.1, 203.0.113.7');
+    expect(first.status).toBe(200);
+    expect((await upload('198.51.100.2, 203.0.113.7')).status).toBe(200);
+    // a third from the same real address, under a third made-up one: over the limit of 2
+    const third = await upload('198.51.100.3, 203.0.113.7');
+    expect(third.status).toBe(429);
+    expect(await third.json()).toEqual({ error: 'Rate limit exceeded (2/month)' });
+    // another real address has its own count, whatever it wrote in front
+    expect((await upload('198.51.100.1, 203.0.113.8')).status).toBe(200);
+    // and the seed's record holds the real address
+    const { id } = await first.json() as { id: string };
+    expect(JSON.parse(readFileSync(join(dir, 'seeds', `${id}.meta`), 'utf8')).ip).toBe('203.0.113.7');
+  }, 30_000);
+});
+
 describe('seed (the clipboard snippet)', () => {
   it('carries no credential, and opens this site, not another', async () => {
     const { output, exitCode } = await run(shell, 'seed');

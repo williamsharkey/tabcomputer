@@ -1917,7 +1917,8 @@ const SEED_SHARE = process.env.TABCOMPUTER_SEED_SHARE === '1';
 const SEED_KEEP_DAYS = 60;
 const SEED_DIR = process.env.SEED_DIR || '/opt/tabcomputer/seeds';
 const SEED_MAX_SIZE = 512 * 1024; // 512KB max per seed (gzipped)
-const SEED_RATE_LIMIT = 200; // per IP per month
+// Uploads one address may make in a month (TABCOMPUTER_SEED_RATE)
+const SEED_RATE_LIMIT = Number(process.env.TABCOMPUTER_SEED_RATE) > 0 ? Math.floor(Number(process.env.TABCOMPUTER_SEED_RATE)) : 200;
 
 // In-memory rate limit tracker: ip -> { count, resetAt }
 const seedRates = new Map();
@@ -1939,6 +1940,8 @@ async function handleSeed(req, res, pathname) {
 
 function checkSeedRateLimit(ip) {
   const now = Date.now();
+  // (what is remembered stays small: a month that is over is forgotten)
+  if (seedRates.size > 10_000) for (const [k, e] of seedRates) if (now > e.resetAt) seedRates.delete(k);
   let entry = seedRates.get(ip);
   if (!entry || now > entry.resetAt) {
     // Reset monthly
@@ -1959,10 +1962,12 @@ async function handleSeedUpload(req, res) {
     return res.end();
   }
 
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  // The address the proxy in front appended, as the layer limits read it (requestAddress): the
+  // entries before it are whatever the client sent, and counting those let one client count as many
+  const ip = requestAddress(req, process.env.TABCOMPUTER_TRUST_PROXY || 'loopback');
   if (!checkSeedRateLimit(ip)) {
     res.writeHead(429, { 'content-type': 'application/json', ...cors });
-    return res.end(JSON.stringify({ error: 'Rate limit exceeded (200/month)' }));
+    return res.end(JSON.stringify({ error: `Rate limit exceeded (${SEED_RATE_LIMIT}/month)` }));
   }
 
   // Collect body (already gzipped from client)

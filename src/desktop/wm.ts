@@ -237,6 +237,8 @@ export interface MenuItem {
   disabled?: boolean;
   checked?: boolean;
   action?: () => void;
+  /** false: not in the phone layout's menu sheet (moving and tiling windows). Additive (API v1.7). */
+  phone?: boolean;
 }
 export interface MenuSpec { title: string; items: (MenuItem | 'separator')[] }
 
@@ -296,6 +298,15 @@ export function compactViewport(): boolean {
   return s > 0 && s <= 500 && window.innerHeight <= 500;
 }
 
+/**
+ * The size a native GUI app's window gets in the phone layout, CSS px: such
+ * apps were drawn for a large screen, so they keep one and the person pans
+ * and pinches over it (phone.ts). Never smaller than the work area.
+ */
+export function phoneSurfaceSize(wa: { width: number; height: number }): { width: number; height: number } {
+  return { width: Math.max(wa.width, 1024), height: Math.max(wa.height, 720) };
+}
+
 export class WindowManager implements DesktopAPI {
   readonly version = DESKTOP_API_VERSION;
   /** Element windows live in (positioned over the whole page; work area excludes menu bar and dock). */
@@ -315,6 +326,11 @@ export class WindowManager implements DesktopAPI {
   workAreaFn: () => Geometry;
   /** Narrow screens: every window fills the work area. */
   compact = false;
+  /**
+   * The phone layout (phone.ts, docs/DESKTOP.md "Phone layout"): an app is the
+   * whole work area, with no title bar. Set by the desktop shell; implies `compact`.
+   */
+  phone = false;
   /** App launches in progress (docs/DESKTOP.md "Launch feedback") */
   readonly launches = launches;
 
@@ -370,7 +386,8 @@ export class WindowManager implements DesktopAPI {
     const factory = this.kinds.get(content.kind);
     if (!factory) throw new Error(`desktop: no content kind '${content.kind}'`);
     win.content = factory(win, content, win.body);
-    if (opts.state === 'maximized' || this.compact) win.maximize(true);
+    // (the phone layout places a native app's menus and tooltips exactly, over its panned window)
+    if (opts.state === 'maximized' || (this.compact && !(this.phone && opts.override))) win.maximize(true);
     win.appear();
     if (opts.state === 'minimized') win.minimize();
     else if (opts.focus ?? !opts.override) win.focus();
@@ -565,7 +582,7 @@ export class WindowManager implements DesktopAPI {
   }
 
   relayout(): void {
-    const compact = compactViewport();
+    const compact = this.phone || compactViewport();
     if (compact !== this.compact) {
       this.compact = compact;
       this.root.classList.toggle('sd-compact', compact);
@@ -603,7 +620,7 @@ class WindowImpl implements DesktopWindow {
   private minHeight: number;
   readonly options: WindowOptions;
 
-  constructor(private wm: WindowManager, readonly id: string, opts: WindowOptions) {
+  constructor(readonly wm: WindowManager, readonly id: string, opts: WindowOptions) {
     this.options = { ...opts };
     if (opts.override) this.options.decorations = 'none';
     this.kind = opts.content?.kind ?? 'dom';
@@ -723,11 +740,14 @@ class WindowImpl implements DesktopWindow {
   }
 
   private chromeHeight(): number {
-    return this.decorated ? TITLEBAR_H : 0;
+    // (the phone layout draws no title bar)
+    return this.decorated && !this.wm.phone ? TITLEBAR_H : 0;
   }
 
   /** Frame rect in work-area coordinates for the current state. */
   frameGeometry(): Geometry {
+    // The phone layout: a native GUI app keeps a large screen's size (phoneSurfaceSize)
+    if (this.wm.phone && this.kind === 'surface' && !this.options.override) return { x: 0, y: 0, ...phoneSurfaceSize(this.wm.workArea()) };
     const s = this.wm.stateGeometry(this.state);
     if (s) return s;
     return { x: this.g.x, y: this.g.y, width: this.g.width, height: this.g.height + this.chromeHeight() };
@@ -1036,7 +1056,8 @@ class SurfaceImpl implements Surface {
     if (typeof ResizeObserver !== 'undefined') {
       let last = '';
       this.ro = new ResizeObserver(() => {
-        const r = body.getBoundingClientRect();
+        // (the phone layout draws these windows scaled, phone.ts: there the size is the layout's, not the one on screen)
+        const r = this.win.wm.phone ? { width: body.clientWidth, height: body.clientHeight } : body.getBoundingClientRect();
         const w = Math.max(1, Math.round(r.width * this.scale)), h = Math.max(1, Math.round(r.height * this.scale));
         const key = `${w}x${h}`;
         if (key === last || r.width === 0) return;

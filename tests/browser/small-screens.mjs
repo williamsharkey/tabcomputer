@@ -1,4 +1,5 @@
-// Phones and tablets (docs/DESKTOP.md "Small screens"), in Chromium with device emulation:
+// Phones and tablets (docs/DESKTOP.md "Small screens"), in Chromium with device emulation.
+// The desktop on them: a phone is given `?ui=desktop` (its own layout is tests/browser/phone-layout.mjs).
 //   no scroll    the page never scrolls sideways; the menu bar, dock, windows, menus, stacks
 //                and notifications stay inside the viewport
 //   windows      phones (also on their side) maximize every window; tablets get normal
@@ -68,7 +69,9 @@ for (const { name, phone, defaultBrowserType, ...device } of SIZES) {
   page.on('pageerror', (e) => console.log(name, 'pageerror', e.message));
   // Welcome dismissed, until the last step asks for it (sessionStorage survives the reload)
   await page.addInitScript(() => { try { if (!sessionStorage.getItem('show-welcome')) localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
-  await page.goto(url);
+  // A phone has a layout of its own now (tests/browser/phone-layout.mjs): this is the desktop on it, asked for
+  const narrow = Math.min(device.viewport.width, device.viewport.height) < 600;
+  await page.goto(narrow ? new URL('?ui=desktop', url).href : url);
   await page.waitForFunction(() => window.__tabcomputer?.terminal && !document.querySelector('.sd-booting'), null, { timeout: 60_000 });
   await page.waitForTimeout(1000);
   const vp = page.viewportSize();

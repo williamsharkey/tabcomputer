@@ -257,7 +257,9 @@ export async function startAppLink(o: {
     open: async (id, become) => {
       // A phone has no room for a desktop around the app that was asked for: the tab is the app,
       // with a way back to the desktop (tabcomputer#139)
-      const small = !become && phoneScreen();
+      // (the desktop's phone layout shows the app on the whole screen as it is, with the pill to leave
+      // it by: the tab becomes the app, with a bar back, only where a phone has no desktop under it)
+      const small = !become && phoneScreen() && !desktop()?.phone;
       if (become || small) await becomeApp((await installedRef(id)).ref, { back: small });
       else {
         const wm = desktop();

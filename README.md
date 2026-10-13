@@ -134,8 +134,8 @@ Not here: hardware devices, kernel modules, and any access to your own machine.
 ## What's in it
 
 - **Desktop.** Menu bar, dock, windows with snapping, Terminal with tabs, Files, Settings,
-  Activity, About, search (Ctrl+Space), light and dark themes, a phone layout with an
-  extra-keys bar. `?ui=terminal` gives the full-page terminal ([docs/DESKTOP.md](docs/DESKTOP.md)).
+  Activity, About, search (Ctrl+Space), light and dark themes, and on a phone a home screen
+  of apps with one app on the whole screen. `?ui=terminal` gives the full-page terminal ([docs/DESKTOP.md](docs/DESKTOP.md)).
 - **Shell and commands.** A bash-compatible shell and built-in commands
   (coreutils, grep/sed/awk, git, gh, node and npm, jq, rg, tmux, vi, nano). `help` lists the
   common ones, `help --all` all of them.

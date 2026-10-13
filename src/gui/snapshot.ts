@@ -1,6 +1,7 @@
 /**
  * Snapshots of started GUI apps (docs/research/GUI_SNAPSHOTS.md). The setting
- * is in snapshot-setting.ts: on by default for the apps the test restores.
+ * is in snapshot-setting.ts: off unless set, and then on for the apps the
+ * test restores.
  *
  * A GTK or Qt app spends its launch computing the same start-up every time
  * (docs/GUI_LAUNCH.md). With snapshots on, the first start of an app is kept:

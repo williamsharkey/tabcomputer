@@ -101,8 +101,8 @@ describe('npm install -g: the command is found by which (#110)', () => {
     expect((await sh(shell, 'which tcagent; echo "rc=$?"')).out).toBe('/usr/local/bin/tcagent\nrc=0\n');
     expect((await sh(shell, 'type tcagent')).out).toBe('tcagent is /usr/local/bin/tcagent\n');
     expect((await sh(shell, 'which tc-no-such-command; echo "rc=$?"')).out).toBe('rc=1\n');
-    // without the x bit Debian's which doesn't see the file: what #110 reported
+    // without the x bit Debian's which doesn't see the file: what #110 reported (the shell's own which stays the builtin in Debian mode, #128, so ask for Debian's by path)
     await fs.chmod('/usr/local/lib/node_modules/@tcfix/agent/bin/tcagent.js', 0o644);
-    expect((await sh(shell, 'which tcagent; echo "rc=$?"')).out).toBe('rc=1\n');
+    expect((await sh(shell, '/usr/bin/which tcagent; echo "rc=$?"')).out).toBe('rc=1\n');
   }, 180_000);
 });

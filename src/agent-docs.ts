@@ -185,7 +185,10 @@ ${bootSection(ctx, name)}
   prebuilt one: \`sudo apt remove -y NAME && pkg install --reinstall NAME\`.
   \`tabcomputer-alternatives --list\` shows which programs are ${name}'s builtins
   and which are Debian's; \`--set NAME debian\` and \`--auto NAME\` switch one.
-- \`npm install\` works; \`pip install\` installs pure-Python wheels.
+- \`npm install\` works. \`pip install\` on the built-in Python installs pure-Python
+  packages, and ones whose compiled part is optional without it (Flask, PyYAML,
+  tornado). It can't load compiled extensions: numpy, pandas, check50 and Jupyter
+  need Debian's Python (\`toolchain install python\`, which has numpy).
 - \`python3\` is Pyodide until a \`pkg\` or Debian python3 is installed.
 - \`gui\` lists X11 desktop apps; \`gui NAME\` opens one in a window.
 

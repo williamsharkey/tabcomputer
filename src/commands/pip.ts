@@ -2,7 +2,9 @@
  * pip for the WASI CPython package (`pkg install python3`): resolves
  * requirements against PyPI's JSON API, downloads pure-Python wheels and
  * installs them into site-packages (or a venv, or --target), with
- * console-script launchers, RECORD files and uninstall.
+ * console-script launchers, RECORD files and uninstall. A release with no
+ * such wheel installs from its source distribution when that needs no
+ * compiler (pip-sdist.ts).
  *
  * Real pip can't run inside WASI python (no sockets or TLS there), so this
  * does pip's job from the page, which can fetch PyPI (CORS-enabled).
@@ -14,6 +16,8 @@ import {
   parseVersion, compareVersions, satisfies, parseRequirement, evalMarker, markerEnv,
   parseWheelName, wheelCompatible, normalizeName, parseSpecifiers, type Requirement, type Specifier,
 } from '../utils/pep440';
+import { readTarball } from '../utils/tar';
+import { buildSdist, stripTopDir, CompiledSdistError, OPTIONAL_EXTENSIONS } from './pip-sdist';
 
 export const PY_PREFIX = '/usr/lib/pkg/python3';
 export const PY_VERSION = '3.13.7';
@@ -118,7 +122,15 @@ export async function listInstalled(fs: FileSystem, site: string): Promise<Map<s
 interface PypiFile { filename: string; url: string; packagetype: string; requires_python?: string | null; yanked?: boolean; size?: number; digests?: { sha256?: string } }
 interface PypiProject { info: { name: string; version: string; requires_dist?: string[] | null; requires_python?: string | null; summary?: string }; releases: Record<string, PypiFile[]>; urls?: PypiFile[] }
 
-export interface Candidate { name: string; version: string; wheel: PypiFile; requires: string[] }
+/** `wheel` is the file to download: a pure-Python wheel, or with `sdist` the source distribution. */
+export interface Candidate { name: string; version: string; wheel: PypiFile; requires: string[]; sdist?: boolean }
+
+/** What to do about a project the built-in Python can't have (tabcomputer#125). */
+const COMPILED_HINT = `the built-in Python can't load compiled extensions, and there is no pure-Python build of this one.
+Debian's Python can install it: toolchain install python`;
+/** In the Pyodide distribution, which \`pyodide\` fetches on first import (checked in a tab: docs/research/PYTHON_NATIVE_WHEELS.md). */
+const PYODIDE_HAS = new Set(['numpy', 'pandas', 'matplotlib']);
+const pyodideHint = (name: string) => (PYODIDE_HAS.has(normalizeName(name)) ? `\nOr run the program with pyodide (pyodide FILE.py), which has ${name}.` : '');
 
 export class PyPI {
   private projects = new Map<string, Promise<PypiProject>>();
@@ -148,7 +160,12 @@ export class PyPI {
     return v.info?.requires_dist ?? [];
   }
 
-  /** Newest version matching `specs` that has a pure-Python wheel. */
+  /**
+   * Newest version matching `specs` that can be installed: one with a
+   * pure-Python wheel, or one whose source distribution needs no compiler
+   * (a release with no wheels at all, checked once it is downloaded, or a
+   * project whose extension is optional).
+   */
   async best(req: Requirement, specs: Specifier[], pre: boolean): Promise<Candidate> {
     const proj = await this.project(req.name);
     const versions = Object.keys(proj.releases)
@@ -157,6 +174,7 @@ export class PyPI {
       .sort((a, b) => compareVersions(b.p, a.p));
     const py = parseVersion(PY_VERSION)!;
     let sdistOnly: string | null = null;
+    const optional = OPTIONAL_EXTENSIONS.has(normalizeName(proj.info.name));
     for (const allowPre of pre ? [true] : [false, true]) {
       for (const { v, p } of versions) {
         if (!satisfies(p, specs, allowPre)) continue;
@@ -167,7 +185,14 @@ export class PyPI {
           return !!w && wheelCompatible(w, PY_MINOR);
         })() && (!f.requires_python || safeSatisfies(py, f.requires_python)));
         if (!wheels.length) {
-          if (files.some(f => f.packagetype === 'sdist') && !sdistOnly) sdistOnly = v;
+          const sdist = files.find(f => f.packagetype === 'sdist' && /\.(tar\.gz|tgz|zip)$/.test(f.filename) &&
+            (!f.requires_python || safeSatisfies(py, f.requires_python)));
+          // Wheels for other platforms mean a compiled part: only worth the download when it is
+          // optional. (And a project that has one now had one before it published wheels: numpy 1.5.)
+          if (sdist && (optional || (!sdistOnly && !files.some(f => f.packagetype === 'bdist_wheel')))) {
+            return { name: proj.info.name, version: v, wheel: sdist, requires: [], sdist: true };
+          }
+          if (sdist && !sdistOnly) sdistOnly = v;
           continue;
         }
         // the most specific tag first (py3 over py2.py3 doesn't matter: any works)
@@ -177,7 +202,7 @@ export class PyPI {
       if (versions.some(({ p }) => satisfies(p, specs, false))) break;
     }
     const spec = specs.map(s => s.op + s.version).join(',');
-    if (sdistOnly) throw new Error(`${proj.info.name}${spec}: version ${sdistOnly} has no pure-Python wheel (only a source distribution, which tabcomputer's pip can't build yet)`);
+    if (sdistOnly) throw new Error(`${proj.info.name}${spec}: version ${sdistOnly} has a compiled extension and no wheel for this Python.\n${COMPILED_HINT}${pyodideHint(proj.info.name)}`);
     throw new Error(`No matching distribution found for ${req.name}${spec}`);
   }
 }
@@ -298,9 +323,17 @@ function parseEntryPoints(text: string): Record<string, Record<string, string>> 
   return out;
 }
 
-/** Install one wheel's bytes. Returns the dist-info directory. */
-export async function installWheel(fs: FileSystem, wheel: Uint8Array, target: PipTarget, opts: { requested?: boolean } = {}): Promise<string> {
-  const entries = readZip(wheel);
+/** The files of a downloaded sdist (.tar.gz or .zip), without its top directory. */
+async function unpackSdist(filename: string, data: Uint8Array): Promise<Map<string, Uint8Array>> {
+  const files = new Map<string, Uint8Array>();
+  if (filename.endsWith('.zip')) for (const e of readZip(data)) files.set(e.name, await e.data());
+  else for (const e of await readTarball(data)) if (e.type === '0') files.set(e.name, e.data);
+  return stripTopDir(files);
+}
+
+/** Install one wheel: its bytes, or the entries built from an sdist. Returns the dist-info directory. */
+export async function installWheel(fs: FileSystem, wheel: Uint8Array | ZipEntry[], target: PipTarget, opts: { requested?: boolean } = {}): Promise<string> {
+  const entries = wheel instanceof Uint8Array ? readZip(wheel) : wheel;
   const di = entries.find(e => /^[^/]+\.dist-info\/WHEEL$/.test(e.name));
   if (!di) throw new Error('wheel has no .dist-info/WHEEL');
   const distInfo = di.name.split('/')[0];
@@ -474,7 +507,8 @@ const HELP = `Usage:
   pip list | freeze | show <package> | --version
 
 Installs pure-Python wheels from PyPI into the WASI python (pkg install python),
-the active venv ($VIRTUAL_ENV), or --target DIR.
+the active venv ($VIRTUAL_ENV), or --target DIR. A release with only a source
+distribution installs from it when it needs no compiler.
 `;
 
 async function readRequirements(fs: FileSystem, file: string, cwd: string, seen = new Set<string>()): Promise<string[]> {
@@ -642,14 +676,22 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
         return 0;
       }
 
-      const toInstall: { name: string; version: string; data: Uint8Array; requested: boolean }[] = [];
+      const toInstall: { name: string; version: string; data: Uint8Array | ZipEntry[]; requested: boolean }[] = [];
       for (const lw of localWheels) {
         const data = await fs.readFile(lw.path) as Uint8Array;
         const w = parseWheelName(lw.path.split('/').pop()!)!;
         log(`Processing ${lw.path}\n`);
         toInstall.push({ name: w.name, version: w.version, data, requested: true });
       }
-      for (const c of plan.install) toInstall.push({ name: c.name, version: c.version, data: await download(c, fetchFn, log), requested: plan.requested.has(normalizeName(c.name)) });
+      for (const c of plan.install) {
+        let data: Uint8Array | ZipEntry[] = await download(c, fetchFn, log);
+        if (c.sdist) {
+          const built = await buildSdist(await unpackSdist(c.wheel.filename, data), normalizeName(c.name));
+          log(`  Built ${c.name} ${built.version} from its source distribution` + (built.skipped ? ` (pure Python: ${built.skipped} compiled source file${built.skipped === 1 ? '' : 's'} left out)\n` : '\n'));
+          data = built.entries;
+        }
+        toInstall.push({ name: c.name, version: c.version, data, requested: plan.requested.has(normalizeName(c.name)) });
+      }
       if (!toInstall.length) {
         if (editableNames.length) log(`Successfully installed ${editableNames.join(' ')}\n`);
         return 0;
@@ -667,7 +709,7 @@ export async function pipMain(ctx: CommandContext, argv: string[], target: PipTa
       log(`Successfully installed ${[...editableNames, ...toInstall.map(t => `${t.name}-${t.version}`)].join(' ')}\n`);
       return 0;
     } catch (e: any) {
-      ctx.stderr += `ERROR: ${e?.message ?? e}\n`;
+      ctx.stderr += `ERROR: ${e?.message ?? e}\n` + (e instanceof CompiledSdistError ? `${COMPILED_HINT}\n` : '');
       return 1;
     }
   }
@@ -710,7 +752,7 @@ export async function pipTarget(ctx: CommandContext): Promise<PipTarget> {
 
 export const pipWasiCmd: Command = {
   name: 'pip',
-  description: 'Install Python packages (pure-Python wheels from PyPI)',
+  description: 'Install Python packages (pure-Python wheels and sources from PyPI)',
   async exec(ctx) {
     return pipMain(ctx, ctx.args, await pipTarget(ctx));
   },

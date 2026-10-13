@@ -533,6 +533,12 @@ if (wants('link')) for (const device of DEVICES) {
     w = await linkWindow(page);
     check(`${D} link: System → Share This Setup as a Link… opens the window with the same script`, !!w && w.script.startsWith(want), JSON.stringify(w && w.script));
   }
+  // the session is the tab's: a reload keeps it
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await booted(page);
+  const kept = (await side(page, 'link --script')).o;
+  check(`${D} link: a reload of the tab keeps the session, so link still has the script`, kept === want + 'cd ~', kept);
   await page.close();
   await done(ctx, `${D} link`);
 

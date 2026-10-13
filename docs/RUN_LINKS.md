@@ -72,6 +72,8 @@ Code: `src/link-fragment.ts` (what the part after `#` means, with no DOM), `src/
 
 Addresses of the page's examples, with `https://tabcomputer.com` as the site (`link-fragment.test.ts` prints them): a Python one-liner 68 characters, a Flask hello 285, the jq playground 531, the expenses table 215, a C hello 460.
 
+From a link to working, each from a fresh profile, on a local build with the site's files from localhost (`tests/browser/link-is-computer.mjs --only times`, headless Chrome on a Mac, 1280 px and a 390 x 844 touch screen alike): the Run / Cancel window or the install prompt is up about 0.35 s after the link is opened. From the click on Run or Install: the Python one-liner prints after 0.2 s, the Flask hello answers after 1.1 s (it fetches Flask from PyPI), the jq playground shows its first result after 0.15 s, the expenses table is usable after 0.15 s. The C hello was not run: its `needs=c` is Debian's gcc, which a local build does not serve. A deployed site adds its own download times to each.
+
 ### link: a link from what you did
 
 `link` (and System → "Share This Setup as a Link…") writes the shortest script that gets another person to where this tab is, and the address that carries it. It reads what was typed at this tab's terminals since the tab was new. It works by rules; no model reads the session.

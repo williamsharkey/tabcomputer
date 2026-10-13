@@ -31,6 +31,9 @@ import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
 import { flushStorage, reloadAfterFlush } from '../storage';
 
+/** The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts) */
+const ASKED_FOR_APP = typeof location !== 'undefined' && new URLSearchParams(location.search).has('app');
+
 export interface DesktopDeps {
   fs: FileSystem;
   shell: Shell;
@@ -960,9 +963,10 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         performance.mark('shiro:desktop:revealed');
         // A first visit gets the tour
         // A first visit gets the welcome (welcome.ts, loaded only until it's dismissed)
+        // Never over an app the address asked for (tabcomputer#139): the card waits for a visit without a link
         let seen = true;
         try { seen = !!localStorage.getItem('tabcomputer-desktop-welcome'); } catch {}
-        if (!seen) setTimeout(() => void import('./welcome').then(m => m.showWelcome(ctx)), 900);
+        if (!seen && !ASKED_FOR_APP) setTimeout(() => void import('./welcome').then(m => m.showWelcome(ctx)), 900);
         // A live icon set showed its still so far: bring it to life (crossfaded)
         if (iconSet(iconSetId).kind === 'live') void switchIconSet(iconSetId);
       };

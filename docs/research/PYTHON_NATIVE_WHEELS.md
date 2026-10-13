@@ -301,8 +301,8 @@ rule, its table and the measured times are in
 [DEBIAN.md](../DEBIAN.md) ("Which Python `python3` is after the set is
 installed"); the code is `src/python/choose.ts`. For this document's
 subject: a program that imports numpy still runs in Pyodide after the set is
-installed (0.4 to 0.6 s for `python3 -c "import numpy"`, against 3.4 s for
-Debian's numpy under the emulator), and the case this document listed as
+installed (0.4 to 0.6 s for `python3 -c "import numpy"`, against 3.1 to 3.4 s
+for Debian's numpy under the emulator), and the case this document listed as
 working in neither Python, numpy together with the network, now runs on
 Debian's when the set is installed: a program that imports a Pyodide package
 and `socket`, `subprocess` or `requests` is sent there.

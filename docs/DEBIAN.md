@@ -260,19 +260,22 @@ the page, the fastest of three runs:
 
 | Command | Before `toolchain install python` | After |
 | --- | ---: | ---: |
-| `python3 hello.py` | 24 | 21 |
-| `python3 lab.py` (`input()` and a 2-million sieve) | 34 | 29 |
-| `python3 -c "import numpy"` (after `pip install numpy`: Pyodide) | 421 | 623 |
-| a turtle program | 64 (the line that says what to run) | 7,656 (Debian's Python, a window) |
-| `pip install requests` | 536 | 350 (the wheels came from the browser's cache) |
+| `python3 hello.py` | 21 | 19 |
+| `python3 lab.py` (`input()` and a 2-million sieve) | 36 | 29 |
+| `python3 -c "import numpy"` (after `pip install numpy`: Pyodide) | 361 | 384 |
+| a turtle program | 73 (the line that says what to run) | 6,906 (Debian's Python, a window) |
+| `pip install requests` | 515 | 188 (the wheels came from the browser's cache) |
 
 Debian's Python by name, which is what `python3` ran after the install until
-this change: `python3.13 hello.py` 480 ms (794 the first time), `python3.13
-lab.py` 557 ms, `python3.13 -c "import numpy"` 3,420 ms. Also: the first
-`python3` of a fresh profile 187 ms (the built-in Python is fetched), `python3
--m venv DIR` 2 ms, `python3.13 -m venv DIR` 42 s (Debian's ensurepip),
-`pip install setproctitle` through Debian's pip 15 s. The local server has
-the layer on disk; `toolchain install python` itself took 0.4 s there.
+this change: `python3.13 hello.py` 476 ms (850 the first time), `python3.13
+lab.py` 608 ms, `python3.13 -c "import numpy"` 3,122 ms. Also: the first
+`python3` of a fresh profile 171 ms (the built-in Python is fetched), the
+first `import numpy` 1.9 s (Pyodide and numpy are fetched), `python3 -m venv
+DIR` 2 ms, `python3.13 -m venv DIR` 40 s (Debian's ensurepip), `pip install
+setproctitle` through Debian's pip 14 s. The local server has the layer on
+disk; `toolchain install python` itself took 0.5 s there. An earlier run of
+the same script on the same day gave the same picture (24 and 21 ms, 34 and
+29 ms, 421 and 623 ms, 7.7 s for the turtle program).
 
 Not done: `pip list` and `pip freeze` do not include what only Debian's
 Python has; a request that mixes a pure package and a compiled one goes to

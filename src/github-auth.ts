@@ -6,12 +6,14 @@
  * approves at github.com/login/device. The token goes where gh and git
  * already look (localStorage `tabcomputer_github_token`). github.com's OAuth
  * endpoints have no CORS, so requests go through the server's narrow
- * `/api/github-login/` proxy route.
+ * `/api/github-login/` proxy route, or in private network mode (net-mode.ts)
+ * over the TCP relay with TLS in the page.
  */
 
 import type { FileSystem } from './filesystem';
 import { createServerWindow } from './server-window';
 import { getShiroOrigin } from './utils/shiro-origin';
+import { githubApiBase, networkMode } from './net-mode';
 import { copyText } from './utils/osc52';
 import { GLOBAL_GITCONFIG, formatGitConfig, parseGitConfig } from './commands/git-config';
 import { ensureGitCredentialHelper } from './git-credential';
@@ -35,11 +37,24 @@ export interface DeviceCode {
 type FetchLike = typeof fetch;
 
 async function postForm(fetchImpl: FetchLike, path: string, body: Record<string, string>): Promise<any> {
-  const resp = await fetchImpl(`${getShiroOrigin()}/api/github-login${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let resp: Response;
+  if (networkMode() === 'private') {
+    // github.com's OAuth endpoints allow no cross-origin request: TLS in this
+    // page, over the relay, so the server never sees the token GitHub answers with
+    const { relayAvailable, relayFetch } = await import('./commands/relay-fetch');
+    if (!relayAvailable()) throw new Error('private network mode needs the relay for GitHub sign-in, and this page has none (netmode proxy turns it off)');
+    resp = await relayFetch(`https://github.com${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams(body).toString(),
+    });
+  } else {
+    resp = await fetchImpl(`${getShiroOrigin()}/api/github-login${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
   const data = await resp.json().catch(() => null);
   if (!resp.ok && !data?.error) throw new Error(`GitHub returned HTTP ${resp.status}`);
   return data;
@@ -112,7 +127,7 @@ export async function ensureGitIdentity(
   // (after the identity: its rewrite of the file keeps one value per key)
   const helper = () => ensureGitCredentialHelper(fs as Parameters<typeof ensureGitCredentialHelper>[0], GLOBAL_GITCONFIG).catch(() => false);
   if (config['user.name'] && config['user.email']) { await helper(); return {}; }
-  const api = (path: string) => fetchImpl(`${getShiroOrigin()}/api/github${path}`, {
+  const api = (path: string) => fetchImpl(`${githubApiBase(getShiroOrigin())}${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
   }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   const user = await api('/user');

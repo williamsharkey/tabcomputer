@@ -8,7 +8,6 @@ import { gitBlame } from './git-blame';
 import { gitTagHandler } from './git-tag';
 import { resolveRevision } from './git-utils';
 import { startReflog } from './git-reflog';
-import { getShiroOrigin } from '../utils/shiro-origin';
 import { activeProfile } from '../profile';
 import { gitPlumbing, changeSummary, stagedCount, statusText, gitDate, unmergedPaths, pathEntries, changesBetweenTrees } from './git-plumbing';
 import { packageShadows } from '../pkg-manager';
@@ -17,6 +16,8 @@ import { builtinCloneHandles } from './git-clone-route';
 import { githubCloneSize, githubRepo, pageCloneLimit, mb } from './git-clone-size';
 import { splitShortOptions, unknownOption, realGit, PREFER_REAL } from './git-route';
 import { GLOBAL_GITCONFIG, parseGitConfig, formatGitConfig } from './git-config';
+import { gitHttpFor } from './git-transport';
+import { apiCloneOp, apiFetchOp, apiPullOp, apiPushOp } from './git-api-ops';
 
 // git clone's pack indexing in a worker (vite-plugin-isogit.ts calls it from fromPack)
 installPackIndexer();
@@ -524,7 +525,8 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
           };
           ctx.stderr = `Cloning into '${cloneTarget || repoName}'...\n`;
 
-          const corsProxy = ctx.env['GIT_CORS_PROXY'] || `${getShiroOrigin()}/git-proxy`;
+          // proxy, relay or GitHub's API (git-transport.ts)
+          const net = gitHttpFor(ctx.env, url, http);
           const token = ctx.env['GITHUB_TOKEN'] || (typeof localStorage !== 'undefined' ? localStorage.getItem('tabcomputer_github_token') || '' : '');
           // Too big for the page (#43): the full git, in its own worker, or a hint, never a frozen tab
           const limit = pageCloneLimit(ctx.env);
@@ -542,11 +544,21 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
               + `hint: or read just the files you need: gh api repos/${githubRepo(url)}/contents/PATH\n`;
             return 128;
           }
+          // github.com in private mode: GitHub's API from the browser; null: the relay does it
+          const viaApi = net.transport === 'api'
+            ? await apiCloneOp(ctx, { fs, dir: targetDir, url, token, remote: remoteName, ref: cloneBranch, depth: cloneDepth }).catch(async (e) => { await undo(); throw e; })
+            : null;
+          if (viaApi !== null && viaApi !== 0) { await undo(); return viaApi; }
+          if (viaApi === null && net.transport === 'api') {
+            // (what the API had written before it gave up: the relay's clone starts clean)
+            await ctx.fs.rm(gitDir, { recursive: true }).catch(() => {});
+            await ctx.fs.mkdir(gitDir, { recursive: true });
+          }
           try {
-            await Promise.race([
+            if (viaApi === null) await Promise.race([
               git.clone({
-                fs, http, dir: targetDir, url,
-                corsProxy,
+                fs, http: net.http, dir: targetDir, url,
+                ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}),
                 remote: remoteName,
                 // as git: --depth implies --single-branch
                 singleBranch: singleBranch ?? (asFullGit ? cloneDepth !== undefined : true),
@@ -644,21 +656,27 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
         }
 
         case 'push': {
-          const { remote, ref, token, corsProxy } = parseRemoteArgs(ctx);
+          const { remote, ref, token } = parseRemoteArgs(ctx);
           if (!token) {
             ctx.stderr = 'error: not signed in to GitHub. Run: gh auth login\n';
             return 1;
           }
           const currentBranch = ref || await git.currentBranch({ fs, dir }) || 'main';
           const pushUrl = await remoteUrl(fs, dir, remote);
+          const net = gitHttpFor(ctx.env, pushUrl, http);
           ctx.stdout = `Pushing to ${remote}/${currentBranch}...\n`;
+          const pushForce = ctx.args.includes('-f') || ctx.args.includes('--force');
+          const pushedByApi = net.transport === 'api'
+            ? await apiPushOp(ctx, { fs, dir, url: pushUrl, token, remote, branch: currentBranch, force: pushForce })
+            : null;
+          if (pushedByApi !== null && pushedByApi !== 0) return pushedByApi;
           try {
-            const result = await git.push({
-              fs, http, dir,
+            const result = pushedByApi === 0 ? { ok: true } as Awaited<ReturnType<typeof git.push>> : await git.push({
+              fs, http: net.http, dir,
               remote,
               ref: currentBranch,
               force: ctx.args.includes('-f') || ctx.args.includes('--force'),
-              corsProxy,
+              ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}),
               ...githubAuth(token, pushUrl),
               onMessage: (msg: string) => { ctx.stdout += msg; },
             });
@@ -700,7 +718,7 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
         }
 
         case 'fetch': {
-          const { remote, token, corsProxy } = parseRemoteArgs(ctx);
+          const { remote, token } = parseRemoteArgs(ctx);
           const quiet = ctx.args.includes('-q') || ctx.args.includes('--quiet');
           // --all: every remote (none is fine: nothing to do)
           const remotes = ctx.args.includes('--all')
@@ -712,10 +730,16 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
               return 128;
             }
             if (!quiet) ctx.stderr += `Fetching ${r}\n`;
+            const net = gitHttpFor(ctx.env, await remoteUrl(fs, dir, r), http);
+            if (net.transport === 'api') {
+              const code = await apiFetchOp(ctx, { fs, dir, url: await remoteUrl(fs, dir, r), token, remote: r, all: true });
+              if (code === 0) continue;
+              if (code !== null) return code;
+            }
             await git.fetch({
-              fs, http, dir,
+              fs, http: net.http, dir,
               remote: r,
-              corsProxy,
+              ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}),
               prune: ctx.args.includes('--prune') || ctx.args.includes('-p'),
               tags: ctx.args.includes('--tags') || ctx.args.includes('-t'),
               ...githubAuth(token, await remoteUrl(fs, dir, r)),
@@ -725,14 +749,20 @@ async function gitMain(ctx: CommandContext, reflog: ReflogHook = {}): Promise<nu
         }
 
         case 'pull': {
-          const { remote, ref, token, corsProxy } = parseRemoteArgs(ctx);
+          const { remote, ref, token } = parseRemoteArgs(ctx);
           const currentBranch = ref || await git.currentBranch({ fs, dir }) || 'main';
+          const net = gitHttpFor(ctx.env, await remoteUrl(fs, dir, remote), http);
           ctx.stdout = `Pulling from ${remote}/${currentBranch}...\n`;
+          if (net.transport === 'api') {
+            const code = await apiPullOp(ctx, { fs, dir, url: await remoteUrl(fs, dir, remote), token, remote, branch: currentBranch, author: await resolveAuthor(ctx, fs, dir) });
+            if (code === 0) { ctx.stdout += `done.\n`; break; }
+            if (code !== null) return code;
+          }
           await git.pull({
-            fs, http, dir,
+            fs, http: net.http, dir,
             remote,
             ref: currentBranch,
-            corsProxy,
+            ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}),
             singleBranch: true,
             author: await resolveAuthor(ctx, fs, dir),
             ...githubAuth(token, await remoteUrl(fs, dir, remote)),
@@ -1166,13 +1196,14 @@ async function lsRemote(ctx: CommandContext, fs: any, cwd: string, dir: string |
   const target = pos[0] ?? 'origin';
   const url = dir && !/[:@]/.test(target) ? await remoteUrl(fs, dir, target) : target;
   if (!url) { ctx.stderr = `fatal: '${target}' does not appear to be a git repository\n`; return 128; }
-  const { token, corsProxy } = parseRemoteArgs(ctx);
+  const { token } = parseRemoteArgs(ctx);
+  const net = gitHttpFor(ctx.env, url, http);
   void cwd;
   const heads = ctx.args.includes('--heads') || ctx.args.includes('-h') || ctx.args.includes('--branches');
   const tags = ctx.args.includes('--tags') || ctx.args.includes('-t');
   let refs: { ref: string; oid: string; target?: string; peeled?: string }[];
   try {
-    refs = await git.listServerRefs({ http, url, corsProxy, symrefs: true, peelTags: true, ...githubAuth(token, url) });
+    refs = await git.listServerRefs({ http: net.http, url, ...(net.corsProxy ? { corsProxy: net.corsProxy } : {}), symrefs: true, peelTags: true, ...githubAuth(token, url) });
   } catch (e: any) {
     ctx.stderr = `fatal: unable to access '${url}': ${e.message}\n`;
     return 128;
@@ -1194,7 +1225,7 @@ async function remoteUrl(fs: any, dir: string, remote: string): Promise<string |
   try { return await git.getConfig({ fs, dir, path: `remote.${remote}.url` }); } catch { return undefined; }
 }
 
-function parseRemoteArgs(ctx: CommandContext): { remote: string; ref: string; token: string; corsProxy: string } {
+function parseRemoteArgs(ctx: CommandContext): { remote: string; ref: string; token: string } {
   let remote = 'origin';
   let ref = '';
   const positional: string[] = [];
@@ -1208,9 +1239,7 @@ function parseRemoteArgs(ctx: CommandContext): { remote: string; ref: string; to
 
   const token = ctx.env['GITHUB_TOKEN']
     || (typeof localStorage !== 'undefined' ? localStorage.getItem('tabcomputer_github_token') || '' : '');
-  const corsProxy = ctx.env['GIT_CORS_PROXY'] || `${getShiroOrigin()}/git-proxy`;
-
-  return { remote, ref, token, corsProxy };
+  return { remote, ref, token };
 }
 
 

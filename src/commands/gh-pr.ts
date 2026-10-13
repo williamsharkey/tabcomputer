@@ -1,4 +1,5 @@
 import git from './git-cached';
+import { githubApiBase } from '../net-mode';
 import { CommandContext } from './index';
 import { ghApi, parseFlags, getRepoFromFlags, detectRepo, timeAgo, isDryRun } from './gh';
 
@@ -253,7 +254,7 @@ Commands:
       }
       // When Accept is diff, data may come back as text via json parse fail (null) — re-fetch as text
       if (data === null) {
-        const baseUrl = typeof location !== 'undefined' ? location.origin + '/api/github' : 'https://api.github.com';
+        const baseUrl = typeof location !== 'undefined' ? githubApiBase(location.origin) : 'https://api.github.com';
         const url = `${baseUrl}${base}/pulls/${num}`;
         const resp = await fetch(url, {
           headers: {

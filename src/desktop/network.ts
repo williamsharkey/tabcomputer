@@ -7,6 +7,7 @@
  * silently.
  */
 
+import { githubApiBase } from '../net-mode';
 import {
   networkCredential, networkStatus, onNetworkStatus, setNetworkSignInHandler, setNetworkStatus,
   resetNetworkDecline, ownRelay, onOwnRelayChange, probeRelayToken, relayTokenUrlFor, type NetworkNeed, type NetworkStatus,
@@ -125,7 +126,7 @@ export async function signedInAccount(): Promise<string | null> {
   const tok = networkCredential();
   if (!tok) return null;
   try {
-    const res = await fetch('/api/github/user', { headers: { Authorization: `Bearer ${tok}`, Accept: 'application/vnd.github+json' } });
+    const res = await fetch(`${githubApiBase('')}/user`, { headers: { Authorization: `Bearer ${tok}`, Accept: 'application/vnd.github+json' } });
     if (!res.ok) return null;
     return (await res.json())?.login ?? null;
   } catch { return null; }

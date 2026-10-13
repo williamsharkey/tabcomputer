@@ -9,6 +9,7 @@ import { ghWorkflowHandler, ghRunHandler } from './gh-workflow';
 import { ghLabelHandler } from './gh-label';
 import { ghSearchHandler } from './gh-search';
 import { normalizeGhArgs, takeJsonFlags, finishJson, GhUsageError, type JsonRequest } from './gh-cli';
+import { githubApiBase, withCommandEnv } from '../net-mode';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import {
   DEFAULT_GITHUB_SCOPES, GITHUB_TOKEN_KEY, ensureGitIdentity, openGitHubLoginPanel,
@@ -35,7 +36,8 @@ export async function detectRepo(ctx: CommandContext): Promise<{ owner: string; 
 export async function ghApi(
   token: string, method: string, path: string, body?: any, extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; data: any; headers: Headers }> {
-  const baseUrl = `${getShiroOrigin()}/api/github`;
+  // (private mode: GitHub itself, which allows the cross-origin request; net-mode.ts)
+  const baseUrl = githubApiBase(getShiroOrigin());
   const url = path.startsWith('http') ? path : `${baseUrl}${path.startsWith('/') ? path : '/' + path}`;
   const headers: Record<string, string> = {
     'Accept': 'application/vnd.github+json',
@@ -170,7 +172,12 @@ function parseScopes(flags: Record<string, string>): string[] {
 export const ghCmd: Command = {
   name: 'gh',
   description: 'GitHub CLI',
-  async exec(ctx: CommandContext) {
+  // (TABCOMPUTER_NETWORK_MODE=proxy gh ...: the variable reaches ghApi; net-mode.ts)
+  exec: (ctx: CommandContext) => withCommandEnv(ctx.env, () => ghMain(ctx)),
+};
+
+async function ghMain(ctx: CommandContext): Promise<number> {
+  {
     const sub = ctx.args[0];
 
     if (sub === '--version' || sub === '-v') {
@@ -214,8 +221,8 @@ Commands:
     const code = await ghDispatch(ctx, sub);
     if (json && code === 0) return finishJson(ctx, json, ctx.args[1] ?? '');
     return code;
-  },
-};
+  }
+}
 
 async function ghDispatch(ctx: CommandContext, sub: string): Promise<number> {
     const token = getToken(ctx);

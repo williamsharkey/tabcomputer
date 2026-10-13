@@ -67,7 +67,10 @@ async function makeFetcher(guest: GuestNet | null): Promise<NetFetcher> {
       close() { void s.close(); },
     };
   };
-  return new NetFetcher({ dial });
+  // A guest is a node process that ends when nothing is pending: a kept-alive
+  // connection (its idle timer, an HTTP/2 session's reader) held the process
+  // open after its last fetch, for a minute or for good. So no reuse there.
+  return new NetFetcher(stack ? { dial, http2: false, idleMs: 0 } : { dial });
 }
 
 /** Can this page reach the relay at all (a browser page, not a test in node)? */

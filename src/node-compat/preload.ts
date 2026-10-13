@@ -1,5 +1,6 @@
 import type { CommandContext } from '../commands/index';
 import { getShiroOrigin } from '../utils/shiro-origin';
+import { privateFetch } from '../net-private';
 import { DEFAULT_CLAUDE_THEME, ensureClaudeBootstrap } from '../claude-config';
 import { ensureClaudeAuthState } from '../claude-auth';
 import { LazyTextMap, decodeUtf8Strict } from './file-cache';
@@ -188,11 +189,14 @@ export async function preloadEnvironment(
             refresh_token: oauth.refreshToken,
             client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
           });
-          const resp = await fetch(tokenUrl, {
+          // (private network mode: platform.claude.com itself, over the relay; net-private.ts)
+          const site = getShiroOrigin();
+          const guestNet = (ctx as any).nodeGuest?.netStack;
+          const resp = await privateFetch(proxyOrigin ? tokenUrl : site + tokenUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
-          });
+          }, { env: ctx.env, siteOrigin: site, guest: guestNet ? { sockets: guestNet, fetch } : null });
           if (resp.ok) {
             const data = await resp.json();
             oauth.accessToken = data.access_token;

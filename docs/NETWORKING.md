@@ -234,6 +234,62 @@ into them, loopback listen/accept, and the iframeServer HTTP bridge.
 - `net.connect` to a port served by `http.createServer` (that server is not a
   kernel socket).
 
+## Private mode
+
+Two ways for requests the browser cannot make itself (`src/net-mode.ts`). The
+choice is per browser: Settings → Network → Privacy, or `netmode private` /
+`netmode proxy`. `TABCOMPUTER_NETWORK_MODE=proxy git push` goes the other way
+for one command.
+
+- **proxy** (the default). This site's server makes the request:
+  `/api/github`, `/git-proxy`, `/api/github-login`, `/api/anthropic` and the
+  other `/api/` routes. It is the faster and more dependable way, and the
+  server reads what passes: tokens, repositories, prompts (docs/DATA_FLOW.md).
+- **private**. The server reads none of it:
+
+  | what | how | what this site's server sees |
+  |---|---|---|
+  | `gh`, the Git app, the account check, git identity | `api.github.com` straight from the browser (it allows cross-origin requests with `Authorization`) | nothing |
+  | `git clone`, `fetch`, `pull`, `push` on github.com | GitHub's REST API (`src/commands/git-github-api.ts`, `git-api-ops.ts`): trees and blobs read and written as objects, each checked against its sha | nothing |
+  | the same when the API is not the way (a clone over 300 files or 20 MB, a rate limit, a commit it cannot reproduce), and git on every other host | the git protocol with TLS in the page, over `/tcp` (`relayHttp` in `src/commands/git-transport.ts`) | host name, byte counts |
+  | GitHub sign-in (`github.com/login/…`) | TLS in the page, over `/tcp` (`src/github-auth.ts`) | host name, byte counts |
+  | Claude and the other model APIs, Claude sign-in and token refresh | TLS in the page or the node Worker, over `/tcp` (`src/net-private.ts`, `src/node-compat/execution.ts`) | host name, byte counts |
+
+  Private mode never falls back to a proxy route. With no relay, what needs
+  one fails and says so.
+
+What private mode costs:
+
+- A clone through the API is a request per file, about 40 files a second
+  (1,731 files: 41 s, against 1.9 s over the relay), so only small
+  repositories take it (`TABCOMPUTER_GIT_API_MAX_FILES`, default 300).
+  `TABCOMPUTER_GIT_TRANSPORT=proxy|relay|api` picks the transport for one
+  command.
+- GitHub's rate limit applies to the browser's address: 60 requests an hour
+  signed out, 5,000 signed in. Signed-out clones read file contents from
+  `raw.githubusercontent.com`.
+- Through the API: branches only (no tags), a push goes to the same-named
+  branch, and history GitHub's API cannot give back byte for byte (rare:
+  commits with an `encoding` header or an odd timezone offset) becomes a
+  shallow boundary.
+- TLS is done in JavaScript, and a node Worker opens a new connection for each
+  request (a kept one held the process open).
+- Claude's voice input is off: its WebSocket route needs the server to send
+  the token.
+- GitHub sees the browser's address instead of this server's. The relay still
+  sees which hosts are contacted; a relay of your own (below) takes that away
+  from this site too.
+
+Measured on a local build (2026-10-12): `gh api` 0.12 s in private mode
+against 0.10 s; a shallow clone of a 1,731-file repository over the relay
+1.9 s against 3.1 s through `/git-proxy`; clone of a 25-file private
+repository through the API 3.2 s; a push of one commit 2.0 to 2.9 s, with the
+commit ids GitHub stored equal to the local ones.
+
+Tests: `net-mode.test.ts` (the mode, the transports, what private mode takes
+from the page's fetch, the data-flow rows), `git-github-api.test.ts` (clone,
+fetch and push against a fake GitHub that hashes every object).
+
 ## Sign-in and other relays (desktop)
 
 `NetConfig.credentials` (default true, for this site's relay) allows the

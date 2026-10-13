@@ -5,6 +5,7 @@
  * processes, fds 0/1/2 for stdio and the terminal), runs the `node`
  * command with argv, writes what it printed and exits with its status.
  */
+import { inheritNetworkMode } from '../net-mode';
 import * as A from '../kernel/abi';
 import { connectGuest, isStartMessage, ChannelClosed, type GuestStartMessage, type GuestSys } from '../kernel/channel';
 import { decodeTermios, encodeTermios, decodeWinsize, makeRaw, TCSETS, TERMIOS_SIZE, WINSIZE_SIZE } from '../kernel/pty';
@@ -109,6 +110,7 @@ export async function runNodeGuest(start: GuestStartMessage, post: (m: unknown) 
   threadEvents.clear();
   const pageCalls = guestBridge(post);
   pageReplies = pageCalls.receive;
+  inheritNetworkMode((start as any).networkMode); // (a Worker has no localStorage)
   setShiroOrigin((start as any).pageOrigin ?? null); // (ANTHROPIC_BASE_URL and the like: the page's origin, not the Worker's)
   try {
     const fs = new SyscallFs(sys);

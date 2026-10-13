@@ -183,8 +183,10 @@ export class GuestNetStack {
         if (got !== -A.EAGAIN) return got;
         if (Date.now() > deadline) return -A.ETIMEDOUT;
         const pending = this.poller.wait(fd, A.POLLIN);
-        const timeout = new Promise<number>((r) => setTimeout(() => r(0), deadline - Date.now()));
-        await Promise.race([pending, timeout]);
+        // (cleared once the answer is in: left running, it kept the program alive for its 10 s)
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<number>((r) => { timer = setTimeout(() => r(0), deadline - Date.now()); });
+        try { await Promise.race([pending, timeout]); } finally { clearTimeout(timer); }
       }
     } finally {
       this.sys.close(fd);

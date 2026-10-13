@@ -15,6 +15,7 @@ import { createServerWindow } from './server-window';
 import { DEFAULT_CLAUDE_THEME } from './claude-config';
 import { ensureClaudeAuthState } from './claude-auth';
 import { getShiroOrigin } from './utils/shiro-origin';
+import { privateFetch } from './net-private';
 import { BRAND } from './brand';
 import { claudeSignInUI } from './claude-signin-ui';
 
@@ -186,7 +187,7 @@ async function exchangeCode(pasted: string, verifier: string, expectedState: str
   if (state !== expectedState) {
     throw new Error('That code is from a different sign-in attempt. Open the sign-in page again from this panel.');
   }
-  const resp = await fetch(`${getShiroOrigin()}/api/platform/v1/oauth/token`, {
+  const resp = await privateFetch(`${getShiroOrigin()}/api/platform/v1/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -197,7 +198,7 @@ async function exchangeCode(pasted: string, verifier: string, expectedState: str
       code_verifier: verifier,
       state,
     }),
-  });
+  }, { siteOrigin: getShiroOrigin() });
   if (!resp.ok) {
     let detail = '';
     try { const body = await resp.json(); detail = body?.error_description || body?.error?.message || (typeof body?.error === 'string' ? body.error : '');

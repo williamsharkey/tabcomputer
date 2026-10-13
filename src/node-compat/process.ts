@@ -1,3 +1,4 @@
+import { networkMode } from '../net-mode';
 import { LiveStdin, STDIN_HOLD } from './live-stdin';
 import { asyncContext } from './async-context';
 import type { CommandContext } from '../commands/index';
@@ -33,8 +34,11 @@ export function createFakeProcess(
   const processEnv: Record<string, string> = {
     ...exportedOnly(ctx),
     MCP_CONNECTION_NONBLOCKING: '1',
+    // programs can tell (the voice WebSocket has no private route: claude-vm/extract.ts)
+    ...(networkMode(ctx.env) === 'private' ? { TABCOMPUTER_NETWORK_MODE: 'private' } : {}),
     // Route API calls through CORS proxy when in browser (the page, or a guest's Worker)
-    ...((typeof window !== 'undefined' || (ctx as any).nodeGuest) && !ctx.env['ANTHROPIC_BASE_URL'] ? {
+    // (not in private network mode: the request goes to the API itself, over the relay; net-mode.ts)
+    ...((typeof window !== 'undefined' || (ctx as any).nodeGuest) && !ctx.env['ANTHROPIC_BASE_URL'] && networkMode(ctx.env) !== 'private' ? {
       ANTHROPIC_BASE_URL: `${getShiroOrigin()}/api/anthropic`,
     } : {}),
   };

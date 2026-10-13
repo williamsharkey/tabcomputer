@@ -12,6 +12,7 @@
 import type { FileSystem } from '../filesystem';
 import { GITHUB_TOKEN_KEY, DEFAULT_GITHUB_SCOPES, pollForToken, requestDeviceCode, saveGitHubToken } from '../github-auth';
 import { onNetworkStatus, setNetworkStatus } from '../net-signin';
+import { networkMode } from '../net-mode';
 import { headBranch, parseRepoSpec, type Repo } from './gitstatus';
 
 // ── API types (only the fields used) ──
@@ -50,7 +51,8 @@ export function hasNextPage(link: string | null): boolean {
  */
 export function gitHubApi(token: string, opts: { fetchImpl?: FetchLike; proxyBase?: string | null } = {}) {
   const fetchImpl = opts.fetchImpl ?? ((...a: Parameters<FetchLike>) => fetch(...a));
-  const proxyBase = opts.proxyBase === undefined ? '/api/github' : opts.proxyBase;
+  // (private network mode has no fallback: the request must not reach this site's server)
+  const proxyBase = opts.proxyBase === undefined ? (networkMode() === 'private' ? null : '/api/github') : opts.proxyBase;
   async function request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ data: T; next: boolean }> {
     const reqInit: RequestInit = {
       method: init.method ?? 'GET',

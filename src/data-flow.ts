@@ -41,6 +41,8 @@ export interface DataFlowInputs {
   siteRelaySignin?: boolean;
   /** navigator.storage.persisted(); null when the browser can't say */
   persisted: boolean | null;
+  /** Settings → Network, `netmode` (net-mode.ts); absent: proxy */
+  networkMode?: 'proxy' | 'private';
 }
 
 export interface DataFlowState {
@@ -62,6 +64,8 @@ export interface DataFlowState {
     signin?: boolean;
   };
   persisted: boolean | null;
+  /** private: GitHub and the model APIs are not sent through this site's proxies */
+  mode: 'proxy' | 'private';
 }
 
 /** host[:port] of a relay URL: no path, query or user part (any of them could carry a token) */
@@ -86,7 +90,7 @@ export function dataFlowState(i: DataFlowInputs): DataFlowState {
   else if (ownHost) relay = { kind: 'own', host: ownHost, seen: false, ...(i.ownRelaySignin ? { signin: true } : {}) };
   else if (i.siteRelay === 'off') relay = { kind: 'none', host: null, why: 'off', seen: true };
   else relay = { kind: 'site', host: i.host, seen: i.siteRelay === 'on', ...(i.siteRelaySignin ? { signin: true } : {}) };
-  return { host: i.host, ui: i.ui, profile: guest ? 'guest' : 'main', guest, guestsOffered: i.guestsOffered, secrets, relay, persisted: i.persisted };
+  return { host: i.host, ui: i.ui, profile: guest ? 'guest' : 'main', guest, guestsOffered: i.guestsOffered, secrets, relay, persisted: i.persisted, mode: i.networkMode === 'private' ? 'private' : 'proxy' };
 }
 
 // ── The picture: three places and the flows between them ──
@@ -283,7 +287,25 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
   const proxyOff = sealed ? 'Off: the server refuses this to a no-network guest.'
     : noNet ? 'Not blocked: this server does not enforce no-network for this address.' : undefined;
 
-  flows.push({
+  // Private network mode (net-mode.ts): the same traffic, kept from the server's proxies
+  const priv = s.mode === 'private';
+  const relayWord = s.relay.kind === 'own' ? 'your relay' : s.relay.kind === 'none' ? 'the relay (there is none here, so these fail)' : 'the /tcp relay';
+
+  flows.push(priv ? {
+    id: 'api',
+    title: 'Claude and other model APIs',
+    from: 'claude (the default build, and --npm), Gemini CLI, node programs',
+    via: s.relay.kind === 'site' ? '/tcp relay' : null,
+    to: 'api.anthropic.com, platform.claude.com, generativelanguage.googleapis.com',
+    reads: s.relay.kind === 'site' ? 'endpoints' : 'nothing',
+    readsText: s.relay.kind === 'site'
+      ? 'The host name, byte counts and your address. Not the prompts, the replies or your token.'
+      : 'This does not pass through the server.',
+    detail: `Private mode: the request is encrypted in the tab and carried by ${relayWord}, which sees ciphertext. Voice input is off, because its route needs the server to read the token.`,
+    status: sealed || s.relay.kind === 'none' ? 'off' : 'on',
+    ...(proxyOff ? { note: proxyOff } : {}),
+    carries: [],
+  } : {
     id: 'api',
     title: 'Claude and other model APIs',
     from: 'claude (the default build, and --npm), Gemini CLI, node programs',
@@ -291,13 +313,26 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     to: 'api.anthropic.com, platform.claude.com, generativelanguage.googleapis.com',
     reads: 'contents',
     readsText: 'Prompts, replies and the Authorization header (your Claude token or API key) pass through it unencrypted.',
-    detail: 'The server ends the HTTPS connection and makes its own to the API. It forwards and does not store them. It logs the path, the model, sizes and timing. claude --x86 goes by the relay instead, encrypted in the tab.',
+    detail: 'The server ends the HTTPS connection and makes its own to the API. It forwards and does not store them. It logs the path, the model, sizes and timing. claude --x86 goes by the relay instead, encrypted in the tab. Private mode (Settings → Network, or netmode private) keeps these from the server.',
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: [...(s.secrets.claude ? ['Claude credentials'] : []), ...s.secrets.apiKeys.map((k) => `${k} API key`)],
   });
 
-  flows.push({
+  flows.push(priv ? {
+    id: 'github',
+    title: 'GitHub: git, gh, sign-in',
+    from: 'git, gh, the Git app, GitHub sign-in',
+    via: null,
+    to: 'api.github.com straight from the browser; github.com sign-in and other git hosts by the relay',
+    reads: 'nothing',
+    readsText: 'GitHub\'s API is called by the browser itself: the token and the repository do not pass through the server.',
+    detail: `Private mode: gh and git on github.com use GitHub's API directly, so GitHub sees your address. Sign-in, repositories too large for the API and other git hosts are encrypted in the tab and carried by ${relayWord}, which sees the host name and byte counts.`
+      + (g ? ' The server refuses GitHub sign-in to a guest.' : ''),
+    status: sealed ? 'off' : 'on',
+    ...(proxyOff ? { note: proxyOff } : {}),
+    carries: [],
+  } : {
     id: 'github',
     title: 'GitHub: git, gh, sign-in',
     from: 'git, gh, the Git app, GitHub sign-in',
@@ -306,7 +341,8 @@ export function dataFlowModel(s: DataFlowState): DataFlowModel {
     reads: 'contents',
     readsText: 'The GitHub token, the requests and the repository data pass through it unencrypted.',
     detail: 'The server ends the HTTPS connection and makes its own to GitHub. It forwards and does not store them. It logs the method, path and status.'
-      + (g ? ' The server refuses GitHub sign-in to a guest.' : ''),
+      + (g ? ' The server refuses GitHub sign-in to a guest.' : '')
+      + ' Private mode (Settings → Network, or netmode private) keeps these from the server.',
     status: sealed ? 'off' : 'on',
     ...(proxyOff ? { note: proxyOff } : {}),
     carries: s.secrets.github ? ['GitHub token'] : [],
@@ -490,6 +526,7 @@ export async function collectDataFlowInputs(fs: CredentialFs, opts: { ui?: 'desk
     siteRelay: siteRelay.relay,
     siteRelaySignin: siteRelay.signin,
     persisted,
+    networkMode: (await import('./net-mode')).networkMode(),
   };
 }
 

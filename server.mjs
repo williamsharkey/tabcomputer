@@ -1088,6 +1088,16 @@ export function createDebianMirror(cfg = debianMirrorConfig(), { fetchFn = (url,
   const turn = async () => { if (fetching >= cfg.fetches) await new Promise((r) => waiting.push(r)); else fetching++; };
   const done = () => { const next = waiting.shift(); if (next) next(); else fetching--; };
 
+  /** The directory a copy goes in. A file that stands where a directory has to be (something kept under a directory's name) goes first. */
+  async function makeDir(dir) {
+    try { return void await mkdir(dir, { recursive: true }); } catch (e) { if (e.code !== 'ENOTDIR' && e.code !== 'EEXIST') throw e; }
+    for (let p = dir; p.length > cfg.cacheDir.length; p = p.slice(0, p.lastIndexOf('/'))) {
+      const st = await stat(p).catch(() => null);
+      if (st && !st.isDirectory()) { await unlink(p); await unlink(p + '.lm').catch(() => {}); break; }
+    }
+    await mkdir(dir, { recursive: true });
+  }
+
   /** The copy on disk, when it may be served: { status: 200, file, lastModified } */
   async function kept(cacheFile, immutable, stale = false) {
     try {
@@ -1118,9 +1128,11 @@ export function createDebianMirror(cfg = debianMirrorConfig(), { fetchFn = (url,
       const r = await fetchFn(url, { redirect: 'follow', signal: AbortSignal.timeout(DEBIAN_FETCH_MS) });
       if (!r.ok) { await r.body?.cancel().catch(() => {}); return { status: r.status, body: Buffer.from(`upstream: ${r.status} ${r.statusText}\n`) }; }
       if (Number(r.headers.get('content-length')) > cfg.maxFileBytes) { await r.body?.cancel().catch(() => {}); return tooLarge(); }
+      // A directory's listing is no file of the archive, and kept under the directory's name it would stand in the way of the files below it
+      if (/^text\/html\b/i.test(r.headers.get('content-type') || '')) { await r.body?.cancel().catch(() => {}); return { status: 404, body: Buffer.from('upstream: not a file of the archive\n') }; }
       const lastModified = r.headers.get('last-modified') || '';
       upstream = false;
-      await mkdir(cacheFile.slice(0, cacheFile.lastIndexOf('/')), { recursive: true });
+      await makeDir(cacheFile.slice(0, cacheFile.lastIndexOf('/')));
       fh = await open(tmp, 'w');
       let n = 0;
       if (r.body) {

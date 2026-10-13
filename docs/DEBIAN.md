@@ -126,6 +126,8 @@ largest a GUI app fetches is `firefox-esr`, 76 MB; no package set built ahead
 needs one over 27 MB. 768 MB leaves a quarter of headroom, and 11 packages of
 main are larger (debug symbols, game data, API documentation). So the disk
 holds at most the cache's size plus the files in flight (4 of 768 MB).
+An answer that is a web page (an archive's listing of a directory) is
+answered 404 and not kept.
 Tests: `debian-mirror.test.ts`.
 
 Responses are same-origin, so no CORS or COEP issues. Traffic per user is

@@ -182,6 +182,23 @@ describe('Debian package mirror: limits', () => {
     expect([ok.status, (await ok.arrayBuffer()).byteLength]).toEqual([200, 1024 * 1024]);
   }, 30_000);
 
+  it('keeps no page that lists a directory, and nothing kept under a directory\'s name stands in the way of its files', async () => {
+    const h = await harness();
+    const listing = await h.file('listed/f');
+    expect([listing.status, await listing.text()]).toEqual([404, 'upstream: not a file of the archive\n']);
+    expect(h.kept()).toEqual([]);
+    const under = await h.file('listed/f/pkg_2k.deb');
+    expect([under.status, (await under.arrayBuffer()).byteLength]).toEqual([200, 2048]);
+    // a file an earlier build of the server kept under a directory's name: the first file below it takes its place
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(h.cache, 'deb.debian.org/debian/pool/main/old'), { recursive: true });
+    writeFileSync(join(h.cache, 'deb.debian.org/debian/pool/main/old/g'), '<html>Index of g</html>');
+    writeFileSync(join(h.cache, 'deb.debian.org/debian/pool/main/old/g.lm'), '');
+    const below = await h.file('old/g/gpkg_2k.deb');
+    expect([below.status, (await below.arrayBuffer()).byteLength]).toEqual([200, 2048]);
+    expect(h.kept().filter((f) => f.includes('/old/'))).toEqual(['deb.debian.org/debian/pool/main/old/g/gpkg_2k.deb', 'deb.debian.org/debian/pool/main/old/g/gpkg_2k.deb.lm']);
+  }, 30_000);
+
   it('fetches a few files at a time; the others wait their turn', async () => {
     const h = await harness({ FETCHES: '2' });
     const names = ['w1_256k.deb', 'w2_256k.deb', 'w3_256k.deb', 'w4_256k.deb'];

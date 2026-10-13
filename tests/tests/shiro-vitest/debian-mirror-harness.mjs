@@ -15,6 +15,7 @@
  * The upstream's files, by name (under /debian/pool/main/):
  *   NAME_<n>k.deb               n KB of one byte value, with a content-length
  *   NAME_<n>k.nolen.deb         the same without a content-length
+ *   listed, listed/<letter>     a directory: the upstream answers with a page that lists it
  */
 import { createServer } from 'node:http';
 
@@ -30,6 +31,8 @@ let ahead = 0;
 const fetchFn = async (url) => {
   const path = String(url).startsWith(UP) ? String(url).slice(UP.length) : `?${url}`;
   hits.push(path);
+  // (a directory, as an archive answers for one: a page that lists it)
+  if (/\/listed(\/[a-z])?$/.test(path)) return new Response('<html><body>Index of ' + path + '</body></html>', { status: 200, headers: { 'content-type': 'text/html;charset=UTF-8' } });
   const size = /_(\d+)k(\.nolen)?\.deb$/.exec(path);
   if (!size) return new Response('', { status: 404, statusText: 'Not Found' });
   const total = Number(size[1]) * 1024;

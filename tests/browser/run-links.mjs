@@ -260,7 +260,9 @@ function encodeShLinkPlaceholder() { return 'sh:' + b64url(SH_SCRIPT); }
   check(await prompt(page).locator('pre').textContent() === GH_SCRIPT, 'gh: the prompt shows the whole script');
   const from = await prompt(page).textContent();
   check(/github\.com\/someone\/project, \.tabcomputer\/run\.sh/.test(from) && /Not reviewed by tabcomputer\./.test(from), 'gh: it says where the script is from and that it is not reviewed');
-  check((await prompt(page).locator('p').allInnerTexts()).length === 2, 'gh: two sentences beside the script: where it is from, and what it can touch', (await prompt(page).locator('p').allInnerTexts()).join(' | '));
+  const says = (await prompt(page).locator('p').allInnerTexts()).map((t) => t.replace(/\s*\n\s*/g, ' '));
+  check(says.length === 4 && says[1] === 'The script has 5 lines.' && says[2] === 'After the script, this runs: echo gh-opened >> ~/run/gh-someone-project/log',
+    'gh: beside the script: where it is from, how long it is, its on-open line as a command, and what it can touch', says.join(' | '));
   check(/RUN_WHO/.test(from) && /me/.test(from), 'gh: it shows what the link sets');
   check(await page.evaluate(() => window.__pwned) === undefined && await prompt(page).locator('img, script').count() === 0 && await prompt(page).locator('button').count() === 2,
     'gh: markup in the script stays text');

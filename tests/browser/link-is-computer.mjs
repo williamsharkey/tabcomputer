@@ -176,7 +176,7 @@ if (wants('commands')) for (const device of DEVICES) {
   time(`${D} commands: link to the Run / Cancel window (fresh profile)`, Date.now() - t0);
   let p = await promptOf(page, RUN);
   check(`${D} commands: the window shows the commands whole, with Run and Cancel`, !!p && p.title === 'Run these commands?' && p.box === commands + '\n'
-    && p.says.join(' | ') === 'From this link. Not reviewed by tabcomputer. | They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).', JSON.stringify(p && { title: p.title, box: p.box, says: p.says }));
+    && p.says.join(' | ') === 'From this link. Not reviewed by tabcomputer. | The commands: 1 line. | They run as you: they can read and change every file in this tab and use its sign-ins (Claude, GitHub).', JSON.stringify(p && { title: p.title, box: p.box, says: p.says }));
   // a phone has no room for a desktop around a question: the prompt is the screen
   if (device.hasTouch) check('phone commands: the prompt fills the screen, with nothing of the desktop around it', !!p && p.left === 0 && p.right === device.viewport.width && p.top === 0 && p.bottom === device.viewport.height && p.buttons.join() === 'Cancel,Run', JSON.stringify(p && { left: p.left, right: p.right, top: p.top, bottom: p.bottom }));
   check(`${D} commands: Cancel has the focus, and the window fits`, !!p && p.focus === 'cancel' && p.left >= 0 && p.right <= device.viewport.width && p.sw <= p.cw, JSON.stringify(p && { focus: p.focus, left: p.left, right: p.right, sw: p.sw, cw: p.cw }));

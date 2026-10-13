@@ -168,6 +168,9 @@ describe('/debian/layers/set', () => {
     // 4 packages (the two and two more): all downloaded, then the build waits in "installing" with one set up
     const mid = await h.until('qpdf hold-jq', (a) => a.phase === 'installing' && a.done === 1);
     expect(mid).toEqual({ state: 'building', key: first.key, phase: 'installing', done: 1, total: 4 });
+    // while it builds, the names are in the spec file the builder was given
+    const running = await h.spawned();
+    expect(JSON.parse(readFileSync(running[0].env.SPEC, 'utf8')).layers[first.key].packages).toEqual(['hold-jq', 'qpdf']);
     // the same set from someone else, in another order: the same build
     expect((await h.set('qpdf,hold-jq', '', '10.0.0.2')).key).toBe(first.key);
     await h.get(`/__release?key=${first.key}`);
@@ -179,7 +182,8 @@ describe('/debian/layers/set', () => {
     // The builder got the key and a file; the names are in the file and nowhere else
     expect(spawned[0].args.at(-1)).toBe(first.key);
     expect(JSON.stringify([spawned[0].args, spawned[0].env])).not.toMatch(/hold-jq|qpdf/);
-    expect(JSON.parse(readFileSync(spawned[0].env.SPEC, 'utf8')).layers[first.key].packages).toEqual(['hold-jq', 'qpdf']);
+    // (the spec is gone once the build has ended: nothing reads it again)
+    expect(existsSync(spawned[0].env.SPEC)).toBe(false);
     expect(spawned[0].env).toMatchObject({ OUT: h.sets, BASE: join(h.dir, 'static/debian'), TC_SET_MAX_DEB_MB: '200' });
   }, 30_000);
 
@@ -307,6 +311,86 @@ describe('what a set may install (scripts/debian/set-limits.mjs)', () => {
   });
 });
 
+describe('one address cannot hold the builder', () => {
+  /** createPackageLayers with a clock and a builder the test ends by hand: `steps` run in plain Node, each returning what it saw */
+  const script = (steps: string) => inServer(`(async () => {
+    const { EventEmitter } = await import('node:events');
+    const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkg-fair-'));
+    fs.mkdirSync(path.join(dir, 'static/debian'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'static/debian/rootfs.json'), JSON.stringify({ id: 'base1', snapshot: 'S1' }));
+    let t = 1e12;
+    const procs = [];
+    const cfg = m.packageLayersConfig({ TABCOMPUTER_DEBIAN_LAYERS: path.join(dir, 'layers'), STATIC_DIR: path.join(dir, 'static'), TABCOMPUTER_LAYER_BUILDER: '1', TABCOMPUTER_LAYER_BUILDER_WORK: path.join(dir, 'work'), TABCOMPUTER_LAYER_BUILDER_CMD: '["builder"]' });
+    const layers = m.createPackageLayers(cfg, { log() {}, now: () => t, spawnFn: () => { const p = new EventEmitter(); p.kill = () => {}; procs.push(p); return p; } });
+    const ask = (packages, address) => layers.request({ packages, baseId: 'base1', address });
+    const specs = () => { try { return fs.readdirSync(path.join(dir, 'work/specs')); } catch { return []; } };
+    /** Let the running build take \`minutes\`, then end it (it fails: the stand-in wrote no layer) */
+    const end = async (minutes) => {
+      for (let i = 0; i < 200 && !procs.length; i++) await new Promise((r) => setTimeout(r, 5));
+      t += minutes * 60000;
+      procs.shift().emit('close', 1);
+      for (let i = 0; i < 200 && layers.stats().building; i++) await new Promise((r) => setTimeout(r, 5));
+    };
+    const out = [];
+    ${steps}
+    layers.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    return out;
+  })()`);
+
+  it('counts the minutes an address\'s builds took in the last hour, not only how many it started', () => {
+    const out = script(`
+      out.push(cfg.perAddressMinutes, cfg.perAddressHour);
+      out.push((await ask('aaa', 'A')).state);         // 2
+      await end(12);
+      out.push((await ask('bbb', 'A')).state);         // 3: 12 of 20 minutes used
+      await end(12);
+      out.push(await ask('ccc', 'A'));                 // 4: 24 minutes used
+      out.push((await ask('ccc', 'B')).state);         // 5: another address is served
+      out.push((await ask('ddd', 'A')).reason);        // 6: A asked while B's build runs; still over its share
+      await end(1);
+      t += 36 * 60000;                                 // A's first build ended 49 minutes ago
+      out.push((await ask('eee', 'A')).reason);        // 7
+      t += 12 * 60000;                                 // 61 minutes ago: only the second build's 12 minutes count
+      out.push((await ask('eee', 'A')).state);         // 8
+      await end(1);
+    `);
+    expect(out.slice(0, 2)).toEqual([20, 6]);
+    expect(out[2]).toBe('building');
+    expect(out[3]).toBe('building');
+    expect(out[4]).toEqual({ state: 'unavailable', reason: 'rate', message: 'This address has used its share of the builder this hour.' });
+    expect(out[5]).toBe('building');
+    expect(out[6]).toBe('rate');
+    expect(out[7]).toBe('rate');
+    expect(out[8]).toBe('building');
+  });
+
+  it('a build that is still running counts against the address that started it', () => {
+    const out = script(`
+      out.push((await ask('aaa', 'A')).state);
+      for (let i = 0; i < 200 && !procs.length; i++) await new Promise((r) => setTimeout(r, 5));
+      t += 21 * 60000;                                 // (a build the time limit has not ended yet)
+      out.push((await ask('bbb', 'A')).reason);
+      out.push((await ask('bbb', 'B')).state);         // someone else waits in line behind it
+      await end(0);
+      await end(1);
+    `);
+    expect(out).toEqual(['building', 'rate', 'queued']);
+  });
+
+  it('the spec file is there while the builder runs and gone when the build ends', () => {
+    const out = script(`
+      const a = await ask('aaa', 'A');
+      for (let i = 0; i < 200 && !procs.length; i++) await new Promise((r) => setTimeout(r, 5));
+      out.push(specs().length === 1 && specs()[0] === a.key + '.json');
+      await end(1);
+      out.push(specs());
+    `);
+    expect(out).toEqual([true, []]);
+  });
+});
+
 describe('the disk cap (scripts/debian/set-evict.mjs)', () => {
   const evict = async (dir: string, o: object) => inModule('scripts/debian/set-evict.mjs', `m.evictSets(${JSON.stringify(dir)}, ${JSON.stringify(o)})`);
   /** A set of `chunks` chunk names of 1000 bytes each, last used `daysAgo` days ago */
@@ -337,6 +421,28 @@ describe('the disk cap (scripts/debian/set-evict.mjs)', () => {
     expect(await evict(dir, { maxBytes: 3000, keepId: 'p-mid' })).toMatchObject({ sets: 2, removed: ['p-new'], chunkBytes: 5000 });
     expect(readdirSync(dir).sort()).toEqual(['chunks', 'p-mid', 'p-pinned']);
     expect(readdirSync(join(dir, 'chunks')).sort()).toEqual(['b1.gz', 'b2.gz', 'd1.gz', 'd2.gz', 'shared.gz']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a removed set\'s spec file goes with it, and so does an old one whose set was never built', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pkg-evict-'));
+    const id = (c: string) => `p-${c.repeat(24)}`;
+    addSet(dir, id('a'), ['a1', 'a2'], 30);
+    addSet(dir, id('b'), ['b1'], 1);
+    const specs = join(dir, 'specs');
+    mkdirSync(specs);
+    // a: its set is evicted; b: its set stays; c: a failed build from last week; d: a build that has not run yet; e: the one being built
+    for (const [c, daysAgo] of [['a', 30], ['b', 1], ['c', 7], ['d', 0], ['e', 9]] as const) {
+      writeFileSync(join(specs, `${id(c)}.json`), '{}');
+      const t = new Date(Date.now() - daysAgo * 86400_000);
+      utimesSync(join(specs, `${id(c)}.json`), t, t);
+    }
+    writeFileSync(join(specs, 'notes.txt'), 'not a spec');
+    expect(await evict(dir, { maxBytes: 1000, keepId: id('e'), specs })).toMatchObject({ removed: [id('a')], specsDeleted: 2 });
+    expect(readdirSync(specs).sort()).toEqual(['notes.txt', `${id('b')}.json`, `${id('d')}.json`, `${id('e')}.json`].sort());
+    // the builder passes its spec directory, and the deploy's loop removes each spec after its build
+    expect(readFileSync(join(ROOT, 'scripts/debian/build-set.sh'), 'utf8')).toContain('--specs "$WORK/specs"');
+    expect(readFileSync(join(ROOT, 'scripts/debian/build-deploy.sh'), 'utf8')).toContain('rm -f -- "$spec"');
     rmSync(dir, { recursive: true, force: true });
   });
 

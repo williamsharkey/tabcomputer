@@ -534,8 +534,14 @@ names. Sets live in `TABCOMPUTER_DEBIAN_LAYERS/sets/<key>/` with their own
 - The names reach the builder in a JSON file. Its command line carries the
   key and nothing else of the request.
 - One build at a time. At most 8 wait. One address has at most 2 builds
-  waiting or running and starts at most 6 in an hour. A failed build is not
-  started again for ten minutes.
+  waiting or running, starts at most 6 in an hour, and may use at most 20
+  minutes of building in an hour (`TABCOMPUTER_LAYER_PER_ADDRESS_MINUTES`;
+  a build that is still running counts). So a few long builds do not let
+  one address keep the builder. A failed build is not started again for ten
+  minutes.
+- The builder's spec file (`set-build/specs/<key>.json`) is removed when its
+  build ends. `set-evict.mjs` removes the spec of a set it evicts, and one a
+  day old whose set was never built.
 - A set installs at most 400 packages and 200 MB of `.deb`s, checked from
   apt's own plan before anything is downloaded (`set-limits.mjs`). A build
   has 15 minutes and 900 MB of memory.

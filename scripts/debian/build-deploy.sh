@@ -27,6 +27,8 @@ if [ -f "$SETS" ]; then
     [ -n "$key" ] || continue
     env -u PRUNE -u FORCE BASE="$BASE" OUT="$OUT/sets" WORK="$SETS_WORK" SPEC="$spec" TC_SET_PIN=1 \
       bash "$HERE/build-set.sh" "$key" < /dev/null || { echo "build-deploy.sh: set $key failed" >&2; rc=1; }
+    # (the spec was that build's input; nothing reads it again)
+    rm -f -- "$spec"
   done < <(node "$HERE/set-key.mjs" specs "$BASE" "$SETS" "$SETS_WORK/specs")
 fi
 exit "$rc"

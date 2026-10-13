@@ -102,7 +102,7 @@ fi
 echo "::tc:: phase resolving"
 echo "== $id: ${PKGS[*]} (recipe $recipe)"
 # Room first: the sets used longest ago go while the chunks are over the cap
-node "$HERE/set-evict.mjs" "$OUT" --max-mb "${TC_SETS_MAX_MB:-3072}" --keep "$id" --debs "$WORK/debs" --debs-max-mb "${TC_SET_DEBS_MAX_MB:-1024}"
+node "$HERE/set-evict.mjs" "$OUT" --max-mb "${TC_SETS_MAX_MB:-3072}" --keep "$id" --debs "$WORK/debs" --debs-max-mb "${TC_SET_DEBS_MAX_MB:-1024}" --specs "$WORK/specs"
 free_gb=$(( $(df -Pk "$WORK" | awk 'NR==2 {print $4}') / 1024 / 1024 ))
 if [ "$free_gb" -lt "${MIN_FREE_GB:-3}" ]; then
   echo "::tc:: refused busy The server's disk is nearly full."

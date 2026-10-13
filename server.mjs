@@ -674,6 +674,7 @@ async function handleDebianLayers(req, res, rel) {
 //   TABCOMPUTER_LAYER_QUEUE                 8      builds waiting
 //   TABCOMPUTER_LAYER_PER_ADDRESS           2      builds one address has waiting or running
 //   TABCOMPUTER_LAYER_PER_ADDRESS_HOUR      6      builds one address starts in an hour
+//   TABCOMPUTER_LAYER_PER_ADDRESS_MINUTES   20     minutes of building one address may use in an hour
 //   TABCOMPUTER_LAYER_BUILD_SECONDS         900    a build's time limit
 
 /**
@@ -727,6 +728,7 @@ export function packageLayersConfig(env = process.env) {
     queue: int(env.TABCOMPUTER_LAYER_QUEUE, 8),
     perAddress: int(env.TABCOMPUTER_LAYER_PER_ADDRESS, 2),
     perAddressHour: int(env.TABCOMPUTER_LAYER_PER_ADDRESS_HOUR, 6),
+    perAddressMinutes: int(env.TABCOMPUTER_LAYER_PER_ADDRESS_MINUTES, 20),
     buildSeconds: int(env.TABCOMPUTER_LAYER_BUILD_SECONDS, 900),
     failedMs: 10 * 60_000,
     trustProxy: env.TABCOMPUTER_TRUST_PROXY || 'loopback',
@@ -779,6 +781,11 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
   let current = null;
   /** address → times its builds started */
   const started = new Map();
+  /** address → [{ at, ms }]: how long each of its builds ran, by when it ended */
+  const spent = new Map();
+  /** The building time an address has used in the last hour, the build it has running included */
+  const spentMs = (address) => (spent.get(address) || []).filter((s) => now() - s.at < 3600_000).reduce((n, s) => n + s.ms, 0)
+    + (current?.payers?.includes(address) ? now() - current.at : 0);
   let rootfs = null, rootfsAt = 0;
   let known = null, knownAt = 0;
 
@@ -845,13 +852,17 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
   async function run(job) {
     current = job;
     job.state = 'building'; job.phase = 'starting'; job.done = 0; job.total = 0; job.at = now();
-    for (const a of job.addresses) started.set(a, [...(started.get(a) || []), now()]);
+    // Who asked for it before it started: they are the ones its time counts against
+    job.payers = [...job.addresses];
+    const startedAt = job.at;
+    for (const a of job.payers) started.set(a, [...(started.get(a) || []), now()]);
     let code = 1;
+    let spec = '';
     try {
       const specs = join(cfg.work, 'specs');
       await mkdir(specs, { recursive: true });
       await mkdir(cfg.dir, { recursive: true });
-      const spec = join(specs, `${job.key}.json`);
+      spec = join(specs, `${job.key}.json`);
       await writeFile(spec, JSON.stringify({ format: 1, layers: { [job.key]: { title: job.names.join(', '), description: 'Debian packages', packages: job.names } } }) + '\n');
       const c = packageBuildCommand(cfg, job.key, spec);
       log(`[layers] building ${job.key}: ${job.names.join(' ')}`);
@@ -875,6 +886,10 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
       job.message = `The builder did not start (${e.code || e.message}).`; job.reason = 'no-builder';
     }
     delete job.proc;
+    // The spec was the builder's input and nothing reads it again
+    if (spec) await rm(spec, { force: true }).catch(() => {});
+    const ms = Math.max(0, now() - startedAt);
+    for (const a of job.payers) spent.set(a, [...(spent.get(a) || []), { at: now(), ms }]);
     const ok = code === 0 && !!(await built(job.key, job.baseId));
     log(`[layers] ${job.key}: ${ok ? 'built' : `failed (exit ${code}${job.reason ? `, ${job.reason}` : ''})`} in ${Math.round((now() - job.at) / 1000)} s`);
     if (ok) jobs.delete(job.key);
@@ -895,6 +910,7 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
     // What is remembered stays small: failures for ten minutes, an address's builds for an hour
     for (const [k, j] of jobs) if (j.state === 'failed' && now() - j.at >= cfg.failedMs) jobs.delete(k);
     for (const [a, times] of started) if (!times.some((t) => now() - t < 3600_000)) started.delete(a);
+    for (const [a, list] of spent) if (!list.some((s) => now() - s.at < 3600_000)) spent.delete(a);
     const b = await base();
     if (!b) return { state: 'unavailable', reason: 'no-builder', message: 'This server has no Debian base.' };
     if (baseId && baseId !== b.id) return { state: 'unavailable', reason: 'base', message: 'This server builds for another Debian base than this tab has.' };
@@ -919,6 +935,8 @@ export function createPackageLayers(cfg = packageLayersConfig(), { spawnFn = nul
       const recent = (started.get(address) || []).filter((t) => now() - t < 3600_000);
       started.set(address, recent);
       if (recent.length >= cfg.perAddressHour) return { state: 'unavailable', reason: 'rate', message: 'This address has asked for many builds this hour.' };
+      // One builder serves everyone: an address gets a share of each hour, however few builds it took
+      if (spentMs(address) >= cfg.perAddressMinutes * 60_000) return { state: 'unavailable', reason: 'rate', message: 'This address has used its share of the builder this hour.' };
       if (queue.length >= cfg.queue) return { state: 'unavailable', reason: 'busy', message: 'The builder has a full queue.' };
       job = { key, names: set.names, baseId: b.id, state: 'queued', phase: 'queued', done: 0, total: 0, addresses: new Set([address]), reason: '', message: '', at: now() };
       jobs.set(key, job);

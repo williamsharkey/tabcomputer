@@ -2,7 +2,7 @@
 // Package layers (docs/DEBIAN.md "Package layers"): the cap on what all sets
 // take on disk together.
 //
-//   node set-evict.mjs OUT --max-mb N [--keep ID] [--debs DIR --debs-max-mb M]
+//   node set-evict.mjs OUT --max-mb N [--keep ID] [--debs DIR --debs-max-mb M] [--specs DIR]
 //
 // OUT is the directory of sets (TABCOMPUTER_DEBIAN_LAYERS/sets: <key>/layer.json,
 // <key>/index-*.json.gz, chunks/). Chunks no index names are deleted (a build
@@ -12,7 +12,9 @@
 // with a `pinned` file (the ones built at deploy) are never removed. Each set
 // keeps its newest two indexes, as toolchain layers do: a tab that applied
 // the older one may still fetch its chunks. With --debs, the oldest
-// downloaded .debs go until that directory is under M MB.
+// downloaded .debs go until that directory is under M MB. With --specs, the
+// builder's spec file (DIR/<key>.json) of each removed set goes with it, and
+// so does one a day old whose set was never built (a build that failed).
 //
 // build-set.sh runs this before a build, under its lock, so nothing here
 // races a build. A tab that applied a set which is removed later keeps what
@@ -21,10 +23,13 @@
 // packages again builds the set again.
 import { gunzipSync } from 'node:zlib';
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+
+const SPEC_FILE = /^(p-[0-9a-f]{24})\.json$/;
+const SPEC_STALE_MS = 24 * 3600_000;
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export function evictSets(dir, { maxBytes, keepId = '', debs = '', debsMax = 0 }) {
+export function evictSets(dir, { maxBytes, keepId = '', debs = '', debsMax = 0, specs = '', now = Date.now() }) {
   const chunkDir = join(dir, 'chunks');
   const sets = () => (existsSync(dir) ? readdirSync(dir) : [])
     .filter((d) => existsSync(join(dir, d, 'layer.json')))
@@ -62,7 +67,17 @@ export function evictSets(dir, { maxBytes, keepId = '', debs = '', debsMax = 0 }
     let total = files.reduce((n, x) => n + x.st.size, 0);
     for (const x of files) { if (total <= debsMax) break; unlinkSync(join(debs, x.f)); total -= x.st.size; debsDeleted++; }
   }
-  return { sets: sets().length, removed, chunkBytes, chunksDeleted, debsDeleted };
+  let specsDeleted = 0;
+  if (specs && existsSync(specs)) {
+    const have = new Set(sets().map((s) => s.id));
+    for (const f of readdirSync(specs)) {
+      const id = SPEC_FILE.exec(f)?.[1];
+      if (!id || id === keepId) continue;
+      const gone = removed.includes(id) || (!have.has(id) && now - lstatSync(join(specs, f)).mtimeMs > SPEC_STALE_MS);
+      if (gone) { unlinkSync(join(specs, f)); specsDeleted++; }
+    }
+  }
+  return { sets: sets().length, removed, chunkBytes, chunksDeleted, debsDeleted, specsDeleted };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -72,6 +87,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const keepId = opt('--keep', '');
   const debs = opt('--debs', '');
   const debsMax = Number(opt('--debs-max-mb', '1024')) * 1e6;
-  if (!args[0]) { console.error('usage: set-evict.mjs OUT --max-mb N [--keep ID] [--debs DIR --debs-max-mb M]'); process.exit(2); }
-  console.log(JSON.stringify(evictSets(args[0], { maxBytes, keepId, debs, debsMax })));
+  const specs = opt('--specs', '');
+  if (!args[0]) { console.error('usage: set-evict.mjs OUT --max-mb N [--keep ID] [--debs DIR --debs-max-mb M] [--specs DIR]'); process.exit(2); }
+  console.log(JSON.stringify(evictSets(args[0], { maxBytes, keepId, debs, debsMax, specs })));
 }

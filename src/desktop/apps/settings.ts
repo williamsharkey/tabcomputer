@@ -32,7 +32,7 @@ const PERSON_D = 'M12 4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 1 0 0-7.2zM5 20c.8-3.8 3.6
 
 /** Panes in sidebar groups; `words` widen the search */
 const PANES = [
-  { id: 'accounts', label: 'Accounts', group: 0, icon: paneIcon(PERSON_D, '#2f7cf6'), words: 'account sign in sign out login logout github claude code subscription plan credentials' },
+  { id: 'accounts', label: 'Accounts', group: 0, icon: paneIcon(PERSON_D, '#2f7cf6'), words: 'account sign in sign out login logout github claude code subscription plan credentials shared computer school erase delete wipe' },
   { id: 'appearance', label: 'Appearance', group: 1, icon: paneIcon(SUN_D, '#2b2b30'), words: 'theme light dark mode system keys keyboard motion classic terminal restore session reload' },
   { id: 'dock', label: 'Dock & Icons', group: 1, icon: paneIcon(DOCK_D, '#5b4fd6'), words: 'icon icons set theme drafting classic pearl glass foil vaporwave aurora clay swiss brutalist risograph one-bit pixel paper' },
   { id: 'network', label: 'Network', group: 2, icon: paneIcon(glyphFor('browser')!, '#1f9d8b'), words: 'internet relay github sign in account connection tcp' },
@@ -203,6 +203,64 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     let gone = false;
     void import('../accounts').then((m) => { if (!gone) off = m.renderAccounts(host, { wm, fs: ctx.fs }); });
     cleanup = () => { gone = true; off?.(); };
+
+    // Sign-out for a shared computer (src/sign-out.ts): the sign-ins and every file, after a confirm that lists them
+    const h = document.createElement('h3');
+    h.textContent = 'Shared computer';
+    const card = document.createElement('div');
+    card.className = 'sd-card sd-signout';
+    panel.append(h, card);
+    const add = <K extends keyof HTMLElementTagNameMap>(to: HTMLElement, tag: K, text = '', cls = ''): HTMLElementTagNameMap[K] => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text) e.textContent = text;
+      to.appendChild(e);
+      return e;
+    };
+    const idle = () => {
+      card.textContent = '';
+      const row = add(card, 'div', '', 'sd-row');
+      const text = add(row, 'span', 'Sign out of this computer', 'sd-grow');
+      add(text, 'div', 'For a computer other people use. It removes the GitHub and Claude sign-ins and every file of this tab computer from this browser.', 'sd-small sd-muted');
+      const b = add(row, 'button', 'Sign Out and Erase…', 'sd-btn');
+      b.type = 'button';
+      b.dataset.act = 'signout-all';
+      b.addEventListener('click', () => void confirm(b));
+    };
+    const confirm = async (opener: HTMLButtonElement) => {
+      opener.disabled = true;
+      const so = await import('../../sign-out');
+      const plan = await so.signOutPlan(ctx.fs);
+      if (gone) return;
+      const t = so.signOutText(plan);
+      card.textContent = '';
+      const box = add(card, 'div', '', 'sd-signout-confirm');
+      box.setAttribute('role', 'alertdialog');
+      box.setAttribute('aria-label', t.title);
+      add(box, 'b', t.title);
+      add(box, 'div', 'It deletes, from this browser:', 'sd-small');
+      const list = add(box, 'ul', '', 'sd-small');
+      for (const d of t.deleted) add(list, 'li', d);
+      if (t.warning) {
+        add(box, 'div', t.warning, 'sd-small sd-signout-warn');
+        const lost = add(box, 'ul', '', 'sd-small sd-signout-warn');
+        for (const l of t.lost) add(lost, 'li', l);
+      }
+      add(box, 'div', t.kept, 'sd-small sd-muted');
+      const actions = add(box, 'div', '', 'sd-sheet-actions');
+      add(actions, 'span', '', 'sd-grow');
+      const cancel = add(actions, 'button', 'Cancel', 'sd-btn');
+      cancel.type = 'button';
+      cancel.dataset.act = 'signout-cancel';
+      const go = add(actions, 'button', t.action, 'sd-btn sd-danger');
+      go.type = 'button';
+      go.dataset.act = 'signout-confirm';
+      cancel.addEventListener('click', idle);
+      box.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); idle(); } });
+      go.addEventListener('click', () => { go.disabled = cancel.disabled = true; go.textContent = 'Signing out…'; void so.signOutOfThisComputer(ctx.fs); });
+      cancel.focus();
+    };
+    idle();
   }
 
   function network(): void {

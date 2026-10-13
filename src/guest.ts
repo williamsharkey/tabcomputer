@@ -225,6 +225,17 @@ export const guestDiscarding = (): boolean => discarding;
  */
 export async function wipeGuestStorage(): Promise<string[]> {
   if (!guestInfo()) throw new Error('not a guest: refusing to delete this origin\'s storage');
+  return wipeAllStorage();
+}
+
+/**
+ * Delete everything this origin stores, whatever profile it is. Two callers:
+ * a guest's discard (above), and the shared-computer sign-out after its
+ * confirm (src/sign-out.ts, in a document that opened nothing). From here on
+ * nothing writes storage again (`guestDiscarding`).
+ */
+export async function wipeAllStorage(): Promise<string[]> {
+  discarding = true;
   const left: string[] = [];
   const attempt = async (what: string, fn: () => Promise<unknown>) => { try { await fn(); } catch (e) { left.push(`${what}: ${(e as Error)?.message ?? e}`); } };
   await attempt('service workers', async () => {

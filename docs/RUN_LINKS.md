@@ -28,12 +28,56 @@ The script runs in `~/run/<name>/`: the recipe's name, `gh-<owner>-<repo>`, `gis
 
 `/recipes` lists the curated recipes with a Run link each.
 
+## After the #
+
+A link can also be written after the `#` of the address (tabcomputer#147). A browser never sends that part of an address to a server, so the server does not see what such a link runs. A person can write one by hand.
+
+```
+https://tabcomputer.com/#pip install flask && python3 app.py
+https://tabcomputer.com/#sh:name=World; echo hello $name
+https://tabcomputer.com/#run=tesseract {in} stdout pdf&accept=.png,.jpg&name=Make scans searchable&needs=tesseract-ocr
+https://tabcomputer.com/#gist:0123456789abcdef0123456789abcdef
+```
+
+Code: `src/link-fragment.ts` (what the part after `#` means, with no DOM), `src/link-capture.ts` (taking it out of the address), `startFragmentLink` in `src/main.ts`. Tests: `tests/tests/shiro-vitest/link-fragment.test.ts`, `tests/browser/link-is-computer.mjs`. `/link` is a page where a person types commands or an app and sees the address.
+
+| After the `#` | What opens |
+| --- | --- |
+| commands | The Run / Cancel window with the commands whole. Run opens a new Terminal that runs them. |
+| `sh:` and commands | The same, whatever the commands start with. |
+| `gz:<base64url>` | The same, with the commands gzipped. `link` makes this form for a script too long to read. |
+| `key=value&key=value` | A one-file app: the keys of `app.json`. The install prompt, then the app. [APPS.md](APPS.md) "An app in the address". |
+| `app=<base64url>` | An app's files, as `app share` packs them. |
+| `gist:<id>`, `gist:<user>/<id>` | A gist. With an `app.json` in it the link is `?app=gist:…`. Without one the link is `?run=gist:…` for its first script: the first file named `.sh`, else the first file. `gist:<user>/<id>/<file>` names the script. |
+
+**The rule that tells an app from commands.** The part after `#` is an app when it starts with a key of `app.json` and `=`: `run=`, `name=`, `table=`, `field.x=` and the rest of [APPS.md](APPS.md)'s list. Everything else is commands. So `#FOO=1 make`, `#echo a=b` and `#git config user.name=x` are commands: none starts with a key of `app.json`. `#name=World; echo $name` starts with one, so it is read as an app, and its error says to write `#sh:` first. `#sh:` makes the rest commands whatever it is.
+
+**How the text is read.** The part after `#` is percent-decoded: `%20` is a space and `%0A` is a line break. A space typed by hand works, because the browser encodes it. A `%` that starts no code stays (`100%`). `+` is a plus. `;` and `&&` are the shell's own, so they need nothing. A second `#` is part of the commands. The whole part is at most 48,000 characters, and holds text only: control characters and invisible characters are refused, as for any script.
+
+**What happens when one is opened.**
+
+- The part after `#` leaves the address at the top of boot (`takeFragment`, the first line of `main()`), before storage opens and before anything is fetched. It is in no reload and no history entry. A link pasted into the address of a tab that is already open is taken the same way (`hashchange`).
+- A framed page ignores it. `?safe=1` skips it. The Welcome card is not shown on a visit that came for a link.
+- Commands go to `handleRunLink` and the Run / Cancel window, on the rules under "Trust" below. An app goes to `handleAppLink` and the install prompt. There is no other path: a link never runs or installs anything before the person presses Run or Install.
+- Commands run in a new Terminal in the home folder, in that Terminal's own shell, as if they were typed: a `cd` or an `export` stays. (A `?run=` script runs in `~/run/<name>/`, in a subshell.) The text and its marker are kept in `~/run/sh-<hash>/`.
+- **A second visit.** Commands that ran to their end here leave the marker. The same link opened again asks nothing and runs nothing: the Terminal says that the commands already ran here and how to run them again. Changed commands, commands that did not finish (a server that is still up, a last command that failed), and commands with an `# on-open:` line ask again.
+
+`?run=sh:<base64url>` still works and is unchanged. It is in the query, so the request for the page carries it to the server.
+
+**What the server learns.** Nothing of the commands or the app's manifest: `tests/browser/link-is-computer.mjs` records every request and checks that none carries them. Two things do reach it later, as for any app or command: an app's id is in the host name of the app page's own origin once the app is open, and what the commands download through this site (the relay, the Debian mirror) is seen as those requests are.
+
+### The /link page
+
+`public/link/index.html` and `public/link/fragment.js`: a box, the address beside it with its length, Open, Copy, and five examples. The box follows the address's rule: text that starts with an app key and `=` is an app, one key on each line, and a line that starts no key continues the value above it. `fragment.js` writes the address the way `src/link-fragment.ts` does (`link-fragment.test.ts` checks the two agree). Commands longer than 2,000 characters are shown as the `gz:` form.
+
+Addresses of the page's examples, with `https://tabcomputer.com` as the site (`link-fragment.test.ts` prints them): a Python one-liner 68 characters, a Flask hello 285, the jq playground 531, the expenses table 215, a C hello 460.
+
 ## Trust
 
 A tab can hold Claude and GitHub tokens and the person's files, so a link never runs code that nobody reviewed without asking.
 
 - **Curated recipes run at once.** The Terminal first prints one line, `running recipe c-class (tabcomputer.com/recipes/c-class.sh)`. A recipe is curated only when `/recipes/index.json` on the page's own origin lists its name with the sha256 of the bytes `/recipes/<name>.sh` returned. Both are fetched with redirects refused, and an HTML answer (the app shell standing in for a missing file) is refused.
-- **`gh:`, `gist:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again.
+- **`gh:`, `gist:` and `sh:` scripts are shown first**, whole, in a window with Run and Cancel, with where the script came from and the variables the link sets. Only the Run button runs it. Cancel has the focus, closing the window is Cancel, and Run is off for the first moment. The window asks on every load, also when the script already ran here (then Run only does its `on-open` line). What runs is the text that was shown: it is not fetched again. Commands written after the `#` are shown the same way; the one difference is that a second visit to commands that finished here, with no `on-open` line, runs nothing and so asks nothing ("After the #" above).
 - **A script from GitHub is fetched as exactly the file asked for**: without cookies or a referrer, no redirect followed, and an HTML answer is refused. A gist is never curated, whatever it is named.
 - **The script must be what it looks like.** UTF-8 text without control characters, bidirectional overrides or invisible characters; otherwise it is refused. The prompt puts the script in with `textContent`, so markup in a script stays text.
 - **Arguments are data.** Only the names in the script's `# args:` header are passed, as `RUN_<NAME>` in the Terminal's environment; other parameters are ignored and named in the Terminal. A link can't set `PATH` or any other variable. Values are never written into shell text. A value with control characters, or longer than 2000 characters, stops the run.

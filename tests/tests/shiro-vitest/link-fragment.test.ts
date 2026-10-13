@@ -616,6 +616,83 @@ describe('#gist: an app or a script, by what the gist holds', () => {
   });
 });
 
+describe('the /link page writes what the app reads', () => {
+  type Page = {
+    EXAMPLES: { name: string; text: string }[];
+    readBox(text: string): { kind: string; fragment: string; key: string };
+    pairsFromLines(text: string): [string, string][];
+    pack(text: string): Promise<string>;
+    isAppKey(key: string): boolean;
+    READABLE_MAX: number; FRAGMENT_MAX: number;
+  };
+  const page = (): Promise<Page> => import(/* @vite-ignore */ path.join(ROOT, 'public/link/fragment.js')) as Promise<Page>;
+
+  it('each example reads back as what was typed, and the apps are valid', async () => {
+    const p = await page();
+    const lengths: Record<string, string> = {};
+    expect(p.EXAMPLES.map((e) => e.name)).toEqual(['A Python one-liner', 'A Flask hello', 'The jq playground', 'An expenses table', 'A C hello']);
+    for (const ex of p.EXAMPLES) {
+      const r = p.readBox(ex.text);
+      const url = `${ORIGIN}/#${r.fragment}`;
+      lengths[ex.name] = `${url.length} (${r.kind})`;
+      expect(url.length, ex.name).toBeLessThanOrEqual(READABLE_MAX);
+      expect(r.fragment, ex.name).toMatch(/^[A-Za-z0-9\-._~!$'()*+,;=:@/?&%]+$/);
+      const back = parseFragment(new URL(url).hash)!;
+      expect(back.kind, ex.name).toBe(r.kind);
+      if (back.kind === 'commands') {
+        expect(back.text).toBe(ex.text + '\n');
+        expect(r.fragment).toBe(commandsFragment(ex.text));
+      } else if (back.kind === 'app') {
+        expect(back.pairs).toEqual(p.pairsFromLines(ex.text));
+        expect(r.fragment).toBe(appFragment(back.pairs));
+        const app = await keysApp(back.pairs);
+        expect(app.manifest.kind).not.toBe('page');
+      }
+    }
+    console.log('[link] characters of each /link example:', JSON.stringify(lengths));
+    // the two examples the site also ships are the same apps
+    const same = async (name: string, id: string) => {
+      const pairs = (parseFragment('#' + p.readBox(p.EXAMPLES.find((e) => e.name === name)!.text).fragment) as { pairs: [string, string][] }).pairs;
+      expect((await keysApp(pairs)).manifest, name).toEqual(validateManifest(JSON.parse(dec(example(id)))));
+    };
+    await same('The jq playground', 'jq-playground');
+    await same('An expenses table', 'expenses');
+    // the C hello: a program of several lines in one value, and a toolchain set under needs
+    const c = await keysApp(p.pairsFromLines(p.EXAMPLES[4].text));
+    expect(c.manifest).toMatchObject({ kind: 'form', shell: true, needs: ['c'], stdin: '{code}' });
+    expect(c.manifest.fields[0].value).toBe('#include <stdio.h>\n\nint main(void) {\n    puts("hello from a link");\n    return 0;\n}');
+  });
+
+  it('the box follows the address\'s rule, and the two lists of keys agree', async () => {
+    const p = await page();
+    expect(p.READABLE_MAX).toBe(READABLE_MAX);
+    expect(p.FRAGMENT_MAX).toBe(FRAGMENT_MAX);
+    for (const k of ['run', 'name', 'about', 'description', 'id', 'version', 'out', 'stdin', 'output', 'table', 'shell', 'each', 'live', 'accept', 'needs', 'toolchains', 'columns', 'fields', 'options', 'manifest',
+      'field.x', 'fields.x.value', 'option.q', 'window.width', 'FOO', 'entry', 'icon', 'echo a', 'user.name', '']) expect(p.isAppKey(k), k).toBe(isAppKey(k));
+    expect(p.readBox('')).toEqual({ kind: 'none', fragment: '', key: '' });
+    expect(p.readBox('  \n ').kind).toBe('none');
+    for (const text of ['FOO=1 make', 'echo a=b', 'git config user.name=x', 'ls -la', 'echo done.', 'safe', 'app=1 ./go', 'echo こんにちは # hi']) {
+      const r = p.readBox(text);
+      expect(r.kind, text).toBe('commands');
+      expect(r.fragment, text).toBe(commandsFragment(text));
+      expect(commands('#' + r.fragment), text).toBe(text + '\n');
+    }
+    // a line that starts with an app key is an app here too, and sh: says otherwise
+    expect(p.readBox('name=World; echo hi $name')).toMatchObject({ kind: 'app', key: 'name' });
+    const sh = p.readBox('sh:name=World; echo hi $name');
+    expect(sh.kind).toBe('commands');
+    expect(commands('#' + sh.fragment)).toBe('name=World; echo hi $name\n');
+    const gist = p.readBox(`gist:someone/${'ab12'.repeat(8)}`);
+    expect(gist.kind).toBe('gist');
+    expect(parseFragment('#' + gist.fragment)).toEqual({ kind: 'gist', user: 'someone', id: 'ab12'.repeat(8), file: '' });
+    // a value keeps its & and =; a line that starts no key continues the value above
+    expect(p.pairsFromLines('name=A & B\nrun=sh -c "x=1; echo $x"\nabout=two\nlines\n')).toEqual([['name', 'A & B'], ['run', 'sh -c "x=1; echo $x"'], ['about', 'two\nlines']]);
+    expect(parseFragment('#' + p.readBox('name=A & B\nrun=cat {in}').fragment)).toEqual({ kind: 'app', pairs: [['name', 'A & B'], ['run', 'cat {in}']] });
+    // the compressed form is the one the app unpacks
+    expect(dec(await unpackCommands(await p.pack('echo héllo'), 1000))).toBe('echo héllo\n');
+  });
+});
+
 describe('app share for a one-file app', () => {
   it('gives the readable link when the app is one app.json, and says what it is', async () => {
     const { fs } = await createTestShell();

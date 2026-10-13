@@ -1,4 +1,4 @@
-From f25c1b52b7fb831c3bdbaab87a279dcafa9963fa Mon Sep 17 00:00:00 2001
+From ede1be032bed6770b97d5a137b400b212bade4e6 Mon Sep 17 00:00:00 2001
 From: shiro <build@shiro>
 Date: Tue, 13 Oct 2026 03:10:06 -0400
 Subject: [PATCH] Shiro: the wasm JIT compiles code in writable pages, and
@@ -49,7 +49,7 @@ dropped, pages given up).
 ---
  blink/iovs.c    |   2 +-
  blink/machine.h |   8 +
- blink/memory.c  |  83 +++++++-
+ blink/memory.c  |  93 +++++++--
  blink/modrm.c   |  14 +-
  blink/modrm.h   |   1 +
  blink/shiro.inc |   9 +-
@@ -58,7 +58,7 @@ dropped, pages given up).
  blink/syscall.c |   2 +
  blink/wjit.c    | 530 +++++++++++++++++++++++++++++++++++++++++++++++-
  blink/wjit.h    |  10 +
- 11 files changed, 635 insertions(+), 30 deletions(-)
+ 11 files changed, 643 insertions(+), 32 deletions(-)
 
 diff --git a/blink/iovs.c b/blink/iovs.c
 index 0000000..0000000 100644
@@ -103,10 +103,11 @@ diff --git a/blink/memory.c b/blink/memory.c
 index 0000000..0000000 100644
 --- a/blink/memory.c
 +++ b/blink/memory.c
-@@ -334,7 +334,36 @@ u64 BreakCow(struct Machine *m, i64 virt) {
+@@ -334,7 +334,33 @@ u64 BreakCow(struct Machine *m, i64 virt) {
    return e2;
  }
  
+-u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
 +// Sets and clears bits in the entry of the 4 KiB page at `page`, unless the
 +// entry (as it is now, not a cached copy) has one of `unless` (a system
 +// call's page lock, say): 0 then, or when the page isn't mapped; 1 if the
@@ -127,20 +128,17 @@ index 0000000..0000000 100644
 +  return e2 != entry ? 1 : 2;
 +}
 +
- u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
-+  // (an instruction fetch writes nothing; any other caller may)
-+  return LookupAddressFor(m, virt, mask, need, mask == PAGE_XD && !need ? 0 : -1);
-+}
-+
-+// LookupAddress2 with what the caller will do through the pointer: wlen 0,
++// The lookup, with what the caller will do through the pointer: wlen 0,
 +// only read; n > 0, write at most n bytes from `virt` on; -1, unknown (it
 +// may write anywhere in the page). The wasm JIT's code from a writable
-+// page (PAGE_WJC) is dropped by a write that touches it.
-+u8 *LookupAddressFor(struct Machine *m, i64 virt, u64 mask, u64 need, int wlen) {
++// page (PAGE_WJC) is dropped by a write that touches it. Inlined into each
++// entry point below, so none of them is a call deeper than before.
++static inline __attribute__((__always_inline__)) u8 *Lookup(
++    struct Machine *m, i64 virt, u64 mask, u64 need, int wlen) {
    u8 *host;
    u64 entry;
    if (!m->metal || m->mode.omode == XED_MODE_LONG ||
-@@ -354,9 +383,14 @@ u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
+@@ -354,9 +380,14 @@ u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
    // soon as Blink resolves an address in it: many of its paths write
    // through a resolved pointer without checking PAGE_RW (only compiled
    // code's inline reads keep sharing; its writes come here)
@@ -158,27 +156,45 @@ index 0000000..0000000 100644
    }
    if ((entry & mask) != need) {
      m->segvcode = SEGV_ACCERR_LINUX;
-@@ -400,6 +434,19 @@ u8 *LookupAddress(struct Machine *m, i64 virt) {
-   return LookupAddress2(m, virt, need, need);
+@@ -384,6 +415,15 @@ u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
+   }
  }
  
++u8 *LookupAddress2(struct Machine *m, i64 virt, u64 mask, u64 need) {
++  // (an instruction fetch writes nothing; any other caller may)
++  return Lookup(m, virt, mask, need, mask == PAGE_XD && !need ? 0 : -1);
++}
++
++u8 *LookupAddressFor(struct Machine *m, i64 virt, u64 mask, u64 need, int wlen) {
++  return Lookup(m, virt, mask, need, wlen);
++}
++
+ // LookupAddress for Blink's own writes to guest memory (futex words, signal
+ // frames, the clear-tid word): a copy-on-write page becomes this process's
+ u8 *LookupAddressWrite(struct Machine *m, i64 virt) {
+@@ -397,7 +437,20 @@ u8 *LookupAddressWrite(struct Machine *m, i64 virt) {
+ u8 *LookupAddress(struct Machine *m, i64 virt) {
+   u64 need = 0;
+   if (Cpl(m) == 3) need = PAGE_U;
+-  return LookupAddress2(m, virt, need, need);
++  return Lookup(m, virt, need, need, -1);
++}
++
 +// LookupAddress for a pointer that is only read through
 +u8 *LookupAddressRead(struct Machine *m, i64 virt) {
 +  u64 need = 0;
 +  if (Cpl(m) == 3) need = PAGE_U;
-+  return LookupAddressFor(m, virt, need, need, 0);
++  return Lookup(m, virt, need, need, 0);
 +}
 +
 +u8 *ResolveAddressRead(struct Machine *m, i64 v) {
 +  u8 *r;
 +  if ((r = LookupAddressRead(m, v))) return r;
 +  ThrowSegmentationFault(m, v);
-+}
-+
+ }
+ 
  flattencalls u8 *GetAddress(struct Machine *m, i64 v) {
-   if (HasLinearMapping()) return ToHost(v);
-   return LookupAddress(m, v);
-@@ -481,7 +528,7 @@ int VirtualCopy(struct Machine *m, i64 v, char *r, u64 n, bool d) {
+@@ -481,7 +534,7 @@ int VirtualCopy(struct Machine *m, i64 v, char *r, u64 n, bool d) {
        k = 4096;
        continue;
      }
@@ -187,27 +203,27 @@ index 0000000..0000000 100644
      if (d) {
        memcpy(r, p, k);
      } else if (!IsRomAddress(m, p)) {
-@@ -562,7 +609,7 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
+@@ -562,7 +615,7 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
      need = 0;
    }
    if ((v & 4095) + n <= 4096) {
 -    if ((res = LookupAddress2(m, v, mask, need))) {
-+    if ((res = LookupAddressFor(m, v, mask, need, writable ? (n ? (int)n : 1) : 0))) {
++    if ((res = Lookup(m, v, mask, need, writable ? (n ? (int)n : 1) : 0))) {
        if (!IsRomAddress(m, res)) return res;
        p1 = res;
        m->stashaddr = v;
-@@ -584,8 +631,8 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
+@@ -584,8 +637,8 @@ u8 *ReserveAddress(struct Machine *m, i64 v, size_t n, bool writable) {
    m->opcache->writable = writable;
    res = m->opcache->stash;
    k = 4096 - (v & 4095);
 -  if ((p1 = LookupAddress2(m, v, mask, need))) {
 -    if ((p2 = LookupAddress2(m, v + k, mask, need))) {
-+  if ((p1 = LookupAddressFor(m, v, mask, need, writable ? (int)k : 0))) {
-+    if ((p2 = LookupAddressFor(m, v + k, mask, need, writable ? (int)(n - k) : 0))) {
++  if ((p1 = Lookup(m, v, mask, need, writable ? (int)k : 0))) {
++    if ((p2 = Lookup(m, v + k, mask, need, writable ? (int)(n - k) : 0))) {
        IGNORE_RACES_START();
        memcpy(res, p1, k);
        memcpy(res + k, p2, n - k);
-@@ -604,6 +651,19 @@ static u8 *AccessRam2(struct Machine *m, i64 v, size_t n, void *p[2], u8 *tmp,
+@@ -604,6 +657,19 @@ static u8 *AccessRam2(struct Machine *m, i64 v, size_t n, void *p[2], u8 *tmp,
    u8 *a, *b;
    unsigned k;
    unassert(n <= 4096);
@@ -227,7 +243,7 @@ index 0000000..0000000 100644
    if ((v & 4095) + n <= 4096) {
      a = ResolveAddress(m, v);
      if (!protect_rom || !IsRomAddress(m, a)) return a;
-@@ -703,7 +763,8 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
+@@ -703,7 +769,8 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
    size_t have;
    void *res, *page;
    if (!size) return 0;
@@ -237,7 +253,7 @@ index 0000000..0000000 100644
    have = 4096 - (addr & 4095);
    if (size <= have) {
      res = page;
-@@ -711,7 +772,7 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
+@@ -711,7 +778,7 @@ void *Schlep(struct Machine *m, i64 addr, size_t size, u64 mask, u64 need) {
      if (!(copy = (char *)malloc(size))) return 0;
      memcpy(copy, page, have);
      for (; have < size; have += 4096) {
@@ -246,7 +262,7 @@ index 0000000..0000000 100644
          free(copy);
          return 0;
        }
-@@ -746,7 +807,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
+@@ -746,7 +813,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
    char *copy, *page, *p;
    have = 4096 - (addr & 4095);
    if (!addr) return 0;
@@ -255,7 +271,7 @@ index 0000000..0000000 100644
    if ((p = (char *)memchr(page, '\0', have))) {
      SetReadAddr(m, addr, p - page + 1);
      return page;
-@@ -754,7 +815,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
+@@ -754,7 +821,7 @@ char *LoadStr(struct Machine *m, i64 addr) {
    if (!(copy = (char *)malloc(have + 4096))) return 0;
    memcpy(copy, page, have);
    for (;;) {

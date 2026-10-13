@@ -222,6 +222,7 @@ describe('inbound links: the window is the run links\'', () => {
     // the question, where it is from, the script, and one sentence on what it can touch
     expect([...root.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
       'From this link. Not reviewed by tabcomputer.',
+      'The script has 1 line. Scroll to the end to turn Run on.',
       'It runs as you: it can read and change every file in this tab and use its sign-ins (Claude, GitHub).',
     ]);
     const again = buildRunPrompt({ name: 'sh-1', from: 'this link', script: 'echo hi\n', env: {}, ignored: [], dir: '/home/user/run/sh-1', onOpenOnly: 'cd work' }, () => {});

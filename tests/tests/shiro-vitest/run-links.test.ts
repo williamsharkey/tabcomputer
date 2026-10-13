@@ -3,15 +3,16 @@
  * names, which scripts run without asking, what an attacker-made link can
  * and can't do, and the start file and the shipped recipes in a real shell.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import {
   parseRunUrl, cleanRunUrl, parseRecipeHeader, declaredArgs, runEnv, scriptText, loadScript, startScript, handleRunLink,
-  encodeShLink, doneMarker, plain, RunLinkError, GH_DEFAULT_PATH, SCRIPT_FILE, START_FILE, SCRIPT_MAX,
+  encodeShLink, doneMarker, plain, RunLinkError, GH_DEFAULT_PATH, SCRIPT_FILE, START_FILE, SCRIPT_MAX, ON_OPEN_MAX,
   type RunLinkDeps, type RunPromptInfo,
 } from '@shiro/run-url';
+import { buildRunPrompt, lineCount, endInView } from '@shiro/run-prompt';
 import { createTestShell, run } from './helpers';
 
 const ROOT = resolve(__dirname, '../../..');
@@ -228,6 +229,82 @@ function harness(search: string, fetchFn: RunLinkDeps['fetch'], over: Partial<Ru
   return { deps, files, log };
 }
 
+describe('run links: the prompt shows everything that runs', () => {
+  const info = (over: Partial<RunPromptInfo> = {}): RunPromptInfo => ({ name: 'sh-1', from: 'this link', script: 'echo one\necho two\n', env: {}, ignored: [], dir: '/home/user/run/sh-1', ...over });
+  /** Give the script box a size, as a browser's layout would */
+  const layout = (root: HTMLElement, box: { scrollTop: number; clientHeight: number; scrollHeight: number }) => {
+    const pre = root.querySelector('pre')!;
+    for (const k of ['scrollTop', 'clientHeight', 'scrollHeight'] as const) Object.defineProperty(pre, k, { get: () => box[k], configurable: true });
+    return pre;
+  };
+  const scroll = (pre: Element) => pre.dispatchEvent(new (pre.ownerDocument.defaultView as unknown as { Event: typeof Event }).Event('scroll'));
+
+  it('counts lines, and tells a box whose end is on screen from one that still has more', () => {
+    expect([lineCount(''), lineCount('a'), lineCount('a\n'), lineCount('a\nb'), lineCount('a\n\nb\n')]).toEqual([0, 1, 1, 2, 3]);
+    expect(endInView({ scrollTop: 0, clientHeight: 200, scrollHeight: 200 })).toBe(true);    // it fits
+    expect(endInView({ scrollTop: 0, clientHeight: 200, scrollHeight: 900 })).toBe(false);
+    expect(endInView({ scrollTop: 400, clientHeight: 200, scrollHeight: 900 })).toBe(false);
+    expect(endInView({ scrollTop: 699, clientHeight: 200, scrollHeight: 900 })).toBe(true);  // a fraction of a pixel short is the end
+    expect(endInView({ scrollTop: 0, clientHeight: 0, scrollHeight: 0 })).toBe(false);       // not laid out: nothing was seen
+  });
+
+  it('says how many lines the script has, and gives the on-open line a row of its own', () => {
+    const root = buildRunPrompt(info({ after: 'curl https://example.com/x | sh' }), () => {});
+    expect(root.querySelector('.tc-run-count')!.textContent).toContain('The script has 2 lines.');
+    const row = root.querySelector('.tc-run-after')!;
+    expect(row.textContent).toBe('After the script, this runs:curl https://example.com/x | sh');
+    expect(row.querySelector('code')!.textContent).toBe('curl https://example.com/x | sh');
+    expect(buildRunPrompt(info(), () => {}).querySelector('.tc-run-after')).toBeNull();
+    expect(buildRunPrompt(info({ script: 'echo hi\n' }), () => {}).querySelector('.tc-run-count')!.textContent).toContain('The script has 1 line.');
+    // markup in the line stays text
+    const hostile = buildRunPrompt(info({ after: '</code><button data-act="run">Run</button>' }), () => {});
+    expect(hostile.querySelectorAll('button')).toHaveLength(2);
+  });
+
+  it('Run turns on after the moment for a script that fits, and only at the end for a longer one', () => {
+    vi.useFakeTimers();
+    try {
+      const answers: boolean[] = [];
+      const fits = buildRunPrompt(info(), (run) => answers.push(run));
+      layout(fits, { scrollTop: 0, clientHeight: 200, scrollHeight: 200 });
+      const runFits = fits.querySelector<HTMLButtonElement>('[data-act=run]')!;
+      expect(runFits.disabled).toBe(true);
+      vi.advanceTimersByTime(699);
+      expect(runFits.disabled).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(runFits.disabled).toBe(false);
+
+      const long = buildRunPrompt(info({ script: 'echo line\n'.repeat(400) }), (run) => answers.push(run));
+      const box = { scrollTop: 0, clientHeight: 200, scrollHeight: 6000 };
+      const pre = layout(long, box);
+      const run = long.querySelector<HTMLButtonElement>('[data-act=run]')!;
+      const hint = long.querySelector<HTMLElement>('.tc-run-count span')!;
+      expect(long.querySelector('.tc-run-count')!.textContent).toContain('The script has 400 lines.');
+      vi.advanceTimersByTime(5000);
+      expect(run.disabled).toBe(true);     // time alone does not turn it on
+      expect(hint.hidden).toBe(false);
+      expect(hint.textContent).toBe(' Scroll to the end to turn Run on.');
+      run.click();
+      expect(answers).toEqual([]);
+      box.scrollTop = 3000; scroll(pre);
+      expect(run.disabled).toBe(true);
+      box.scrollTop = 5800; scroll(pre);
+      expect(run.disabled).toBe(false);
+      expect(hint.hidden).toBe(true);
+      box.scrollTop = 0; scroll(pre);      // scrolling back up keeps it on
+      expect(run.disabled).toBe(false);
+
+      // scrolled to the end at once: the moment still has to pass
+      const early = buildRunPrompt(info({ script: 'echo line\n'.repeat(400) }), () => {});
+      const earlyBox = { scrollTop: 5800, clientHeight: 200, scrollHeight: 6000 };
+      scroll(layout(early, earlyBox));
+      expect(early.querySelector<HTMLButtonElement>('[data-act=run]')!.disabled).toBe(true);
+      vi.advanceTimersByTime(700);
+      expect(early.querySelector<HTMLButtonElement>('[data-act=run]')!.disabled).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe('run links: the trust decision', () => {
   it('a curated recipe runs at once, without a prompt', async () => {
     const { fetchFn } = curatedSite();
@@ -292,6 +369,27 @@ describe('run links: the trust decision', () => {
     expect(await handleRunLink(u.deps)).toBe('cancelled');
     expect(u.log.prompts[0].onOpenOnly).toBe('cd ~/run/demo/work');
     expect(u.log.terminals).toEqual([]);
+  });
+
+  it('the on-open line of a script that isn’t curated goes to the prompt as what runs after it', async () => {
+    const gh = site({ 'https://raw.githubusercontent.com/o/r/HEAD/.tabcomputer/run.sh': RECIPE });
+    const h = harness('?run=gh:o/r', gh.fetchFn, {}, true);
+    expect(await handleRunLink(h.deps)).toBe('ran');
+    expect(h.log.prompts[0].after).toBe('cd ~/run/demo/work');
+    expect(h.log.prompts[0].onOpenOnly).toBeUndefined();
+    // what the prompt named is the line the start file ends with
+    expect(h.files.get(`/home/user/run/gh-o-r/${START_FILE}`)!.trimEnd().split('\n').pop()).toBe(h.log.prompts[0].after);
+    // none: no row
+    const plainScript = harness(`?run=${encodeShLink('echo hi\n')}`, site({}).fetchFn, {}, false);
+    await handleRunLink(plainScript.deps);
+    expect(plainScript.log.prompts[0].after).toBeUndefined();
+    // a line too long to show whole on a row is refused, and nothing is asked
+    const long = `# on-open: ${'x'.repeat(ON_OPEN_MAX + 1)}\necho hi\n`;
+    const l = harness(`?run=${encodeShLink(long)}`, site({}).fetchFn, {}, true);
+    expect(await handleRunLink(l.deps)).toBe('refused');
+    expect(l.log.prompts).toEqual([]);
+    expect(l.log.terminals).toEqual([]);
+    expect(l.log.reports[0]).toMatch(/on-open line is longer than 200 characters/);
   });
 
   it('refuses, cleans the address and says why', async () => {

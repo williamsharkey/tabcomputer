@@ -9,6 +9,11 @@
  * script can't add markup to its own prompt. Cancel has the focus, and Run is
  * off for a moment after the window appears, so a click or Enter already on
  * its way doesn't start anything.
+ *
+ * The window shows everything that runs. It says how many lines the box
+ * holds, and Run stays off until the end of the box has been on screen: a
+ * text that fits needs nothing, a longer one is scrolled to its end. A
+ * script's `# on-open:` line is a command, so it has a row of its own.
  */
 import type { RunPromptInfo } from './run-url';
 import type { DesktopAPI, DesktopWindow } from './desktop/wm';
@@ -30,13 +35,16 @@ const CSS = `
 .tc-run-prompt dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font: 12px/1.5 var(--sd-mono, ui-monospace, monospace); max-height: 96px; overflow: auto; }
 .tc-run-prompt dt { color: var(--sd-text-2, #a4a8b8); }
 .tc-run-prompt dd { margin: 0; overflow-wrap: anywhere; }
+.tc-run-prompt .tc-run-after code { display: block; margin-top: 2px; padding: 4px 8px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12px/1.5 var(--sd-mono, ui-monospace, monospace); color: var(--sd-text, #e6e6f0); background: var(--sd-field, rgba(255, 255, 255, .06));
+  border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); border-radius: 6px; user-select: text; -webkit-user-select: text; }
 .tc-run-actions { display: flex; gap: 8px; justify-content: flex-end; flex: none; }
 .tc-run-actions button { font: inherit; padding: 6px 16px; border-radius: 8px; cursor: pointer; color: inherit;
   background: var(--sd-field, rgba(255, 255, 255, .06)); border: 1px solid var(--sd-sep, rgba(255, 255, 255, .12)); }
 .tc-run-actions button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
 .tc-run-actions button[data-act=run] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 .tc-run-actions button:disabled { opacity: .5; cursor: default; }
-.tc-full .tc-run-prompt pre { flex: 0 1 auto; min-height: 0; }
+.tc-full .tc-run-prompt pre { flex: 0 1 auto; min-height: 60px; }
 .tc-full .tc-run-actions { margin-top: auto; }
 .tc-full .tc-run-actions button { flex: 1; }
 `;
@@ -46,6 +54,23 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', cls = ''):
   if (cls) e.className = cls;
   if (text) e.textContent = text;
   return e;
+}
+
+/** How many lines a text has (a last line without its line end counts) */
+export function lineCount(text: string): number {
+  if (!text) return 0;
+  const n = text.split('\n').length;
+  return text.endsWith('\n') ? n - 1 : n;
+}
+
+/**
+ * Whether the end of a scrolling box is on screen: everything fits, or it was
+ * scrolled to its last line. False while the box has no size yet (not in the
+ * page, hidden), so nothing counts as read before it could be.
+ */
+export function endInView(box: { scrollTop: number; clientHeight: number; scrollHeight: number }): boolean {
+  if (!(box.clientHeight > 0) || !(box.scrollHeight > 0)) return false;
+  return box.scrollHeight - box.clientHeight - box.scrollTop <= 2;
 }
 
 /** The prompt's content. `done(true)` only from the Run button. */
@@ -62,6 +87,20 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
   pre.tabIndex = 0;
   pre.setAttribute('aria-label', w ? w.box : 'The script');
   root.append(pre);
+  // How much there is to read, and what is still asked of the reader while Run is off
+  const n = lineCount(info.script);
+  const lines = `${n} ${n === 1 ? 'line' : 'lines'}`;
+  const count = el('p', w ? `${w.box}: ${lines}.` : `The script has ${lines}.`, 'tc-run-count');
+  const hint = el('span', ` Scroll to the end to turn ${w ? w.action : 'Run'} on.`);
+  hint.hidden = true;
+  count.append(hint);
+  root.append(count);
+  // (the on-open line runs as a command; in the box it reads as a comment)
+  if (info.after) {
+    const after = el('p', w ? 'After the commands, this runs:' : 'After the script, this runs:', 'tc-run-after');
+    after.append(el('code', info.after));
+    root.append(after);
+  }
   const vars = Object.entries(info.env);
   if (vars.length || info.ignored.length) {
     const dl = el('dl');
@@ -81,8 +120,19 @@ export function buildRunPrompt(info: RunPromptInfo, done: (run: boolean) => void
   const run = el('button', w ? w.action : 'Run');
   run.type = 'button';
   run.dataset.act = 'run';
+  // Run is on once the moment has passed and the end of the box has been on screen
   run.disabled = true;
-  setTimeout(() => { run.disabled = false; }, RUN_ARMS_AFTER_MS);
+  let timeUp = false;
+  let seenEnd = false;
+  const arm = () => {
+    if (!seenEnd && endInView(pre)) seenEnd = true;
+    run.disabled = !(timeUp && seenEnd);
+    hint.hidden = seenEnd || !timeUp;
+  };
+  pre.addEventListener('scroll', arm);
+  // (the window is laid out after this returns, and its size can change)
+  if (typeof ResizeObserver === 'function') new ResizeObserver(arm).observe(pre);
+  setTimeout(() => { timeUp = true; arm(); }, RUN_ARMS_AFTER_MS);
   cancel.addEventListener('click', () => done(false));
   run.addEventListener('click', (e) => { if (e.isTrusted !== false && !run.disabled) done(true); });
   root.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } });

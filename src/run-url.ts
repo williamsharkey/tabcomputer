@@ -58,6 +58,8 @@ export const GH_DEFAULT_PATH = '.tabcomputer/run.sh';
 export const SCRIPT_MAX = 64 << 10;
 const CURATED_MAX = 256 << 10;
 const VALUE_MAX = 2000;
+/** Longest `# on-open:` line of a script that isn't curated: the prompt shows it whole, on a row of its own */
+export const ON_OPEN_MAX = 200;
 /** The script and the file the Terminal sources, in ~/run/<name>/ */
 export const SCRIPT_FILE = '.recipe.sh';
 export const START_FILE = '.run-link';
@@ -547,6 +549,8 @@ export interface RunPromptInfo {
   env: Record<string, string>;
   ignored: string[];
   dir: string;
+  /** The script's `# on-open:` line, which runs after it: the prompt shows it on a row of its own */
+  after?: string;
   /** It already ran here: Run only does this line */
   onOpenOnly?: string;
   /**
@@ -697,12 +701,16 @@ export async function handleRunLink(deps: RunLinkDeps): Promise<RunOutcome> {
     const cwd = lines ? deps.home : dir;
     const done = await deps.fs.exists(`${dir}/${doneMarker(script.sha256)}`);
     const onOpen = script.header['on-open'];
+    // The on-open line is a command the script box shows as a comment. The prompt shows it again as what
+    // it is, whole, so it has to fit a row
+    if (!script.curated && onOpen && onOpen.length > ON_OPEN_MAX) throw new RunLinkError(`the script's on-open line is longer than ${ON_OPEN_MAX} characters`);
     // Commands that already ran here and have no on-open line: nothing runs now, so there is nothing to ask
     const nothingRuns = lines && done && !onOpen;
     if (!script.curated && !nothingRuns) {
       const ok = await deps.confirm({
-        name: script.name, from: script.from, script: script.text, env, ignored, dir: cwd, onOpenOnly: done ? onOpen ?? '' : undefined,
-        ...(lines ? { wording: { ...LINES_WORDING, ...(done ? { where: `They already ran here. Run only does their on-open line: ${plain(onOpen ?? '', 200)}` } : {}) } } : {}),
+        name: script.name, from: script.from, script: script.text, env, ignored, dir: cwd,
+        ...(done ? { onOpenOnly: onOpen ?? '' } : onOpen ? { after: onOpen } : {}),
+        ...(lines ? { wording: { ...LINES_WORDING, ...(done ? { where: `They already ran here. Run only does their on-open line: ${plain(onOpen ?? '', ON_OPEN_MAX)}` } : {}) } } : {}),
       });
       if (!ok) return 'cancelled';
     }

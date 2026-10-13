@@ -234,8 +234,10 @@
     var st = await tab.fs.stat(outFile);
     var ms = Math.round(performance.now() - t0);
     if (r.code !== 0 || !st || !st.size) {
+      // libwps and libwpd print "ERROR: Unsupported file format!" on stdout, which is the output file here
+      var said = r.code !== 0 && st && st.size && st.size < 2000 ? await tab.fs.readText(outFile).catch(function () { return ''; }) : '';
       await tab.fs.remove(outFile).catch(function () {});
-      var why = (r.stderr.trim().split('\n').pop() || '').slice(0, 300);
+      var why = (r.stderr.trim().split('\n').pop() || said.trim().split('\n').pop() || '').slice(0, 300);
       return { error: why || (r.code ? 'exit ' + r.code : 'the converter wrote nothing'), ms: ms };
     }
     return { ms: ms, size: st.size };

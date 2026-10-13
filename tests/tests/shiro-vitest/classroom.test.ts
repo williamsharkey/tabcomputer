@@ -245,3 +245,169 @@ describe('lab open', () => {
     }
   });
 });
+
+describe('Submit and the saved state', () => {
+  const dir = `${HOME}/src/work`;
+  /** Run a line in the clone, as the Code window's host does */
+  const exec = async (line: string) => {
+    const sh = shell.fork();
+    sh.cwd = dir;
+    let out = '';
+    const code = await sh.execute(line, (s) => { out += s; }, (s) => { out += s; });
+    return { code, out };
+  };
+  const now = () => new Date('2026-10-12T14:03:00Z');
+  let work: FakeGitHub;
+
+  beforeAll(async () => {
+    work = fakeGitHub('ann', 'work');
+    work.private = true;
+    await publish(work, { 'main.py': 'print("hi")\n', 'notes.txt': 'notes\n', [LAB_CONFIG_PATH]: CONFIG });
+    globalThis.fetch = work.fetch;
+    localStorage.setItem(GITHUB_TOKEN_STORAGE_KEY, TOKEN);
+    const r = await run(shell, 'lab open ann/work');
+    expect(r.exitCode, r.output).toBe(0);
+  });
+  beforeEach(() => { globalThis.fetch = work.fetch; localStorage.setItem(GITHUB_TOKEN_STORAGE_KEY, TOKEN); });
+
+  it('a fresh clone is saved; an edit, a new file and a deleted file are not', async () => {
+    const s = (await labState(fs, dir))!;
+    expect(s).toMatchObject({ root: dir, branch: 'main', remote: 'ann/work', changed: 0, ahead: 0, neverPushed: false, unsaved: false });
+    expect(unsavedReason(s)).toBe('');
+    await fs.writeFile(`${dir}/main.py`, 'print("hello")\n');
+    await fs.writeFile(`${dir}/new.py`, 'x = 1\n');
+    await fs.unlink(`${dir}/notes.txt`);
+    const t = (await labState(fs, `${dir}/.tabcomputer`))!;
+    expect(t).toMatchObject({ root: dir, changed: 3, ahead: 0, unsaved: true });
+    expect(unsavedReason(t)).toBe('3 changed files');
+    expect(unsavedReason(t, 1)).toBe('1 file with edits not saved, 3 changed files');
+    expect((await run(shell, `cd ${dir} && lab status`)).output).toContain(`${UNSAVED_TEXT}: 3 changed files (github.com/ann/work).`);
+  });
+
+  it('says why when the tab is not signed in, and keeps the commit', async () => {
+    localStorage.removeItem(GITHUB_TOKEN_STORAGE_KEY);
+    const r = await submitLab(fs, dir, { run: exec, now });
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/^Not submitted\. 3 changed files are committed on this computer only\. /);
+    expect(r.text).toMatch(/not signed in to GitHub|GitHub refused this account/);
+    const s = (await labState(fs, dir))!;
+    expect(s).toMatchObject({ changed: 0, ahead: 1, unsaved: true });
+    expect(unsavedReason(s)).toBe('1 commit not pushed');
+    expect(work.refs.get('main')!.startsWith(s.head)).toBe(false);
+  });
+
+  it('pushes and says what went where', async () => {
+    const r = await submitLab(fs, dir, { run: exec, now });
+    expect(r.text).toMatch(/^Submitted\. 1 commit went to github\.com\/ann\/work, branch main\. The newest commit there is [0-9a-f]{7}\.$/);
+    expect(r.ok).toBe(true);
+    const s = (await labState(fs, dir))!;
+    expect(s.unsaved).toBe(false);
+    expect(work.refs.get('main')!.startsWith(s.head)).toBe(true);
+    expect(r.text).not.toContain(TOKEN);
+    // What GitHub has now: the edit, the new file, no notes.txt, and the commit's message
+    const commit = parseCommit(work.objects.get(work.refs.get('main')!)!.bytes);
+    expect(commit.message.trim()).toBe('Submit 2026-10-12 14:03 UTC');
+    const names = parseTree(work.objects.get(commit.tree)!.bytes).map((e) => e.path).sort();
+    expect(names).toEqual(['.tabcomputer', 'main.py', 'new.py']);
+    expect((await submitLab(fs, dir, { run: exec, now })).text).toBe('Nothing to submit. GitHub already has this work (github.com/ann/work, branch main).');
+    expect((await run(shell, `cd ${dir} && lab status`)).output).toContain(`${SAVED_TEXT}: github.com/ann/work, branch main`);
+  });
+
+  it('says to pull when GitHub has commits this computer does not', async () => {
+    // Someone else pushed: the branch on GitHub moves to a commit this clone has never seen
+    const other = fakeGitHub('ann', 'other');
+    const foreign = await publish(other, { 'teacher.txt': 'feedback\n' });
+    for (const [k, v] of other.objects) work.objects.set(k, v);
+    const mine = work.refs.get('main')!;
+    work.refs.set('main', foreign);
+    await fs.writeFile(`${dir}/main.py`, 'print("again")\n');
+    const r = await submitLab(fs, dir, { run: exec, now });
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/^Not submitted\. 1 changed file is committed on this computer only\. /);
+    expect(r.text).toContain('Run "git pull" in the Terminal, then press Submit again.');
+    expect(work.refs.get('main')).toBe(foreign);
+    work.refs.set('main', mine);
+    const again = await submitLab(fs, dir, { run: exec, now });
+    expect(again.ok, again.text).toBe(true);
+  });
+
+  it('refuses a folder that is no repository, or has no GitHub address', async () => {
+    await fs.mkdir('/tmp/plain', { recursive: true });
+    expect((await submitLab(fs, '/tmp/plain', { run: exec })).text).toMatch(/^Not submitted\. This folder is not a git repository/);
+    await fs.mkdir('/tmp/local', { recursive: true });
+    await git.init({ fs: gfs, dir: '/tmp/local', defaultBranch: 'main' });
+    await fs.writeFile('/tmp/local/a.txt', 'a\n');
+    expect((await submitLab(fs, '/tmp/local', { run: exec })).text).toMatch(/^Not submitted\. This repository has no GitHub address/);
+    // Work in a repository with nowhere to push is not "unsaved to GitHub": no mark, no warning
+    expect((await labState(fs, '/tmp/local'))!.unsaved).toBe(false);
+  });
+
+  it('the Code window: the bar, Run and Test in the Terminal after the saves, Submit, the mark and the warning', async () => {
+    const posts: Record<string, any>[] = [];
+    const marks: string[] = [];
+    const terminal: { cwd: string; command: string; saved: boolean }[] = [];
+    let saved = false;
+    let why: string | null = null;
+    const last = (type: string) => posts.filter((p) => p.type === type).pop()!;
+    const until = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 25)); expect(ok()).toBe(true); };
+    document.title = 'tabcomputer';
+    const lab = attachLab({
+      fs, dir, post: (m) => { posts.push(m); }, setMark: (t) => { marks.push(t); },
+      flush: async () => { await new Promise((r) => setTimeout(r, 20)); saved = true; },
+      runInTerminal: (cwd, command) => { terminal.push({ cwd, command, saved }); return why; },
+      exec: async (cwd, line) => { expect(cwd).toBe(dir); return exec(line); },
+    });
+    await until(() => !!last('shiro-editor-git'));
+    expect(last('shiro-editor-lab')).toMatchObject({ show: true, name: 'Lab 1', run: true, test: true, submit: true, problem: '' });
+    expect(last('shiro-editor-git')).toMatchObject({ tracked: true, unsaved: false, text: SAVED_TEXT });
+    expect(unsavedWork()).toEqual([]);
+    expect((globalThis as any).__tabcomputerUnsavedWork()).toBe(false);
+
+    // Run and Test: the config's commands, in the lab's folder, after the editor's saves landed
+    lab.message({ type: 'shiro-editor-action', action: 'run' });
+    await until(() => terminal.length === 1);
+    expect(terminal[0]).toEqual({ cwd: dir, command: 'echo ran-main', saved: true });
+    await until(() => last('shiro-editor-result')?.text === 'Run started in the Terminal: echo ran-main');
+    expect(last('shiro-editor-result').ok).toBeNull();
+    why = 'The Terminal is still running a command. Stop it with Ctrl+C, then press Test again.';
+    lab.message({ type: 'shiro-editor-action', action: 'test' });
+    await until(() => terminal.length === 2);
+    expect(terminal[1].command).toBe('echo tests-pass');
+    await until(() => last('shiro-editor-result').text === why);
+    expect(last('shiro-editor-result').ok).toBe(false);
+
+    // An edit that is not saved yet, then a file changed on disk: the mark, the tab's title, the warning
+    lab.message({ type: 'shiro-editor-dirty', count: 1 });
+    expect(last('shiro-editor-git')).toMatchObject({ unsaved: true, text: UNSAVED_TEXT, detail: '1 file with edits not saved' });
+    expect(document.title).toBe('● tabcomputer');
+    lab.message({ type: 'shiro-editor-dirty', count: 0 });
+    expect(document.title).toBe('tabcomputer');
+    await fs.writeFile(`${dir}/main.py`, 'print("from the editor")\n');
+    await until(() => last('shiro-editor-git').unsaved === true);
+    expect(last('shiro-editor-git').detail).toBe('1 changed file');
+    expect(marks[marks.length - 1]).toBe('not saved to github yet');
+    expect(unsavedWork()).toEqual([dir]);
+    expect((globalThis as any).__tabcomputerUnsavedWork()).toBe(true);
+    expect(document.title).toBe('● tabcomputer');
+
+    // Submit: busy while it runs, the result in words, and the mark clears
+    lab.message({ type: 'shiro-editor-action', action: 'submit' });
+    await until(() => /^Submitted\./.test(last('shiro-editor-result')?.text ?? ''));
+    expect(posts.some((p) => p.type === 'shiro-editor-result' && p.busy === true && p.text === 'Submitting to GitHub…')).toBe(true);
+    expect(last('shiro-editor-result')).toMatchObject({ ok: true, busy: false });
+    await until(() => last('shiro-editor-git').unsaved === false);
+    expect(marks[marks.length - 1]).toBe('');
+    expect(document.title).toBe('tabcomputer');
+    expect(unsavedWork()).toEqual([]);
+
+    // A config that stops being valid: the buttons go, the problem is said
+    await fs.writeFile(`${dir}/${LAB_CONFIG_PATH}`, '{"lab":1,"run":7}');
+    await until(() => last('shiro-editor-lab').run === false);
+    expect(last('shiro-editor-lab')).toMatchObject({ show: true, submit: false, problem: 'lab.json: run must be text' });
+    // (the edit to lab.json is itself work GitHub does not have, until the window closes)
+    await until(() => unsavedWork().length === 1);
+    lab.dispose();
+    expect(unsavedWork()).toEqual([]);
+    expect(document.title).toBe('tabcomputer');
+  });
+});

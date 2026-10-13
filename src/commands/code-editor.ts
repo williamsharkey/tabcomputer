@@ -11,8 +11,17 @@ import { createServerWindow, commandLine } from '../server-window';
 
 const CM_CDN = 'https://esm.sh';
 
+/** A desktop window as the lab bar sees it: a Terminal's view says where its shell is and whether it is busy */
+interface DeskWindow {
+  kind?: string;
+  focus(): void;
+  content?: { cwd?(): string | undefined; activeTerminal?(): { isBusy(): boolean; injectInput(data: string): void } | null };
+}
+const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
 /** The part of the desktop's window manager (src/desktop/wm.ts) this uses */
 interface DesktopLike {
+  windows?(): DeskWindow[];
   createWindow(o: { appId: string; title: string; width: number; height: number; minWidth?: number; minHeight?: number; content: { kind: 'iframe'; srcdoc: string } }): {
     iframe?: HTMLIFrameElement; on(ev: 'close', cb: () => void): () => void;
   };
@@ -97,12 +106,36 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
   #hint { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #313244; color: #cdd6f4; font-size: 12px; border-bottom: 1px solid #45475a; flex-shrink: 0; }
   #hint span { flex: 1; }
   #hint button { background: none; border: 1px solid #585b70; color: #cdd6f4; border-radius: 4px; font: inherit; padding: 1px 8px; cursor: pointer; }
+
+  /* Lab bar (src/lab.ts): Run, Test, Submit for a folder with .tabcomputer/lab.json */
+  #lab { display: flex; align-items: center; gap: 6px; padding: 5px 10px; background: #181825; border-bottom: 1px solid #313244; font-size: 12px; flex-shrink: 0; flex-wrap: wrap; }
+  #lab[hidden] { display: none; }
+  #lab-name { color: #a6adc8; margin-right: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
+  #lab button { background: #313244; border: 1px solid #45475a; color: #cdd6f4; border-radius: 4px; font: inherit; padding: 2px 12px; cursor: pointer; }
+  #lab button:hover { background: #45475a; }
+  #lab button:disabled { opacity: .5; cursor: default; }
+  #lab button[hidden] { display: none; }
+  #lab-submit { background: #89b4fa; border-color: #89b4fa; color: #11111b; font-weight: 600; }
+  #lab-submit:hover { background: #b4befe; }
+  #lab-msg { flex: 1 1 12em; min-width: 0; color: #a6adc8; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+  #lab-msg.ok { color: #a6e3a1; }
+  #lab-msg.bad { color: #f38ba8; }
+  #status-git { margin-left: auto; white-space: nowrap; }
+  #status-git.unsaved { color: #f9e2af; }
+  #status-git.saved { color: #a6e3a1; }
 </style>
 </head>
 <body>
 <div id="sidebar"></div>
 <div id="main">
   ${hint ? `<div id="hint"><span>${hint.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span><button type="button" onclick="this.parentElement.remove()">Got it</button></div>` : ''}
+  <div id="lab" hidden>
+    <span id="lab-name"></span>
+    <button id="lab-run" type="button" title="Save, then run the lab's run command in the Terminal">Run</button>
+    <button id="lab-test" type="button" title="Save, then run the lab's tests in the Terminal">Test</button>
+    <button id="lab-submit" type="button" title="Save, commit and push to GitHub">Submit</button>
+    <span id="lab-msg" role="status" aria-live="polite"></span>
+  </div>
   <div id="tabs"></div>
   <div id="editor-container"></div>
   <div id="status">
@@ -110,8 +143,48 @@ function buildEditorHtml(files: { path: string; content: string; language: strin
     <span id="status-file"></span>
     <span id="status-pos"></span>
     <span id="status-msg"></span>
+    <span id="status-git"></span>
   </div>
 </div>
+
+<script>
+// The lab bar and the saved mark (src/lab.ts). Not a module, so it works before the editor
+// has loaded; everything the window's host sends goes in as text.
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var lab = window.__lab = { saveAll: function () {} };
+  var send = function (m) { window.parent.postMessage(m, '*'); };
+  var actions = ['run', 'test', 'submit'];
+  actions.forEach(function (a) {
+    $('lab-' + a).onclick = function () { lab.saveAll(); send({ type: 'shiro-editor-action', action: a }); };
+  });
+  var say = function (text, cls) { var m = $('lab-msg'); m.textContent = text || ''; m.className = cls || ''; };
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (e.source !== window.parent || !d) return;
+    if (d.type === 'shiro-editor-lab') {
+      $('lab').hidden = !d.show;
+      $('lab-name').textContent = d.name || '';
+      $('lab-run').hidden = !d.run;
+      $('lab-test').hidden = !d.test;
+      $('lab-submit').hidden = !d.submit;
+      if (d.problem) say(d.problem, 'bad');
+      else if ($('lab-msg').className === 'bad' && $('lab-msg').dataset.config) say('');
+      $('lab-msg').dataset.config = d.problem ? '1' : '';
+    } else if (d.type === 'shiro-editor-git') {
+      var g = $('status-git');
+      g.textContent = d.text || '';
+      g.className = d.tracked ? (d.unsaved ? 'unsaved' : 'saved') : '';
+      g.title = d.detail || '';
+    } else if (d.type === 'shiro-editor-result') {
+      say(d.text, d.ok === true ? 'ok' : d.ok === false ? 'bad' : '');
+      $('lab-msg').dataset.config = '';
+      actions.forEach(function (a) { $('lab-' + a).disabled = !!d.busy; });
+    }
+  });
+  send({ type: 'shiro-editor-ready' });
+})();
+</script>
 
 <script type="module">
 const CDN = ${JSON.stringify(CM_CDN)};
@@ -213,7 +286,24 @@ function renderTabs() {
     tab.onclick = () => switchTo(path);
     tabsEl.appendChild(tab);
   }
+  // The window's host counts files with edits that are not saved (the lab's saved mark)
+  let dirty = 0;
+  for (const state of openFiles.values()) if (state.modified) dirty++;
+  if (dirty !== lastDirty) { lastDirty = dirty; window.parent.postMessage({ type: 'shiro-editor-dirty', count: dirty }, '*'); }
 }
+let lastDirty = 0;
+
+// Run, Test and Submit save every edited file first
+window.__lab.saveAll = () => {
+  for (const [path, state] of openFiles) {
+    if (path === activeFile && view) state.content = view.state.doc.toString();
+    if (state.content === state.original) continue;
+    window.parent.postMessage({ type: 'shiro-editor-save', path, content: state.content }, '*');
+    state.original = state.content;
+    state.modified = false;
+  }
+  renderTabs();
+};
 
 async function openFile(path) {
   if (!openFiles.has(path)) {
@@ -431,14 +521,59 @@ export const codeEditorCmd: Command = {
       });
       // session restore opens it again; File ▸ Open… starts in its folder
       (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };
-      (dwin as { codeDir?: string }).codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
-      // Saves from this window's editor only (another Code window has its own files)
-      const onSave = async (e: MessageEvent) => {
-        if (e.data?.type !== 'shiro-editor-save' || e.source !== dwin.iframe?.contentWindow) return;
-        try { await ctx.fs.writeFile(await savePathFor(e.data.path), e.data.content); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
+      const codeDir = isDir ? resolved : resolved.slice(0, resolved.lastIndexOf('/')) || '/';
+      (dwin as { codeDir?: string }).codeDir = codeDir;
+      // Saves from this window's editor only (another Code window has its own files), in the order they were sent
+      let saving: Promise<void> = Promise.resolve();
+      let lab: import('../lab').LabEditor | null = null;
+      const onMessage = (e: MessageEvent) => {
+        if (e.source !== dwin.iframe?.contentWindow || !e.data) return;
+        if (e.data.type === 'shiro-editor-save') {
+          const { path, content } = e.data;
+          saving = saving.then(async () => {
+            try { await ctx.fs.writeFile(await savePathFor(path), content); } catch (err: any) { console.error(`code: save error: ${err.message}`); }
+          });
+        } else lab?.message(e.data);
       };
-      window.addEventListener('message', onSave);
-      dwin.on('close', () => window.removeEventListener('message', onSave));
+      window.addEventListener('message', onMessage);
+      // The classroom's side of the window (src/lab.ts): Run, Test, Submit and the saved mark
+      let closed = false;
+      let labTerminal: DeskWindow | null = null;
+      const runInTerminal = (cwd: string, command: string, label: string): string | null => {
+        const desk = (globalThis as { __shiroDesktopCtx?: { openTerminal(o: { cwd: string; command: string; title: string }): DeskWindow | null } }).__shiroDesktopCtx;
+        if (!desk) return 'There is no Terminal to run it in.';
+        const terminals = (wm.windows?.() ?? []).filter((w) => w.kind === 'terminal');
+        const target = labTerminal && terminals.includes(labTerminal) ? labTerminal : terminals.find((w) => w.content?.cwd?.() === cwd) ?? null;
+        const term = target?.content?.activeTerminal?.();
+        if (target && term) {
+          target.focus();
+          if (term.isBusy()) return `The Terminal is still running a command. Stop it with Ctrl+C, then press ${label} again.`;
+          labTerminal = target;
+          // Ctrl+U first: a half-typed line must not run in front of the command
+          term.injectInput(`\x15${target.content?.cwd?.() === cwd ? '' : `cd ${quote(cwd)} && `}${command}\r`);
+          return null;
+        }
+        labTerminal = desk.openTerminal({ cwd, command, title });
+        return null;
+      };
+      void import('../lab').then(({ attachLab }) => {
+        if (closed) return;
+        lab = attachLab({
+          fs: ctx.fs, dir: codeDir,
+          post: (msg) => dwin.iframe?.contentWindow?.postMessage(msg, '*'),
+          setMark: (text) => (dwin as { setTitle?(t: string): void }).setTitle?.(text ? `${title} · ${text}` : title),
+          flush: () => saving,
+          runInTerminal,
+          exec: async (cwd, line) => {
+            const sh = ctx.shell.fork();
+            sh.cwd = cwd;
+            let out = '';
+            const code = await sh.execute(line, (s) => { out += s; }, (s) => { out += s; });
+            return { code, out };
+          },
+        });
+      });
+      dwin.on('close', () => { closed = true; window.removeEventListener('message', onMessage); lab?.dispose(); });
       return 0;
     }
 

@@ -749,7 +749,9 @@ async function main() {
   window.addEventListener('beforeunload', (e) => {
     iframeServer.cleanup();
     // Leaving mid-write (e.g. during npm install) loses the unsaved files
-    if (fs.pendingWrites > 0) {
+    // Or with work in the Code app that GitHub does not have (src/lab.ts): on a shared computer the push is the only copy
+    const unsaved = (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork?.() === true;
+    if (fs.pendingWrites > 0 || unsaved) {
       e.preventDefault();
       e.returnValue = '';
     }

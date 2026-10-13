@@ -25,6 +25,7 @@ import { guestConfig, guestInfo, openGuest } from '../guest';
 import { loadSession, place, restoreSession, trackSession } from './session';
 import { previousLoadWedge } from '../watchdog';
 import { BRAND } from '../brand';
+import { offerCommand } from '../terminal-links';
 import { DEV_GROUPS, DEV_TOOLS, TOOL_PATH, launchScript, windowCommand, type DevTool } from './devtools';
 import { setClaudeSignInUI } from '../claude-signin-ui';
 import { setPreviewUI } from '../preview-ui';
@@ -1020,13 +1021,24 @@ export function showToast(root: HTMLElement, html: string, ms = 5000): void {
   setTimeout(close, ms);
 }
 
+/** The welcome line's "try:" links: what is shown, and the command a click types */
+export const WELCOME_TRY: [string, string][] = [
+  ['apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`],
+  ['htop', 'apt install htop && htop'],
+  ['python3', 'apt install python3 && python3'],
+  ['ls /dom', 'ls /dom'],
+  ['help', 'help'],
+];
+// Offered from the start, not only when the line is drawn: a restored screen still shows the links of an earlier load
+for (const [, cmd] of WELCOME_TRY) offerCommand(cmd);
+
 /** The terminal's first words on the desktop: short, with something to try. */
 function drawWelcome(t: ShiroTerminal): void {
-  const link = (text: string, cmd = text) => `\x1b]8;;shiro://cmd/${encodeURIComponent(cmd)}\x07\x1b[38;5;117m${text}\x1b[0m\x1b]8;;\x07`;
+  const link = (text: string, cmd: string) => `\x1b]8;;${offerCommand(cmd)}\x07\x1b[38;5;117m${text}\x1b[0m\x1b]8;;\x07`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
   const narrow = t.term.cols < 72;
   t.term.write(`\x1b[1m${BRAND.domain}\x1b[0m ${dim(narrow ? '— Unix in a browser tab.' : `— ${BRAND.tagline}. Real shell, real packages.`)}\r\n`);
-  t.term.write(`${dim('try:')} ${link('apt install cowsay', `apt install cowsay && cowsay hello from ${BRAND.domain}`)} ${dim('·')} ${link('htop', 'apt install htop && htop')} ${dim('·')} ${link('python3', 'apt install python3 && python3')} ${dim('·')} ${link('ls /dom')} ${dim('·')} ${link('help')}\r\n\r\n`);
+  t.term.write(`${dim('try:')} ${WELCOME_TRY.map(([text, cmd]) => link(text, cmd)).join(` ${dim('·')} `)}\r\n\r\n`);
 }
 
 /**

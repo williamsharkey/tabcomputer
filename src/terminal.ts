@@ -19,6 +19,11 @@ import { sessionEnd, sessionStart } from './session-log';
 import { frozenLastTimeNotice } from './watchdog';
 import { installFilePaste, pasteImagePaths } from './terminal-file-paste';
 import { readClipboardImage } from './utils/clipboard';
+import { isCommandLink, offerCommand, offeredCommand } from './terminal-links';
+
+/** The commands the banner's links type (drawHud). Offered from the start: a restored screen still shows an earlier load's banner */
+export const BANNER_COMMANDS = ['claude', 'gh auth login', 'remote start', 'help', 'finder'];
+for (const cmd of BANNER_COMMANDS) offerCommand(cmd);
 
 /**
  * HUD (Heads-Up Display) state for dynamic banner updates.
@@ -170,9 +175,12 @@ export class ShiroTerminal {
             });
             return;
           }
-          // Handle shiro://cmd/<command> — run a shell command from HUD links
-          if (uri.startsWith('shiro://cmd/')) {
-            const cmd = decodeURIComponent(uri.slice('shiro://cmd/'.length));
+          // Handle shiro://cmd/<command> — run a shell command from HUD links.
+          // Only a command tabcomputer itself offers (src/terminal-links.ts): a program can
+          // print such a link too, and a click on that one runs nothing.
+          if (isCommandLink(uri)) {
+            const cmd = offeredCommand(uri);
+            if (cmd === null) { console.warn('[terminal] a command link tabcomputer did not write was clicked; nothing ran'); return; }
             // Type it at an idle prompt, exactly as if the user had (interactive
             // commands like `claude` then get the terminal properly)
             if (!this.isBusy() && !this.lineBuffer) {
@@ -574,7 +582,7 @@ export class ShiroTerminal {
 
     // Rows 1-4: what to do first — each command is a link that types it at the prompt
     const link = (text: string, uri: string) => `${L}${uri}\x07\x1b[97m${text}\x1b[0m${E}`;
-    const cmdLink = (cmd: string) => link(cmd, 'shiro://cmd/' + encodeURIComponent(cmd));
+    const cmdLink = (cmd: string) => link(cmd, offerCommand(cmd));
     const row = (visible: string, rendered: string) =>
       `\x1b[36m│\x1b[0m${rendered}${' '.repeat(Math.max(0, W - 2 - visible.length))}\x1b[36m│\x1b[0m`;
     const entries: Array<[string, string]> = [
@@ -587,7 +595,7 @@ export class ShiroTerminal {
       this.term.writeln(row(visible, '  ' + cmdLink(cmd) + ' '.repeat(15 - cmd.length) + `\x1b[90m${desc}\x1b[0m`));
     }
     const sep = '\x1b[36m · \x1b[0m';
-    const footer = [cmdLink('help'), link('files', 'shiro://cmd/finder'), link('github', 'https://github.com/williamsharkey/tabcomputer')].join(sep);
+    const footer = [cmdLink('help'), link('files', offerCommand('finder')), link('github', 'https://github.com/williamsharkey/tabcomputer')].join(sep);
     this.term.writeln(row('  help · files · github', '  ' + footer));
 
     // Bottom border with 白 (double-width CJK = 2 cols)

@@ -207,16 +207,16 @@ export async function submitLab(fs: FileSystem, dir: string, deps: SubmitDeps): 
 
 // ── Open folders: the mark, the tab's title, the warning before the tab closes ──
 
-interface OpenLab { dir: string; state: LabState | null; buffers: number }
+interface OpenLab { dir: string; state: LabState | null; buffers: number; /** The folder has a lab config */ lab: boolean }
 const openLabs = new Set<OpenLab>();
 
 /** The page is being left on purpose (the shared-computer sign-out sets it): nothing asks "leave site?" */
 export const LEAVING_FLAG = '__tabcomputerLeaving';
 
 /** Folders open in the Code app with work GitHub does not have */
-export function unsavedWork(): string[] {
+export function unsavedWork(labsOnly = false): string[] {
   if ((globalThis as Record<string, unknown>)[LEAVING_FLAG]) return [];
-  return [...openLabs].filter((l) => l.state?.unsaved || (l.buffers > 0 && !!l.state?.remote)).map((l) => l.state?.root ?? l.dir);
+  return [...openLabs].filter((l) => (!labsOnly || l.lab) && (l.state?.unsaved || (l.buffers > 0 && !!l.state?.remote))).map((l) => l.state?.root ?? l.dir);
 }
 
 const TITLE_MARK = '● ';
@@ -256,9 +256,9 @@ export interface LabEditor {
  * current from filesystem events (nothing polls).
  */
 export function attachLab(host: LabEditorHost): LabEditor {
-  const me: OpenLab = { dir: host.dir, state: null, buffers: 0 };
+  const me: OpenLab = { dir: host.dir, state: null, buffers: 0, lab: false };
   openLabs.add(me);
-  (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork = () => unsavedWork().length > 0;
+  (globalThis as { __tabcomputerUnsavedWork?: () => boolean }).__tabcomputerUnsavedWork = () => unsavedWork(true).length > 0; // lab folders only: a developer's dirty clone reloads without a question
   let lab: FoundLab | null = null;
   let disposed = false;
   let busy = false;
@@ -288,6 +288,7 @@ export function attachLab(host: LabEditorHost): LabEditor {
         const [found, state] = await Promise.all([readLabConfig(host.fs, host.dir).catch(() => null), labState(host.fs, host.dir).catch(() => null)]);
         if (disposed) return;
         lab = found;
+        me.lab = !!found;
         me.state = state;
         sendBar();
         sendState();
@@ -311,6 +312,7 @@ export function attachLab(host: LabEditorHost): LabEditor {
     if (busy) return;
     await host.flush();
     lab = await readLabConfig(host.fs, host.dir).catch(() => null);
+    me.lab = !!lab;
     sendBar();
     if (!lab?.config) { say(false, lab ? lab.problems.join(' · ') : `This folder has no ${LAB_CONFIG_PATH}.`); return; }
     if (action === 'run' || action === 'test') {

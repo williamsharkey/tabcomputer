@@ -63,7 +63,7 @@ When the folder open in the Code app has the config (its own, or the one at the 
 
 A Code window on a clone of a GitHub repository (with or without the config) shows whether GitHub has the work: "Saved to GitHub" or "Not saved to GitHub yet" at the right of its status bar (hover for what is missing: changed files, commits not pushed, files with edits not saved), the same words in the window's title, and a dot before the tab's title. The state is read from the repository when the filesystem reports a change in it; nothing polls.
 
-While any such window has work GitHub does not have, the browser asks before the tab closes or reloads. A repository whose origin is not on github.com gets neither the mark nor the question.
+While a window on a lab folder (one with `.tabcomputer/lab.json`) has work GitHub does not have, the browser asks before the tab closes or reloads. A clone without a lab config shows the mark and the browser does not ask. A repository whose origin is not on github.com gets neither the mark nor the question.
 
 Not built: automatic commits to a backup branch.
 

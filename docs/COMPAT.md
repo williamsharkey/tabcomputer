@@ -81,7 +81,7 @@ the page (`apt-get update` ≈2m20s first).
 | `sudo apt-get install -y build-essential` | pass | 5m50s–7m10s | gcc 14.2, g++, make 4.4.1, libc6-dev, dpkg-dev |
 | `gcc -O0 -o hello hello.c && ./hello` | pass | 10.7s compile+link | the x86-64 binary runs in Blink |
 | `make hello` (`$(CC)` = `cc`) | pass (after fix) | 10.9s | failed at first: tabcomputer's commands look like files in the bin directories to a PATH search, so make took a made-up `/usr/local/bin/cc` for its compiler; now an installed program replaces that (below) |
-| `sudo apt-get install -y python3-pip` | pass | 9m00s–10m05s | pip 25.1.1, Python 3.13.5; `python3` at the prompt is then Debian's |
+| `sudo apt-get install -y python3-pip` | pass | 9m00s–10m05s | pip 25.1.1, Python 3.13.5; `python3.13` is Debian's, `python3` at the prompt stays the built-in one unless the program needs Debian's (docs/DEBIAN.md) |
 | `pip3 install --user --break-system-packages six` + import | pass (after fixes) | 1m30s install, 2.8s import | needs the TCP relay. Fixed on the way: socket `ioctl(FIONBIO)` was EINVAL (CPython's `setblocking(False)`); glibc's parallel A+AAAA lookup failed in Blink (`sendmmsg` → EBADF, fixed by perf-blink in patch 0043), then its address sort aborted on a connected UDP socket with no source address (fixed in the kernel). In this sandbox pip also needed `--cert` for its TLS-intercepting egress proxy, which a normal deployment doesn't have |
 | `sudo apt-get install -y nodejs` | installs | 2m25s | Debian's node 20.19.2 |
 | node: which wins | Debian's | — | in Debian mode a program file on PATH replaces the builtin of that name, so `node` is `/usr/bin/node` once nodejs is installed (22–26 s per script under emulation); `builtin node` still runs tabcomputer's (0.2 s) |

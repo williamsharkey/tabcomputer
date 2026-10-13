@@ -47,9 +47,37 @@ describe('browser scripts: the shared helper', () => {
     expect(expectRe.test([line.slice(0, 47), line.slice(47)].join('\n'))).toBe(false);
   });
 
+  /**
+   * A launch whose browser is a path written in the script: `executablePath:`
+   * given a string, or a variable whose value has a string path in it and does
+   * not come from chromiumPath().
+   */
+  function hardCodedBrowser(src: string): boolean {
+    if (/executablePath:\s*['"`]/.test(src)) return true;
+    const names = new Set<string>();
+    for (const m of src.matchAll(/executablePath(?::\s*([A-Za-z_$][\w$]*))?\s*[,}]/g)) names.add(m[1] ?? 'executablePath');
+    for (const name of names) {
+      for (const m of src.matchAll(new RegExp(`(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*=([^;\\n]*)`, 'g'))) {
+        if (/['"`]\/[\w.-]+\//.test(m[1]) && !m[1].includes('chromiumPath(')) return true;
+      }
+    }
+    return false;
+  }
+
+  it('tells a browser path written in the script from the helper\'s', () => {
+    expect(hardCodedBrowser(`chromium.launch({ executablePath: '/opt/pw-browsers/chromium' })`)).toBe(true);
+    expect(hardCodedBrowser(`const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';\nawait chromium.launch({ executablePath: exe, args: [] });`)).toBe(true);
+    expect(hardCodedBrowser(`const exe = "/opt/pw-browsers/chromium";\nawait chromium.launch({ args: [], executablePath: exe });`)).toBe(true);
+    expect(hardCodedBrowser(`const executablePath = '/usr/bin/chromium';\nawait chromium.launch({ executablePath });`)).toBe(true);
+    expect(hardCodedBrowser(`const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');\nawait chromium.launch({ executablePath: exe });`)).toBe(false);
+    expect(hardCodedBrowser(`await chromium.launch({ executablePath: chromiumPath(), args: [] });`)).toBe(false);
+    expect(hardCodedBrowser(`const exe = opts.browser;\nawait chromium.launch({ executablePath: exe });`)).toBe(false);
+  });
+
   it('every script takes its browser and its playwright from the helper', () => {
     const files = [
-      ...readdirSync(BROWSER_DIR).filter((f) => f.endsWith('.mjs') && !f.startsWith('_')).map((f) => join(BROWSER_DIR, f)),
+      // (not the helper, and not a scratch file someone left: .remote-relay-l.mjs)
+      ...readdirSync(BROWSER_DIR).filter((f) => f.endsWith('.mjs') && !f.startsWith('_') && !f.startsWith('.')).map((f) => join(BROWSER_DIR, f)),
       join(SCRIPTS_DIR, 'browser-check.mjs'), join(SCRIPTS_DIR, 'browser-tui.mjs'),
     ];
     expect(files.length).toBeGreaterThan(40);
@@ -57,8 +85,7 @@ describe('browser scripts: the shared helper', () => {
       const src = readFileSync(file, 'utf8');
       if (!/\.launch\(/.test(src)) continue;
       // no launch with a hard-coded Linux path, and none that needs `playwright` itself
-      expect(/process\.env\.CHROMIUM \|\| '\/opt/.test(src), file).toBe(false);
-      expect(/executablePath: '\/opt/.test(src), file).toBe(false);
+      expect(hardCodedBrowser(src), file).toBe(false);
       expect(src.includes('chromiumPath('), file).toBe(true);
       expect(/loadPlaywright\(|playwright-core/.test(src), file).toBe(true);
     }

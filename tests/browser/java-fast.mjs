@@ -9,15 +9,11 @@
 //
 // Prints one line per step with its time; exits 1 if a step fails.
 // WARM_LIMIT_MS (default 20000) is the most a warm compile may take.
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-let chromium;
-try { ({ chromium } = require('playwright')); } catch {
-  try { ({ chromium } = require('playwright-core')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
-}
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
+const { chromium } = loadPlaywright();
 
 const url = process.argv[2] || 'http://localhost:5299/';
-const exe = process.env.CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const WARM_LIMIT = Number(process.env.WARM_LIMIT_MS || 20_000);
 
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });

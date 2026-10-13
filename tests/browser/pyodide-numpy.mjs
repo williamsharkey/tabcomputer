@@ -12,21 +12,16 @@
 //
 // Prints one line per step with its time, then the measured times; exits 1
 // if a step fails. PLAYWRIGHT= and CHROMIUM= pick the tools.
-import { createRequire } from 'node:module';
-import { existsSync, mkdirSync } from 'node:fs';
-const require = createRequire(import.meta.url);
-let chromium;
-for (const m of [process.env.PLAYWRIGHT, 'playwright-core', 'playwright', '/opt/node-tools/node_modules/playwright'].filter(Boolean)) {
-  try { ({ chromium } = require(m)); break; } catch { /* the next one */ }
-}
+import { mkdirSync } from 'node:fs';
+import { chromiumPath, loadPlaywright } from './_browser.mjs';
+const { chromium } = loadPlaywright();
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
 const base = args[0] || 'http://localhost:6011/';
 const url = base + (base.includes('?') ? '&' : '?') + 'ui=desktop';
-const MAC = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const exe = process.env.CHROMIUM || (existsSync(MAC) ? MAC : '/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
+const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const LIMIT = Number(process.env.WORKFLOW_LIMIT_MS || 240_000); // per step
 if (shots) mkdirSync(shots, { recursive: true });
 

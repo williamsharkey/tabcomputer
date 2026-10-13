@@ -242,6 +242,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   // ── the start: a kind, or an app to start from ──
   async function start(): Promise<void> {
     root.replaceChildren();
+    win.setTitle('Studio');
     const page = h('div', 'sd-scroll');
     const s = h('div', 'st-start');
     page.append(s);
@@ -343,6 +344,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
     drawBar();
     draw();
     say('');
+    win.setTitle(state.draft.name.trim() ? `Studio — ${state.draft.name.trim()}` : 'Studio');
     preview ??= new Preview(frameBox, ctx, (t) => say(t));
     // (a new draft's try-out starts with nothing)
     void preview.restart(state.preview()).then(waiting);
@@ -580,6 +582,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
 
   /** After each change: the form's parts, its problems, and (a moment after the last key) the app beside it */
   function changed(): void {
+    win.setTitle(state.draft.name.trim() ? `Studio — ${state.draft.name.trim()}` : 'Studio');
     if (shapeOf() !== shape) draw();
     else {
       // (the packages follow the command until they are typed: shown in their box when it is not being typed in)

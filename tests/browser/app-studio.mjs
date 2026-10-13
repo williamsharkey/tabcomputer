@@ -57,6 +57,12 @@ async function session(W, H, theme) {
     ? { viewport: { width: W, height: H }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, userAgent: UA, colorScheme: theme }
     : { viewport: { width: W, height: H }, deviceScaleFactor: 1, colorScheme: theme });
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin }).catch(() => {});
+  // GitHub stood in for: a gist made of what is sent
+  await context.route('**/api/github/gists', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    gists.push(body);
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'f00dfeed0123456789abcdef01234567', owner: { login: 'octocat' } }) });
+  });
   const page = await context.newPage();
   page.on('pageerror', (e) => console.log(`     pageerror ${String(e).slice(0, 240)}`));
   await page.addInitScript((theme) => { try { if (window.top === window) { localStorage.setItem('tabcomputer-desktop-welcome', '1'); localStorage.setItem('tabcomputer-desktop-theme', theme); } } catch {} }, theme);
@@ -121,6 +127,7 @@ async function shareLink(s, c) {
 }
 
 const measured = [];
+const gists = [];
 function record(s, tool, app, c, ms, link) {
   const row = { tool, app, size: `${s.W}x${s.H}`, theme: s.theme, taps: c.taps, keys: c.keys, parts: c.parts, scripted: +(ms / 1000).toFixed(1), model: +c.model().toFixed(0), link: link.length };
   measured.push(row);
@@ -202,6 +209,16 @@ async function studio(s) {
     }
     const link = await shareLink(s, c);
     record(s, 'Studio', 'Expenses', c, Date.now() - t0, link);
+    // Save to a gist: there for a person signed in to GitHub
+    await tap(s, new Count(s.touch), '.st-sheet [data-act=close]');
+    await page.evaluate(() => localStorage.setItem('tabcomputer_github_token', 'gho_standin'));
+    await tap(s, new Count(s.touch), '.st-bar [data-act=share]');
+    await tap(s, new Count(s.touch), '.st-sheet [data-act=gist]');
+    const gistLink = await until(page, () => page.$eval('.st-sheet textarea', (t) => (/gist:/.test(t.value) ? t.value : null)), 15_000);
+    check(`${D} studio expenses: Save to a gist gives a link that names the gist`, gistLink === `${origin}/?app=gist:f00dfeed0123456789abcdef01234567`, gistLink);
+    check(`${D} studio expenses: the gist holds the app.json`, /"table": "expenses.csv"/.test(gists.at(-1)?.files?.['app.json']?.content ?? ''), JSON.stringify(gists.at(-1) ?? {}).slice(0, 120));
+    await shot(s, 'studio-gist');
+    await page.evaluate(() => localStorage.removeItem('tabcomputer_github_token'));
     check(`${D} studio expenses: the link names the columns`, /columns=Date:date,What,Category:Food\|Travel\|Home\|Other,Amount:number,Paid%20back:checkbox/.test(decodeURIComponent(link).replace(/ /g, '%20')) || /columns=/.test(link), link.slice(0, 200));
     await tap(s, new Count(s.touch), '.st-sheet [data-act=close]');
     // Try it: three rows in the copy beside the form

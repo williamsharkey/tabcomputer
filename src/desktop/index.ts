@@ -30,9 +30,13 @@ import { setClaudeSignInUI } from '../claude-signin-ui';
 import { setPreviewUI } from '../preview-ui';
 import { iframeServer } from '../iframe-server';
 import { flushStorage, reloadAfterFlush } from '../storage';
+import { fragmentAtLoad } from '../link-capture';
 
-/** The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts) */
-const ASKED_FOR_APP = typeof location !== 'undefined' && new URLSearchParams(location.search).has('app');
+/**
+ * The address asked for an app (`?app=`), read before the link's handler cleans it (src/apps/links.ts),
+ * or carried a link after its `#` (src/link-capture.ts): the person came for that, not for the Welcome card
+ */
+const ASKED_FOR_APP = typeof location !== 'undefined' && (new URLSearchParams(location.search).has('app') || fragmentAtLoad());
 
 export interface DesktopDeps {
   fs: FileSystem;
@@ -683,6 +687,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   const systemMenu = (): MenuSpec => ({ title: 'System', items: [
     { label: 'About This Computer', action: () => void wm.openApp('about') },
     { label: 'How Your Data Flows', action: () => void wm.openApp('dataflow') },
+    // `link` (src/commands/link.ts): the commands typed in this tab's terminals, as one address
+    { label: 'Share This Setup as a Link…', action: () => void import('../commands/link').then((m) => m.openLinkWindow(deps.fs, deps.shell.env['HOME'] || '/home/user', deps.shell.cwd)).catch((e) => console.warn('[link]', e)) },
     'separator',
     ...guestItems(),
     { label: 'Settings…', shortcut: 'Alt+Shift+,', action: () => void wm.openApp('settings') },

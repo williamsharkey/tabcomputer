@@ -117,6 +117,9 @@ import { safeModeCmd } from './commands/safe-mode';
 import { JAVAC_USED_KEY, javacPrestartWanted, scheduleJavacPrestart } from './java-defaults';
 import * as agentResume from './agent-resume';
 import { bootGuest, boundaryStatement, guestConfig, guestUnavailable, inboundCodeLink, parseGuestOrigin } from './guest';
+import { takeFragment } from './link-capture';
+import { sessionBackground, watchSessionFs } from './session-log';
+import { startNetTally } from './net-tally';
 import { guestCmd } from './commands/guest';
 
 /**
@@ -132,6 +135,9 @@ function registerCommand(commands: CommandRegistry, cmd: Command, sourcePath?: s
 const PERSIST_AFTER_BYTES = 64 << 20;
 
 async function main() {
+  // A link written after the # (src/link-fragment.ts): it leaves the address before anything
+  // else happens. (An address that asks for a guest keeps it until bootGuest has sent it there.)
+  let fragment = new URLSearchParams(location.search).has('guest') ? '' : takeFragment();
   console.log(`[tabcomputer] Starting... (build #${buildNumber.trim()})`);
   // Hard Restart (src/desktop/index.ts) adds ?reload= to get past the HTTP cache; drop it again
   try {
@@ -146,6 +152,7 @@ async function main() {
   if (signingOut && await (await import('./sign-out')).bootSignOut()) return;
   const guest = await bootGuest();
   if (guest === 'stop') return;
+  if (!fragment) fragment = takeFragment();
   logIsolationStatus();
   // Safe mode (src/safe-mode.ts): ?safe=1, or this tab's last loads never reached the prompt
   const safe = safeMode();
@@ -360,6 +367,8 @@ async function main() {
   registerCommand(commands, unbecomeCmd, 'src/commands/become.ts');
   registerCommand(commands, lazyCommand('app', 'Apps: make one from a template, try it, install it in the dock, open it',
     () => import('./commands/app').then(m => m.appCmd)), 'src/commands/app.ts');
+  registerCommand(commands, lazyCommand('link', 'A link from what you did in this tab: the commands that got here, in one address',
+    () => import('./commands/link').then(m => m.linkCmd)), 'src/commands/link.ts');
   registerCommand(commands, pageCmd, 'src/commands/page.ts');
   registerCommand(commands, titleCmd, 'src/commands/title.ts');
   registerCommand(commands, desktopCmd, 'src/commands/desktop.ts');
@@ -792,13 +801,15 @@ async function main() {
     }
   });
 
-  const startRunLink = async () => {
+  type FromFragment = { search: string; hash: string; fetch?: (url: string, init?: RequestInit) => Promise<Response> };
+  // (`link`: the run link was the part after `#`, already taken from the address)
+  const startRunLink = async (link?: FromFragment) => {
     const [{ handleRunLink, cleanRunUrl }, { showRunPrompt }] = await Promise.all([import('./run-url'), import('./run-prompt')]);
     let framed = true;
     try { framed = window.top !== window; } catch { /* cross-origin parent */ }
     await handleRunLink({
-      search: location.search, origin: location.origin, home: shell.env['HOME'] || '/home/user', framed,
-      fetch: (url, init) => fetch(url, init),
+      search: link ? link.search : location.search, hash: link?.hash, origin: location.origin, home: shell.env['HOME'] || '/home/user', framed,
+      fetch: link?.fetch ?? ((url, init) => fetch(url, init)),
       github: async (action, run) => (await import('./github-needed')).fetchSignedIn(action, run),
       fs,
       cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
@@ -813,7 +824,7 @@ async function main() {
         Object.assign(shell.env, env);
         terminal.injectInput(command + '\r');
       },
-      report: (message) => terminal.term.writeln(`\r\n\x1b[33mrun link: ${message}\x1b[0m`),
+      report: (message) => terminal.term.writeln(`\r\n\x1b[33m${link ? 'link' : 'run link'}: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
     }).catch((e) => console.warn('[run-link]', e));
   };
 
@@ -824,15 +835,43 @@ async function main() {
     return runtime;
   };
   // An app link (?app=, src/apps/links.ts): the run links' rules, an app instead of a script
-  const startAppLink = async () => {
+  const startAppLink = async (link?: FromFragment) => {
     await appsCore();
     const { startAppLink: handle } = await import('./apps/install');
     await handle({
+      link,
       ready: async () => {
         for (let i = 0; desktop && document.querySelector('.sd-booting') && i < 80; i++) await new Promise((r) => setTimeout(r, 50));
       },
-      report: (message) => terminal.term.writeln(`\r\n\x1b[33mapp link: ${message}\x1b[0m`),
+      report: (message) => terminal.term.writeln(`\r\n\x1b[33m${link ? 'link' : 'app link'}: ${message.replace(/\n/g, '\r\n')}\x1b[0m`),
     }).catch((e) => console.warn('[app-link]', e));
+  };
+  /**
+   * A link written after the `#` (src/link-fragment.ts, docs/RUN_LINKS.md "After the #"):
+   * a one-file app goes to the app links' prompt, commands to the run links', and a gist
+   * to one or the other by what it holds. There is no way from here around those prompts.
+   */
+  const startFragmentLink = async (hash: string) => {
+    const say = (message: string) => terminal.term.writeln(`\r\n\x1b[33mlink: ${message.replace(/\n/g, '\r\n')}\x1b[0m`);
+    const [{ parseFragment, FragmentError }, { gistFragmentQuery, fetchOnce, githubTokenFetch, RunLinkError }] = await Promise.all([import('./link-fragment'), import('./run-url')]);
+    try {
+      const link = parseFragment(hash);
+      if (!link) return;
+      if (link.kind === 'app' || link.kind === 'packed-app') { await startAppLink({ search: '', hash }); return; }
+      if (link.kind !== 'gist') { await startRunLink({ search: '', hash }); return; }
+      let framed = true;
+      try { framed = window.top !== window; } catch { /* cross-origin parent */ }
+      if (framed) throw new RunLinkError('links are ignored inside a frame; open the link in its own tab');
+      // One request tells what the gist is; the prompt that follows reads the same answer
+      const once = fetchOnce((url, init) => fetch(url, init), `https://api.github.com/gists/${link.id}`);
+      const { fetchSignedIn } = await import('./github-needed');
+      const what = await fetchSignedIn(`gist:${link.id}`, (token) => gistFragmentQuery(link, token ? githubTokenFetch(once, token) : once));
+      if ('app' in what) await startAppLink({ search: what.app, hash: '', fetch: once });
+      else await startRunLink({ search: what.run, hash: '', fetch: once });
+    } catch (e) {
+      say(e instanceof FragmentError || e instanceof RunLinkError ? e.message : 'it failed to start');
+      if (!(e instanceof FragmentError) && !(e instanceof RunLinkError)) console.warn('[link]', e);
+    }
   };
 
   // Demo mode: lightweight boot for about page iframes
@@ -885,6 +924,10 @@ async function main() {
     terminal.term.writeln('\x1b[1;33mThis address asked for a guest, but this server has none. Nothing it carried was run.\x1b[0m');
   }
 
+  // What `link` reads (src/session-log.ts, src/net-tally.ts): the files that change while a typed line runs,
+  // and the browser's own record of what the page fetched. Nothing is scanned and nothing is intercepted.
+  watchSessionFs(fs);
+  startNetTally();
   await terminal.start();
   fs.releaseKeyIndex();
   // The prompt is up: the next load of this tab is a normal one
@@ -950,7 +993,14 @@ async function main() {
     void startRunLink();
   } else if (!safe && !guestUnavailable() && !document.body.classList.contains('become-active') && new URLSearchParams(location.search).has('app')) {
     void startAppLink();
+  } else if (fragment && !safe && !guestUnavailable() && !document.body.classList.contains('become-active')) {
+    void startFragmentLink(fragment);
   }
+  // The same link pasted into the address of a tab that is already open changes only the part after `#`
+  window.addEventListener('hashchange', () => {
+    const hash = takeFragment();
+    if (hash && !safe && !document.body.classList.contains('become-active')) void startFragmentLink(hash);
+  });
 
   // A shared seed (/s/:id) or a repository (/:user/:repo) in the address (src/inbound-link.ts,
   // tabcomputer#116). Where the server has guests the link was sent to a guest of its own
@@ -1045,7 +1095,8 @@ async function main() {
   // Have Claude Code ready before anyone types `claude` (the profile's preinstall
   // list). Waits a few seconds so the 18 MB tarball download doesn't compete with boot.
   if (!safe && !guest?.noNetwork && profile.preinstall.includes('claude-code')) setTimeout(() => {
-    ensureClaudeCodeInstalled(fs)
+    // (sessionBackground: what this writes belongs to no line typed meanwhile, src/session-log.ts)
+    sessionBackground(ensureClaudeCodeInstalled(fs))
       .then(() => console.log('[tabcomputer] Claude Code ready'))
       .catch((e) => console.warn('[tabcomputer] Claude Code background install failed:', e?.message || e));
   }, 3000);
@@ -1067,7 +1118,7 @@ async function main() {
   // native programs' TLS looks for at /etc/ssl/certs/ca-certificates.crt).
   const pkgPreinstall = safe ? [] : profile.preinstall.filter((n) => n !== 'claude-code');
   if (pkgPreinstall.length) setTimeout(() => {
-    import('./pkg-manager').then((m) => m.preinstallPackages(fs, pkgPreinstall))
+    sessionBackground(import('./pkg-manager').then((m) => m.preinstallPackages(fs, pkgPreinstall)))
       .then((done) => { if (done.length) console.log(`[tabcomputer] preinstalled ${done.join(', ')}`); })
       .catch((e) => console.warn('[tabcomputer] package preinstall failed:', e?.message || e));
   }, 2000);

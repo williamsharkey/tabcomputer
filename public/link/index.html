@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A link is a computer: tabcomputer</title>
+  <meta name="description" content="Write commands or a small app after the # of a tabcomputer address. The link opens a computer in a browser tab, shows what it will run, and runs it when the person says so.">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0f1a; color: #e0e0e0; line-height: 1.6; -webkit-font-smoothing: antialiased;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    }
+    a { color: #00d4ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, textarea, .address {
+      font-family: 'SF Mono', Consolas, 'Liberation Mono', monospace; font-size: 0.88rem;
+    }
+    code { background: rgba(255, 255, 255, 0.08); padding: 2px 6px; border-radius: 3px; overflow-wrap: anywhere; }
+    main { max-width: 1040px; margin: 0 auto; padding: 36px 20px 64px; }
+    h1 { font-size: 1.9rem; color: #fff; margin-bottom: 8px; }
+    h2 { font-size: 1.15rem; color: #fff; margin-bottom: 8px; }
+    .lede { color: #a8a8c0; max-width: 66ch; margin-bottom: 24px; }
+    .editor { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .pane { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    label { color: #fff; font-weight: 600; font-size: 0.95rem; }
+    textarea {
+      width: 100%; min-height: 260px; padding: 12px; resize: vertical; line-height: 1.5; tab-size: 4;
+      color: #e0e0e0; background: #13132a; border: 1px solid #2a2a3e; border-radius: 10px;
+    }
+    textarea:focus-visible, button:focus-visible, .open:focus-visible { outline: 2px solid #00d4ff; outline-offset: 2px; }
+    .address {
+      min-height: 120px; max-height: 260px; overflow: auto; padding: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap;
+      color: #e0e0e0; background: #13132a; border: 1px solid #2a2a3e; border-radius: 10px; user-select: all; -webkit-user-select: all;
+    }
+    .address .site { color: #7c7c98; }
+    .note { color: #a8a8c0; font-size: 0.9rem; min-height: 1.5em; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button, .open {
+      font: inherit; font-size: 0.92rem; padding: 7px 16px; border-radius: 6px; cursor: pointer;
+      color: #e0e0e0; background: #1c1c36; border: 1px solid #2a2a3e;
+    }
+    button:hover, .open:hover { filter: brightness(1.15); text-decoration: none; }
+    .open { background: #00d4ff; color: #0f0f1a; font-weight: 600; border-color: transparent; }
+    .open[aria-disabled=true] { opacity: 0.45; pointer-events: none; }
+    .examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; }
+    section { margin-top: 40px; max-width: 76ch; }
+    section p, section li { color: #a8a8c0; margin-bottom: 10px; }
+    section ul { padding-left: 20px; }
+    table { border-collapse: collapse; margin: 6px 0 12px; font-size: 0.92rem; }
+    th, td { text-align: left; vertical-align: top; padding: 6px 14px 6px 0; border-bottom: 1px solid #2a2a3e; color: #a8a8c0; }
+    th { color: #fff; font-weight: 600; }
+    @media (max-width: 760px) {
+      .editor { grid-template-columns: 1fr; }
+      textarea { min-height: 200px; }
+      main { padding-top: 24px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>A link is a computer</h1>
+  <p class="lede">Write commands, or a small app, after the <code>#</code> of the address. The link opens a computer in a browser tab. The computer shows the person what the link will run, and runs it when they choose Run. A browser never sends the part after the <code>#</code> to a server. <a href="/">tabcomputer</a></p>
+
+  <div class="editor">
+    <div class="pane">
+      <label for="box">Commands, or an app</label>
+      <textarea id="box" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="reads"></textarea>
+      <p class="note" id="reads" aria-live="polite"></p>
+    </div>
+    <div class="pane">
+      <label id="address-label">The address</label>
+      <div class="address" id="address" tabindex="0" role="textbox" aria-readonly="true" aria-labelledby="address-label"></div>
+      <p class="note" id="size" aria-live="polite"></p>
+      <div class="actions">
+        <a class="open" id="open" target="_blank" rel="noopener" aria-disabled="true">Open</a>
+        <button type="button" id="copy">Copy the address</button>
+        <span class="note" id="copied" aria-live="polite"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="examples" id="examples" role="group" aria-label="Examples"></div>
+
+  <section>
+    <h2>How the address is read</h2>
+    <ul>
+      <li>The part after the <code>#</code> is an app when it starts with a key of an app and <code>=</code>, such as <code>name=</code>, <code>run=</code> or <code>table=</code>.</li>
+      <li>Anything else is commands. <code>#sh:</code> in front makes it commands whatever follows.</li>
+      <li><code>#gist:ID</code> opens a gist. A gist with an <code>app.json</code> is an app. Any other gist runs its first script.</li>
+      <li>A space typed by hand works. A new line is <code>%0A</code>.</li>
+    </ul>
+    <p>An app in the box is one key on each line. The address joins the lines with <code>&amp;</code>.</p>
+    <table>
+      <tr><th>Key</th><th>What it says</th></tr>
+      <tr><td><code>name</code>, <code>about</code></td><td>What the app is called, and what it does.</td></tr>
+      <tr><td><code>run</code></td><td>The command. <code>{in}</code> is each file a person gives it. <code>{field}</code> is what a field holds.</td></tr>
+      <tr><td><code>accept</code>, <code>out</code></td><td>The kinds of file it takes (<code>.png,.jpg</code>), and what a result is called (<code>{name}.pdf</code>).</td></tr>
+      <tr><td><code>field.NAME</code></td><td>A field and its label. <code>field.NAME.type</code>, <code>.value</code> and <code>.choices</code> say more about it.</td></tr>
+      <tr><td><code>stdin</code>, <code>live</code>, <code>shell</code></td><td>What the command reads, whether it runs as the person types, and whether it is a shell line.</td></tr>
+      <tr><td><code>table</code>, <code>columns</code></td><td>A table kept in a file: <code>columns=Date:date,What,Amount:number</code>.</td></tr>
+      <tr><td><code>needs</code></td><td>Debian packages the app installs before its first start.</td></tr>
+    </table>
+    <p>The full list is in <a href="https://github.com/williamsharkey/tabcomputer/blob/main/docs/APPS.md">docs/APPS.md</a>.</p>
+  </section>
+
+  <section>
+    <h2>What happens when a link is opened</h2>
+    <p>tabcomputer takes the link out of the address first. Then tabcomputer shows the commands, or what the app runs and installs, in a window with Cancel and Run. Nothing runs before the person chooses Run or Install. A link opened inside another page's frame is ignored.</p>
+    <p>A link holds text only, and at most 48,000 characters. In a tabcomputer terminal, <code>link</code> writes a link from what was done there.</p>
+  </section>
+</main>
+<script type="module">
+  import { EXAMPLES, FRAGMENT_MAX, READABLE_MAX, pack, readBox } from '/link/fragment.js';
+
+  const $ = (id) => document.getElementById(id);
+  const box = $('box'), address = $('address'), reads = $('reads'), size = $('size'), open = $('open'), copied = $('copied');
+  const site = location.origin + '/';
+  let url = '';
+  let turn = 0;
+
+  function show(fragment) {
+    url = fragment ? `${site}#${fragment}` : '';
+    address.textContent = '';
+    if (!url) return;
+    const s = document.createElement('span');
+    s.className = 'site';
+    s.textContent = `${site}#`;
+    address.append(s, fragment);
+  }
+
+  async function update() {
+    const mine = ++turn;
+    const r = readBox(box.value);
+    reads.textContent = r.kind === 'app' ? `The box is read as an app, because it starts with ${r.key}=.`
+      : r.kind === 'commands' ? 'The box is read as commands.'
+      : r.kind === 'gist' ? 'The box names a gist.' : 'The box is empty.';
+    show(r.fragment);
+    let said = url ? `The address is ${url.length.toLocaleString('en-US')} characters long.` : '';
+    if (url.length > READABLE_MAX && r.kind === 'commands') {
+      const payload = await pack(box.value.replace(/\r\n?/g, '\n').replace(/^\s*\n/, '').replace(/\s+$/, ''));
+      if (mine !== turn) return;
+      if (payload.length + 3 <= FRAGMENT_MAX) {
+        show(`gz:${payload}`);
+        said = `The commands are too long to read in an address, so the address holds them compressed. The address is ${url.length.toLocaleString('en-US')} characters long.`;
+      } else {
+        show('');
+        said = 'The commands are too long for an address. Put them in a gist and write gist:ID in the box.';
+      }
+    } else if (url.length > READABLE_MAX && r.kind === 'app') {
+      said += ' A mail or chat program may cut an address this long. In tabcomputer, app share makes a shorter one.';
+    }
+    size.textContent = said;
+    if (url) { open.href = url; open.setAttribute('aria-disabled', 'false'); } else { open.removeAttribute('href'); open.setAttribute('aria-disabled', 'true'); }
+    copied.textContent = '';
+  }
+
+  box.addEventListener('input', update);
+  $('copy').addEventListener('click', async () => {
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); copied.textContent = 'The address is copied.'; } catch { copied.textContent = 'The browser did not allow the copy. Select the address and copy it.'; }
+  });
+  for (const ex of EXAMPLES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = ex.name;
+    b.addEventListener('click', () => { box.value = ex.text; update(); box.focus(); });
+    $('examples').append(b);
+  }
+  box.value = EXAMPLES[0].text;
+  update();
+</script>
+</body>
+</html>

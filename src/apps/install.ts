@@ -8,7 +8,7 @@ import type { Launch } from '../desktop/launch-state';
 import type { DesktopWindow, WindowManager } from '../desktop/wm';
 import { appsConfig } from './frame';
 import {
-  archiveApp, fetchArchive, fetchGhApp, fetchGistApp, fetchSiteApp, handleAppLink, linkApp,
+  archiveApp, fetchArchive, fetchGhApp, fetchGistApp, fetchSiteApp, handleAppLink, keysApp, linkApp,
   type AppLinkOutcome, type AppTarget, type FetchedApp, type InstallChoice, type InstallPromptInfo,
 } from './links';
 import { AppError, findInstalled, installFromDir, installFromFiles, type InstalledApp } from './registry';
@@ -52,6 +52,7 @@ export async function fetchApp(target: AppTarget, fetchFn: (url: string, init?: 
   if (target.kind === 'gh') return fetchGhApp(target, fetchFn, githubToken);
   if (target.kind === 'gist') return fetchGistApp(target, fetchFn, githubToken);
   if (target.kind === 'link') return linkApp(target.payload);
+  if (target.kind === 'keys') return keysApp(target.pairs);
   return archiveApp(await unpack(await fetchArchive(target.url, fetchFn), target.url), target.url);
 }
 
@@ -159,16 +160,21 @@ export async function prepareInstalled(id: string, line: (text: string) => void 
   } finally { if (!had && !inst.views.size) inst.stop(); }
 }
 
-/** Boot (main.ts): the page's `?app=` link, through the same rules as a run link */
+/**
+ * Boot (main.ts): the page's `?app=` link, through the same rules as a run
+ * link. `link` is given when the app link was the part after `#` (already
+ * taken from the address): that part, or the `?app=gist:…` a `#gist:` stands for.
+ */
 export async function startAppLink(o: {
   ready?: () => Promise<void>;
   report: (message: string) => void;
+  link?: { search: string; hash: string; fetch?: (url: string, init?: RequestInit) => Promise<Response> };
 }): Promise<AppLinkOutcome> {
   let framed = true;
   try { framed = window.top !== window; } catch { /* a cross-origin parent */ }
   return handleAppLink({
-    search: location.search, hash: location.hash, origin: location.origin, framed,
-    fetch: (url, init) => fetch(url, init),
+    search: o.link ? o.link.search : location.search, hash: o.link ? o.link.hash : location.hash, origin: location.origin, framed,
+    fetch: o.link?.fetch ?? ((url, init) => fetch(url, init)),
     cleanUrl: () => history.replaceState(history.state, '', cleanRunUrl(location.href)),
     ready: o.ready,
     github: async (action, run) => (await import('../github-needed')).fetchSignedIn(action, run),

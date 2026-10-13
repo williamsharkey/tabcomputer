@@ -392,7 +392,9 @@ if (wants('share')) {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
   await page.goto(url);
   await booted(page);
-  const made = await side(page, 'cd /home/user && app new sharer --template table --name "Shared Table" && app install /home/user/sharer');
+  // (a second file beside app.json: this is the link that carries files. An app that is one app.json
+  // gets a link of words instead, which tests/browser/link-is-computer.mjs opens.)
+  const made = await side(page, 'cd /home/user && app new sharer --template table --name "Shared Table" && echo "About Shared Table." > sharer/README.txt && app install /home/user/sharer');
   await put(page, { '/home/user/.local/share/apps/sharer/own.csv': 'the,sharer,own,data\n' });
   const said = await side(page, 'app share sharer');
   const PROMISE = ['Each person who opens this link gets their own copy of Shared Table.', 'Each copy keeps its own data on that person\'s computer.', 'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.'];

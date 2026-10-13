@@ -14,7 +14,7 @@ import type { Shell } from '@shiro/shell';
 import { appCmd } from '@shiro/commands/app';
 import { configureApps } from '@shiro/apps/runtime';
 import { packApp, unpackApp, shareApp, shareStatement, siteOriginOf, collectAppFiles, SHARE_PAYLOAD_MAX, SHARE_UNPACKED_MAX } from '@shiro/apps/share';
-import { parseAppUrl, parseAppSpec, appLinkQuery, linkApp, handleAppLink, type AppLinkDeps, type FetchedApp, type InstallChoice } from '@shiro/apps/links';
+import { parseAppUrl, parseAppSpec, appLinkQuery, linkApp, keysApp, handleAppLink, type AppLinkDeps, type FetchedApp, type InstallChoice } from '@shiro/apps/links';
 import { cleanRunUrl, RunLinkError } from '@shiro/run-url';
 
 const HOME = '/home/user';
@@ -206,7 +206,8 @@ describe('app share', () => {
   });
 
   it('one command gives a link that installs the same app somewhere else, without its data', async () => {
-    expect((await app('new shared-notes --template table')).exitCode).toBe(0);
+    // (an app with a page of its own: one that is a single app.json gets a link of words, link-fragment.test.ts)
+    expect((await app('new shared-notes --page')).exitCode).toBe(0);
     expect((await app('install shared-notes')).exitCode).toBe(0);
     await fs.mkdir(`${HOME}/.local/share/apps/shared-notes`, { recursive: true });
     await fs.writeFile(`${HOME}/.local/share/apps/shared-notes/private.csv`, 'my,own,data\n');
@@ -244,11 +245,17 @@ describe('app share', () => {
     await fs.mkdir(`${HOME}/Apps/tidy-it`, { recursive: true });
     await fs.writeFile(`${HOME}/Apps/tidy-it/app.json`, '{"name": "Something else entirely", "run": "jq . {in}"}');
     const one = await shareApp(fs, { ...base, id: 'tidy-it', name: 'Something else entirely', dir: `${HOME}/Apps/tidy-it`, source: 'dir:/x' }, ORIGIN);
-    expect(one).toMatchObject({ kind: 'files', files: 1, asks: true });
-    expect(one.url.length).toBeLessThan(ORIGIN.length + 260);
-    const copy = await linkApp(one.url.slice(one.url.indexOf('#app=') + 5));
-    expect(copy.manifest).toMatchObject({ id: 'tidy-it', kind: 'files' });
-    expect(new TextDecoder().decode((await copy.files()).get('app.json'))).toBe('{"name": "Something else entirely", "run": "jq . {in}"}');
+    expect(one).toMatchObject({ kind: 'files', files: 1, readable: true, asks: true });
+    expect(one.url).toBe(`${ORIGIN}/#name=Something%20else%20entirely&run=jq%20.%20%7Bin%7D&id=tidy-it`);
+    const copy = await keysApp((parseAppUrl('', new URL(one.url).hash)!.target as { pairs: [string, string][] }).pairs);
+    expect(copy.manifest).toMatchObject({ id: 'tidy-it', kind: 'files', name: 'Something else entirely', run: 'jq . {in}' });
+    // the same app with a second file beside it travels packed, its id as a hint
+    await fs.writeFile(`${HOME}/Apps/tidy-it/notes.txt`, 'x');
+    const two = await shareApp(fs, { ...base, id: 'tidy-it', name: 'Something else entirely', dir: `${HOME}/Apps/tidy-it`, source: 'dir:/x' }, ORIGIN);
+    expect(two).toMatchObject({ kind: 'files', files: 2, asks: true });
+    const packedCopy = await linkApp(two.url.slice(two.url.indexOf('#app=') + 5));
+    expect(packedCopy.manifest).toMatchObject({ id: 'tidy-it', kind: 'files' });
+    expect(new TextDecoder().decode((await packedCopy.files()).get('app.json'))).toBe('{"name": "Something else entirely", "run": "jq . {in}"}');
     // (a hint that is no id is not taken: the name gives one)
     expect((await linkApp(await packApp(new Map([['app.json', new TextEncoder().encode('{"name": "Tidy", "run": "jq . {in}"}')]]), '../../etc'))).manifest.id).toBe('tidy');
     const site = await shareApp(fs, { ...base, id: 'converter', source: 'site' }, ORIGIN);

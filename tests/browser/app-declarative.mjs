@@ -475,7 +475,8 @@ if (wants('share')) {
       : await side(page, `app install /home/user/mine/${id}`);
     const link = (await side(page, `app share ${id} --print`)).o.trim();
     lengths[id] = link.length;
-    check(`share: ${id}'s link carries its one file in a few hundred characters`, inst.code === 0 && /\?app=link#app=[A-Za-z0-9_-]+$/.test(link) && link.length < 700, `${link.length} characters (${example(id).length} bytes of app.json)`);
+    // (an app that is one app.json is shared as words after the #: src/link-fragment.ts)
+    check(`share: ${id}'s link is its one file, written out, in a few hundred characters`, inst.code === 0 && /\/#name=[A-Za-z0-9\-._~!$'()*+,;=:@/?&%]+$/.test(link) && link.length < 700, `${link.length} characters (${example(id).length} bytes of app.json)`);
   }
   // for comparison: an app with a page of its own (what every such app was before)
   await side(page, 'cd /home/user && app new own --page && app install own && app new one && app install one');

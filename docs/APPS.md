@@ -334,6 +334,7 @@ So: an app that is only a page, with no commands or with commands that are safe 
 | `app install gh:OWNER/REPO[/PATH]`, `?app=gh:…` | A folder of a GitHub repository, fetched as a visitor. A private repository, or GitHub's limit of 60 requests an hour for visitors, opens the sign-in sheet; signed in, it is fetched again from `api.github.com` with the tab's GitHub token (`fetchSignedIn`) | **Yes.** |
 | `app install https://…/x.zip` (`.tar.gz`, `.tgz`) | An archive with `app.json` at its top or in its one folder | **Yes.** Not as a link: an address never names an archive. |
 | `?app=link#app=…` | The app's own files, carried by the address (`app share`, "Sharing" below) | **Yes.** |
+| `#run=…&name=…` | A one-file app written in the address, key by key ("An app in the address" below) | **Yes.** |
 
 For an app that is its manifest the prompt shows `app check`'s sentences: what it does, the exact command, what it installs. For an app with a page of its own, the prompt shows the app's name, where it comes from (for GitHub, the commit; for a gist, the revision), what it will run (`backend.start`), what it installs (`toolchains`), which commands and folders its page may use, whether it may reach other sites, and the manifest itself. It says which of that is enforced. Its rules are the run link prompt's: everything from the app goes in as text, Cancel has the focus, closing the window is Cancel, Install is off for the first moment, and a click made by script does nothing.
 
@@ -360,11 +361,12 @@ A link shares the app, never its data: `~/.local/share/apps/<id>/` is not read.
 | this site (`site`) | `?app=<id>` | No: it is curated. |
 | GitHub (`gh:…@commit`) | `?app=gh:owner/repo[/path]`: each person gets the repository's head when they open it | Yes. |
 | a gist (`gist:ID@revision`) | `?app=gist:ID`: each person gets the gist's newest revision | Yes. |
-| a folder, an archive, or a shared link | `?app=link#app=<payload>`: the files of `~/Apps/<id>` themselves, as gzipped JSON in base64url (`{ v: 1, t: { path: text }, b: { path: base64 } }`) | Yes. |
+| a folder, an archive, or a shared link, and the app is one `app.json` | `#name=…&run=…`: the keys of its `app.json` written out ("An app in the address" below), when that address is at most 2,000 characters | Yes. |
+| a folder, an archive, or a shared link, otherwise | `?app=link#app=<payload>`: the files of `~/Apps/<id>` themselves, as gzipped JSON in base64url (`{ v: 1, t: { path: text }, b: { path: base64 } }`) | Yes. |
 
-An app that is one `app.json` makes a short link of the last form: 336, 486 and 380 characters for the three examples on a local build, against 3,747 for `app new --page`'s five files (`tests/browser/app-declarative.mjs` prints them).
+An app that is one `app.json` gets the form a person can read (`readableAppUrl` in `src/apps/share.ts`). It is used only when the pairs read back as the same app; the id is written into the link only where the name would give another. In a link that tabcomputer writes, every character outside letters, digits and `-._~!$'()*+,;=:@/?` is percent-encoded, so that mail and chat programs keep the link whole: a space is `%20`. With `https://tabcomputer.com` as the site the three examples are 300, 531 and 215 characters (`link-fragment.test.ts` prints them), against 336, 486 and 380 for their packed form and 3,747 for `app new --page`'s five files on a local build (`tests/browser/app-declarative.mjs`).
 
-The last form needs no server. A browser never sends the part of an address after `#`, so the files are not uploaded and nothing stores them; `tests/browser/app-toolkit.mjs` checks that no request carries them. The address is cleaned of them before anything else happens (`cleanRunUrl`). The payload is at most 48,000 characters (`SHARE_PAYLOAD_MAX`: browsers take far more, mail and chat programs do not) and unpacks to at most 4 MB, 400 files, plain relative paths only. A larger app is refused with a sentence that says to put it in a public GitHub repository and share `?app=gh:OWNER/REPO`. A change made to the app later does not reach copies already installed from the link.
+The last two forms need no server. A browser never sends the part of an address after `#`, so the files are not uploaded and nothing stores them; `tests/browser/app-toolkit.mjs` checks that no request carries them. The address is cleaned of them before anything else happens (`cleanRunUrl`). The payload is at most 48,000 characters (`SHARE_PAYLOAD_MAX`: browsers take far more, mail and chat programs do not) and unpacks to at most 4 MB, 400 files, plain relative paths only. A larger app is refused with a sentence that says to put it in a public GitHub repository and share `?app=gh:OWNER/REPO`. A change made to the app later does not reach copies already installed from the link.
 
 Opening one is an app link like any other (below): the address is cleaned first, a framed page ignores it, `?safe=1` skips it. It is never curated, so the install prompt is shown, in a main profile and in a guest alike, with "Open in a guest" where the server has guests (the whole link goes there). Its `source` is `link:<hash of the payload>`: the same link opened again opens the copy it installed without asking; a link with other files asks again. `app install link` is refused: the files come only from the address.
 
@@ -379,11 +381,52 @@ https://tabcomputer.com/?app=gh:someone/tool
 https://tabcomputer.com/?app=gh:someone/tools/apps/notes&guest
 https://tabcomputer.com/?app=gist:0123456789abcdef0123456789abcdef
 https://tabcomputer.com/?app=link#app=H4sIA…          (what app share makes)
+https://tabcomputer.com/#name=Tidy&run=jq . {in}       (a one-file app, written by hand)
+https://tabcomputer.com/#gist:0123456789abcdef0123456789abcdef
 ```
 
 `?app=` is handled by the run links' machinery (docs/RUN_LINKS.md, `src/run-url.ts`), with an app in place of a script: the address is cleaned before anything is fetched (`app`, `become` and every parameter that is not the page's own), a framed page takes no app link, `?safe=1` skips it, and `&guest` (`&guest=NAME`, `&nonet`) moves the whole link to a guest first. A refused link prints `app link: <why>` in the terminal and installs nothing.
 
 A curated app installs and opens. An app carried by its link (`?app=link`) shows the prompt ("Sharing" above). A `gh:` or `gist:` app shows the prompt; once installed, the same link opens it without asking for as long as the repository's head (the gist's newest revision) is the one that was installed, and asks again when it has moved. `&become` makes the tab the app.
+
+### An app in the address
+
+An app that is one `app.json` can be written after the `#` of the address, with no file anywhere (tabcomputer#147, `src/link-fragment.ts`):
+
+```
+https://tabcomputer.com/#run=tesseract {in} stdout pdf&accept=.png,.jpg&name=Make scans searchable&needs=tesseract-ocr
+https://tabcomputer.com/#name=Expenses&table=expenses.csv&columns=Date:date,What,Category:Food|Travel|Home|Other,Amount:number
+```
+
+The keys are the keys of `app.json` for the three kinds. `&` separates the pairs and the first `=` of a pair ends its key. Values are percent-decoded; a space typed by hand works. In a value, `&` is written `%26`; an `=` needs nothing.
+
+| In the link | In `app.json` |
+| --- | --- |
+| `name=`, `about=`, `run=`, `out=`, `stdin=`, `output=`, `table=`, `id=`, `version=` | The same key, as text. |
+| `accept=.png,.jpg`, `needs=a,b`, `toolchains=c` | A list, split at commas. |
+| `shell`, `each`, `live` | A switch: `=true`, `=false`, `=yes`, `=no`, or the key alone for true. |
+| `columns=Date:date,What,Category:Food\|Travel,Amount:number` | A list of columns, split at commas. `Name` is a text column, `Name:type` names its type, `Name:a\|b\|c` is a choice column with those choices, `Name:choice:only` one with a single choice. |
+| `field.NAME=Label` | A field of a form, with its label. The fields keep the order they are first written in. `fields.NAME=` is the same. |
+| `field.NAME.type=`, `.value=`, `.on=`, `.label=` | The same keys of that field. A number field's value is a number, a checkbox's is true or false. |
+| `field.NAME.choices=A\|B\|C` | A list of choices. `Small=/ebook\|Print=/printer` is what is shown and what it becomes. |
+| `field.NAME.accept=.txt,.md` | A list. |
+| `option.NAME…` | The same as `field.NAME…`, for a files app's `options`. |
+| `window.width=`, `window.height=`, `window.minWidth=`, `window.minHeight=`, `window.resizable=`, `window.multiple=` | Numbers and switches. |
+| `columns=[…]`, `fields={…}`, `options={…}` | `app.json`'s own JSON, when the value starts with `[` or `{`. It is for what the short forms cannot say: a name or a choice that holds `,`, `:`, `\|` or `=`. |
+
+`icon`, `entry`, `backend`, `files` and `access` are not keys of a link: a link carries no file, and tabcomputer supplies the page. The link must start with one of the keys above and `=`, or it is read as commands ([RUN_LINKS.md](RUN_LINKS.md) "After the #").
+
+A mistake names its key, in `app check`'s words, in the terminal:
+
+```
+link: the app in the link is not valid:
+  unknown key acept (known: name, about, id, version, run, out, stdin, output, table, accept, needs, toolchains, shell, each, live, columns, field.NAME, option.NAME, window.width, window.height)
+  run must say where the file goes: {in}
+```
+
+Opening one is an app link like any other: the part after `#` leaves the address first, a framed page ignores it, `?safe=1` skips it, and it is never curated, so the install prompt shows the app's sentences (what it runs, what it installs) with Cancel focused. tabcomputer writes the `app.json` from the pairs; that text is what the prompt shows under "app.json, as it will be installed" and what is installed. Its `source` is `link:<hash of that text>`: the same link opened again opens the installed copy without asking, and a link with another command asks again. On a phone it opens as the app. "Open in a guest" carries the same link.
+
+`#app=<payload>` alone, without `?app=link`, is the packed form of "Sharing" above.
 
 On a phone (the desktop's compact layout and a touch screen) every app link opens as `&become` does, with a slim bar above the app whose one link, "tabcomputer", leads to the desktop (tabcomputer#139). The Welcome card is never shown on a visit that asked for an app, on any screen; it shows on the next visit without a link.
 
@@ -415,5 +458,6 @@ The Code app's app mode and a Studio would sit on the same modules the `app` com
 - `app-share.test.ts`: a shared link (round trip, refused payloads and names, the size limits, that it always asks, Cancel, the same link again, a frame), `app share`, the sentences.
 - `app-shipped.test.ts`: the shipped apps' dock entries and their removal, the first start's sentences.
 - `run-links-gist.test.ts`: `?run=gist:`.
+- `link-fragment.test.ts`: links written after the `#`: an app from `key=value` pairs (each kind, the short forms, every mistake by its key), what tells an app from commands, `#gist:`, the readable link `app share` gives a one-file app, and that the `/link` page writes what the app reads. `tests/browser/link-is-computer.mjs` opens each form from a fresh profile at 1280 px and on a 390 x 844 touch screen.
 - `tests/browser/app-toolkit.mjs`: new → dev → install → dock → open → drop → result → download; the page's boundary; a backend restarted, restored by a reload, stopped on close; app mode; remove; the prompt for a `gh:` app; `?app=`; `app share`, its screen, the link opened in another profile and in a guest; 360 px. `tests/browser/app-converter.mjs`: the converter, and its dock entry from a fresh profile: the first click, the first-run sentences, the window, removal.
 - `tests/browser/app-declarative.mjs`: each kind at 1280 px and on a 390 x 844 touch screen: `app new`, install, open, the job (three files with two of one name and one the program refuses; Run, streamed output, Stop, live; add, edit, sort, filter, a reload, another program's change, SQLite), downloads, the keyboard alone, the appearance; an app link on the phone; the Welcome card; the key row; a gist; share link lengths; 360 px. It prints the times.

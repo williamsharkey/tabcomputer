@@ -3,7 +3,8 @@
  * (tabcomputer#71: eviction, "Clear site data", another tab): a banner over
  * everything, in the desktop and the terminal UI, with a Save button that
  * downloads what memory still holds as a tar. Nothing else can bring those
- * files back once the page reloads.
+ * files back once the page reloads. On the load after a loss: a notice, and
+ * an offer to install again what the lost disk had (offerReinstall).
  */
 
 import type { FileSystem, StorageLost } from './filesystem';
@@ -71,9 +72,47 @@ export function watchStorageLost(fs: FileSystem): void {
     document.body.append(b);
   });
   if (fs.previousVolumeLost) {
-    const b = banner('<b>This tab\'s previous files are gone.</b> The browser cleared or evicted its storage before this load, so tabcomputer started with an empty disk.');
+    const b = banner(PREVIOUS_GONE);
+    b.classList.add(PREVIOUS_CLASS);
     b.style.background = '#78350f';
     b.append(button('Dismiss', () => b.remove()));
     document.body.append(b);
   }
+}
+
+const PREVIOUS_GONE = '<b>This tab\'s previous files are gone.</b> The browser cleared or evicted its storage before this load, so tabcomputer started with an empty disk.';
+const PREVIOUS_CLASS = 'tabcomputer-storage-previous';
+
+/**
+ * After a loss: what the lost disk had installed, with a button that installs
+ * it again (src/install-inventory.ts). Called once the prompt is up; `run`
+ * types the commands into a Terminal. The offer stands across reloads until
+ * it is taken or dismissed, or everything is back. Resolves to whether it
+ * was shown.
+ */
+export async function offerReinstall(fs: FileSystem, opts: { run(commands: string[]): void; skipPkg?: string[] }): Promise<boolean> {
+  if (typeof document === 'undefined') return false;
+  const { reinstallOffer, dismissLostInventory } = await import('./install-inventory');
+  const offer = await reinstallOffer(fs, { skipPkg: opts.skipPkg });
+  if (!offer) return false;
+  // (in place of the plain notice watchStorageLost put up on the first load after the loss)
+  document.querySelector(`.${PREVIOUS_CLASS}`)?.remove();
+  const { describeMissing } = await import('./install-inventory');
+  const b = banner(PREVIOUS_GONE);
+  b.classList.add(PREVIOUS_CLASS);
+  b.style.background = '#78350f';
+  const text = b.firstElementChild as HTMLElement;
+  // Names from the saved list go in as text
+  const what = describeMissing(offer.missing);
+  if (what) text.append(document.createElement('br'), `It had installed: ${what}.`);
+  if (offer.signins.includes('claude')) text.append(document.createElement('br'), 'Claude\'s sign-in was among the files: run claude and sign in again.');
+  const done = () => { dismissLostInventory(); b.remove(); };
+  if (offer.commands.length) {
+    const again = button('Reinstall', () => { done(); opts.run(offer.commands); });
+    again.title = offer.commands.join(' ; ');
+    b.append(again);
+  }
+  b.append(button('Dismiss', done));
+  document.body.append(b);
+  return true;
 }

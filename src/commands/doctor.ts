@@ -252,11 +252,39 @@ async function storageCheck(ctx: CommandContext): Promise<Check> {
   const used = est.usage ?? 0;
   const quota = est.quota ?? 0;
   const frac = quota ? used / quota : 0;
+  // What a lost filesystem had installed and this one lacks (src/install-inventory.ts)
+  const offer = await import('../install-inventory').then((m) => m.reinstallOffer(ctx.fs)).catch(() => null);
+  const again = offer ? [...offer.commands, ...(offer.signins.includes('claude') ? ['claude (sign in again)'] : [])] : [];
+  const lostBefore = again.length
+    ? ` · the filesystem before this one was lost; to put back what it had: ${again.join(' ; ')}`
+    : ctx.fs.previousVolumeLost ? ' · the filesystem before this load was lost' : '';
   return {
     label: 'storage',
-    status: frac > 0.9 ? 'FAIL' : frac > 0.75 || !persisted ? 'WARN' : 'OK',
-    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%) · ${persisted ? 'persisted' : 'not persisted: the browser may evict it under storage pressure, deleting every file'}${ctx.fs.previousVolumeLost ? ' · the filesystem before this load was lost' : ''}`,
+    status: frac > 0.9 ? 'FAIL' : frac > 0.75 || !persisted || again.length ? 'WARN' : 'OK',
+    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%) · ${persisted ? 'persisted' : NOT_PERSISTED}${lostBefore}`,
   };
+}
+
+/** What "not persisted" costs and what to do about it (tabcomputer#71) */
+const NOT_PERSISTED = 'not persisted: the browser may delete every file here when the disk runs low, with no warning. To keep them, bookmark this site or install it as an app, then run: doctor --persist';
+
+/**
+ * `doctor --persist`: ask the browser to keep this site's storage, and say
+ * what it answered. Chrome decides by itself (a bookmarked, installed or
+ * often-used site gets it); Firefox asks the person.
+ */
+async function persistStorage(ctx: CommandContext): Promise<number> {
+  const st = g.navigator?.storage;
+  if (!st?.persist) { ctx.stderr = 'doctor: this browser has no persistent storage to ask for\n'; return 1; }
+  const { requestPersistentStorage } = await import('../storage');
+  if (await requestPersistentStorage('doctor --persist', true)) {
+    ctx.stdout = 'Storage is persistent: the browser will not delete this site\'s files to free space.\n';
+    return 0;
+  }
+  ctx.stdout = 'The browser did not grant persistent storage, so it may still delete every file here when the disk runs low.\n'
+    + 'Chrome and Edge grant it to a site that is bookmarked, installed as an app (the install icon in the address bar) or used often; Firefox asks you.\n'
+    + 'Do one of those and run doctor --persist again. Until then, keep copies of what matters outside the tab (git push, Files → Download).\n';
+  return 1;
 }
 
 async function kernelCheck(ctx: CommandContext): Promise<Check> {
@@ -307,9 +335,10 @@ export const doctorCmd: Command = {
   description: 'Check this tab (deploy, browser, engine, network, sign-ins, storage) for a bug report',
   async exec(ctx) {
     if (ctx.args[0] === '--help' || ctx.args[0] === '-h') {
-      ctx.stdout = 'Usage: doctor [--agents]\n\nPrints the deploy, browser, x86 engine, internet relay, sign-ins, Debian,\nstorage, upgradable packages, kernel and agent-readiness state, one OK/WARN/FAIL line each, to\npaste into a bug report. No tokens or secrets are printed. Also: tabinfo\n\n--agents: what agent CLIs (Claude Code, Codex) need, step by step, through\nboth runtimes: a native x86-64 probe under Blink and the Node runtime\n(mkdir -p 0700, O_EXCL + rename, stat/lstat/fstat, realpath, a child\nsh -c with output to a file), `node -v` and `node -e` on their own, and the\nnative claude binary\'s --version. A failing node probe runs again with\nstdin on /dev/null, which tells a terminal (stdin) problem from the rest.\n';
+      ctx.stdout = 'Usage: doctor [--agents | --persist]\n\nPrints the deploy, browser, x86 engine, internet relay, sign-ins, Debian,\nstorage, upgradable packages, kernel and agent-readiness state, one OK/WARN/FAIL line each, to\npaste into a bug report. No tokens or secrets are printed. Also: tabinfo\n\n--agents: what agent CLIs (Claude Code, Codex) need, step by step, through\nboth runtimes: a native x86-64 probe under Blink and the Node runtime\n(mkdir -p 0700, O_EXCL + rename, stat/lstat/fstat, realpath, a child\nsh -c with output to a file), `node -v` and `node -e` on their own, and the\nnative claude binary\'s --version. A failing node probe runs again with\nstdin on /dev/null, which tells a terminal (stdin) problem from the rest.\n\n--persist: ask the browser to keep this site\'s storage (it may otherwise\ndelete every file when the disk runs low), and say what it answered.\n';
       return 0;
     }
+    if (ctx.args.includes('--persist')) return persistStorage(ctx);
     if (ctx.args.includes('--agents')) {
       const { agentChecks } = await import('./doctor-agents');
       const checks = await guard('agents', () => agentChecks(ctx, { claudeVersion: true }), 120_000);

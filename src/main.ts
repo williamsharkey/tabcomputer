@@ -171,6 +171,8 @@ async function main() {
   setActiveFileSystem(fs);
   // The banner (and Save) if the browser deletes the filesystem's IndexedDB under the page (tabcomputer#71)
   void import('./storage-lost').then(m => m.watchStorageLost(fs)).catch(e => console.warn('[fs]', e));
+  // A short list of what is installed, kept in localStorage: after such a loss the page offers it again
+  if (!guest?.ephemeral) void import('./install-inventory').then(m => m.trackInventory(fs)).catch(e => console.warn('[fs]', e));
   // Persistent storage (no eviction under storage pressure) once the machine
   // holds a lot: Firefox asks the user, so not for a page that stores little
   // (not for a thrown-away guest)
@@ -847,6 +849,18 @@ async function main() {
   fs.releaseKeyIndex();
   // The prompt is up: the next load of this tab is a normal one
   bootFinished();
+
+  // After the browser deleted the filesystem (tabcomputer#71): what it had installed, and a button to install it again
+  if (!guest?.ephemeral && localStorage.getItem('tabcomputer-installed-lost')) {
+    void import('./storage-lost').then(m => m.offerReinstall(fs, {
+      skipPkg: profile.preinstall,
+      run: (commands) => {
+        const command = commands.join(' ; ');
+        if (desktop) { desktop.ctx.openTerminal({ cwd: shell.env['HOME'] || '/home/user', command, title: 'Reinstall' }); return; }
+        terminal.injectInput(command + '\r');
+      },
+    })).catch(e => console.warn('[fs]', e));
+  }
 
   // Check for become mode (app mode) — restore full-screen app if configured
   if (becomeConfig) {

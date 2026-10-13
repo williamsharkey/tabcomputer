@@ -145,7 +145,10 @@ ${bootSection(ctx, name)}
   coreutils, grep/sed/awk, \`rg\`, \`jq\`, \`git\`, \`gh\`, \`curl\`, \`vi\`, \`nano\`, \`tmux\`.
 - Home is \`/home/user\`. Files persist in this browser's storage for this site
   across reloads. They are not synced anywhere else: commit and push work you
-  want to keep. You run as uid 1000; \`sudo\` gives root inside ${name}.
+  want to keep. Unless that storage is persistent (\`doctor\` says;
+  \`doctor --persist\` asks the browser for it), the browser may delete all of
+  it when the disk runs low; after such a loss \`doctor\` lists the commands
+  that install again what was there. You run as uid 1000; \`sudo\` gives root inside ${name}.
 - x86-64 Linux programs run in the Blink emulator, compiled to WebAssembly:
   correct, but big programs take seconds to start. WASM programs run directly.
 - \`node\`, \`npm\` and \`npx\` are a Node.js-compatible runtime built into the page,

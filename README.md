@@ -227,7 +227,11 @@ the relay.
   `apt install` runs while this README was checked (python3 once, gcc once). When `apt` stops
   with a dpkg error, run the install again; apt suggests `sudo apt --fix-broken install`.
 - **Storage.** Everything lives in this browser's site storage. Clearing site data erases the
-  machine. `doctor` and Settings → Storage show usage.
+  machine, and unless the storage is persistent the browser may erase it by itself when the
+  disk runs low. `doctor` and Settings → Storage show usage and whether it is persistent;
+  `doctor --persist` asks the browser for it. After such a loss the next load says so and
+  offers to install again what was there (files and work are not brought back: push what
+  you want to keep).
 - **Isolation.** Blocking syscalls and threads need a cross-origin isolated page (SharedArrayBuffer).
   tabcomputer.com is isolated; a page embedded elsewhere may not be.
 

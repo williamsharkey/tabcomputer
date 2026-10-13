@@ -281,9 +281,24 @@ export function scriptJson(value) {
 // (the two line separators by their numbers: written out they would end this line)
 const SCRIPT_UNSAFE = new RegExp('[<>&' + String.fromCharCode(0x2028, 0x2029) + ']', 'g');
 
+/** What the callback page hands to the tabs: the names an OAuth answer has, and nothing else of the address (src/oauth-flows.ts has the same list) */
+export const OAUTH_CALLBACK_PARAMS = ['code', 'state', 'error', 'error_description', 'error_uri', 'iss', 'scope'];
+
+/** The callback's parameters a waiting flow needs: the known names, each a text of at most 4096 characters */
+export function oauthCallbackParams(searchParams) {
+  const params = {};
+  for (const k of OAUTH_CALLBACK_PARAMS) {
+    const v = searchParams.get(k);
+    if (typeof v === 'string' && v && v.length <= 4096) params[k] = v;
+  }
+  return params;
+}
+
 function handleOAuthCallback(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const params = Object.fromEntries(url.searchParams.entries());
+  // The page tells every open tab of this site (below), so it says only what a flow that waits
+  // needs. A tab acts on it only when the state is one it issued; the port is the tab's to know.
+  const params = oauthCallbackParams(url.searchParams);
 
   const html = `<!DOCTYPE html>
 <html><head><title>OAuth Callback - Shiro</title></head>
@@ -294,7 +309,7 @@ function handleOAuthCallback(req, res) {
   var msg = {
     type: 'shiro-oauth-callback',
     code: params.code || '', state: params.state || '',
-    port: params.port || '', params: params
+    params: params
   };
   // COOP same-origin on Shiro severs window.opener once the popup has been to
   // the provider's origin, so also post on a same-origin BroadcastChannel.

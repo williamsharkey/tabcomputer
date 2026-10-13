@@ -7,6 +7,9 @@
  * works. Either way the caller returns at once, as xdg-open does.
  */
 
+import { noteOAuthFlow } from './oauth-flows';
+import { getShiroOrigin } from './utils/shiro-origin';
+
 /** Claude Code's OAuth client (its sign-in URLs carry it). */
 const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 /** Where Claude Code's manual sign-in sends the browser: a page showing the code to paste. */
@@ -68,6 +71,8 @@ function offer(url: string): void {
 /** Open `url` in a new tab, or offer it when the browser blocks that. */
 export function openUrl(url: string): 'opened' | 'offered' | 'unavailable' {
   if (typeof window === 'undefined' || typeof document === 'undefined') return 'unavailable';
+  // A sign-in that comes back through this site's /oauth/callback: this tab started it, so its answer is taken
+  noteOAuthFlow(url, getShiroOrigin());
   let w: Window | null = null;
   // Without 'noopener' so a blocked open is visible (null); the opener is cut below
   try { w = window.open(url, '_blank'); } catch { w = null; }

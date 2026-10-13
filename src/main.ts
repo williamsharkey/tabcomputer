@@ -110,6 +110,7 @@ import {
   SHIRO_RUNTIME_CONTEXT_SESSION_KEY,
 } from './seed-runtime-context';
 import { getShiroOrigin } from './utils/shiro-origin';
+import { oauthCallbackRequest } from './oauth-flows';
 import { logIsolationStatus } from './utils/isolation';
 import { requestPersistentStorage, setActiveFileSystem, storageInfo } from './storage';
 import { installNodeWorkerBoot } from './node-worker/boot';
@@ -760,30 +761,15 @@ async function main() {
   // (migrateFrom in a swap runs on tracked instances)
   for (const o of [shell, terminal, kernel, fs]) trackInstance(o);
 
-  // OAuth callback bridge: receive auth codes from /oauth/callback popup
+  // OAuth callback bridge: receive auth codes from /oauth/callback popup.
+  // Only an answer to a flow this tab started is passed on (src/oauth-flows.ts): its state was
+  // recorded when the provider's page was opened, with the port. A callback with any other
+  // state, which anyone can link to, does nothing; the port never comes from the callback.
   const onOAuthCallback = (event: MessageEvent) => {
     if (event.origin !== getShiroOrigin()) return;
-    if (event.data?.type !== 'shiro-oauth-callback') return;
-    const { code, state, params } = event.data;
-    let port = event.data.port;
-    // Extract port from state parameter (setup command encodes it as port_XXXXX_random)
-    if (!port && state) {
-      const m = state.match(/^port_(\d+)_/);
-      if (m) port = m[1];
-    }
-    if (!port) return;
-    // Reconstruct the original callback URL path with query params
-    const callbackParams = new URLSearchParams();
-    if (code) callbackParams.set('code', code);
-    if (state) callbackParams.set('state', state);
-    // Forward any extra params the provider sent
-    if (params) {
-      for (const [k, v] of Object.entries(params)) {
-        if (k !== 'port' && !callbackParams.has(k)) callbackParams.set(k, v as string);
-      }
-    }
-    const path = '/oauth/callback?' + callbackParams.toString();
-    iframeServer.fetch(parseInt(port, 10), path).catch(() => {});
+    const ask = oauthCallbackRequest(event.data);
+    if (!ask) return;
+    iframeServer.fetch(ask.port, ask.path).catch(() => {});
   };
   window.addEventListener('message', onOAuthCallback);
   // Under COOP the popup loses window.opener after visiting the provider, so

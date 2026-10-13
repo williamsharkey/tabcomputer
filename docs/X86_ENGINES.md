@@ -1174,6 +1174,38 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    is no `flock(1)` (macOS): configure built it with emcc, a wasm program
    that locks nothing, and its parallel probes lost a `#define` in
    `config.h` now and then.
+0554–0557. unix/blink-miscompute's (#150): instructions that computed
+   wrongly, all in Blink's own handlers, which the JIT calls for these.
+   [research/BLINK_MISCOMPUTE.md](research/BLINK_MISCOMPUTE.md) has how
+   each was found and the check against real programs.
+   - 0554: `fsubp %st,%st(i)` (DE E8+i) wrote its result to st(1) whatever
+     i was. Debian's tesseract lost text lines to it: its line finder fits
+     each row's baseline in `long double`, and one line of the fit compiles
+     to `fsubp` into st(2). `fdiv`/`fdivr %st,%st(i)` (DC F8+i, DC F0+i)
+     were each other's. `fucompp` (DA E9) was SIGILL. `fist`/`fistp`/
+     `fisttp` of a value that doesn't fit stored a saturated number, not the
+     integer indefinite. `fxam` called a subnormal double a denormal.
+   - 0555: `cvttpd2dq` (66 0F E6) and `cvtpd2dq` (F2 0F E6) were each
+     other's, so a vectorized `(int)x` on doubles rounded to nearest. They
+     and `cvtpd2ps` left the destination's upper 64 bits as they were.
+   - 0556: x87 add, sub, mul, div and sqrt are the IEEE operations. `fsub`
+     with one infinite operand had its cases exchanged (inf - 1 was -inf).
+     An invalid operation gives the x87's negative NaN on every host.
+   - 0557: `fxsave` stores one tag bit a register and `fxrstor` rebuilds
+     the two-bit tags from it. Before, registers 4 to 7 came back "in use",
+     and since ld.so runs both around the first call of each library
+     function, x87 code that then used the whole stack set IE and SF in
+     the status word: numpy's "invalid value encountered" warnings (#110
+     item 6). `fucom` and its kind no longer raise IE for a quiet NaN;
+     `fprem`'s C0, C3, C1 come from the quotient's magnitude.
+   Tests: `x87-ops.test.ts` (`fixtures/x86/x87ops.c`: every x87 form
+   against the manual's definition; the same source passes under Rosetta 2)
+   and `sse-diff.test.ts` (`fixtures/x86/ssediff.c`: a checksum per
+   SSE/SSE2/SSE3/SSSE3 instruction form, 378 of them, against
+   `ssediff.expected`, its output under Rosetta 2).
+   Not done: the sign of a NaN that an SSE operation makes is the host
+   CPU's (negative on x86, positive on ARM), and MXCSR's status flags are
+   never set.
 
    fork+exit+wait with 16 MiB of dirty heap went from 30 to 7.5 ms, and
    with 64 MiB from 104 to 12 ms (native: 3.1 ms). Test:

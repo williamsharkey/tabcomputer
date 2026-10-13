@@ -13,8 +13,8 @@ zeroed.
 
 Found by fixtures/x86/ssediff.c: a checksum per SSE/SSE2/SSE3/SSSE3
 instruction form over operands with special values, compared with the same
-program on Rosetta (tabcomputer#150's wider check). 364 of 378 forms agreed
-before this patch; the other differences are the sign of a NaN that an
+program on Rosetta (tabcomputer#150's wider check). 358 of 378 forms agreed
+before this patch and 364 after; the 14 left are the sign of a NaN that an
 operation makes (add, div, sqrt), which is the host CPU's: negative on x86,
 positive on ARM.
 ---

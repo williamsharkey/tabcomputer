@@ -54,6 +54,7 @@ export const NOISE = /^\/(tmp|proc|dev|run|sys)(\/|$)|\/\.bash_history$|\/__pyca
 
 let entries: SessionEntry[] = [];
 let edits: SessionEdit[] = [];
+let arrivals: SessionEdit[] = [];
 const running = new Map<SessionEntry, TallyRow[]>();
 let loaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66,12 +67,13 @@ function load(): void {
   if (loaded) return;
   loaded = true;
   try {
-    const saved = JSON.parse(storage()?.getItem(KEY) ?? 'null') as { entries?: SessionEntry[]; edits?: SessionEdit[] } | null;
+    const saved = JSON.parse(storage()?.getItem(KEY) ?? 'null') as { entries?: SessionEntry[]; edits?: SessionEdit[]; arrivals?: SessionEdit[] } | null;
     if (Array.isArray(saved?.entries)) {
       // (a line that was running when the page went away did not finish)
       entries = saved!.entries.filter((e) => e && typeof e.line === 'string').map((e) => ({ ...e, status: e.status ?? -1, changed: Array.isArray(e.changed) ? e.changed : [], net: Array.isArray(e.net) ? e.net : [] }));
     }
     if (Array.isArray(saved?.edits)) edits = saved!.edits.filter((e) => e && typeof e.path === 'string');
+    if (Array.isArray(saved?.arrivals)) arrivals = saved!.arrivals.filter((e) => e && typeof e.path === 'string');
   } catch { /* nothing saved, or not ours */ }
 }
 
@@ -83,6 +85,7 @@ function save(): void {
       storage()?.setItem(KEY, JSON.stringify({
         entries: entries.map((e) => ({ ...e, changed: e.changed.slice(0, SAVED_CHANGED_MAX), more: e.more + Math.max(0, e.changed.length - SAVED_CHANGED_MAX) })),
         edits,
+        arrivals,
       }));
     } catch { /* full, or no storage: the log is then this page's only */ }
   }, 800);
@@ -155,16 +158,31 @@ export function noteEdited(path: string): void {
   save();
 }
 
-/** The lines entered since the tab was new, oldest first, and the files an editor saved */
-export function sessionLog(): { entries: SessionEntry[]; edits: SessionEdit[] } {
+/**
+ * A file came into the tab from the person's own computer: dropped on a
+ * window, or picked for an upload. No command made it, so no link can make it
+ * again: `link` names it under "not in the link".
+ */
+export function noteArrived(path: string): void {
   load();
-  return { entries: entries.map((e) => ({ ...e, changed: [...e.changed] })), edits: edits.map((e) => ({ ...e })) };
+  if (NOISE.test(path)) return;
+  arrivals = arrivals.filter((a) => a.path !== path);
+  arrivals.push({ path, at: Date.now() });
+  if (arrivals.length > 500) arrivals.splice(0, arrivals.length - 500);
+  save();
+}
+
+/** The lines entered since the tab was new, oldest first, the files an editor saved, and the files that came from outside */
+export function sessionLog(): { entries: SessionEntry[]; edits: SessionEdit[]; arrivals: SessionEdit[] } {
+  load();
+  return { entries: entries.map((e) => ({ ...e, changed: [...e.changed] })), edits: edits.map((e) => ({ ...e })), arrivals: arrivals.map((a) => ({ ...a })) };
 }
 
 /** Tests: start over */
 export function resetSessionLog(): void {
   entries = [];
   edits = [];
+  arrivals = [];
   running.clear();
   loaded = true;
   try { storage()?.removeItem(KEY); } catch { /* no storage */ }

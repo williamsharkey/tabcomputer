@@ -215,15 +215,13 @@ const mistakes: Session = {
   files: new Map(),
   script: `pip install requests
 mkdir proj && cd proj
-touch main.py
-rm main.py
 echo 'print("hi")' > main.py
 git init
 git add .
 git commit -m first
 `,
-  // made and then removed: the rules see two lines that each changed a file
-  extra: ['touch main.py', 'rm main.py'],
+  // (`touch main.py` and `rm main.py` cancel out, and neither is kept)
+  extra: [],
 };
 
 const T0 = 1_760_000_000_000;

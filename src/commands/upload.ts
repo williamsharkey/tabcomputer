@@ -1,4 +1,5 @@
 import { Command } from './index';
+import { noteArrived } from '../session-log';
 
 const UPLOAD_USAGE = `Usage: upload [DIR]
 Pick files on this device and copy them into DIR (default: the current directory).
@@ -40,6 +41,7 @@ export const uploadCmd: Command = {
               ? ctx.fs.resolvePath(file.name, ctx.cwd)
               : ctx.fs.resolvePath(`${targetDir}/${file.name}`, ctx.cwd);
             await ctx.fs.writeFile(destPath, content);
+            noteArrived(destPath); // (link names it: no command can make this file again)
             outputs.push(`Uploaded: ${destPath} (${file.size} bytes)`);
           } catch (err: any) {
             outputs.push(`Failed to upload ${file.name}: ${err.message}`);

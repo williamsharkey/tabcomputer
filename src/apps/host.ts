@@ -400,7 +400,25 @@ export class AppHost {
     let line = m.shell ? shellLineFor(m.run, values, rules) : argvFor(splitRun(m.run), values, rules).map(shq).join(' ');
     // A command that does not name {out} writes its result to standard output
     const piped = !!out && !placeholders(m.run).includes('out');
-    if (piped) line = m.shell ? `{ ${line}\n} > ${shq(out)}` : `${line} > ${shq(out)}`;
+    // The shell hands over what a redirected command said on stderr only when the command ends. Sent to a
+    // file of its own instead, a program writes it as it goes, and the page gets it while the program runs
+    // (its last line is the progress a files run shows).
+    const says = piped ? `${this.app.dataDir}/in/${session}/.says-${this.batch++}` : '';
+    if (piped) {
+      await fs.mkdir(says.slice(0, says.lastIndexOf('/')), { recursive: true });
+      line = m.shell ? `{ ${line}\n} > ${shq(out)} 2> ${shq(says)}` : `${line} > ${shq(out)} 2> ${shq(says)}`;
+    }
+    let sent = 0, reading: Promise<void> | null = null, last = 0, later: ReturnType<typeof setTimeout> | null = null;
+    const tail = (): Promise<void> => reading ??= (async () => {
+      const text = String(await fs.readFile(says, 'utf8').catch(() => ''));
+      if (text.length > sent) { send('err', text.slice(sent)); sent = text.length; }
+    })().finally(() => { reading = null; });
+    // At most four reads a second, and always one after the last change: a program that says one
+    // line and then works for a minute has that line shown.
+    const offSays = says ? fs.onChange((_event, path) => {
+      if (path !== says || later) return;
+      later = setTimeout(() => { later = null; last = Date.now(); void tail(); }, Math.max(0, 250 - (Date.now() - last)));
+    }) : () => {};
     const h = this.deps.run({
       line, cwd: this.app.dataDir, env: { APP_ID: m.id, APP_DIR: this.app.dir, APP_DATA: this.app.dataDir },
       ...(m.stdin ? { stdin: fill(m.stdin, values) } : {}),
@@ -408,6 +426,13 @@ export class AppHost {
     });
     onCancel(() => h.kill());
     const code = await h.done;
+    offSays();
+    if (later) clearTimeout(later);
+    if (says) {
+      await reading;
+      await tail();
+      await fs.unlink(says).catch(() => {});
+    }
     let made = out ? await fs.stat(out).catch(() => null) : null;
     let said = '';
     if (out && made && code !== 0) {

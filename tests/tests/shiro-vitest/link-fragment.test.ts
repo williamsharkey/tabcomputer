@@ -707,9 +707,9 @@ describe('app share for a one-file app', () => {
     const said = shareStatement(share);
     expect(said.promise).toHaveLength(2);
     expect(said.details).toEqual([
-      'The link is Expenses itself, written after the #. No server stores it.',
-      'A later change to Expenses does not reach copies already made. Share a new link for that.',
-      'Each person sees what Expenses does before it is installed.',
+      'The link is the app itself, written after the #. No server stores it.',
+      'A later change here does not reach copies already made. Share a new link for that.',
+      'Each person sees what it does before it is installed.',
     ]);
     // the copy made from the link is the same app
     const copy = await keysApp((parseFragment(new URL(share.url).hash) as { pairs: [string, string][] }).pairs);

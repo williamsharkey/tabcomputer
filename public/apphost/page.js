@@ -64,7 +64,7 @@ pre { min-height: 80px; max-height: 60vh; overflow: auto; white-space: pre-wrap;
 pre.err { min-height: 0; color: var(--bad); }
 pre.stale, .stale .rendered { opacity: .5; }
 .rendered { overflow-wrap: anywhere; }
-.rendered:empty { display: none; }
+div.rendered:empty { display: none; }
 .rendered > :first-child { margin-top: 0; }
 .rendered > :last-child { margin-bottom: 0; }
 .rendered pre { background: var(--bg); min-height: 0; }
@@ -194,7 +194,7 @@ tfoot td.num { text-align: right; }
     const options = controls(m.options);
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const rows = el('ul', { 'aria-label': 'Files' });
-    const all = el('button', { type: 'button', id: 'all', class: 'main', text: 'Download all', disabled: true, onclick: () => tab.download(state.dirs.out, { zip: true, name: `${app.id}.zip` }) });
+    const all = el('button', { type: 'button', id: 'all', class: 'main', text: 'Download all (.zip)', disabled: true, onclick: () => tab.download(state.dirs.out, { zip: true, name: `${app.id}.zip` }) });
     const stop = el('button', { type: 'button', id: 'stop', text: 'Stop', hidden: true, onclick: stopAll });
     const work = el('section', { hidden: true }, el('div', { class: 'row bar' }, status, el('div', { class: 'row' }, stop, all)), rows);
     const accept = m.accept.join(',');
@@ -238,8 +238,8 @@ tfoot td.num { text-align: right; }
       const left = count('waiting') + count('working');
       const done = count('done');
       work.hidden = !state.rows.length;
-      all.disabled = !done || left > 0;
-      all.textContent = done > 1 ? 'Download all (.zip)' : 'Download as a .zip';
+      // One button at a time: Stop while anything is left, then the results as one file (one result has its own Download)
+      all.disabled = all.hidden = done < 2 || left > 0;
       const parts = [`${done} done`, ...['failed', 'stopped', 'skipped'].map((s) => (count(s) ? `${count(s)} ${s}` : ''))].filter(Boolean);
       // (skipped files were never work to do: "3 of 12" counts the files the program gets)
       const total = state.rows.length - count('skipped'), sofar = `${total - left} of ${total}`;
@@ -574,25 +574,24 @@ tfoot td.num { text-align: right; }
     const filter = el('input', { type: 'search', id: filterId, placeholder: 'Filter', oninput: () => { state.filter = filter.value; draw(); } });
     const sortBy = el('select', { id: sortId, onchange: () => { state.sort = +sortBy.value; state.down = false; draw(); } });
     const table = el('table', {}, el('thead'), el('tbody'), el('tfoot'));
-    const kept = `The table is kept on this computer, in ${file.replace(app.home, '~')}.`;
-    const note = el('p', { class: 'note', text: kept });
+    const note = el('p', { class: 'note', text: `The table is kept on this computer, in ${file.replace(app.home, '~')}.` });
     main.append(
       el('div', { class: 'row tools' },
         el('div', { class: 'grow' }, el('label', { for: filterId, text: 'Filter the rows' }), filter),
         el('div', { class: 'sortby' }, el('label', { for: sortId, text: 'Sort by' }), sortBy),
         el('button', { type: 'button', id: 'add', class: 'main', text: 'Add a row', onclick: add }),
         el('button', { type: 'button', id: 'export', text: 'Download CSV', onclick: async () => tab.download(await store.exported(), { name: m.table.replace(/\.[a-z]+$/, '.csv') }) })),
-      el('div', { class: 'scroll' }, table), status, note);
+      // (what an edit did is said above the rows: under a long table nobody would read it)
+      status, el('div', { class: 'scroll' }, table), note);
 
     async function save(said) {
       try {
         const t0 = performance.now();
         await store.write(state.cols.map((c) => c.name), state.rows);
         state.saves++;
-        status.textContent = said || 'Saved.';
         // Every edit writes the whole table. Said only once that is slow enough to feel, with the time it took.
         const s = (performance.now() - t0) / 1000;
-        note.textContent = s < 0.5 ? kept : `${kept} Each change saves all ${state.rows.length.toLocaleString('en')} rows, which took ${s.toFixed(1)} seconds: a table this large is slow to edit here.`;
+        status.textContent = (said || 'Saved.') + (s < 0.5 ? '' : ` Each change saves all ${state.rows.length.toLocaleString('en')} rows, which took ${s.toFixed(1)} seconds: a table this large is slow to edit here.`);
       } catch (e) { status.textContent = `The table could not be saved: ${e.message}`; }
     }
     async function load(said) {

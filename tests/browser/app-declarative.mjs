@@ -2,7 +2,7 @@
 // local server with no Debian: every command used is built in, and GitHub is stood in for.
 //
 //   npx vite build && PORT=6641 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/app-declarative.mjs [URL] [--shots DIR] [--only NAME]
+//   node tests/browser/app-declarative.mjs [URL] [--shots DIR] [--only NAME[,NAME]] [--theme light|dark]
 //
 // Each kind at 1280 px and at a 390 x 844 touch screen:
 //   files   app new → install → open; three files, two with one name and one the program
@@ -10,6 +10,8 @@
 //   form    Run, output as it is written, Stop; a live form (the jq playground example)
 //   table   add, edit, sort, filter, total; a reload finds the data; another program's
 //           change shows; CSV and SQLite
+//   progress  a real program (gawk, from this server's own packages) whose result is its standard
+//           output: what it says on stderr shows while it runs
 //   links   ?app= on the phone is the app, with no Welcome card and a way to the desktop;
 //           the key row shows only for a terminal; a gist with one app.json, asked first
 //   share   the length of each example's link
@@ -25,17 +27,28 @@ const ROOT = resolve(dirname(decodeURIComponent(new URL(import.meta.url).pathnam
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args.splice(i, 2)[1]; };
 const shots = opt('--shots');
-const only = opt('--only');
+const only = opt('--only')?.split(',');
+// The desktop's appearance for the whole run: dark (the default) or light
+const theme = opt('--theme') === 'light' ? 'light' : 'dark';
 const url = args[0] || 'http://localhost:6641/';
 if (shots) mkdirSync(shots, { recursive: true });
 const results = [];
 const times = [];
 const check = (name, ok, detail = '') => { results.push(!!ok); console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`); };
 const time = (name, ms) => { times.push([name, Math.round(ms)]); };
-const wants = (name) => !only || only === name;
+const wants = (name) => !only || only.includes(name);
 const example = (id) => readFileSync(join(ROOT, 'apps/examples', id, 'app.json'), 'utf8');
 
-const browser = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
+// A browser that has run one part's checks is big, and a machine with little memory ends it: each part
+// (each screen of each kind) gets a browser of its own.
+const launch = async () => {
+  const b = await pw.chromium.launch({ executablePath: chromiumPath('/opt/pw-browsers/chromium'), args: ['--no-sandbox'] });
+  b.on('disconnected', () => { if (b === browser && !closing) console.log('the browser went away'); });
+  return b;
+};
+let closing = false;
+let browser = await launch();
+const relaunch = async () => { closing = true; await browser.close().catch(() => {}); closing = false; browser = await launch(); };
 const WIDE = { name: '1280', viewport: { width: 1280, height: 800 } };
 const PHONE = { name: 'phone', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 };
 
@@ -43,12 +56,25 @@ const PHONE = { name: 'phone', viewport: { width: 390, height: 844 }, hasTouch: 
 const GIST = 'abcdef0123456789abcdef0123456789';
 const REV = 'beef'.padEnd(40, '1');
 const GIST_APP = '{\n  "name": "Upper case",\n  "about": "Makes a copy of each text file with every a as a capital A.",\n  "accept": [".txt"],\n  "run": "sed -e s/a/A/g {in}"\n}\n';
+// …and one repository: an app with a page of its own whose app.json names no `entry`
+const COMMIT = 'c0ffee'.padEnd(40, '0');
+const PAGE_APP = {
+  'app.json': '{ "name": "Page app", "about": "A page of its own, with no entry written out." }\n',
+  'public/index.html': '<!doctype html><title>Page app</title><h1 id="own">its own page</h1><script src="/__tabcomputer/tab.js"></script><script>tab.ready.then(() => document.documentElement.setAttribute("data-ready", "1"))</script>',
+};
 const touchPages = new WeakSet();
 async function newTab(device, { welcome = false } = {}) {
   const { name: _n, ...opts } = device;
   const context = await browser.newContext({ ...opts, acceptDownloads: true });
+  await context.route('https://raw.githubusercontent.com/**', (route) => {
+    const file = PAGE_APP[route.request().url().replace(`https://raw.githubusercontent.com/someone/pageapp/${COMMIT}/`, '')];
+    return route.fulfill(file === undefined ? { status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'Not Found' } : { status: 200, contentType: 'text/plain; charset=utf-8', headers: { 'access-control-allow-origin': '*' }, body: file });
+  });
   await context.route('https://api.github.com/**', (route) => {
     const u = route.request().url();
+    const cors = { 'access-control-allow-origin': '*' };
+    if (u === 'https://api.github.com/repos/someone/pageapp/commits/HEAD') return route.fulfill({ status: 200, contentType: 'text/plain', headers: cors, body: COMMIT });
+    if (u === `https://api.github.com/repos/someone/pageapp/git/trees/${COMMIT}?recursive=1`) return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ tree: Object.keys(PAGE_APP).map((path) => ({ path, type: 'blob', mode: '100644', size: PAGE_APP[path].length })) }) });
     if (u !== `https://api.github.com/gists/${GIST}`) return route.fulfill({ status: 404, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: 'Not Found' });
     return route.fulfill({
       status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
@@ -58,7 +84,9 @@ async function newTab(device, { welcome = false } = {}) {
   const page = await context.newPage();
   if (device.hasTouch) touchPages.add(page);
   page.on('pageerror', (e) => console.log('pageerror', e.message));
+  page.on('crash', () => console.log('the page crashed'));
   if (!welcome) await page.addInitScript(() => { try { if (window.top === window) localStorage.setItem('tabcomputer-desktop-welcome', '1'); } catch {} });
+  await page.addInitScript((theme) => { try { if (window.top === window) localStorage.setItem('tabcomputer-desktop-theme', theme); } catch {} }, theme);
   return page;
 }
 const booted = (page) => page.waitForFunction(() => !!window.__tabcomputer?.shell && !sessionStorage.getItem('tabcomputer-boots-unfinished') && !document.querySelector('.sd-booting'), null, { timeout: 90_000 });
@@ -80,14 +108,39 @@ async function inner(page, id) {
 }
 /** A real click on an element of the app's page, by its place on the screen */
 async function clickIn(page, id, f, target) {
+  await f.evaluate((target) => document.querySelector(target).scrollIntoView({ block: 'center' }), target);
+  await page.waitForTimeout(60);
   const frame = await page.evaluate((sel) => { const r = document.querySelector(sel).getBoundingClientRect(); return { x: r.x, y: r.y }; }, FRAME(id));
-  const el = await f.evaluate((target) => { const e = typeof target === 'string' ? document.querySelector(target) : null; e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }, target);
+  const el = await f.evaluate((target) => { const r = document.querySelector(target).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }, target);
   // (a finger where the screen is a touch screen: a file picker opens only for a real tap)
   if (touchPages.has(page)) await page.touchscreen.tap(frame.x + el.x, frame.y + el.y);
   else await page.mouse.click(frame.x + el.x, frame.y + el.y);
 }
 const ready = (page, id, ms = 40_000) => until(page, async () => { const f = await inner(page, id); return (await f?.evaluate(() => document.documentElement.getAttribute('data-ready') === '1')) ? f : null; }, ms);
-const shot = async (page, name) => { if (shots) await page.screenshot({ path: join(shots, `${name}.png`) }); };
+const shot = async (page, name) => { if (shots) { await page.waitForTimeout(450); await page.screenshot({ path: join(shots, `${name}.png`) }); } };
+/** What a prompt says at once (outside its disclosures), its buttons and its disclosures */
+const promptSays = (page, sel = '.tc-app-prompt') => page.evaluate((sel) => {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return {
+    title: el.querySelector('h3')?.textContent ?? '', says: [...el.querySelectorAll(':scope > p')].map((p) => p.innerText.replace(/\s*\n\s*/g, ' ')),
+    buttons: [...el.querySelectorAll('[class$=actions] button')].map((b) => b.textContent), more: [...el.querySelectorAll('summary')].map((x) => x.textContent),
+    box: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }, focus: document.activeElement?.getAttribute('data-act'),
+  };
+}, sel);
+/** The page's modules, for stand-ins (the hot-swap registry): live('src/apps/runtime.ts') */
+const standInPackages = (page, lines, ms = 700) => page.evaluate(async ([lines, ms]) => {
+  const t = window.__tabcomputer;
+  t.live('src/apps/runtime.ts').configureApps({
+    fs: t.fs, shell: t.shell,
+    packages: {
+      installed: async () => ({}),
+      // what the server and apt say while a set of packages is installed, slowly enough to read
+      install: async (_names, onLine) => { for (const l of lines) { onLine(l); await new Promise((r) => setTimeout(r, ms)); } while (window.__holdInstall) await new Promise((r) => setTimeout(r, 100)); return 0; },
+    },
+  });
+}, [lines, ms]);
 const fits = (f) => f.evaluate(() => ({ w: innerWidth, sw: document.documentElement.scrollWidth }));
 /** What a screen reader needs: every control named, a live region, a heading */
 const named = (f) => f.evaluate(() => {
@@ -108,6 +161,7 @@ async function openApp(page, id) {
 
 for (const device of [WIDE, PHONE]) {
   const D = device.name;
+  await relaunch();
   const touch = !!device.hasTouch;
 
   // ── files ──
@@ -127,7 +181,8 @@ for (const device of [WIDE, PHONE]) {
     const origin = await f.evaluate(() => location.origin);
     check(`${D} files: its page is on an origin of its own`, /^http:\/\/app--tidy--[0-9a-f]{16}\./.test(origin), origin);
     const ui = await f.evaluate(() => ({ text: document.body.innerText, pickdir: !!document.getElementById('pickdir'), theme: document.documentElement.dataset.theme }));
-    check(`${D} files: says where the files stay`, /Your files stay on this computer\./.test(ui.text));
+    // (an app from a folder is not one this site reviewed: the page says where the work happens, and promises no more)
+    check(`${D} files: says where the files are worked on`, /Your files are worked on in this tab\./.test(ui.text) && !/stay on this computer/.test(ui.text), ui.text.split('\n').pop());
     if (touch) check('phone files: "Choose files", nothing to drop on, no folder button', /Choose files/.test(ui.text) && !/Drop/.test(ui.text) && !ui.pickdir, ui.text.replace(/\n+/g, ' | ').slice(0, 120));
     else check('1280 files: "Drop files or a folder here", and a folder button', /Drop files or a folder here/.test(ui.text) && ui.pickdir);
     const a11y = await named(f);
@@ -212,6 +267,7 @@ for (const device of [WIDE, PHONE]) {
 
   // ── form ──
   if (wants('form')) {
+    await relaunch();
     const page = await newTab(device);
     await page.goto(url);
     await booted(page);
@@ -228,6 +284,7 @@ for (const device of [WIDE, PHONE]) {
       const ran = await until(page, () => f.evaluate(() => window.__app.code === 0 && window.__app.output === '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n'));
       time(`${D} form: Run to Done (seq 1 1 10)`, Date.now() - t0);
       check(`${D} form: Run fills the command from the fields and shows its output`, ran, await f.evaluate(() => document.querySelector('[role=status]').textContent));
+      check(`${D} form: Stop shows only while the program runs`, await until(page, () => f.evaluate(() => !window.__app.running && document.getElementById('stop').offsetParent === null && document.querySelector('[role=status]').textContent === 'Done.'), 5000));
       await shot(page, `${D}-form`);
       check(`${D} form: nothing scrolls sideways`, await fits(f).then((s) => s.sw <= s.w));
     }
@@ -258,10 +315,17 @@ for (const device of [WIDE, PHONE]) {
       const typed = await until(page, () => f.evaluate(() => (document.querySelector('pre').textContent === '3\n' ? true : null)), 8000);
       time(`${D} form (live): a keystroke to the new result`, Date.now() - t2);
       check(`${D} live: typing runs it again`, typed, await f.evaluate(() => document.querySelector('pre').textContent));
-      await f.evaluate(() => { const i = document.querySelector('input[type=text]'); i.value = '.people['; i.dispatchEvent(new Event('input', { bubbles: true })); });
-      const err = await until(page, () => f.evaluate(() => (/status/.test(document.querySelector('[role=status]').textContent) ? document.querySelector('pre').textContent : null)), 8000);
-      check(`${D} live: a filter jq refuses shows jq's own words`, !!err && err.trim() !== '' && err !== '3\n', JSON.stringify(err).slice(0, 120));
+      // a live form has no Run, no Stop and no "Done.": only the program's own words, when it refuses what was typed
+      const quiet = await f.evaluate(() => ({ run: document.getElementById('run').offsetParent !== null, stop: document.getElementById('stop').offsetParent !== null, status: document.querySelector('[role=status]').textContent, height: document.querySelector('[role=status]').offsetHeight }));
+      check(`${D} live: no Run, no Stop and no "Done." line`, !quiet.run && !quiet.stop && quiet.status === '' && quiet.height === 0, JSON.stringify(quiet));
       await shot(page, `${D}-form-live`);
+      await f.evaluate(() => { const i = document.querySelector('input[type=text]'); i.value = '.people['; i.dispatchEvent(new Event('input', { bubbles: true })); });
+      const err = await until(page, () => f.evaluate(() => { const s = document.querySelector('[role=status]'); return s.textContent ? { said: s.textContent, bad: s.classList.contains('bad'), pre: document.querySelector('pre').textContent, stale: document.querySelector('pre').classList.contains('stale') } : null; }), 8000);
+      check(`${D} live: a filter jq refuses shows jq's own words, and the last result stays, dimmed`, !!err && /^jq: /.test(err.said) && err.bad && err.pre === '3\n' && err.stale, JSON.stringify(err).slice(0, 200));
+      await shot(page, `${D}-form-live-error`);
+      await f.evaluate(() => { const i = document.querySelector('input[type=text]'); i.value = '.people | length'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+      const cleared = await until(page, () => f.evaluate(() => { const s = document.querySelector('[role=status]'); return !s.textContent && !document.querySelector('pre').classList.contains('stale'); }), 8000);
+      check(`${D} live: the words go when the typing is something jq takes`, cleared);
       check(`${D} live: nothing scrolls sideways`, await fits(f).then((s) => s.sw <= s.w));
     }
     await page.context().close();
@@ -269,6 +333,7 @@ for (const device of [WIDE, PHONE]) {
 
   // ── table ──
   if (wants('table')) {
+    await relaunch();
     const page = await newTab(device);
     await page.goto(url);
     await booted(page);
@@ -330,10 +395,11 @@ for (const device of [WIDE, PHONE]) {
     const t3 = Date.now();
     await page.reload();
     await booted(page);
-    if (touch) await side(page, 'app open expenses');
+    // (a phone's desktop brings back the apps that were open, and nothing else)
     f = await ready(page, 'expenses');
+    if (touch) check('phone table: the app\'s window comes back after a reload by itself; a terminal that was open does not', !!f && await page.evaluate(() => window.__tabcomputer.desktop.windows().filter((w) => w.appId === 'terminal').length === 1));
     const back = f ? await until(page, () => f.evaluate(() => (window.__app.rows.length === 4 ? window.__app.rows.map((r) => r[1]).join() : null))) : null;
-    time(`${D} table: a reload to the table with its data${touch ? ' (opened again)' : ' (its window restored)'}`, Date.now() - t3);
+    time(`${D} table: a reload to the table with its data${' (its window restored)'}`, Date.now() - t3);
     check(`${D} table: a reload finds the data`, back === 'Train to Leeds,Lunch, with "Sam",Light bulbs,Stamps', String(back));
 
     if (!touch) {
@@ -360,8 +426,300 @@ for (const device of [WIDE, PHONE]) {
   }
 }
 
+
+// ── what #141 left: the appearance, Stop, progress, streamed output, Share, the placeholder ──
+if (wants('polish')) for (const device of [WIDE, PHONE]) {
+  const D = device.name;
+  await relaunch();
+  const touch = !!device.hasTouch;
+  const page = await newTab(device);
+  await page.goto(url);
+  await booted(page);
+  const BG = theme === 'dark' ? 'rgb(27, 29, 41)' : 'rgb(255, 255, 255)';
+
+  // nothing white in the dark appearance: the frame, the frame's own document, and the page as it is served
+  await side(page, 'cd /home/user && app new tidy && app install tidy');
+  let { f } = await openApp(page, 'tidy');
+  const paint = f ? {
+    frame: await page.evaluate((sel) => getComputedStyle(document.querySelector(sel)).backgroundColor, FRAME('tidy')),
+    around: await page.evaluate((sel) => getComputedStyle(document.querySelector(sel).closest('.tc-app')).backgroundColor, FRAME('tidy')),
+    // (the document of the app's origin that holds the page: it has no background of its own)
+    holder: await (await (await page.$(FRAME('tidy'))).contentFrame()).evaluate(() => getComputedStyle(document.documentElement).backgroundColor + ' / ' + getComputedStyle(document.body).backgroundColor),
+    page: await f.evaluate(() => getComputedStyle(document.documentElement).backgroundColor),
+    served: await f.evaluate(async () => (await (await fetch('/')).text()).match(/<html[^>]*>[\s\S]*?<style>[^<]*<\/style>/)?.[0] ?? ''),
+  } : null;
+  check(`${D} ${theme}: the frame is the page's color before the page paints, and at the window's corners`, !!paint && paint.frame === BG && paint.page === BG && paint.holder === 'rgba(0, 0, 0, 0) / rgba(0, 0, 0, 0)'
+    && paint.served.includes(`data-theme="${theme}"`) && paint.served.includes(`color-scheme: ${theme}`) && (theme === 'light' || paint.around === BG), JSON.stringify(paint));
+
+  // a files run: Stop, the program's last line while a file is worked on, "1 of 3" in the window's title
+  await put(page, { '/home/user/slowfiles/app.json': JSON.stringify({ name: 'Slow files', about: 'Works on each file for a while.', run: 'sh -c \'i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo "page $i of 40" >&2; sleep 0.25; done; cat "$0" > "$1"\' {in} {out}', out: '{name}.txt' }) });
+  await side(page, 'app install /home/user/slowfiles');
+  f = (await openApp(page, 'slowfiles')).f;
+  if (f) {
+    await f.evaluate(async () => {
+      const file = (name) => ({ file: new File(['x'], name), rel: name });
+      window.__app.take(await tab.files.import([file('a.txt'), file('b.txt'), file('c.txt')], { dir: window.__app.dirs.in + '/1' }));
+    });
+    const during = await until(page, () => f.evaluate(() => {
+      const rows = window.__app.rows.map((r) => ({ status: r.status, says: r.li.querySelector('.why')?.textContent ?? '' }));
+      return rows.filter((r) => r.status === 'working' && /^page \d+ of 40$/.test(r.says)).length === 2
+        ? { rows, stop: document.getElementById('stop').offsetParent !== null, status: document.querySelector('[role=status]').textContent, all: document.getElementById('all').offsetParent === null } : null;
+    }), 15_000);
+    check(`${D} files: while a file is worked on its row shows the program's last line, and Stop is there`, !!during && during.stop && during.all && during.status === '0 of 3 done.' && during.rows[2].status === 'waiting', JSON.stringify(during));
+    const title = () => page.evaluate(() => (document.body.classList.contains('become-active') ? document.title : window.__tabcomputer.desktop.windows().find((w) => w.appId === 'slowfiles')?.title));
+    check(`${D} files: the window's title says how far the run is`, await title() === 'Slow files — 0 of 3', String(await title()));
+    await shot(page, `${D}-files-working`);
+    await clickIn(page, 'slowfiles', f, '#stop');
+    const stopped = await until(page, () => f.evaluate(() => (window.__app.rows.every((r) => r.status === 'stopped') ? { status: document.querySelector('[role=status]').textContent, stop: document.getElementById('stop').offsetParent !== null } : null)), 10_000);
+    check(`${D} files: Stop ends the files being worked on and starts no more`, !!stopped && stopped.status === '0 done, 3 stopped.' && !stopped.stop, JSON.stringify(stopped ?? await f.evaluate(() => window.__app.rows.map((r) => r.status))));
+    check(`${D} files: the title is the app's name again`, await until(page, async () => await title() === 'Slow files', 5000), String(await title()));
+    await shot(page, `${D}-files-stopped`);
+  }
+
+  // a result without `out` is named for what it is
+  await put(page, { '/home/user/topdf/app.json': JSON.stringify({ name: 'To PDF', run: 'sh -c \'printf "%%PDF-1.4\\n"; cat "$0"\' {in}' }) });
+  await side(page, 'app install /home/user/topdf');
+  f = (await openApp(page, 'topdf')).f;
+  if (f) {
+    await f.evaluate(async () => { window.__app.take(await tab.files.import([{ file: new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2])], 'p.png'), rel: 'p.png' }], { dir: window.__app.dirs.in + '/1' })); });
+    const named = await until(page, () => f.evaluate(() => (window.__app.rows[0]?.status === 'done' ? { result: window.__app.rows[0].result, said: window.__app.rows[0].li.querySelector('.why')?.textContent, zip: document.getElementById('all').offsetParent !== null, one: !!window.__app.rows[0].li.querySelector('button') } : null)), 15_000);
+    check(`${D} files: without out, a PDF made from p.png is named p.pdf, and the row says so`, named?.result === 'p.pdf' && named.said === 'Saved as p.pdf', JSON.stringify(named));
+    check(`${D} files: one result has its own Download and no zip button`, !!named && named.one && !named.zip, JSON.stringify(named));
+    await shot(page, `${D}-files-named`);
+    // (windows that are done with are closed: each open app is a page of its own, and memory is short here)
+    await side(page, 'app stop tidy; app stop slowfiles; app stop topdf');
+  }
+
+  // markdown and html output: drawn while the program still writes; tables, images, links
+  const DOT = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  await put(page, {
+    '/home/user/report/app.json': JSON.stringify({ name: 'Report', about: 'Writes a report as Markdown.', output: 'markdown', fields: { title: { label: 'Title', value: 'Totals' } },
+      run: `sh -c 'echo "# $0"; echo; echo "| Item | Cost |"; echo "|:-----|-----:|"; echo "| Train | **42.50** |"; echo "| Lunch | 18 |"; sleep 3; echo; echo "![a dot](${DOT}) ![plot](plot.png) ![far](https://example.com/far.png)"; echo; echo "See [the site](https://example.com/page) for more."; sleep 2; echo; echo "- done"' {title}` }),
+    '/home/user/webpage/app.json': JSON.stringify({ name: 'Web page', output: 'html', fields: { who: { label: 'Who', value: 'you' } },
+      run: 'sh -c \'echo "<h1 id=one>Hello $0</h1><script>parent.postMessage(1, String.fromCharCode(42))</script>"; sleep 3; echo "<p id=two>and more</p>"; sleep 2; echo "<p id=three>the end</p>"\' {who}' }),
+  });
+  await page.evaluate(async (b64) => {
+    const fs = window.__tabcomputer.fs;
+    await fs.mkdir('/home/user/.local/share/apps/report', { recursive: true });
+    await fs.writeFile('/home/user/.local/share/apps/report/plot.png', Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+  }, DOT.split(',')[1]);
+  await side(page, 'app install /home/user/report && app install /home/user/webpage');
+  f = (await openApp(page, 'report')).f;
+  if (f) {
+    await clickIn(page, 'report', f, '#run');
+    const early = await until(page, () => f.evaluate(() => (window.__app.running && document.querySelector('.rendered table') ? {
+      heading: document.querySelector('.rendered h2')?.textContent, cells: [...document.querySelectorAll('.rendered td')].map((td) => td.textContent), right: document.querySelectorAll('.rendered td')[1]?.style.textAlign,
+      strong: !!document.querySelector('.rendered td strong'), more: !!document.querySelector('.rendered img'), stop: document.getElementById('stop').offsetParent !== null,
+    } : null)), 10_000);
+    check(`${D} markdown: the output is drawn while the program still writes: a heading and a table`, !!early && early.heading === 'Totals' && early.cells.join() === 'Train,42.50,Lunch,18' && early.right === 'right' && early.strong && !early.more && early.stop, JSON.stringify(early));
+    await shot(page, `${D}-markdown-streaming`);
+    const whole = await until(page, () => f.evaluate(() => (!window.__app.running && window.__app.runs === 1 && [...document.querySelectorAll('.rendered img')].every((i) => i.complete && i.naturalWidth) ? {
+      imgs: [...document.querySelectorAll('.rendered img')].map((i) => [i.alt, i.src.slice(0, 5), i.naturalWidth]), text: document.querySelector('.rendered').innerText.replace(/\s+/g, ' '),
+      links: document.querySelectorAll('.rendered a').length, status: document.querySelector('[role=status]').textContent, scrolls: document.documentElement.scrollWidth > innerWidth,
+    } : null)), 15_000);
+    // (an image written into the output, and one in the app's own data folder, where the command runs; another site's is its words)
+    check(`${D} markdown: images that are data: or the app's own are shown, another site's is its words`, !!whole && JSON.stringify(whole.imgs) === JSON.stringify([['a dot', 'data:', 1], ['plot', 'blob:', 1]]) && / far /.test(whole.text), JSON.stringify(whole?.imgs ?? await f.evaluate(() => [...document.querySelectorAll('.rendered img')].map((i) => [i.alt, i.src.slice(0, 30), i.complete, i.naturalWidth]))));
+    // (this app may not reach other sites: a link is its words and its address, not something to click)
+    check(`${D} markdown: a link is plain text in an app that is kept from other sites`, !!whole && whole.links === 0 && whole.text.includes('See the site (https://example.com/page) for more.') && whole.status === 'Done.' && !whole.scrolls, JSON.stringify(whole && { links: whole.links, text: whole.text.slice(-120) }));
+    await shot(page, `${D}-markdown`);
+  }
+  f = (await openApp(page, 'webpage')).f;
+  if (f) {
+    await f.evaluate(() => addEventListener('message', (e) => { if (e.data === 1) window.__ran = (window.__ran || 0) + 1; }));
+    await clickIn(page, 'webpage', f, '#run');
+    const doc = () => f.evaluate(() => { const fr = document.querySelector('iframe.rendered:not(.next)'); return fr ? { srcdoc: fr.srcdoc, sandbox: fr.getAttribute('sandbox'), frames: document.querySelectorAll('iframe.rendered').length } : null; });
+    const early = await until(page, async () => { const d = await doc(); return d && d.srcdoc.includes('id=one') && !d.srcdoc.includes('id=three') && await f.evaluate(() => window.__app.running) ? d : null; }, 10_000);
+    check(`${D} html: the document shows while the program still writes, in a frame that runs no script`, !!early && early.sandbox === '' && !early.srcdoc.includes('id=three'), JSON.stringify(early && { sandbox: early.sandbox, has: early.srcdoc.slice(0, 40) }));
+    const whole = await until(page, async () => { const d = await doc(); return d && d.srcdoc.includes('id=three') && d.frames === 1 && !(await f.evaluate(() => window.__app.running)) ? d : null; }, 15_000);
+    check(`${D} html: the whole document at the end, one frame, and its script never ran`, !!whole && await f.evaluate(() => !window.__ran), JSON.stringify(whole && { frames: whole.frames }));
+    await shot(page, `${D}-html`);
+    await side(page, 'app stop report; app stop webpage');
+  }
+
+  // Share, from the app's own window (app mode on a phone has it in the bar: below)
+  if (!touch) {
+    await side(page, 'app install examples/expenses');
+    f = (await openApp(page, 'expenses')).f;
+    const btn = await page.evaluate(() => { const w = window.__tabcomputer.desktop.windows().find((x) => x.appId === 'expenses'); const b = w?.element.querySelector('.sd-titlebar .tc-app-tb'); return b ? { label: b.getAttribute('aria-label'), title: b.title } : null; });
+    check('1280 share: the app\'s window has a Share button in its title bar', btn?.label === 'Share Expenses' && btn.title === 'Share', JSON.stringify(btn));
+    await page.click('.sd-win[data-app="expenses"] .tc-app-tb');
+    await page.waitForSelector('.tc-app-share', { timeout: 10_000 }).catch(() => null);
+    const shared = await page.evaluate(() => { const el = document.querySelector('.tc-app-share'); return el ? { title: el.querySelector('h3').textContent, says: [...el.querySelectorAll('p')].map((p) => p.textContent), link: el.querySelector('textarea').value, buttons: [...el.querySelectorAll('button')].map((b) => b.textContent) } : null; });
+    check('1280 share: the screen has the link, Copy, and what a person who opens it gets, as app share says it', !!shared && shared.title === 'Share Expenses' && shared.link === `${new URL(url).origin}/?app=expenses` && shared.buttons.join() === 'Close,Copy link'
+      && shared.says.join(' | ') === 'Each person who opens this link gets their own copy of Expenses, with their own data. Nobody sees your data, and you do not see theirs. | This site ships Expenses, so it installs without a question.', JSON.stringify(shared));
+    const printed = (await side(page, 'app share expenses --print')).o.trim();
+    check('1280 share: it is the link app share prints', shared?.link === printed, printed);
+    await shot(page, `${D}-share`);
+    await page.click('.tc-app-share [data-act=close]');
+    // the same in the menu bar, with Export beside it
+    const menu = await page.evaluate(() => window.__tabcomputer.desktop.apps().find((a) => a.id === 'expenses')?.menus?.().map((m) => [m.title, m.items.map((i) => i.label)]));
+    check('1280 share: the menu bar has the same under App', JSON.stringify(menu) === JSON.stringify([['App', ['Share as a Link…', 'Export with Its Data']]]), JSON.stringify(menu));
+  }
+
+  // the placeholder while what an app needs is installed: its name whole, sentences with the installer's own count
+  const LINES = [
+    'The server is building other programs first: 1 build is ahead of tesseract-ocr.', 'The server is installing package 12 of 71 for tesseract-ocr.',
+    'No ready-made copy of tesseract-ocr (this server keeps none): apt installs it here, which takes a few minutes.',
+    '0 upgraded, 5 newly installed, 0 to remove and 0 not upgraded.', 'Get:1 http://deb.debian.org/debian trixie/main amd64 liblept5 amd64 1.84 [1,027 kB]', 'Get:2 http://deb.debian.org/debian trixie/main amd64 libtesseract5 amd64 5.5 [1,407 kB]',
+    'Selecting previously unselected package liblept5:amd64.', 'Unpacking liblept5:amd64 (1.84) ...', 'Unpacking libtesseract5:amd64 (5.5) ...', 'Setting up liblept5:amd64 (1.84) ...',
+  ];
+  await put(page, {
+    '/home/user/ocr/app.json': JSON.stringify({ name: 'Make a scanned PDF searchable, page by page', about: 'Reads the text on scanned pages.', accept: ['.png'], run: 'tesseract {in} stdout pdf', out: '{name}.pdf', needs: ['tesseract-ocr'] }),
+    '/usr/local/bin/tesseract': '#!/bin/sh\nprintf "%%PDF-1.4\\n"; cat "$1"\n',
+  });
+  await side(page, 'chmod +x /usr/local/bin/tesseract; app list');
+  await standInPackages(page, LINES);
+  await page.evaluate(() => { window.__holdInstall = true; });
+  const seen = [];
+  const reading = (async () => {
+    for (let i = 0; i < 300 && !seen.includes('__over'); i++) {
+      const t = await page.evaluate(() => document.querySelector('#become-container .tc-app-cover:not([hidden])')?.innerText ?? document.querySelector('.sd-launch .sd-launch-stage')?.textContent ?? '').catch(() => '');
+      const said = t.replace(/\s*\n\s*/g, ' ').trim();
+      if (said && seen[seen.length - 1] !== said) seen.push(said);
+      await page.waitForTimeout(120);
+    }
+  })();
+  if (touch) {
+    // an app link on a phone installs what it needs as the app: its name over the sentences, no desktop frame
+    await page.evaluate(async () => {
+      const t = window.__tabcomputer;
+      await t.live('src/apps/install.ts').installDir('/home/user/ocr');
+      const w = t.live('src/apps/window.ts');
+      void w.becomeApp((await w.installedRef('ocr')).ref, { back: true });
+    });
+  } else void side(page, 'app install /home/user/ocr --open');
+  await until(page, async () => seen.some((x) => /Package 1 of 5 is being set up\./.test(x)), 25_000);
+  const holder = await page.evaluate(() => {
+    const name = document.querySelector('.sd-launch-name');
+    const cover = document.querySelector('#become-container .tc-app-cover:not([hidden])');
+    const r = (e) => { const b = e.getBoundingClientRect(); return { w: Math.round(b.width), h: Math.round(b.height), sw: e.scrollWidth, cw: e.clientWidth }; };
+    return { become: document.body.classList.contains('become-active'), placeholders: document.querySelectorAll('.sd-launch-win').length, name: name ? { text: name.textContent, ...r(name) } : null, cover: cover ? { title: cover.querySelector('b')?.textContent, ...r(cover) } : null };
+  });
+  // (the placeholder opens behind the other windows: in front for its picture)
+  if (!touch) await page.evaluate(() => window.__tabcomputer.desktop.windows().find((w) => w.element.classList.contains('sd-launch-win'))?.focus());
+  await shot(page, `${D}-needs-installing`);
+  if (touch) check('phone needs: what it needs is installed as the app, under its whole name, with no desktop frame', holder.become && holder.placeholders === 0 && holder.cover?.title === 'Starting Make a scanned PDF searchable, page by page…' && holder.cover.sw <= holder.cover.cw, JSON.stringify(holder));
+  else check('1280 needs: the placeholder shows the name whole', !!holder.name && holder.name.text === 'Make a scanned PDF searchable, page by page' && holder.name.sw <= holder.name.cw, JSON.stringify(holder.name));
+  await page.evaluate(() => { window.__holdInstall = false; });
+  const opened = await ready(page, 'ocr', 30_000);
+  seen.push('__over');
+  await reading;
+  const said = seen.filter((x) => x !== '__over').map((x) => x.replace(/^Starting Make a scanned PDF searchable, page by page… ?/, '')).filter(Boolean);
+  const want = [
+    'Make a scanned PDF searchable, page by page needs some programs. They are being downloaded. This happens once.',
+    'The server is building other programs first: 1 build is ahead of tesseract-ocr. This build happens once: the next person gets these programs in seconds.',
+    'The server is installing package 12 of 71 for tesseract-ocr. This build happens once: the next person gets these programs in seconds.',
+    'No ready-made copy of tesseract-ocr (this server keeps none): apt installs it here, which takes a few minutes.',
+    'Package 1 of 5 is being downloaded.', 'Package 2 of 5 is being downloaded.', 'Package 1 of 5 is being unpacked.', 'Package 2 of 5 is being unpacked.', 'Package 1 of 5 is being set up.',
+  ];
+  // (a sentence shown for a moment can be missed by the reader here: each one seen must be one of these, in their order)
+  const known = said.filter((x) => want.includes(x));
+  const inOrder = known.map((x) => want.indexOf(x)).every((n, i, a) => i === 0 || n >= a[i - 1]);
+  check(`${D} needs: the sentences are the server's and apt's own, with the count of what is left`, inOrder && known.includes(want[2]) && known.some((x) => /^Package \d of 5 is being /.test(x)) && known.length >= 5, JSON.stringify(said));
+  check(`${D} needs: the app opens when its programs are there`, !!opened);
+  // an app this site did not review says where the work happens; (the site's own files app says the files stay: app-converter.mjs)
+  if (opened) check(`${D} needs: its page says where the files are worked on`, await opened.evaluate(() => document.querySelector('.note').textContent) === 'Your files are worked on in this tab.');
+
+  if (touch) {
+    // app mode: the bar follows the page's appearance, and has Share
+    const bar = await page.evaluate(() => { const b = document.querySelector('.tc-app-back'); const s = getComputedStyle(b); return { bg: s.backgroundColor, color: getComputedStyle(b.querySelector('a')).color, items: [...b.children].map((c) => c.textContent), theme: document.getElementById('become-container').dataset.tcTheme, title: document.title }; });
+    const light = (rgb) => { const [r, g, b] = rgb.match(/\d+/g).map(Number); return (r + g + b) / 3 > 128; };
+    check(`phone ${theme}: the bar above the app follows the page's appearance`, bar.theme === theme && light(bar.bg) === (theme === 'light') && light(bar.color) !== light(bar.bg) && bar.items.join() === '‹ tabcomputer,Share', JSON.stringify(bar));
+    await shot(page, `${D}-app-mode`);
+    await page.tap('.tc-app-back button');
+    await page.waitForSelector('.tc-overlay .tc-app-share', { timeout: 10_000 }).catch(() => null);
+    const shared = await page.evaluate(() => { const el = document.querySelector('.tc-overlay .tc-app-share'); if (!el) return null; const r = el.getBoundingClientRect(); return { title: el.querySelector('h3').textContent, link: el.querySelector('textarea')?.value ?? '', fits: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, theme: el.parentElement.dataset.tcTheme }; });
+    check('phone share: Share in the bar shows the link over the app, in the same appearance', !!shared && shared.title === 'Share Make a scanned PDF searchable, page by page' && /#name=|\?app=link#app=/.test(shared.link) && shared.fits && shared.theme === theme, JSON.stringify(shared));
+    await shot(page, `${D}-share`);
+    await page.tap('.tc-app-share [data-act=close]');
+    await page.goto(`${url}?unbecome`);
+    await booted(page);
+  }
+
+  // a table: no file until the first row; and it says so when saving has become slow
+  await side(page, 'app install examples/expenses; rm -f /home/user/.local/share/apps/expenses/expenses.csv');
+  await side(page, 'app stop expenses');
+  f = (await openApp(page, 'expenses')).f;
+  if (f) {
+    const FILE = '/home/user/.local/share/apps/expenses/expenses.csv';
+    const fresh = { rows: await f.evaluate(() => window.__app.rows.length), file: (await side(page, `ls ${FILE} 2>&1`)).o.trim(), note: await f.evaluate(() => document.querySelector('.note').textContent), mark: await page.evaluate(() => document.querySelector('.sd-win[data-app="expenses"] .tc-app-backup:not([hidden])')?.textContent ?? '') };
+    check(`${D} table: an app that was only opened has no file yet, and nothing to back up`, fresh.rows === 0 && /No such file/.test(fresh.file) && fresh.mark === '' && fresh.note === 'The table is kept on this computer, in ~/.local/share/apps/expenses/expenses.csv.', JSON.stringify(fresh));
+    const sizes = [];
+    for (const n of [1000, 5000, 20_000]) {
+      await page.evaluate(async ([file, n]) => { await window.__tabcomputer.fs.writeFile(file, 'Date,What,Category,Amount,Paid back\n' + Array.from({ length: n }, (_, i) => `2026-10-01,Thing number ${i},Food,${i % 90}.5,\n`).join('')); }, [FILE, n]);
+      const t1 = Date.now();
+      await until(page, () => f.evaluate((n) => window.__app.rows.length === n, n), 120_000);
+      const drawn = Date.now() - t1;
+      const t0 = Date.now();
+      const before = await f.evaluate(() => window.__app.saves);
+      await f.evaluate(() => { const box = document.querySelector('tbody tr input[type=text]'); box.value = 'changed'; box.dispatchEvent(new Event('change', { bubbles: true })); });
+      await until(page, () => f.evaluate((b) => window.__app.saves > b, before), 120_000);
+      sizes.push([n, Date.now() - t0, await f.evaluate(() => document.querySelector('[role=status]').textContent), drawn]);
+    }
+    console.log(`  ${D} table: ${sizes.map(([n, ms, , drawn]) => `${n.toLocaleString('en')} rows: shown in ${drawn} ms, one edit saved in ${ms} ms`).join('; ')}`);
+    time(`${D} table: one edit of 20,000 rows, to saved`, sizes[2][1]);
+    const slow = sizes.find(([, , note]) => / Each change saves all /.test(note));
+    check(`${D} table: the note says the cost of an edit only once it is slow, with the time it took`, sizes[0][2] === 'Saved.' && (!slow || /^Saved\. Each change saves all [\d,]+ rows, which took \d+\.\d seconds: a table this large is slow to edit here\.$/.test(slow[2]))
+      && await f.evaluate(() => { const s = document.querySelector('[role=status]'), t = document.querySelector('table'); return s.getBoundingClientRect().top < t.getBoundingClientRect().top; }), JSON.stringify(sizes.map(([n, ms, said]) => [n, ms, said])));
+    if (slow) await shot(page, `${D}-table-large`);
+    await side(page, `app stop expenses; rm -f ${FILE}`);
+  }
+
+  // an app in a repository whose app.json names no page: the index.html in public/ is its page, as for a gist
+  await page.goto(`${url}?app=gh:someone/pageapp`);
+  await page.waitForSelector('.tc-app-prompt', { timeout: 60_000 }).catch(() => null);
+  const asked = await promptSays(page);
+  check(`${D} gh: an app with its own page and no entry is shown like any app from a repository`, asked?.title === 'Install Page app?' && asked.says[0] === `From github.com/someone/pageapp at commit ${COMMIT.slice(0, 10)}. Not reviewed by tabcomputer.` && asked.buttons.join() === 'Cancel,Install'
+    && asked.says.at(-1) === 'Its page runs on an address of its own: it cannot read this tab\'s files or sign-ins.', JSON.stringify(asked));
+  if (touch) check('phone gh: the prompt fills the screen', asked?.box.left === 0 && asked.box.top === 0 && asked.box.right === device.viewport.width && asked.box.bottom === device.viewport.height, JSON.stringify(asked?.box));
+  await shot(page, `${D}-page-app-prompt`);
+  await page.waitForFunction(() => !document.querySelector('.tc-app-prompt [data-act=install]')?.disabled, null, { timeout: 5000 }).catch(() => {});
+  await page.click('.tc-app-prompt [data-act=install]');
+  const own = await ready(page, 'pageapp', 40_000);
+  check(`${D} gh: Install opens its own page`, !!own && await own.evaluate(() => document.getElementById('own')?.textContent) === 'its own page' && (await side(page, 'cat ~/Apps/pageapp/app.json')).o.includes('"Page app"'), (await side(page, 'ls -R ~/Apps/pageapp 2>&1')).o);
+  await page.context().close();
+}
+
+// ── progress: a real program whose result is its standard output ──
+// gawk, from this server's own packages (no Debian, no other site): what it says on stderr shows
+// while it runs, also when it says one line and then works in silence, as an OCR program does.
+if (wants('progress')) {
+  await relaunch();
+  const page = await newTab(WIDE);
+  await page.goto(url);
+  await booted(page);
+  const got = await side(page, 'pkg install gawk && which gawk');
+  if (got.code !== 0) console.log(`skip progress: gawk did not install from this server: ${got.o.slice(-200)}`);
+  else {
+    const busy = 'for (j = 0; j < 1500000; j++) x = j';
+    const watch = async (id, run) => {
+      await put(page, { [`/home/user/${id}/app.json`]: JSON.stringify({ name: id, run }) });
+      await side(page, `app install /home/user/${id}`);
+      const { f } = await openApp(page, id);
+      if (!f) return null;
+      await f.evaluate(async () => { window.__app.take(await tab.files.import([{ file: new File(['one\ntwo\n'], 'a.txt'), rel: 'a.txt' }], { dir: window.__app.dirs.in + '/1' })); });
+      const dirs = await f.evaluate(() => window.__app.dirs);
+      const seen = [];
+      const t0 = Date.now();
+      for (;;) {
+        const row = await f.evaluate(() => { const r = window.__app.rows[0]; return r ? { status: r.status, says: r.li.querySelector('.why')?.textContent ?? '' } : null; });
+        if (row?.status === 'working' && row.says && seen.at(-1)?.says !== row.says) seen.push({ says: row.says, at: Date.now() - t0 });
+        if ((row && row.status !== 'working' && row.status !== 'waiting') || Date.now() - t0 > 90_000) return { seen, status: row?.status, ms: Date.now() - t0, out: (await side(page, `cat ${dirs.out}/a.txt; ls -A ${dirs.in}`)).o };
+        await page.waitForTimeout(40);
+      }
+    };
+    const steps = await watch('steps', `gawk 'BEGIN { for (i = 1; i <= 6; i++) { print "page " i " of 6" > "/dev/stderr"; ${busy} } } { print }' {in}`);
+    check('1280 progress: a program that writes its result to standard output shows each line it says while it runs', !!steps && steps.status === 'done' && steps.seen.length >= 4 && steps.seen.every((x) => /^page \d of 6$/.test(x.says)) && steps.out === 'one\ntwo\n1\n', JSON.stringify(steps));
+    const once = await watch('once', `gawk 'BEGIN { print "Reading the page" > "/dev/stderr"; for (i = 1; i <= 3; i++) { ${busy} } } { print }' {in}`);
+    check('1280 progress: one line and then silence: the line shows while the program works', !!once && once.status === 'done' && once.seen.length === 1 && once.seen[0].says === 'Reading the page' && once.seen[0].at < once.ms - 1000, JSON.stringify(once));
+    if (steps) time('1280 progress: six steps of a real program, to done', steps.ms);
+  }
+  await page.context().close();
+}
+
 // ── links: the phone, the Welcome card, the key row, a gist ──
 if (wants('links')) {
+  await relaunch();
   // a first visit on a phone, by an app link: the app, not the desktop
   let page = await newTab(PHONE, { welcome: true });
   const t0 = Date.now();
@@ -377,7 +735,7 @@ if (wants('links')) {
   }));
   check('phone link: the tab is the app, at its own address', !!f && mode.become && mode.path === '/jq-playground' && mode.search === '' && mode.title === 'jq playground' && first === '"Ada"\n"Grace"\n', JSON.stringify(mode));
   check('phone link: no Welcome card over the app', !mode.welcome);
-  check('phone link: a small control leads to the desktop', /tabcomputer/.test(mode.back ?? '') && mode.frame?.w === 390 && mode.frame.top <= 40, JSON.stringify(mode.frame));
+  check('phone link: a small control leads to the desktop', /tabcomputer/.test(mode.back ?? '') && mode.frame?.w === 390 && mode.frame.top <= 41, JSON.stringify(mode.frame));
   await shot(page, 'phone-link');
   await page.reload();
   f = await ready(page, 'jq-playground', 60_000);
@@ -430,12 +788,12 @@ if (wants('links')) {
       const el = document.querySelector('.tc-app-prompt');
       if (!el) return null;
       const r = el.getBoundingClientRect();
-      return { text: el.innerText, left: Math.round(r.left), right: Math.round(r.right), sw: el.scrollWidth, cw: el.clientWidth, focus: document.activeElement?.getAttribute('data-act'), installed: !!document.querySelector('iframe[data-app]') };
+      return { text: el.innerText.replace(/\s*\n\s*/g, ' '), left: Math.round(r.left), right: Math.round(r.right), sw: el.scrollWidth, cw: el.clientWidth, focus: document.activeElement?.getAttribute('data-act'), installed: !!document.querySelector('iframe[data-app]') };
     });
     check(`${device.name} gist: asked first, in sentences: where from, the exact command`, !!prompt && !prompt.installed && prompt.focus === 'cancel'
       && prompt.text.includes(`From gist.github.com/${GIST} at revision ${REV.slice(0, 10)}`)
       && prompt.text.includes('Upper case runs this command once for each file you give it: sed -e s/a/A/g {in}')
-      && prompt.text.includes('sed is an ordinary program in this tab'), prompt?.text.replace(/\n+/g, ' | ').slice(0, 300));
+      && prompt.text.includes('sed is an ordinary program in this tab'), prompt?.text.slice(0, 300));
     check(`${device.name} gist: the prompt fits`, !!prompt && prompt.left >= 0 && prompt.right <= device.viewport.width && prompt.sw <= prompt.cw, JSON.stringify(prompt && { left: prompt.left, right: prompt.right, sw: prompt.sw, cw: prompt.cw }));
     await shot(page, `${device.name}-gist-prompt`);
     await page.waitForFunction(() => !document.querySelector('.tc-app-prompt [data-act=install]')?.disabled, null, { timeout: 5000 }).catch(() => {});
@@ -453,6 +811,7 @@ if (wants('links')) {
 
 // ── share: how long each example's link is ──
 if (wants('share')) {
+  await relaunch();
   const page = await newTab(WIDE);
   await page.goto(url);
   await booted(page);
@@ -494,6 +853,7 @@ if (wants('share')) {
 
 // ── 360 px: each kind fits ──
 if (wants('narrow')) {
+  await relaunch();
   const page = await newTab({ name: '360', viewport: { width: 360, height: 740 }, hasTouch: true, isMobile: true });
   await page.goto(url);
   await booted(page);
@@ -508,6 +868,7 @@ if (wants('narrow')) {
   await page.context().close();
 }
 
+closing = true;
 await browser.close();
 console.log('\ntimes (ms):');
 for (const [name, ms] of times) console.log(`  ${String(ms).padStart(6)}  ${name}`);

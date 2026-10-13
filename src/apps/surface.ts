@@ -47,11 +47,11 @@ const CSS = `
 .tc-surface { --sd-text: #e6e6f0; --sd-text-2: #a4a8b8; --sd-window: #1b1d29; --sd-field: rgba(255, 255, 255, .06); --sd-sep: rgba(255, 255, 255, .12); --sd-accent: #6e6aff; }
 .tc-surface[data-tc-theme=light] { --sd-text: #1c1d26; --sd-text-2: #555a6b; --sd-window: #fbfbfd; --sd-field: rgba(0, 0, 0, .045); --sd-sep: rgba(0, 0, 0, .14); }
 .tc-overlay { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center; padding: 12px; background: rgba(0, 0, 0, .5); }
-.tc-overlay > * { width: min(600px, 100%); height: auto; max-height: 100%; border: 1px solid var(--sd-sep); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
-.tc-overlay.tc-full { padding: 0; background: var(--sd-window); }
-.tc-overlay.tc-full > * { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; font-size: 15px;
+.tc-surface.tc-overlay > * { width: min(600px, 100%); height: auto; max-height: 100%; border: 1px solid var(--sd-sep); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.tc-surface.tc-overlay.tc-full { padding: 0; background: var(--sd-window); }
+.tc-surface.tc-overlay.tc-full > * { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; font-size: 15px;
   padding: max(20px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom)); }
-.tc-overlay.tc-full button { min-height: 44px; }
+.tc-surface.tc-overlay.tc-full button { min-height: 44px; }
 `;
 
 /** Give `el` those colors and keep them in step with the appearance. Returns stop. */

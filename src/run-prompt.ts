@@ -36,6 +36,8 @@ const CSS = `
 .tc-run-actions button:focus-visible { outline: 2px solid var(--sd-accent, #6e6aff); outline-offset: 1px; }
 .tc-run-actions button[data-act=run] { background: var(--sd-accent, #6e6aff); border-color: transparent; color: #fff; }
 .tc-run-actions button:disabled { opacity: .5; cursor: default; }
+.tc-full .tc-run-prompt pre { flex: 0 1 auto; min-height: 0; }
+.tc-full .tc-run-actions { margin-top: auto; }
 .tc-full .tc-run-actions button { flex: 1; }
 `;
 

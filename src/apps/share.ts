@@ -224,7 +224,8 @@ export async function shareApp(fs: RegistryFs, app: InstalledApp, origin: string
 const size = (n: number) => (n < 1000 ? `${n} bytes` : n < 1e6 ? `${Math.ceil(n / 1000)} KB` : `${(n / 1e6).toFixed(1)} MB`);
 
 /**
- * What the share screen says, one sentence per fact. The first two are the
+ * What the share screen says, one sentence per fact, the app named once (a
+ * long name five times over is a wall of it). The first two are the
  * promise (own copy, own data, nobody sees another's) and are the same for
  * every app; the rest say what the link is and what opening it does.
  */
@@ -236,13 +237,13 @@ export function shareStatement(s: AppShare): { promise: string[]; details: strin
   const details: string[] = [];
   if (s.kind === 'files') {
     details.push(s.readable
-      ? `The link is ${s.name} itself, written after the #. No server stores it.`
-      : `The link holds ${s.name}'s ${s.files === 1 ? 'file' : `${s.files} files`} (${size(s.bytes ?? 0)}). No server stores ${s.files === 1 ? 'it' : 'them'}.`);
-    details.push(`A later change to ${s.name} does not reach copies already made. Share a new link for that.`);
+      ? 'The link is the app itself, written after the #. No server stores it.'
+      : `The link holds its ${s.files === 1 ? 'file' : `${s.files} files`} (${size(s.bytes ?? 0)}). No server stores ${s.files === 1 ? 'it' : 'them'}.`);
+    details.push('A later change here does not reach copies already made. Share a new link for that.');
   } else if (s.kind === 'gh' || s.kind === 'gist') {
     details.push(`The link names ${s.repo}. Each person gets what that ${s.kind === 'gist' ? 'gist' : 'repository'} holds when they open the link.`);
   } else details.push(`This site ships ${s.name}, so it installs without a question.`);
-  if (s.asks) details.push(`Each person sees what ${s.name} does before it is installed.`);
+  if (s.asks) details.push('Each person sees what it does before it is installed.');
   return { promise, details };
 }
 

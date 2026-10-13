@@ -345,7 +345,7 @@ if (wants('links')) {
       manifest: el.querySelector('pre').textContent, guest: !!el.querySelector('[data-act=guest]'),
     };
   }, P);
-  check('an app from GitHub is shown before anything is installed', shown?.title === 'Install Remote Tool?' && /From github\.com\/someone\/tool at commit c0ffee1111\. tabcomputer has not reviewed it/.test(shown.text), shown?.title);
+  check('an app from GitHub is shown before anything is installed', shown?.title === 'Install Remote Tool?' && /From github\.com\/someone\/tool at commit c0ffee1111\. Not reviewed by tabcomputer\./.test(shown.text), shown?.title);
   check('the prompt says what it runs and may touch, and shows the manifest', !!shown && /node server\.js/.test(shown.text) && /~\/Documents/.test(shown.text) && /its page may reach other sites/.test(shown.text) && /zip/.test(shown.text) && shown.manifest === GH_MANIFEST && /ordinary programs in this tab/.test(shown.text));
   check('Cancel has the focus and Install is off at first', shown?.focus === 'cancel' && shown.installDisabled === true, JSON.stringify({ focus: shown?.focus, disabled: shown?.installDisabled }));
   check('only the commit and the manifest were fetched so far', ghCalls.length === 2 && ghCalls[0].endsWith('/commits/HEAD') && ghCalls[1].endsWith(`/${COMMIT}/app.json`), ghCalls.join(' '));
@@ -397,23 +397,23 @@ if (wants('share')) {
   const made = await side(page, 'cd /home/user && app new sharer --template table --name "Shared Table" && echo "About Shared Table." > sharer/README.txt && app install /home/user/sharer');
   await put(page, { '/home/user/.local/share/apps/sharer/own.csv': 'the,sharer,own,data\n' });
   const said = await side(page, 'app share sharer');
-  const PROMISE = ['Each person who opens this link gets their own copy of Shared Table.', 'Each copy keeps its own data on that person\'s computer.', 'Nothing is shared between the copies. Other people do not see your data, and you do not see theirs.'];
+  const PROMISE = ['Each person who opens this link gets their own copy of Shared Table, with their own data.', 'Nobody sees your data, and you do not see theirs.'];
   check('app share prints the link and what it means', made.code === 0 && said.code === 0 && PROMISE.every((l) => said.o.includes(l)) && /\?app=link#app=[A-Za-z0-9_-]+/.test(said.o), (made.o + said.o).trim().split('\n').pop());
   const S = '.tc-app-share';
   await page.waitForSelector(S, { timeout: 10_000 }).catch(() => null);
   const screen = await page.evaluate((S) => {
     const el = document.querySelector(S);
     if (!el) return null;
-    return { title: el.querySelector('h3').textContent, promise: [...el.querySelectorAll('.tc-app-share-promise li')].map((li) => li.textContent), details: el.querySelector('.tc-app-share-details').textContent, link: el.querySelector('textarea').value };
+    return { title: el.querySelector('h3').textContent, promise: el.querySelector('.tc-app-share-promise').textContent, details: el.querySelector('.tc-app-share-details').textContent, link: el.querySelector('textarea').value };
   }, S);
   const link = screen?.link ?? '';
-  check('the share screen says each person gets their own copy and their own data, nothing shared', screen?.title === 'Share Shared Table as a link' && JSON.stringify(screen.promise) === JSON.stringify(PROMISE)
-    && /does not hold the data you stored in Shared Table/.test(screen.details) && /installs it only when they choose Install/.test(screen.details) && /not stored on a server/.test(screen.details), JSON.stringify(screen?.promise));
+  check('the share screen says each person gets their own copy and their own data, nothing shared', screen?.title === 'Share Shared Table' && screen.promise === PROMISE.join(' ')
+    && /No server stores them\./.test(screen.details) && /Each person sees what it does before it is installed\./.test(screen.details), JSON.stringify(screen?.promise));
   check('the link is this site\'s, with the app after the #', link.startsWith(new URL('/?app=link#app=', url).toString()) && said.o.includes(link), `${link.length} characters`);
   await page.bringToFront();
   await page.click(`${S} [data-act=copy]`);
   const copied = await until(page, () => page.evaluate((S) => document.querySelector(`${S} [role=status]`).textContent || null, S), 5000);
-  check('Copy link says what happened', copied === 'The link is copied.' || /did not allow the copy/.test(copied ?? ''), String(copied));
+  check('Copy link says what happened', copied === 'Copied.' || /did not allow the copy/.test(copied ?? ''), String(copied));
   if (shots) await page.screenshot({ path: join(shots, 'toolkit-share.png') });
 
   // another person: a profile of their own opens the link
@@ -428,7 +428,7 @@ if (wants('share')) {
     const el = document.querySelector(P);
     return el ? { title: el.querySelector('h3')?.textContent, text: el.textContent, focus: document.activeElement?.getAttribute('data-act'), installDisabled: el.querySelector('[data-act=install]').disabled, guest: !!el.querySelector('[data-act=guest]') } : null;
   }, P);
-  check('the link asks first in a profile that never saw the app', shown?.title === 'Install Shared Table?' && /From a link that carries the app's own files \(\d+ files?, \d+ KB\)\. tabcomputer has not reviewed it/.test(shown.text) && shown.focus === 'cancel' && shown.installDisabled === true, shown?.title);
+  check('the link asks first in a profile that never saw the app', shown?.title === 'Install Shared Table?' && /From this link \(\d+ files?, \d+ KB\)\. Not reviewed by tabcomputer\./.test(shown.text) && shown.focus === 'cancel' && shown.installDisabled === true, shown?.title);
   check('the address is cleaned, and the app\'s files went to no server', !/app=/.test(other.url()) && !new URL(other.url()).hash && !requests.some((u) => u.includes(link.split('#app=')[1].slice(0, 40))), other.url());
   if (shots) await other.screenshot({ path: join(shots, 'toolkit-share-prompt.png') });
   await other.waitForTimeout(900);
@@ -445,7 +445,8 @@ if (wants('share')) {
     await other.waitForSelector(P, { timeout: 20_000 }).catch(() => null);
     await other.waitForTimeout(900);
     const popup = other.context().waitForEvent('page', { timeout: 15_000 }).catch(() => null);
-    await other.click(`${P} [data-act=guest]`);
+    await other.evaluate((P) => { document.querySelector(`${P} details`).open = true; }, P);
+    await other.click(`${P} details [data-act=guest]`);
     const g = await popup;
     const inGuest = g && await g.waitForSelector(P, { timeout: 60_000 }).then(() => g.evaluate((P) => document.querySelector(`${P} h3`)?.textContent, P)).catch(() => null);
     check('"Open in a guest" carries the link to a guest, which asks there', !!g && /^guest--/.test(new URL(g.url()).hostname) && inGuest === 'Install Shared Table?' && !await other.evaluate(() => window.__tabcomputer.fs.exists('/home/user/Apps/sharer')), g ? new URL(g.url()).hostname : 'no tab');

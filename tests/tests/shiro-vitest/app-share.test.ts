@@ -197,9 +197,9 @@ describe('app share', () => {
       'Nobody sees your data, and you do not see theirs.',
     ]);
     expect(s.details).toEqual([
-      'The link holds Notes\'s 3 files (3 KB). No server stores them.',
-      'A later change to Notes does not reach copies already made. Share a new link for that.',
-      'Each person sees what Notes does before it is installed.',
+      'The link holds its 3 files (3 KB). No server stores them.',
+      'A later change here does not reach copies already made. Share a new link for that.',
+      'Each person sees what it does before it is installed.',
     ]);
     const site = shareStatement({ id: 'converter', name: 'Convert Old Files', url: 'x', kind: 'site', asks: false });
     expect(site.promise).toHaveLength(2);

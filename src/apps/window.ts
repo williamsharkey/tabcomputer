@@ -51,6 +51,7 @@ const CSS = `
 #become-container.tc-app-mode { display: flex; flex-direction: column; background: var(--sd-window); }
 #become-container.tc-app-mode iframe { flex: 1; min-height: 0; height: auto !important; }
 #become-container .tc-app-cover { position: fixed; background: var(--sd-window); }
+#become-container.tc-app-backed .tc-app-cover { top: 41px; }
 .tc-app-back { flex: none; display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 6px; background: var(--sd-window); border-bottom: 1px solid var(--sd-sep); }
 .tc-app-back a, .tc-app-back button { display: inline-flex; align-items: center; min-height: 40px; padding: 0 10px; font: 13px/1 system-ui, sans-serif; color: var(--sd-text-2); text-decoration: none; background: none; border: 0; border-radius: 6px; cursor: pointer; }
 .tc-app-back a:focus-visible, .tc-app-back button:focus-visible { outline: 2px solid var(--sd-accent); outline-offset: -2px; }
@@ -465,6 +466,8 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
   const cover = makeCover();
   // The bar, the cover and the frame's edge follow the appearance the page has
   container.classList.add('tc-app-mode');
+  // (with the bar, what covers the page while it starts leaves the bar and its way back in sight)
+  container.classList.toggle('tc-app-backed', !!opts.back);
   const offTheme = surface(container);
   if (opts.back) {
     const bar = document.createElement('nav');
@@ -492,7 +495,7 @@ export async function becomeApp(ref: AppRef, opts: { back?: boolean } = {}): Pro
     reload: () => frame?.reload(),
   };
   const offBackend = { off: () => {} };
-  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); offTheme(); backup?.dispose(); container!.classList.remove('tc-app-mode', 'tc-surface'); frame?.dispose(); inst.detach(view); };
+  (container as { _navCleanup?: () => void })._navCleanup = () => { offBackend.off(); offTheme(); backup?.dispose(); container!.classList.remove('tc-app-mode', 'tc-app-backed', 'tc-surface'); frame?.dispose(); inst.detach(view); };
   // (the tab's title is the app's window title: a files run puts "3 of 12" there)
   inst.window = { setTitle: (t) => { document.title = t || m.name; }, resize: () => {}, close: () => {} };
   try {

@@ -292,7 +292,8 @@ describe('Python Runtime', () => {
       // (the one place that names it: src/python/pyodide-dist.ts)
       const { PYODIDE_CDN, pyodideIndexURL } = await import('@shiro/python/pyodide-dist');
       expect(PYODIDE_CDN).toContain('cdn.jsdelivr.net/pyodide');
-      expect(pyodideIndexURL()).toBe(PYODIDE_CDN);
+      // (a site without the route: src/python/pyodide-dist.ts asks, pyodide-mirror.test.ts has the rest)
+      expect(await pyodideIndexURL(async () => new Response('Not found', { status: 404 }))).toBe(PYODIDE_CDN);
     });
 
     it('should redirect stdout/stderr through StringIO', async () => {

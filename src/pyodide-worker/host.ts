@@ -24,8 +24,10 @@ export { setPyodideWorkerFactory, pyodideWorkerMode } from './boot';
 function createWorker(): GuestWorker {
   const factory = pyodideWorkerFactory();
   const w = factory ? factory() : webWorker(new Worker(new URL('./guest-entry.ts', import.meta.url), { type: 'module', name: 'pyodide' }));
-  // (it starts loading Pyodide now, before any program is given to it)
-  w.postMessage({ type: 'pyodide-boot', indexURL: pyodideIndexURL() });
+  // (it starts loading Pyodide now, before any program is given to it. The page's first
+  // use asks this site whether it has the distribution, so the place can arrive after
+  // the program: the worker waits for it)
+  void pyodideIndexURL().then((indexURL) => { try { w.postMessage({ type: 'pyodide-boot', indexURL }); } catch { /* terminated */ } });
   return w;
 }
 
@@ -73,8 +75,9 @@ function takeWorker(): GuestWorker {
  */
 export function warmPyodide(files: string[] = []): void {
   if (!pyodideWorkerMode() || typeof fetch !== 'function') return;
-  const base = pyodideIndexURL();
-  for (const f of new Set(files)) void fetch(base + f).then((r) => r.arrayBuffer()).catch(() => {});
+  void pyodideIndexURL().then((base) => {
+    for (const f of new Set(files)) void fetch(base + f).then((r) => r.arrayBuffer()).catch(() => {});
+  });
   prepareSpare();
 }
 

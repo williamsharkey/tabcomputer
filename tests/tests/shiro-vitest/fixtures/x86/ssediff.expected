@@ -1,0 +1,378 @@
+addps xmm a1782e9267f616b3
+addps mem a1782e9267f616b3
+subps xmm 7cf15145b3c204d2
+subps mem 7cf15145b3c204d2
+mulps xmm 6b0ed49213e1ecd8
+mulps mem 6b0ed49213e1ecd8
+divps xmm 2d59a1857dabed53
+divps mem 2d59a1857dabed53
+minps xmm e9eab0ffbb456390
+minps mem e9eab0ffbb456390
+maxps xmm 70b35ab4b6c3e739
+maxps mem 70b35ab4b6c3e739
+sqrtps xmm f7d5d65c0d9f1ad4
+sqrtps mem f7d5d65c0d9f1ad4
+andps xmm 6d9174bbd3293612
+andps mem 6d9174bbd3293612
+andnps xmm 106be1b9426297d4
+andnps mem 106be1b9426297d4
+orps xmm b5469fa11a7de1d0
+orps mem b5469fa11a7de1d0
+xorps xmm c6e77ad9fbad6457
+xorps mem c6e77ad9fbad6457
+unpcklps xmm 105731b72dcad42f
+unpcklps mem 105731b72dcad42f
+unpckhps xmm 068ed4529f747fad
+unpckhps mem 068ed4529f747fad
+movaps xmm b38e0265211c0747
+movups xmm b38e0265211c0747
+movups mem b38e0265211c0747
+movhlps xmm c0240ba56d6d728d
+movlhps xmm 89179e8866886177
+addss xmm 9ac1643a6459df6a
+addss mem 9ac1643a6459df6a
+subss xmm 86521da75ff1a0e9
+subss mem 86521da75ff1a0e9
+mulss xmm 8096e5c37418a4df
+mulss mem 8096e5c37418a4df
+divss xmm f7621003f12263b2
+divss mem f7621003f12263b2
+minss xmm baaffb3208cf4ec8
+minss mem baaffb3208cf4ec8
+maxss xmm 09533fe543a4ab45
+maxss mem 09533fe543a4ab45
+sqrtss xmm 2fab27d196d18e93
+sqrtss mem 2fab27d196d18e93
+movss xmm 09533fe543a4ab45
+movss mem bb3ae072488d3d33
+cvtss2sd xmm b127dbca19bdc6e5
+cvtss2sd mem b127dbca19bdc6e5
+cvtps2pd xmm e06efa6f7dfc307b
+cvtps2pd mem e06efa6f7dfc307b
+cvtdq2ps xmm 7c6eac0dae174544
+cvtdq2ps mem 7c6eac0dae174544
+cvtps2dq xmm b02523bc219204cb
+cvtps2dq mem b02523bc219204cb
+cvttps2dq xmm 464b20b5b047ef68
+cvttps2dq mem 464b20b5b047ef68
+movlps mem 0b998115dd3c6cdf
+movhps mem 89179e8866886177
+cmpps 0 d34f278bd71198e1
+cmpps 1 3f00e24852a80571
+cmpps 2 71fadfd0d1e534ad
+cmpps 3 8476e87d21b0107d
+cmpps 4 2bf142f2b8f7bfa9
+cmpps 5 1e4ead9306474319
+cmpps 6 1c15f29cc75c67dd
+cmpps 7 ecf8ba4df2b94e0d
+cmpss 1 aaf81ee3699ee117
+cmpss 3 ed27cab5f2307f87
+cmpss 6 ed27cab5f2307f87
+shufps 0x1b b685b8c5595bcaef
+shufps 0xe4 08d50e57f6895375
+shufps 0x4e b0f04b654ad52d03
+addpd xmm c4f1fce4883a98f3
+addpd mem c4f1fce4883a98f3
+subpd xmm 0005d90fa2be5f82
+subpd mem 0005d90fa2be5f82
+mulpd xmm 89858840aaf3bf04
+mulpd mem 89858840aaf3bf04
+divpd xmm 8688782400bc265b
+divpd mem 8688782400bc265b
+minpd xmm 9aa92c38a6c7c857
+minpd mem 9aa92c38a6c7c857
+maxpd xmm 6dbec036aa015090
+maxpd mem 6dbec036aa015090
+sqrtpd xmm e8b1727697dbcf29
+sqrtpd mem e8b1727697dbcf29
+andpd xmm 6d9174bbd3293612
+andpd mem 6d9174bbd3293612
+andnpd xmm 106be1b9426297d4
+andnpd mem 106be1b9426297d4
+orpd xmm b5469fa11a7de1d0
+orpd mem b5469fa11a7de1d0
+xorpd xmm c6e77ad9fbad6457
+xorpd mem c6e77ad9fbad6457
+unpcklpd xmm 89179e8866886177
+unpcklpd mem 89179e8866886177
+unpckhpd xmm 4097147bb60c2e95
+unpckhpd mem 4097147bb60c2e95
+movapd xmm b38e0265211c0747
+movupd xmm b38e0265211c0747
+movupd mem b38e0265211c0747
+addsd xmm 20d028abfe6e2bc4
+addsd mem 20d028abfe6e2bc4
+subsd xmm 516c86f452425463
+subsd mem 516c86f452425463
+mulsd xmm 8bc0f7bd8d039cd0
+mulsd mem 8bc0f7bd8d039cd0
+divsd xmm 2881a669a9e901f4
+divsd mem 2881a669a9e901f4
+minsd xmm 0381081b2e4bd41b
+minsd mem 0381081b2e4bd41b
+maxsd xmm 0789aaa53441e075
+maxsd mem 0789aaa53441e075
+sqrtsd xmm f87b8b6aa22a7de8
+sqrtsd mem f87b8b6aa22a7de8
+movsd xmm 0b998115dd3c6cdf
+movsd mem 06fb4a9d2b7be9b0
+cvtsd2ss xmm 1f94c3c378c694a1
+cvtsd2ss mem 1f94c3c378c694a1
+cvtpd2ps xmm c5ea1ca2997d61ab
+cvtpd2ps mem c5ea1ca2997d61ab
+cvtdq2pd xmm 3a61e1dc68057900
+cvtdq2pd mem 3a61e1dc68057900
+cvtpd2dq xmm 71a4e95f45d51cf3
+cvtpd2dq mem 71a4e95f45d51cf3
+cvttpd2dq xmm d35b88c5df2ca6d5
+cvttpd2dq mem d35b88c5df2ca6d5
+movlpd mem 0b998115dd3c6cdf
+movhpd mem 89179e8866886177
+cmppd 0 a332f6309fe1961d
+cmppd 1 1dd9201f9ae82a35
+cmppd 2 df53b58f5a4920ad
+cmppd 3 d58f2dc1d89a140d
+cmppd 4 9ee2431f90853a6d
+cmppd 5 a657971cf22f2255
+cmppd 6 c71fb9b55141c9dd
+cmppd 7 9bba1ca81b8c587d
+cmpsd 0 9bbc73e3740bee1e
+cmpsd 2 c2b1dfb4c1e92abe
+cmpsd 5 5f383e2353c57526
+shufpd 1 b0f04b654ad52d03
+shufpd 2 08d50e57f6895375
+movdqa xmm b38e0265211c0747
+movdqu xmm b38e0265211c0747
+movdqu mem b38e0265211c0747
+movq xmm 06fb4a9d2b7be9b0
+movq mem 06fb4a9d2b7be9b0
+paddb xmm c3964af9a6917b91
+paddb mem c3964af9a6917b91
+paddw xmm 12cfa27ea6ee07bd
+paddw mem 12cfa27ea6ee07bd
+paddd xmm 4d8d58786f69b78f
+paddd mem 4d8d58786f69b78f
+paddq xmm e590a9ef22c3e51e
+paddq mem e590a9ef22c3e51e
+paddsb xmm 4079c35b2772b103
+paddsb mem 4079c35b2772b103
+paddsw xmm 46a347d51b8c4a6b
+paddsw mem 46a347d51b8c4a6b
+paddusb xmm 121264d46a85b888
+paddusb mem 121264d46a85b888
+paddusw xmm beadc5430f9f97c9
+paddusw mem beadc5430f9f97c9
+psubb xmm 94e99f332bc300ed
+psubb mem 94e99f332bc300ed
+psubw xmm 80402837bd0a3076
+psubw mem 80402837bd0a3076
+psubd xmm afc3aa70628e00d1
+psubd mem afc3aa70628e00d1
+psubq xmm a713078960d0f0f3
+psubq mem a713078960d0f0f3
+psubsb xmm 20213c079c0bfe7b
+psubsb mem 20213c079c0bfe7b
+psubsw xmm 8ee6afd29551a8e0
+psubsw mem 8ee6afd29551a8e0
+psubusb xmm e1e11cec452c1803
+psubusb mem e1e11cec452c1803
+psubusw xmm c6aad25d06fa4cb9
+psubusw mem c6aad25d06fa4cb9
+pmullw xmm 28918a7af968ade8
+pmullw mem 28918a7af968ade8
+pmulhw xmm 5e27c008abfb8ba5
+pmulhw mem 5e27c008abfb8ba5
+pmulhuw xmm 6edd2cf9748e847c
+pmulhuw mem 6edd2cf9748e847c
+pmuludq xmm 50c567216e3f5463
+pmuludq mem 50c567216e3f5463
+pmaddwd xmm 91ede6938e542381
+pmaddwd mem 91ede6938e542381
+pand xmm 6d9174bbd3293612
+pand mem 6d9174bbd3293612
+pandn xmm 106be1b9426297d4
+pandn mem 106be1b9426297d4
+por xmm b5469fa11a7de1d0
+por mem b5469fa11a7de1d0
+pxor xmm c6e77ad9fbad6457
+pxor mem c6e77ad9fbad6457
+pcmpeqb xmm b617fff2e639cd66
+pcmpeqb mem b617fff2e639cd66
+pcmpeqw xmm 4b3d6d63b2943f8f
+pcmpeqw mem 4b3d6d63b2943f8f
+pcmpeqd xmm bc6d19bcffa23161
+pcmpeqd mem bc6d19bcffa23161
+pcmpgtb xmm 8e87454db6d6a89d
+pcmpgtb mem 8e87454db6d6a89d
+pcmpgtw xmm 265ed5337401468d
+pcmpgtw mem 265ed5337401468d
+pcmpgtd xmm 666a446e931e4411
+pcmpgtd mem 666a446e931e4411
+pminub xmm 376769088d60bfd9
+pminub mem 376769088d60bfd9
+pmaxub xmm 3b72021b7c303753
+pmaxub mem 3b72021b7c303753
+pminsw xmm 520a3e882f9b6123
+pminsw mem 520a3e882f9b6123
+pmaxsw xmm ffaef8f510c6f90d
+pmaxsw mem ffaef8f510c6f90d
+pavgb xmm f3539d038bf9a6dc
+pavgb mem f3539d038bf9a6dc
+pavgw xmm 4f69f18d3b195bc2
+pavgw mem 4f69f18d3b195bc2
+psadbw xmm 9a11b05189deab62
+psadbw mem 9a11b05189deab62
+packsswb xmm 71286ca347c98669
+packsswb mem 71286ca347c98669
+packssdw xmm 5f4ea2e4ab03aeaf
+packssdw mem 5f4ea2e4ab03aeaf
+packuswb xmm fbfba0a8b4867db9
+packuswb mem fbfba0a8b4867db9
+punpcklbw xmm 615f401c82343de9
+punpcklbw mem 615f401c82343de9
+punpcklwd xmm f500db3bf569ab3b
+punpcklwd mem f500db3bf569ab3b
+punpckldq xmm 105731b72dcad42f
+punpckldq mem 105731b72dcad42f
+punpcklqdq xmm 89179e8866886177
+punpcklqdq mem 89179e8866886177
+punpckhbw xmm 358978f53323e5b9
+punpckhbw mem 358978f53323e5b9
+punpckhwd xmm 015584d77e5d22d5
+punpckhwd mem 015584d77e5d22d5
+punpckhdq xmm 068ed4529f747fad
+punpckhdq mem 068ed4529f747fad
+punpckhqdq xmm 4097147bb60c2e95
+punpckhqdq mem 4097147bb60c2e95
+psllw xmm 49d401b379460665
+psllw mem 49d401b379460665
+pslld xmm ae72f40b6ac75071
+pslld mem ae72f40b6ac75071
+psllq xmm 0a53e01c012cbfdd
+psllq mem 0a53e01c012cbfdd
+psrlw xmm a03a986f99eeb0ed
+psrlw mem a03a986f99eeb0ed
+psrld xmm ad3e8d0f64fdb72d
+psrld mem ad3e8d0f64fdb72d
+psrlq xmm c12bc81cf22e2308
+psrlq mem c12bc81cf22e2308
+psraw xmm 80cae5fef09fd1d1
+psraw mem 80cae5fef09fd1d1
+psrad xmm 271d54e956d42a05
+psrad mem 271d54e956d42a05
+pshufd 0x1b 204e786f8e2c18d3
+pshufd 0x4e b905ffdc09943fc3
+pshuflw 0x1b 578d549df2bb9d13
+pshuflw 0x93 84d65dbd38e883f7
+pshufhw 0x1b 64dab134252884e7
+pshufhw 0x93 8229b7148cce05bb
+psllw imm 0 3fd47bf0cde228ad
+psllw imm 5 ff25de763fac9a43
+psllw imm 15 2e65f93b4b9a2525
+psllw imm 16 66e368127e9e89a5
+pslld imm 7 bbc94fa8c23832cb
+pslld imm 31 47700f965af0cea5
+pslld imm 32 66e368127e9e89a5
+psllq imm 9 822597a0b2a57e52
+psllq imm 63 3dc119db87b9b025
+psllq imm 64 66e368127e9e89a5
+psrlw imm 5 1cb7dba43bfdbf60
+psrlw imm 16 66e368127e9e89a5
+psrld imm 7 34096f2515a04dfc
+psrld imm 32 66e368127e9e89a5
+psrlq imm 9 4cafbfb9621c971d
+psrlq imm 64 66e368127e9e89a5
+psraw imm 5 f6923a3cfb490f00
+psraw imm 15 8523698491d08bb1
+psraw imm 16 8523698491d08bb1
+psrad imm 7 c069353d29822370
+psrad imm 31 81738fe2a4ad6955
+psrad imm 32 81738fe2a4ad6955
+pslldq imm 0 3fd47bf0cde228ad
+pslldq imm 3 ccf6994fe047de5c
+pslldq imm 15 266e0270802cc765
+pslldq imm 16 66e368127e9e89a5
+psrldq imm 3 8b9cd9e765f96702
+psrldq imm 15 1bfc7a7c43a804ea
+psrldq imm 16 66e368127e9e89a5
+addsubps xmm 6380c56fbf41b92d
+addsubps mem 6380c56fbf41b92d
+addsubpd xmm b46f01877e127264
+addsubpd mem b46f01877e127264
+haddps xmm 258b0eddcd1ef719
+haddps mem 258b0eddcd1ef719
+haddpd xmm f72ea881cd5b1965
+haddpd mem f72ea881cd5b1965
+hsubps xmm 3e9bf7ca22df06c7
+hsubps mem 3e9bf7ca22df06c7
+hsubpd xmm 53de0ee9fadc6fb6
+hsubpd mem 53de0ee9fadc6fb6
+movsldup xmm 63f949d758c6f095
+movsldup mem 63f949d758c6f095
+movshdup xmm 2d8961884ba19d01
+movshdup mem 2d8961884ba19d01
+movddup xmm e672a24abcfcac01
+movddup mem e672a24abcfcac01
+lddqu mem b38e0265211c0747
+pshufb xmm 552c9902776e0f0f
+pshufb mem 552c9902776e0f0f
+phaddw xmm 39465a73a4c465e9
+phaddw mem 39465a73a4c465e9
+phaddd xmm d38151de3f594941
+phaddd mem d38151de3f594941
+phaddsw xmm a3890a0f0817d055
+phaddsw mem a3890a0f0817d055
+phsubw xmm 4bb2af80fcd61739
+phsubw mem 4bb2af80fcd61739
+phsubd xmm 961a9fe967956ef0
+phsubd mem 961a9fe967956ef0
+phsubsw xmm 276f1abee6d6de07
+phsubsw mem 276f1abee6d6de07
+pmaddubsw xmm 219332672d4e147a
+pmaddubsw mem 219332672d4e147a
+pmulhrsw xmm f28d177aa16c4b9c
+pmulhrsw mem f28d177aa16c4b9c
+psignb xmm 92f70a9ac8410dd6
+psignb mem 92f70a9ac8410dd6
+psignw xmm df3ed56accda3f4e
+psignw mem df3ed56accda3f4e
+psignd xmm 38cd371dacc91f84
+psignd mem 38cd371dacc91f84
+pabsb xmm e785422bbc61de21
+pabsb mem e785422bbc61de21
+pabsw xmm 3786742b9c4b4058
+pabsw mem 3786742b9c4b4058
+pabsd xmm 15f31f73c55ca0fb
+pabsd mem 15f31f73c55ca0fb
+palignr 0 b38e0265211c0747
+palignr 5 9e89815cc189ee61
+palignr 16 3fd47bf0cde228ad
+palignr 21 7a225ddff7921d0c
+palignr 32 66e368127e9e89a5
+cvtsd2si to r32 2f538891598b2c34
+cvtsd2si to r64 995888cceb632734
+cvttsd2si to r32 91f62e18e9f4ba2e
+cvttsd2si to r64 fe570f2ee1cce52e
+cvtss2si to r32 abfbd096acc69f2b
+cvtss2si to r64 abfbd096acc69f2b
+cvttss2si to r32 abfbd096acc69f2b
+cvttss2si to r64 abfbd096acc69f2b
+movd to r32 cbbb0080c3b32f8f
+movq to r64 ab74843470d53658
+pmovmskb to r32 2db0d144a3b1acaa
+movmskps to r32 2aa03c2eb317b8a6
+movmskpd to r32 3502d54071ffe4b2
+cvtsi2sd from r32 1190472531c3a8e1
+cvtsi2sdq from r64 7ee4d7a337d2f48d
+cvtsi2ss from r32 2af64480bf1432e0
+cvtsi2ssq from r64 0987fda9bc933d99
+movd from r32 bb3ae072488d3d33
+movq from r64 06fb4a9d2b7be9b0
+comisd flags 8e2ab6c9d9e69419
+ucomisd flags 8e2ab6c9d9e69419
+comiss flags cb625d379323be0d
+ucomiss flags cb625d379323be0d
+pextrw 3 560a4f6177833150
+pextrw 6 0e87808a11a256b0
+pinsrw 2 490ef8911e2f98fb
+pinsrw 7 a3a5397adbaa4eef

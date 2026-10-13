@@ -1,0 +1,67 @@
+From 8ad76807e197eaa31ea586f7f02a950257209ae0 Mon Sep 17 00:00:00 2001
+From: shiro <build@shiro>
+Date: Tue, 13 Oct 2026 08:03:42 -0400
+Subject: [PATCH] Shiro: cvttpd2dq truncates and cvtpd2dq rounds (they were
+ each other's); they and cvtpd2ps zero the upper half
+
+66 0F E6 (cvttpd2dq) ran the rounding conversion and F2 0F E6 (cvtpd2dq)
+the truncating one. cvttpd2dq is what a compiler emits for (int)x on two
+doubles at a time, so a vectorized cast rounded to nearest: 0.75 became 1,
+3.5 became 4. All three packed conversions from doubles (those two and
+cvtpd2ps) also left the destination's upper 64 bits as they were; they are
+zeroed.
+
+Found by fixtures/x86/ssediff.c: a checksum per SSE/SSE2/SSE3/SSSE3
+instruction form over operands with special values, compared with the same
+program on Rosetta (tabcomputer#150's wider check). 364 of 378 forms agreed
+before this patch; the other differences are the sign of a NaN that an
+operation makes (add, div, sqrt), which is the host CPU's: negative on x86,
+positive on ARM.
+---
+ blink/cvt.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/blink/cvt.c b/blink/cvt.c
+index 0000000..0000000 100644
+--- a/blink/cvt.c
++++ b/blink/cvt.c
+@@ -286,6 +286,7 @@ static void OpVpsWpdCvtpd2ps(P) {
+   }
+   Put32(XmmRexrReg(m, rde) + 0, f[0].i);
+   Put32(XmmRexrReg(m, rde) + 4, f[1].i);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // (the upper half is zeroed)
+ }
+ 
+ static void OpVssWsdCvtsd2ss(P) {
+@@ -398,6 +399,7 @@ static void OpVdqWpdCvttpd2dq(P) {
+   n[1] = SseI32(d[1].f);
+   Put32(XmmRexrReg(m, rde) + 0, n[0]);
+   Put32(XmmRexrReg(m, rde) + 4, n[1]);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // (the upper half is zeroed)
+ }
+ 
+ static void OpVdqWpdCvtpd2dq(P) {
+@@ -411,6 +413,7 @@ static void OpVdqWpdCvtpd2dq(P) {
+   for (i = 0; i < 2; ++i) n[i] = SseI32(SseRoundDouble(m, d[i].f));
+   Put32(XmmRexrReg(m, rde) + 0, n[0]);
+   Put32(XmmRexrReg(m, rde) + 4, n[1]);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // (the upper half is zeroed)
+ }
+ 
+ static void OpCvt(P, unsigned long op) {
+@@ -473,11 +476,13 @@ static void OpCvt(P, unsigned long op) {
+     case kOpCvt0f5b + 3:
+       OpVdqWpsCvttps2dq(A);
+       break;
++    // 66 0F E6 is cvttpd2dq (truncate) and F2 0F E6 cvtpd2dq (round as
++    // MXCSR says): they were each other's, so a vectorized (int)x rounded
+     case kOpCvt0fE6 + 1:
+-      OpVdqWpdCvtpd2dq(A);
++      OpVdqWpdCvttpd2dq(A);
+       break;
+     case kOpCvt0fE6 + 2:
+-      OpVdqWpdCvttpd2dq(A);
++      OpVdqWpdCvtpd2dq(A);
+       break;
+     case kOpCvt0fE6 + 3:
+       OpVpdWdqCvtdq2pd(A);

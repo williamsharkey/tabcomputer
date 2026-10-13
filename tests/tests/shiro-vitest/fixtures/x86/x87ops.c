@@ -95,6 +95,8 @@ static void regforms(void) {
   void m_##g##_##r(const double *, double *, const void *) __asm__("x87m_" #g "_" #r); \
   __asm__(".text\n.globl x87m_" #g "_" #r "\nx87m_" #g "_" #r ":\nfninit\nfldl (%rdi)\n" \
           ".byte 0x" #g ", (" #r "<<3)|2\nfstpl (%rsi)\nret\n");
+void s_fsqrt_neg(const double *, double *) __asm__("x87s_fsqrt_neg");
+__asm__(".text\n.globl x87s_fsqrt_neg\nx87s_fsqrt_neg:\nfninit\nfldl (%rdi)\nfsqrt\nfstpl (%rsi)\nret\n");
 #define MEM_OPS(g) MEMFN(g, 0) MEMFN(g, 1) MEMFN(g, 4) MEMFN(g, 5) MEMFN(g, 6) MEMFN(g, 7)
 MEM_OPS(D8)
 MEM_OPS(DC)
@@ -128,6 +130,28 @@ static void memforms(void) {
         if (!same(got, want)) fail("memory form", t->g, t->r << 3, 0, got, want);
       }
     }
+  }
+  // infinities, zeros and NaNs (a double operand): IEEE's answers; an invalid
+  // operation gives the x87's "real indefinite", a negative NaN
+  {
+    static const double sp[] = {INFINITY, -INFINITY, 0.0, -0.0, 1, -2, NAN};
+    for (unsigned c = 0; c < sizeof(kMem) / sizeof(kMem[0]); ++c) {
+      const struct MemCase *t = &kMem[c];
+      if (t->g != 0xDC) continue;
+      for (unsigned a = 0; a < 7; ++a) {
+        for (unsigned b = 0; b < 7; ++b) {
+          double x = sp[a], y = sp[b], got = 0, want;
+          want = t->r == 0 ? x + y : t->r == 1 ? x * y : t->r == 4 ? x - y : t->r == 5 ? y - x : t->r == 6 ? x / y : y / x;
+          t->fn(&x, &got, &y);
+          if (isnan(want) ? !isnan(got) || (!isnan(x) && !isnan(y) && !signbit(got)) : !same(got, want)) {
+            if (bad++ < 40) printf("memory form dc /%d with st0 = %g and %g: %s%g, expected %s%g\n", t->r, x, y, signbit(got) ? "-" : "+", fabs(got), isnan(want) ? "-" : signbit(want) ? "-" : "+", fabs(want));
+          }
+        }
+      }
+    }
+    double in = -4, got = 0;
+    s_fsqrt_neg(&in, &got);
+    if ((!isnan(got) || !signbit(got)) && bad++ < 40) printf("fsqrt(-4) = %g with sign %d, expected a negative NaN\n", got, signbit(got));
   }
   printf("memory forms: %s\n", bad == before ? "ok" : "WRONG");
 }

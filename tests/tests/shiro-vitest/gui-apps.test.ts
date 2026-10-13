@@ -250,3 +250,96 @@ describe('GUI apps: the GL environment (docs/research/GL.md)', () => {
     }
   });
 });
+
+describe('GUI apps: package file times and kept overlays (GIMP\'s first-start caches)', () => {
+  const enc = new TextEncoder();
+  /** One tar member (ustar header + data, padded) */
+  const tarFile = (path: string, text: string, mtime: number): Uint8Array => {
+    const data = enc.encode(text);
+    const h = new Uint8Array(512 + Math.ceil(data.length / 512) * 512);
+    const put = (s: string, off: number) => h.set(enc.encode(s), off);
+    put(path, 0); put('0000755\0', 100); put(data.length.toString(8).padStart(11, '0') + '\0', 124);
+    put(mtime.toString(8).padStart(11, '0') + '\0', 136); put('0', 156); put('ustar\0', 257);
+    h.set(data, 512);
+    return h;
+  };
+  /** A .deb with an uncompressed data.tar */
+  const deb = (tar: Uint8Array): Uint8Array => {
+    const member = (name: string, data: Uint8Array) => {
+      const head = enc.encode(`${name.padEnd(16)}${'0'.padEnd(12)}${'0'.padEnd(6)}${'0'.padEnd(6)}${'100644'.padEnd(8)}${String(data.length).padEnd(10)}\`\n`);
+      const out = new Uint8Array(head.length + data.length + (data.length & 1));
+      out.set(head); out.set(data, head.length);
+      return out;
+    };
+    const parts = [enc.encode('!<arch>\n'), member('debian-binary', enc.encode('2.0\n')), member('data.tar', tar)];
+    const out = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  };
+  const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+
+  it('unpacks files with their package\'s times, and writes a kept overlay only where no file is', async () => {
+    const { fs } = await createTestShell();
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { configureGuiApps, installApp } = await import('@shiro/gui/apps');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    const mtime = 1_700_000_000; // the .deb's, not the install's
+    const tar = new Uint8Array([...tarFile('./usr/lib/timedemo/plug-in', 'x', mtime), ...new Uint8Array(1024)]);
+    const pkg = deb(tar);
+    const registry = enc.encode('(plug-in-def "plug-in" 1700000000)\n');
+    const blobs: Record<string, Uint8Array> = { [sha(pkg)]: pkg, [sha(registry)]: registry };
+    configureGuiApps({
+      manifest: {
+        suite: 'test', arch: 'amd64', mirror: '', snapshot: '',
+        packages: { timedemo: { version: '1.0', filename: 'pool/main/t/timedemo/timedemo_1.0_amd64.deb', sha256: sha(pkg), size: pkg.length } },
+        overlays: [{ path: '/home/user/.config/timedemo/registry', sha256: sha(registry), size: registry.length, when: 'timedemo', keep: true }],
+        apps: { timedemo: { description: 'demo', toolkit: 'x11', bin: '/usr/lib/timedemo/plug-in', packages: ['timedemo'], size: 0, closureSize: 0, dropped: [] } },
+      },
+      fetchDeb: async (p) => blobs[p.sha256],
+    });
+    try {
+      await fs.rm('/var/lib/shiro-gui/status.json').catch(() => {}); // test shells share one filesystem
+      await fs.rm('/home/user/.config/timedemo', { recursive: true }).catch(() => {});
+      await installApp(fs, kernel, 'timedemo');
+      expect(Math.floor((await fs.stat('/usr/lib/timedemo/plug-in')).mtime.getTime() / 1000)).toBe(mtime);
+      expect(await fs.readFile('/home/user/.config/timedemo/registry', 'utf8')).toBe('(plug-in-def "plug-in" 1700000000)\n');
+      // the user's own file stays when the package is installed again
+      await fs.writeFile('/home/user/.config/timedemo/registry', 'mine\n');
+      await fs.rm('/var/lib/shiro-gui/status.json');
+      await installApp(fs, kernel, 'timedemo');
+      expect(await fs.readFile('/home/user/.config/timedemo/registry', 'utf8')).toBe('mine\n');
+    } finally {
+      configureGuiApps({ manifest: null, fetchDeb: null });
+    }
+  });
+});
+
+describe('GUI apps: quitting (#118)', () => {
+  it('leaves no zombie: the page reaps the app it started', async () => {
+    const { fs } = await createTestShell();
+    const { Kernel } = await import('@shiro/kernel/kernel');
+    const { configureGuiApps, launchApp } = await import('@shiro/gui/apps');
+    const kernel = new Kernel({ fs, registerWithProcessTable: false });
+    // a stand-in program: runs until told to quit
+    let quit: (() => void) | undefined;
+    kernel.addLoader((path) => (path === '/usr/bin/fakeapp' ? async () => { await new Promise<void>((r) => { quit = r; }); return 0; } : null));
+    configureGuiApps({
+      manifest: {
+        suite: 'test', arch: 'amd64', mirror: '', snapshot: '', packages: {},
+        apps: { fakeapp: { description: 'demo', toolkit: 'x11', bin: '/usr/bin/fakeapp', packages: [], size: 0, closureSize: 0, dropped: [] } },
+      },
+    });
+    try {
+      const app = await launchApp(kernel, 'fakeapp');
+      for (let i = 0; i < 100 && !quit; i++) await new Promise((r) => setTimeout(r, 10));
+      expect(kernel.procs.get(app.pid)?.state).toBe('running');
+      quit!();
+      expect(await app.exited).toBe(0);
+      // not a zombie waiting for the kernel's 30-second sweep of init's children
+      expect(kernel.procs.has(app.pid)).toBe(false);
+    } finally {
+      configureGuiApps({ manifest: null });
+    }
+  });
+});

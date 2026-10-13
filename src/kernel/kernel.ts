@@ -107,6 +107,11 @@ export interface SpawnOptions {
   run?: Runner;
   /** User id of the child (`sudo`: 0). Default: the parent's. */
   uid?: number;
+  /**
+   * The pid to give it, when no process has it (else the next one, as usual):
+   * a process restored from a snapshot holds the pid it had (src/gui/snapshot.ts).
+   */
+  pid?: number;
 }
 
 export interface WaitResult {
@@ -576,7 +581,7 @@ export class Kernel {
 
   spawn(opts: SpawnOptions): Process {
     const parent = opts.parent ?? this.init;
-    const pid = this.allocPid();
+    const pid = opts.pid !== undefined && !this.procs.has(opts.pid) && processTable.takePid(opts.pid) ? opts.pid : this.allocPid();
     let fds: FdTable;
     if (opts.fds && !opts.inheritFds) {
       fds = new FdTable();
@@ -612,6 +617,7 @@ export class Kernel {
       for (const sig of parent.sigmask) proc.sigmask.add(sig);
     }
     for (const sig of opts.sigdefault ?? []) proc.dispositions.delete(sig);
+    if (parent.data.openLog) proc.data.openLog = parent.data.openLog;
     this.procs.set(pid, proc);
     const cpu = parent.data.cpuLimit as { cur: number; max: number } | undefined;
     if (cpu) this.setCpuLimit(proc, cpu.cur, cpu.max);
@@ -1242,6 +1248,9 @@ export class Kernel {
     }
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
+    // (proc.data.openLog: the paths a process opens or looks for, for whoever set it: a GUI app's snapshot is
+    // good while those files are what they were)
+    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     // O_TMPFILE: an unnamed regular file in directory `p` (linkat names it)
     if (flags & A.__O_TMPFILE) {
@@ -1403,6 +1412,7 @@ export class Kernel {
     const p = this.resolvePath(proc, path, dirfd);
     if (typeof p === 'number') return p;
     if (this.devices.has(p) || /^\/(?:dev|proc)\//.test(p)) return undefined;
+    if (proc.data.openLog) (proc.data.openLog as Set<string>).add(p);
     if (this.searchDenied(proc, p)) return -A.EACCES;
     const statusFlags = flags & ~(A.O_CREAT | A.O_EXCL | A.O_TRUNC | A.O_CLOEXEC | A.O_NOCTTY | A.O_DIRECTORY | A.O_NOFOLLOW);
     if (flags & (A.O_CREAT | A.O_TRUNC | A.O_NOFOLLOW)) {
@@ -3621,6 +3631,7 @@ export class Kernel {
     copyCredentials(parent, child);
     this.shm.forked(parent, child);
     this.sem.forked(parent, child);
+    if (parent.data.openLog) child.data.openLog = parent.data.openLog; // (a GUI app's snapshot: its children's files count too)
     child.data.embryo = true;
     child.data.forkParent = parent.pid; // startForkChild: the parent may have exited (and the child been reparented) by then
     this.procs.set(pid, child);

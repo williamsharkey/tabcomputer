@@ -14,6 +14,7 @@
  */
 import type { FileSystem } from '../filesystem';
 import type { Kernel } from '../kernel/kernel';
+import type { Process } from '../kernel/process';
 import { untar, type TarEntry } from '../pkg-tar';
 import { debEntriesOffThread } from './deb';
 import { toolkitScaleEnv } from './display-scale';
@@ -41,7 +42,11 @@ export interface GuiApp {
  * A file a postinst would generate, built by gen-apps.py (public/gui/overlay/SHA256), applied when `when` is
  * installed; with `tar`, a tar archive unpacked at `path` (e.g. symlinks).
  */
-export interface Overlay { path: string; sha256: string; size: number; when: string; tar?: boolean }
+export interface Overlay {
+  path: string; sha256: string; size: number; when: string; tar?: boolean;
+  /** Written only when nothing is at `path` yet (a file in the user's home: GIMP's plug-in registry) */
+  keep?: boolean;
+}
 export interface AppsManifest {
   suite: string; arch: string; mirror: string; snapshot: string;
   overlays?: Overlay[];
@@ -161,7 +166,7 @@ async function installWithApt(fs: FileSystem, kernel: Kernel, name: string, app:
     };
     const argv = cmd.split(' ');
     const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: appEnv({ DEBIAN_FRONTEND: 'noninteractive' }), fds: { 0: new BufferFile(''), 1: out, 2: out } });
-    const st = await p.wait();
+    const st = await exitOf(kernel, p);
     if (pending.trim()) log(pending.trim());
     return st;
   };
@@ -229,7 +234,9 @@ async function unpack(fs: FileSystem, entries: TarEntry[], ownBins: Set<string>)
       try { await fs.unlink(path); } catch { /* none */ }
       await fs.symlink(e.linkname, path).catch(() => {});
     } else {
-      await fs.writeFile(path, e.data, { mode: e.mode & 0o7777 });
+      // with the package's file time, as dpkg does (GIMP asks a plug-in again when its time isn't the one in
+      // pluginrc, and the registry that ships with it was made from these times)
+      await fs.writeFile(path, e.data, { mode: e.mode & 0o7777, times: e.mtime ? { mtime: e.mtime * 1000 } : undefined });
     }
     files++;
   }
@@ -303,11 +310,22 @@ async function runTriggers(fs: FileSystem, kernel: Kernel, which: Set<number>, l
   }));
 }
 
+/**
+ * A process's wait status, with the process reaped. What the page starts is a
+ * child of init, which nothing waits for: a quit app stayed in the process
+ * table as a zombie (`ps`, Activity) until the kernel's 30-second sweep (#118).
+ */
+export async function exitOf(kernel: Kernel, p: { pid: number; wait(): Promise<number> }): Promise<number> {
+  const st = await p.wait();
+  await kernel.waitpid(p.pid, 1 /* WNOHANG */).catch(() => undefined);
+  return st;
+}
+
 async function runQuiet(kernel: Kernel, argv: string[], env: Record<string, string>): Promise<number> {
   const { BufferFile } = await import('../kernel/fd');
   const out = new BufferFile(null);
   const p = kernel.spawn({ path: argv[0], argv, cwd: '/', env: { ...appEnv(), ...env }, fds: { 0: new BufferFile(''), 1: out, 2: out } });
-  return p.wait();
+  return exitOf(kernel, p);
 }
 
 /** Environment GUI apps start with. */
@@ -398,15 +416,18 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
     while (next < want.length && ready.size < 16) {
       const n = want[next++];
       ready.set(n, getDeb(m.packages[n], cache).then(async ({ data, cached }) => {
+        const size = data.length; // (the decoder takes the buffer)
         const entries = await debEntriesOffThread(data);
         readyBytes += m.packages[n].size;
         report('fetch', n);
-        return { size: data.length, cached, entries };
+        return { size, cached, entries };
       }));
     }
   };
   startMore();
-  const overlays = (m.overlays ?? []).filter((o) => want.includes(o.when)).map((o) => [o, getBlob(o.sha256, o.size, `gui/overlay/${o.sha256}`, cache, fetchOverride ? () => fetchOverride!({ version: '', filename: `gui/overlay/${o.sha256}`, sha256: o.sha256, size: o.size }) : null)] as const);
+  // (__guiNoKeptOverlays: scripts/gui/make-pluginrc.mjs wants GIMP to write its registry itself)
+  const noKept = !!(globalThis as { __guiNoKeptOverlays?: boolean }).__guiNoKeptOverlays;
+  const overlays = (m.overlays ?? []).filter((o) => want.includes(o.when) && !(o.keep && noKept)).map((o) => [o, getBlob(o.sha256, o.size, `gui/overlay/${o.sha256}`, cache, fetchOverride ? () => fetchOverride!({ version: '', filename: `gui/overlay/${o.sha256}`, sha256: o.sha256, size: o.size }) : null)] as const);
   for (const [, blob] of overlays) blob.catch(() => {}); // awaited after the packages
   for (const n of want) {
     const tw = Date.now();
@@ -434,6 +455,7 @@ async function doInstall(fs: FileSystem, kernel: Kernel, name: string, onProgres
   for (const [o, blob] of overlays) {
     const { data } = await blob;
     if (o.tar) { await unpack(fs, untar(data), ownBins); continue; }
+    if (o.keep && (await fs.exists(o.path).catch(() => false))) continue;
     await fs.mkdir(o.path.slice(0, o.path.lastIndexOf('/')), { recursive: true }).catch(() => {});
     await fs.writeFile(o.path, data);
   }
@@ -495,7 +517,7 @@ async function startSessionBus(kernel: Kernel, bin: string): Promise<string | nu
     env: appEnv(), fds: { 0: new BufferFile(''), 1: new BufferFile(null), 2: new BufferFile(null) },
   });
   let exited = false;
-  void p.wait().then(() => { exited = true; buses.delete(kernel); });
+  void exitOf(kernel, p).then(() => { exited = true; buses.delete(kernel); });
   for (let t = 0; t < 15000 && !exited; t += 100) {
     if (await fs.exists(sock).catch(() => false)) return SESSION_BUS;
     await new Promise((r) => setTimeout(r, 100));
@@ -558,6 +580,60 @@ async function shipLib(fs: FileSystem, name: string, path: string): Promise<bool
 
 export interface LaunchedApp { pid: number; exited: Promise<number>; output: () => string }
 
+type SnapshotModule = typeof import('./snapshot');
+
+/** The snapshots setting (src/gui/snapshot.ts snapshotsEnabled), read here so that the module loads only when it is on */
+export function snapshotsOn(): boolean {
+  try { return (globalThis as { localStorage?: Storage }).localStorage?.getItem('tabcomputer-gui-snapshots') === '1'; } catch { return false; }
+}
+
+/**
+ * Apps started without the session bus while snapshots are on. An app that
+ * holds a bus connection can't be snapshotted (the daemon keeps its side of
+ * it: docs/research/GUI_SNAPSHOTS.md), and these work without one: they use
+ * the bus to hand a second invocation's files to the running instance.
+ */
+const SNAPSHOT_WITHOUT_BUS = new Set(['gimp', 'inkscape', 'mousepad', 'featherpad']);
+
+/**
+ * Whether this launch can use snapshots, and with what: the stored one when it
+ * is still good (a stale one is dropped), the key a new one would get, and
+ * the X client number the app's snapshots use.
+ */
+async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: GuiApp, argv: string[], env: Record<string, string>): Promise<{ S: SnapshotModule; key: string; index: number | null; stored: import('./snapshot').StoredSnapshot | null } | null> {
+  const fs = kernel.fs as FileSystem | undefined;
+  if (!fs || typeof indexedDB === 'undefined') return null;
+  try {
+    if (!snapshotsOn() || await debianMode(fs)) return null;
+    const S = await import('./snapshot');
+    const { getXSession } = await import('../x11/session');
+    const { server } = await getXSession(0);
+    const { FIRST_RESERVED_CLIENT, LAST_CLIENT } = await import('../x11/server');
+    const key = S.snapshotKey({
+      app: name, argv, env, packages: app.packages.map((n) => `${n}=${m.packages[n]?.version ?? ''}`),
+      screen: [server.width, server.height, server.dpi], textMode: `${server.domText}/${server.domTextRaster}`,
+    });
+    const index = S.clientNumberFor(name, FIRST_RESERVED_CLIENT, LAST_CLIENT);
+    let stored = index !== null && !server.clients.has(index) ? await S.loadSnapshot(name) : null;
+    if (stored) {
+      const problem = await S.snapshotProblem(fs, stored, key);
+      if (problem) { snapshotLog(name, { restored: false, why: problem }); await S.dropSnapshot(name); stored = null; }
+    }
+    // (another instance is running with the app's client number: this one starts the usual way, unrecorded)
+    return { S, key, index: index !== null && !server.clients.has(index) ? index : null, stored };
+  } catch (e) {
+    snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
+    return null;
+  }
+}
+
+/** What snapshots did, newest last (`window.__guiSnapshots`: tests and the benchmark read it) */
+function snapshotLog(app: string, what: Record<string, unknown>): void {
+  const g = globalThis as { __guiSnapshots?: Record<string, unknown>[] };
+  (g.__guiSnapshots ??= []).push({ app, at: Date.now(), ...what });
+  if (g.__guiSnapshots.length > 50) g.__guiSnapshots.shift();
+}
+
 /** Start an installed app as a background kernel process. */
 export async function launchApp(kernel: Kernel, name: string, args: string[] = [], env: Record<string, string> = {}, opts: { onOutput?: (text: string) => void } = {}): Promise<LaunchedApp> {
   const m = await guiManifest();
@@ -570,21 +646,61 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   if (instance !== name) ids.appIdAliases.set(instance, name);
   ids.setParentPid((pid) => kernel.procs.get(pid)?.ppid);
   if (app.home) await writeHomeDefaults(kernel, app.home);
-  const bus = await sessionBus(kernel, m);
+  // Xlib keeps its parsed Compose table in ~/.compose-cache when that directory exists; without it every
+  // Xlib, Xt and FLTK app parses the locale's Compose file at each start (a quarter to a third of xterm's
+  // and Dillo's launch: docs/GUI_LAUNCH.md)
+  await (kernel.fs as FileSystem | undefined)?.mkdir('/home/user/.compose-cache', { recursive: true }).catch(() => {});
+  const withoutBus = SNAPSHOT_WITHOUT_BUS.has(name) && args.length === 0 && snapshotsOn();
+  const bus = withoutBus ? null : await sessionBus(kernel, m);
   if (bus) env = { DBUS_SESSION_BUS_ADDRESS: bus, ...env };
+  // Measurements (tests/browser/gui-launch-bench.mjs): variables for this page's launches, e.g. the engine's profile
+  env = { ...env, ...((globalThis as { __guiLaunchEnv?: Record<string, string> }).__guiLaunchEnv ?? {}) };
   const out = new BufferFile(null);
   if (opts.onOutput) {
     const dec = new TextDecoder();
     out.onData = (d) => { try { opts.onOutput!(dec.decode(d, { stream: true })); } catch { /* a listener's problem */ } };
   }
-  const p = kernel.spawn({
-    // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
-    // oosplash finds soffice.bin next to argv[0])
-    path: app.bin, argv: [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args], cwd: '/home/user',
-    env: appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env }), fds: { 0: new BufferFile(''), 1: out, 2: out },
-  });
-  ids.pidAppIds.set(p.pid, name);
-  const launched = { pid: p.pid, exited: p.wait().finally(() => ids.pidAppIds.delete(p.pid)), output: () => out.text() };
+  // argv[0]: the name for programs on the PATH, the full path for the others (LibreOffice's
+  // oosplash finds soffice.bin next to argv[0])
+  const argv = [/^\/usr\/(local\/)?s?bin\//.test(app.bin) ? app.bin.split('/').pop()! : app.bin, ...(app.args ?? []), ...args];
+  const fullEnv = appEnv({ ...toolkitEnv(app), ...(await textHookEnv(kernel, app)), ...(await glEnv(kernel, app)), ...env });
+  const cwd = '/home/user';
+  // Snapshots (experimental, off by default: src/gui/snapshot.ts): a plain start of the app is
+  // restored from the image its last start left, when nothing it was made from has changed
+  const plan = args.length === 0 ? await snapshotPlan(kernel, m, name, app, argv, fullEnv) : null;
+  let p: Process | null = null;
+  const restoredPids: number[] = [];
+  if (plan?.stored) {
+    const t0 = Date.now();
+    try {
+      // (its windows name the pid it had then)
+      if (!kernel.procs.has(plan.stored.meta.procs[0].pid) && !ids.pidAppIds.has(plan.stored.meta.procs[0].pid)) { ids.pidAppIds.set(plan.stored.meta.procs[0].pid, name); restoredPids.push(plan.stored.meta.procs[0].pid); }
+      const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
+      p = r.proc;
+      snapshotLog(name, { restored: true, ms: Date.now() - t0, x: r.ms.x, image: r.ms.image, bytes: plan.stored.meta.sizes, pid: p.pid, samePid: p.pid === plan.stored.meta.procs[0].pid });
+      // An image that doesn't run (it ends within seconds, and not by a clean exit) is not tried again
+      const S = plan.S;
+      void p.wait().then((st) => { if (st !== 0 && Date.now() - t0 < 5000) { snapshotLog(name, { restored: false, why: `the restored process ended at once (${st})` }); void S.dropSnapshot(name); } });
+    } catch (e) {
+      for (const pid of restoredPids.splice(0)) ids.pidAppIds.delete(pid);
+      snapshotLog(name, { restored: false, why: String((e as Error)?.message ?? e) });
+      await plan.S.dropSnapshot(name);
+    }
+  }
+  if (!p) {
+    p = kernel.spawn({ path: app.bin, argv, cwd, env: fullEnv, fds: { 0: new BufferFile(''), 1: out, 2: out } });
+    if (plan && plan.index !== null) {
+      // its first start: keep its X requests and the files it opens, and its image once it is up and quiet
+      const proc = p;
+      proc.data.openLog = new Set<string>();
+      const { recordXClient } = await import('../x11/display');
+      const watch = plan.S.snapshotWhenQuiet(kernel, name, proc, recordXClient(proc.pid, plan.index), plan.key, { argv, env: fullEnv, cwd, output: out });
+      void watch.done.then((r) => { delete proc.data.openLog; snapshotLog(name, r.ok ? { taken: true, ms: r.ms, bytes: r.meta?.sizes } : { taken: false, why: r.why }); });
+    }
+  }
+  const pid = p.pid;
+  ids.pidAppIds.set(pid, name);
+  const launched = { pid, exited: exitOf(kernel, p).finally(() => { ids.pidAppIds.delete(pid); for (const old of restoredPids) ids.pidAppIds.delete(old); }), output: () => out.text() };
   (globalThis as { __guiLast?: LaunchedApp }).__guiLast = launched;
   return launched;
 }

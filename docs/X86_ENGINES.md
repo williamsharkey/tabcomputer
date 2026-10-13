@@ -1077,6 +1077,28 @@ decoded on most visits; 4096 entries (patch 0022, 160 KB per thread) cut
    0 (pthread_kill(self, 0) read hands[-1]).
 0504. unix/conformance's: setting another user's process's scheduling is
    EPERM, as kill(pid, 0) says; reading it isn't.
+0551. unix/gui-launch-speed's: a checkpoint of the whole process, every
+   thread, for a restore in a later page load (snapshots of started GUI
+   apps: [research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md)).
+   `blink_shiro_checkpoint()` is called by the worker's own thread (host.mjs,
+   on the page's `blink-checkpoint`), takes the GIL and writes the image:
+   patch 0014's fork snapshot of the main thread (read through a scratch
+   `Machine`), one record per guest thread (registers, SSE and x87 state,
+   FS/GS base, signal mask, tid) and a tail. A thread waiting in a system
+   call that only waits (poll, select, epoll_wait, a futex wait, a sleep)
+   is recorded on its `syscall` instruction with the call's number back in
+   rax, so the restored thread runs the call again; a thread between two
+   instructions goes on at its rip; a thread anywhere else means no
+   checkpoint now (-1: the page asks again). A process with fork children
+   in its instance or a writable shared mapping can't be (-2).
+   `ShiroRestore` starts the image's other threads after the main one, each
+   on a new `Machine` with its old tid. `Machine` gains `shiro_inkernel`
+   (kernel calls in progress of any kind: a page fault reading its file is
+   mid-instruction) and `shiro_sysax` (rax as the outermost system call
+   began: waits store -EINTR in rax while they wait). A process not asked
+   for a checkpoint pays two counter updates per kernel call and one store
+   per system call. Test: `tests/browser/gui-snapshot.mjs` (xeyes, one
+   thread; Geany, four).
 
    fork+exit+wait with 16 MiB of dirty heap went from 30 to 7.5 ms, and
    with 64 MiB from 104 to 12 ms (native: 3.1 ms). Test:

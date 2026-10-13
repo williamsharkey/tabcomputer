@@ -10,6 +10,8 @@ export interface TarEntry {
   mode: number;
   data: Uint8Array;
   linkname: string;
+  /** The entry's modification time, in seconds (0: the archive gives none) */
+  mtime?: number;
 }
 
 const dec = new TextDecoder();
@@ -56,14 +58,15 @@ export function untar(bytes: Uint8Array): TarEntry[] {
     path = path.replace(/^\.\//, '').replace(/\/+$/, '');
     if (!path || path === '.') continue;
     const mode = octal(h, 100, 8) & 0o7777;
+    const mtime = octal(h, 136, 12);
     let e: TarEntry | null = null;
     if (typeflag === '5') e = { path, type: 'dir', mode, data: new Uint8Array(0), linkname: '' };
     else if (typeflag === '2') e = { path, type: 'symlink', mode, data: new Uint8Array(0), linkname };
     else if (typeflag === '1') {
       const target = byPath.get(linkname.replace(/^\.\//, ''));
-      if (target) e = { path, type: 'file', mode: target.mode, data: target.data, linkname: '' };
+      if (target) e = { path, type: 'file', mode: target.mode, data: target.data, linkname: '', mtime: target.mtime };
     } else if (typeflag === '0' || typeflag === '7' || typeflag === '\0') {
-      e = { path, type: 'file', mode, data: body.slice(), linkname: '' };
+      e = { path, type: 'file', mode, data: body.slice(), linkname: '', mtime };
     }
     if (e) { out.push(e); byPath.set(path, e); }
   }

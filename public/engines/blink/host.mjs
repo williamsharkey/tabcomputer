@@ -717,6 +717,25 @@ async function run(msg) {
       // The kernel signalled us: any syscall reply carries the signal word.
       if (m.pid) void call(SYS.getpid, [], m.pid, new Uint8Array(0), 0);
       else sys(SYS.getpid);
+    } else if (m.type === 'blink-checkpoint') {
+      // The page asks for the process's image (src/gui/snapshot.ts, Blink
+      // patch 0551): every page, every thread's registers. rc 0: taken;
+      // -1: a thread is mid-call, ask again; -2: this process can't be
+      const B = blinkModule;
+      let rc = -2, why = 'this engine has no checkpoint', snapshot = null;
+      if (B?._blink_shiro_checkpoint) {
+        rc = B._blink_shiro_checkpoint();
+        const at = B._blink_shiro_checkpoint_why();
+        let end = at;
+        while (B.HEAPU8[end]) end++;
+        why = dec.decode(B.HEAPU8.slice(at, end));
+        if (rc === 0) {
+          const p = B._blink_shiro_checkpoint_data(), n = B._blink_shiro_checkpoint_size();
+          snapshot = B.HEAPU8.slice(p, p + n).buffer;
+        }
+        B._blink_shiro_checkpoint_free();
+      }
+      port.postMessage({ type: 'blink-checkpointed', id: m.id, rc, why, snapshot }, snapshot ? [snapshot] : []);
     } else if (m.type === 'blink-reap') {
       // a hosted child's process ended in the kernel (killed): end its System
       if (hosted.delete(m.pid)) blinkModule?._blink_shiro_signal_pid?.(m.pid, 9);

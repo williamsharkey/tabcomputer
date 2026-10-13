@@ -201,7 +201,9 @@ describe('X11 protocol', () => {
     const wid = c.id(1);
     createWindow(c, wid, 0, 0, 10, 10, 1 << 22);
     c.send(16, 0, (w) => w.u16(8).u16(0).str('_MY_PROP'));
-    const atom = (await c.reply()).skip(8).u32();
+    const ar = await c.reply();
+    ar.skip(8);
+    const atom = ar.u32();
     expect(atom).toBeGreaterThan(68);
     c.send(18, 0, (w) => w.u32(wid).u32(atom).u32(31).u8(8).zero(3).u32(5).str('hello'));
     c.send(18, 2, (w) => w.u32(wid).u32(atom).u32(31).u8(8).zero(3).u32(3).str(' xy'));
@@ -575,6 +577,104 @@ try {
   execFileSync('gcc', ['-static', '-O1', '-o', xclientBin, join(FIX, 'xclient.c')], { stdio: 'pipe', timeout: 120_000 });
   haveClient = true;
 } catch { /* no gcc: skip the kernel path */ }
+
+describe('X11: a client restored from its recorded requests (docs/research/GUI_SNAPSHOTS.md)', () => {
+  /** A TC whose client has number `index`, with every byte it sends kept in `sent` */
+  async function recorded(server: XServer, index: number) {
+    const sent: Uint8Array[] = [];
+    const wrap = { connect: (t: Parameters<XServer['connect']>[0]) => { const c = server.connect(t, index); return { receive: (b: Uint8Array) => { sent.push(b.slice()); c.receive(b); }, flush: () => c.flush() }; } };
+    const c = await new TC(wrap as unknown as XServer).setup();
+    return { c, sent };
+  }
+
+  it('gives a client the number it asks for, and the others go round the rest', async () => {
+    const { FIRST_RESERVED_CLIENT, LAST_CLIENT } = await import('@shiro/x11/server');
+    const server = new XServer({ width: 640, height: 480 });
+    const a = server.connect({ write: () => {}, close: () => {} }, FIRST_RESERVED_CLIENT + 3);
+    expect(a.base).toBe((FIRST_RESERVED_CLIENT + 3) << 21);
+    expect(() => server.connect({ write: () => {}, close: () => {} }, FIRST_RESERVED_CLIENT + 3)).toThrow(/taken/);
+    // plain clients never get a kept number, and a number is used again once its client is gone
+    const seen = new Set<number>();
+    for (let i = 0; i < 450; i++) {
+      const c = server.connect({ write: () => {}, close: () => {} });
+      expect(c.index).toBeGreaterThan(0);
+      expect(c.index).toBeLessThan(FIRST_RESERVED_CLIENT);
+      seen.add(c.index);
+      server.disconnect(c);
+    }
+    expect(seen.size).toBe(FIRST_RESERVED_CLIENT - 1);
+    expect(LAST_CLIENT << 21).toBeLessThan(1 << 29); // an X id is 29 bits
+  });
+
+  it('takes a saved atom table when it agrees with its own, and refuses one that does not', () => {
+    const a = new XServer({ width: 640, height: 480 });
+    const mine = a.atom('_MY_ATOM'), other = a.atom('_OTHER');
+    const table = a.atomNames();
+    const b = new XServer({ width: 640, height: 480 });
+    expect(b.adoptAtoms(table)).toBe(true);
+    expect(b.atom('_MY_ATOM')).toBe(mine);
+    expect(b.atom('_OTHER')).toBe(other);
+    expect(b.atom('_NEW')).toBe(table.length + 1);
+    // a server whose next id already has another name: nothing changes
+    const c = new XServer({ width: 640, height: 480 });
+    c.atom('_SOMETHING_ELSE');
+    expect(c.adoptAtoms(table)).toBe(false);
+    expect(c.existingAtom('_MY_ATOM')).toBe(0);
+  });
+
+  it('the same requests played into a new server build the same windows, pixels, properties and sequence number', async () => {
+    const { FIRST_RESERVED_CLIENT } = await import('@shiro/x11/server');
+    const index = FIRST_RESERVED_CLIENT + 1;
+    const first = new XServer({ width: 1024, height: 768 });
+    installRender(first);
+    const { c, sent } = await recorded(first, index);
+    const wid = c.id(1), gc = c.id(2), pm = c.id(3);
+    createWindow(c, wid, 30, 40, 120, 80, (1 << 15) | (1 << 17));               // Exposure, StructureNotify
+    c.send(16, 0, (w) => w.u16(8).u16(0).str('_MY_PROP'));                      // InternAtom
+    const atom = (await c.reply()).skip(8).u32();
+    c.send(18, 0, (w) => w.u32(wid).u32(atom).u32(31).u8(8).zero(3).u32(5).str('hello')); // ChangeProperty STRING
+    c.send(8, 0, (w) => w.u32(wid));                                           // MapWindow
+    c.send(55, 0, (w) => w.u32(gc).u32(wid).u32(0x4).u32(0x00ff00));           // CreateGC, green
+    c.send(70, 0, (w) => w.u32(wid).u32(gc).i16(10).i16(10).u16(20).u16(20)); // PolyFillRectangle
+    c.send(53, 24, (w) => w.u32(pm).u32(wid).u16(8).u16(8));                   // CreatePixmap
+    c.send(54, 0, (w) => w.u32(pm));                                           // FreePixmap
+    c.send(43, 0);                                                             // GetInputFocus: a reply to wait for
+    await c.reply();
+    const client = [...first.clients.values()].find((x) => x.index === index)!;
+    const top = first.topsOf(client)[0];
+    expect(pixelAt(top, 15, 15)).toBe(0x00ff00);
+
+    // Another server, as after a page load: the atoms first, then every byte, with the output dropped
+    const second = new XServer({ width: 1024, height: 768 });
+    installRender(second);
+    expect(second.adoptAtoms(first.atomNames())).toBe(true);
+    const out: Uint8Array[] = [];
+    let muted = true;
+    const again = second.connect({ write: (d) => { if (!muted) out.push(d); }, close: () => {} }, index);
+    for (const chunk of sent) again.receive(chunk);
+    again.flush();
+    muted = false;
+    expect(again.seq).toBe(client.seq);
+    const top2 = second.topsOf(again)[0];
+    expect([top2.id, top2.x, top2.y, top2.width, top2.height, top2.mapped]).toEqual([wid, 30, 40, 120, 80, true]);
+    expect(pixelAt(top2, 15, 15)).toBe(0x00ff00);
+    expect(pixelAt(top2, 5, 5)).toBe(0xffffff);
+    expect(new TextDecoder().decode(second.prop(top2, '_MY_PROP')!.data)).toBe('hello');
+    expect(second.hasResource(gc)).toBe(true);
+    expect(second.hasResource(pm)).toBe(false);
+    // the client is told where its window is now, and goes on from its sequence number
+    second.announce(top2);
+    again.flush();
+    expect(out.length).toBe(1);
+    const ev = new DataView(out[0].buffer, out[0].byteOffset);
+    expect(out[0][0] & 0x7f).toBe(22);                      // ConfigureNotify
+    expect(ev.getUint16(2, true)).toBe(client.seq);
+    expect([ev.getInt16(16, true), ev.getInt16(18, true), ev.getUint16(20, true), ev.getUint16(22, true)]).toEqual([30, 40, 120, 80]);
+    // its time never goes back
+    second.timeAtLeast(1_000_000);
+    expect(second.time()).toBeGreaterThan(1_000_000);
+  });
+});
 
 describe.skipIf(!haveClient)('X11 over the kernel: x86-64 client in Blink', () => {
   beforeAll(async () => {

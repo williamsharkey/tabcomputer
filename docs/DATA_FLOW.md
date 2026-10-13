@@ -21,6 +21,7 @@ There are three places: **this tab** (your browser, this site's origin), **the s
   **Every program that runs in the profile can read them.** `node`, npm install scripts and agents' tools are JavaScript in the page's origin; they can open IndexedDB and localStorage directly, and no kernel check is in that path (docs/research/GUEST_PROFILE.md). x86-64 and WASM programs read the files through the kernel, which does not hide them either.
 - The server sets no cookie and keeps no account for you (`server.mjs` has no `set-cookie`).
 - The page keeps its own console log and a freeze log in localStorage (`src/console-log.ts`, `src/watchdog.ts`). They are not sent anywhere unless a `remote` peer asks for them.
+- With the experimental snapshots of GUI apps turned on (`localStorage.tabcomputer-gui-snapshots`, off by default; docs/research/GUI_SNAPSHOTS.md), a started app's memory is kept in this origin's IndexedDB, database `tabcomputer-gui-snapshots` (`src/gui/snapshot.ts`), so that the app can be restored instead of started. That memory holds whatever the app had read: its settings and any file it opened from your home. It is not sent anywhere, `seed share` does not include it, and clearing this site's data deletes it. The X server's list of atom names is kept in `localStorage.tabcomputer-x-atoms` for the same feature.
 
 ## Through the site's server
 

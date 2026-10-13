@@ -20,7 +20,8 @@ const APPS: [string, string, string, boolean, string?][] = [
   ['featherpad', 'FeatherPad', 'gui/icons/featherpad.svg', true],
   ['ristretto', 'Ristretto', 'gui/icons/ristretto.png', true],
   ['gpicview', 'GPicView', 'gui/icons/gpicview.png', true],
-  ['gimp', 'GIMP', 'gui/icons/gimp.png', true, 'first start takes a few minutes'],
+  // (GIMP's first start is like any other since its plug-in registry and babl's cache ship with it: docs/GUI_LAUNCH.md)
+  ['gimp', 'GIMP', 'gui/icons/gimp.png', true, 'takes a while to start'],
   ['inkscape', 'Inkscape', 'gui/icons/inkscape.svg', true, 'first start takes a few minutes'],
   ['dillo', 'Dillo', 'gui/icons/dillo.png', true],
   ['netsurf', 'NetSurf', 'gui/icons/netsurf.png', true],

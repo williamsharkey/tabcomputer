@@ -140,6 +140,8 @@ export function startGuiApp(fs: FileSystem, kernel: Kernel, id: string, o: GuiLa
       return { status: 'failed', error };
     }
     if (!launch) return { status: 'started', app };
+    // (its window is up already: an app restored from its snapshot shows it before its process runs)
+    if (launch.stage === 'running') return { status: 'started', app };
     // (cancelled while the session bus came up: the process just made goes too)
     if (!launch.active) { stop(kernel, app.pid); return { status: 'cancelled' }; }
     launch.pid = app.pid;

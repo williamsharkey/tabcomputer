@@ -401,6 +401,34 @@ untouched kernel metrics differ by up to 2× against it). Kernel/net/x86
 metrics swing ±25% between identical runs here, so a flag on them was re-run
 3× alternating base/new before being called noise.
 
+### unix/gui-launch-speed: GUI app launches, a corpus and a profile
+
+`tests/browser/gui-launch-bench.mjs` (not part of `bench/run.mjs`: it
+installs Debian packages from the server's mirror) times 13 Debian GUI
+apps from the click to a usable window, cold, warm and after a reload,
+with the kernel profiler attached; `--engine-profile` and
+`scripts/gui/launch-profile.mjs` add where the guest's instructions go by
+library and function. The tables, the ranked costs and each change with
+its before and after are in [GUI_LAUNCH.md](GUI_LAUNCH.md). In short, on an
+Apple M3 in headless Chrome 155, two builds interleaved app by app:
+
+| | Build 1007 | this branch | with a snapshot (setting on) |
+|---|---:|---:|---:|
+| GIMP, first launch (to its main window) | 67 s | 19 s | |
+| GIMP, later launches | 15 s | 15 s | 0.8 s (while its settings are unchanged) |
+| Geany, once installed | 5.5 s | 5.5 s | 0.3 s |
+| Inkscape, once installed | 13 s | 13 s | 0.6 s |
+| xterm, warm | 462 ms | 352 ms | |
+| Dillo, after a reload | 1112 ms | 832 ms | 0.3 s |
+
+A launch is the toolkit's start-up computed by the engine (Geany: 994 M
+guest instructions, 34 ms of kernel CPU), so caches and read-ahead don't
+shorten it; what did: GIMP's plug-in registry and babl's cache shipped
+(`scripts/gui/make-gimp-caches.mjs`), Xlib's Compose cache, and snapshots
+of started apps ([research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md),
+off by default). This machine's times rise 1.5 to 2 times as it heats: the
+first corpus run, 25 minutes long, has GIMP's warm launch at 30.6 s.
+
 ### unix/perf-kernel, round 12: x86 IPC with Blink 0133 (direct channels by default)
 
 Blink 0130–0133 (each thread's own direct channel; a hosted fork child's

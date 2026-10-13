@@ -362,6 +362,13 @@ deviceScaleFactor 2 and 3, before and after.)
   several callers, the download left to do.
 - `tests/browser/gui-first-launch.mjs`: click-to-window from a fresh
   profile (above).
+- `tests/browser/gui-launch-bench.mjs`: the launch timeline of a corpus of
+  apps, cold, warm and after a reload, with the kernel's and the engine's
+  profiles ([GUI_LAUNCH.md](GUI_LAUNCH.md)).
+- `tests/browser/gui-quit.mjs`: quitting leaves nothing (process, window,
+  X client, dock mark), three ways for Geany (#118).
+- `tests/browser/gui-snapshot.mjs`: snapshots of started apps
+  ([research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md), behind a setting).
 - `kernel-pty.test.ts`: `/dev/tty` after a session leader acquires a pty
   (xterm's child needed it).
 - `gui-probe.test.ts` (manual, `GUI_PROBE_ROOT`): run any Debian rootfs X
@@ -383,10 +390,13 @@ deviceScaleFactor 2 and 3, before and after.)
    (manifest entry `dbus-session`) with the first app and gives apps its
    address (`src/gui/apps.ts` `sessionBus`); lximage-qt runs now. The
    accessibility bus (at-spi2) is still off (`NO_AT_BRIDGE=1`).
-2. **Speed of toolkit startup** is Blink's: Qt reaches its first frame in
-   ~10 s, GTK 2 ~15 s. Snapshotting a started process, caching JIT output
-   across runs, and WASM builds of the toolkits (Qt for WebAssembly has an
-   xcb-less platform; GTK's Broadway) are the levers.
+2. **Speed of toolkit startup** is the engine's: a launch is the toolkit's
+   own start-up computed at 100 to 250 M guest instructions a second, with
+   about 1% of it in the kernel ([GUI_LAUNCH.md](GUI_LAUNCH.md) has the
+   corpus, the profile and the ranked costs). Snapshots of started apps
+   restore Geany's window in under half a second and are built behind a
+   setting ([research/GUI_SNAPSHOTS.md](research/GUI_SNAPSHOTS.md)); apps
+   with a D-Bus connection or child processes aren't covered yet.
 3. **PRIMARY** (select, middle-click paste) works between X apps only; the
    browser has no primary selection to bridge it to.
 4. **Extensions not yet offered**: MIT-SHM (Blink can't share guest memory
@@ -400,8 +410,8 @@ deviceScaleFactor 2 and 3, before and after.)
 6. **Per-file laziness**: packages are fetched whole, before start; a kernel
    open hook (unix/kernel) would let files materialize on first open.
 7. **Wayland** (wl_shm) once Blink can share mappings with the page.
-8. Heavy apps: GIMP and Inkscape run, with long first starts. GIMP's would
-   drop to its second-start time with plug-in caches (`pluginrc`) shipped
-   as an overlay, which needs the unpacker to keep the packages' file times
-   (GIMP compares them).
+8. Heavy apps: GIMP and Inkscape run, with long starts. GIMP's plug-in
+   registry (`pluginrc`) ships as an overlay now and the unpacker keeps the
+   packages' file times, so a first start no longer asks every plug-in
+   (GUI_LAUNCH.md "GIMP's first start").
 

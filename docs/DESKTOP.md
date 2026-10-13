@@ -246,7 +246,11 @@ stack, the launcher, the Apps window's Open, `desktop open APP`,
 `/dom/windows/ctl` and `gui APP` all reach. The window manager ends a launch
 when a window with the app's id is created (`LaunchTracker.attach`): not an
 override window, a dialog of another window, or a splash (`splash: true`,
-from `_NET_WM_WINDOW_TYPE_SPLASH`), which moves it to `window`.
+from `_NET_WM_WINDOW_TYPE_SPLASH`), which moves it to `window`. A window can
+come before the launcher has its process: an app restored from a snapshot
+(docs/research/GUI_SNAPSHOTS.md, behind a setting) is on screen while its
+process is still being rebuilt, and `startGuiApp` takes a launch that is
+already `running` as started, not as cancelled.
 
 - **Dock.** The app's tile gets a 6 px dot in the text color under it, with
   an accent ring that pulses outward (`.sd-starting`; the dot is on the

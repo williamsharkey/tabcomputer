@@ -25,6 +25,8 @@ export class Pipe {
   private count = 0;  // bytes buffered
   readers = 0;
   writers = 0;
+  /** Bytes ever written to it (whether anything passed between two looks: src/gui/snapshot.ts) */
+  written = 0;
   readonly ino = nextPipeIno++;
   private readWaiters = new Set<() => void>();
   private writeWaiters = new Set<() => void>();
@@ -100,6 +102,7 @@ export class Pipe {
     this.buf.set(src.subarray(0, first), tail);
     if (n > first) this.buf.set(src.subarray(first, n), 0);
     this.count += n;
+    this.written += n;
     return n;
   }
 

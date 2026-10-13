@@ -7278,6 +7278,20 @@
    "when": "librsvg2-common"
   },
   {
+   "keep": true,
+   "path": "/home/user/.config/GIMP/2.10/pluginrc",
+   "sha256": "e3f8193902941e3930667c8bad9dd8591a66893c30385234cd46f9f5afd507e6",
+   "size": 192370,
+   "when": "gimp"
+  },
+  {
+   "keep": true,
+   "path": "/home/user/.cache/babl/babl-fishes",
+   "sha256": "a6ec00d306f5d5c152e123298fcf85ba539df0f5aad20023f02792d2681d69bd",
+   "size": 8236,
+   "when": "gimp"
+  },
+  {
    "path": "/var/cache/fontconfig/d589a48862398ed80a3d6066f4f56f4c-le64.cache-8",
    "sha256": "ef2debd82c04cbcf82b01ff5847540a7fa5314bf090e0318e09863e3ec042695",
    "size": 16136,

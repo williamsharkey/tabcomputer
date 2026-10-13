@@ -39,6 +39,8 @@ export interface ServerHooks {
   bell?(): void;
   /** a window's geometry, mapping or stacking changed (or it was destroyed): GL surfaces re-place themselves */
   structure?(w: XWindow): void;
+  /** an atom was interned (the table grew) */
+  atomAdded?(): void;
   /** a client took ownership of a selection (CLIPBOARD/PRIMARY) */
   selectionOwned?(selection: string, owner: XWindow | null): void;
 }
@@ -60,6 +62,13 @@ export interface Property { type: number; format: number; data: Uint8Array }
 
 const ROOT_ID = 0x100, COLORMAP_ID = 0x20, VISUAL_24 = 0x21, VISUAL_32 = 0x22, CMAP_32 = 0x23;
 const CLIENT_SHIFT = 21, RESOURCE_MASK = (1 << CLIENT_SHIFT) - 1;
+/**
+ * Client numbers: a client's resource ids are its number << 21, in 29 bits, so
+ * 1 to 255. The last ones are kept for clients that ask for theirs by number
+ * (an app restored from a snapshot holds ids made from the number it had:
+ * src/gui/snapshot.ts); the others go round the rest.
+ */
+export const FIRST_RESERVED_CLIENT = 200, LAST_CLIENT = 254;
 const VENDOR = 'tabcomputer in-page X server';
 const RELEASE = 12101011;
 export const SERVER_DEFAULTS = { width: 1600, height: 1000 };
@@ -171,6 +180,8 @@ export class Client {
   private outLen = 0;
   private flushQueued = false;
   bigRequests = false;
+  /** Bytes queued for the client so far: replies, errors and events */
+  sent = 0;
   saveSet = new Set<XWindow>();
   constructor(readonly server: XServer, readonly index: number, readonly transport: XTransport) {}
   get base() { return this.index << CLIENT_SHIFT; }
@@ -193,6 +204,7 @@ export class Client {
 
   send(b: Uint8Array): void {
     if (this.closed) return;
+    this.sent += b.length;
     this.out.push(b);
     this.outLen += b.length;
     if (this.outLen > 256 * 1024) { this.flush(); return; }
@@ -245,6 +257,8 @@ export class XServer {
   private selections = new Map<number, { win: XWindow; client: Client; time: number }>();
   // input state
   pointerX = 0; pointerY = 0;
+  /** Button and key events so far (a snapshot of an app is of one nobody has typed into: src/gui/snapshot.ts) */
+  inputCount = 0;
   buttons = 0;           // state mask bits 8..12
   mods = 0;              // shift/lock/control/mod1..5
   private keysDown = new Set<number>();
@@ -306,6 +320,8 @@ export class XServer {
   private shapeEvent = 0;
 
   time(): number { return (Date.now() - this.startTime) >>> 0; }
+  /** The server's time never before `t`: a restored client has seen timestamps up to there (src/gui/snapshot.ts) */
+  timeAtLeast(t: number): void { const now = this.time(); if (now <= t) this.startTime -= t - now + 1; }
 
   addExtension(name: string, nEvents: number, nErrors: number, handle: Extension['handle']): Extension {
     const ext: Extension = {
@@ -321,15 +337,39 @@ export class XServer {
   // ── atoms ──
   atom(name: string): number {
     let id = this.atomIds.get(name);
-    if (id === undefined) { id = this.atoms.length; this.atoms.push(name); this.atomIds.set(name, id); }
+    if (id === undefined) { id = this.atoms.length; this.atoms.push(name); this.atomIds.set(name, id); this.hooks.atomAdded?.(); }
     return id;
   }
   atomName(id: number): string | undefined { return id > 0 && id < this.atoms.length ? this.atoms[id] : undefined; }
+  /** Every atom's name, by id from 1 */
+  atomNames(): string[] { return this.atoms.slice(1); }
+  /**
+   * Make atoms 1..n be `names` (a snapshot's, or the profile's saved table:
+   * clients keep atom ids, so a restored one needs its own back). False, and
+   * nothing changed, when an id already has another name or a name another id.
+   */
+  adoptAtoms(names: string[]): boolean {
+    for (let i = 0; i < names.length; i++) {
+      const have = this.atoms[i + 1], id = this.atomIds.get(names[i]);
+      if ((have !== undefined && have !== names[i]) || (id !== undefined && id !== i + 1)) return false;
+    }
+    for (let i = this.atoms.length - 1; i < names.length; i++) { this.atoms.push(names[i]); this.atomIds.set(names[i], i + 1); }
+    return true;
+  }
   existingAtom(name: string): number { return this.atomIds.get(name) ?? 0; }
 
   // ── connections ──
-  connect(transport: XTransport): Client {
-    const index = this.nextClient++;
+  connect(transport: XTransport, index?: number): Client {
+    if (index === undefined) {
+      for (let tries = 0; ; tries++) {
+        if (tries >= FIRST_RESERVED_CLIENT) throw new Error('Xshiro: too many clients');
+        index = this.nextClient;
+        this.nextClient = index + 1 >= FIRST_RESERVED_CLIENT ? 1 : index + 1;
+        if (!this.clients.has(index)) break;
+      }
+    } else if (index < 1 || index > LAST_CLIENT || this.clients.has(index)) {
+      throw new Error(`Xshiro: client number ${index} is taken`);
+    }
     const c = new Client(this, index, transport);
     this.clients.set(index, c);
     return c;
@@ -1153,6 +1193,20 @@ export class XServer {
     this.updatePointerWindow();
   }
 
+  /**
+   * Tell a toplevel's owner where it is and how big, as a window manager does
+   * after placing it (a synthetic ConfigureNotify), whether or not it moved:
+   * a restored client's idea of its position is from another session.
+   */
+  announce(w: XWindow): void {
+    if (!w.owner || w.owner.closed || w.parent !== this.root) return;
+    if (!((w.eventMasks.get(w.owner) ?? 0) & P.StructureNotifyMask)) return;
+    this.event(w.owner, (e) => e.u8(P.ConfigureNotify).u8(0).u16(0).u32(w.id).u32(w.id).u32(0).i16(w.x).i16(w.y).u16(w.width).u16(w.height).u16(w.bw).u8(w.overrideRedirect ? 1 : 0), true);
+  }
+
+  /** The toplevels `c` owns, bottom to top */
+  topsOf(c: Client): XWindow[] { return this.root.children.filter((w) => w.owner === c); }
+
   private resized(w: XWindow, oldW: number, oldH: number): void {
     if (w.pix) {
       const [dx, dy] = gravityOffset(w.bitGravity, oldW, oldH, w.width, w.height);
@@ -1593,6 +1647,7 @@ export class XServer {
 
   /** Button press/release (1 left, 2 middle, 3 right, 4/5 wheel). */
   button(press: boolean, button: number): void {
+    this.inputCount++;
     const bit = button <= 5 ? 1 << (7 + button) : 0;
     if (press) {
       if (!this.grab) {
@@ -1626,6 +1681,7 @@ export class XServer {
 
   /** Key press/release by X keycode. */
   key(press: boolean, keycode: number): void {
+    this.inputCount++;
     if (press) this.keysDown.add(keycode); else this.keysDown.delete(keycode);
     this.deviceEvent(press ? P.KeyPress : P.KeyRelease, keycode, this.pointerWin);
     const mod = MODIFIER_MAP.findIndex((m) => m.includes(keycode));

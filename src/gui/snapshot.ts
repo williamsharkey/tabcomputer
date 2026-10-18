@@ -50,7 +50,12 @@ const ATOMS = 'tabcomputer-x-atoms';
 const SLOTS = 'tabcomputer-gui-snapshot-slots';
 const SKIP = 'tabcomputer-gui-snapshot-skip';
 const DB = 'tabcomputer-gui-snapshots';
-export const VERSION = 3;
+/**
+ * The snapshot format. 4: the X requests are the image's own, taken as the
+ * image is checked, with the client's sequence number (#142): a snapshot of
+ * version 3 could hold requests the process sent after its image.
+ */
+export const VERSION = 4;
 
 /**
  * The most the snapshots take together, in bytes of what is stored (gzip).
@@ -105,8 +110,12 @@ export interface SnapshotMeta {
   /** The app's process first, then its children, each after its parent */
   procs: ProcRecord[];
   files: FileRecord[];
-  /** The X client: its number, the server's atoms when it was taken (ids from 1), how many request bytes, the server's time */
-  x: { index: number; atoms: string[]; bytes: number; time: number };
+  /**
+   * The X client: its number, the server's atoms when it was taken (ids from
+   * 1), how many request bytes, the server's time, and its sequence number
+   * (16 bits) after those requests: a replay that ends anywhere else is refused
+   */
+  x: { index: number; atoms: string[]; bytes: number; time: number; seq: number };
   /** Every path the processes opened or looked for, with what was there ('' nothing) */
   opened: [string, string][];
   sizes: { image: number; stored: number; x: number };
@@ -609,14 +618,26 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
   // (a turn of the event loop: bytes a process wrote before its image are where they went by now)
   await new Promise((res) => setTimeout(res, 0));
   if (rec.bytes !== before.bytes || client.seq !== before.seq || client.sent !== before.sent || queued().rxQueue || queued().txQueue) return { ok: false, why: 'the app was talking to the display' };
+  // The image's X requests are the ones recorded now, taken now. The process runs on while the rest
+  // is looked at and packed, and what it sends meanwhile (a caret's blink) is not in its image:
+  // played back as well, it would put the server's sequence number ahead of the process's, and
+  // Xlib aborts at the first event it reads ("Unknown sequence number while processing queue": #142)
+  const chunks = rec.chunks.slice();
+  // (the kernel's view of their signals, now too: a handler or mask set after the image is not its)
+  const signals: ProcRecord['signals'][] = procs.map((p) => ({
+    dispositions: [...p.dispositions.entries()],
+    actions: [...p.sigactions.entries()].map(([sig, a]) => [sig, { flags: a.flags, mask: [...a.mask], restorer: a.restorer }]),
+    mask: [...p.sigmask],
+  }));
   const again = family(kernel, main);
   const look2 = again.length === procs.length && again.every((p, i) => p === procs[i]) ? await lookAtFiles(procs, xSock, started.output) : 'its processes changed meanwhile';
   if (typeof look2 === 'string' || JSON.stringify(look2) !== JSON.stringify(look)) return { ok: false, why: typeof look2 === 'string' ? look2 : 'its descriptors changed, or its processes talked, meanwhile' };
   const { getXSession } = await import('../x11/session');
   const { server } = await getXSession(0);
-  const requests = new Uint8Array(rec.bytes);
+  const requests = new Uint8Array(before.bytes);
   let at = 0;
-  for (const c of rec.chunks) { requests.set(c, at); at += c.length; }
+  for (const c of chunks) { requests.set(c, at); at += c.length; }
+  if (at !== before.bytes) return { ok: false, why: `its X requests were ${at} bytes, not ${before.bytes}` };
   // (again: what it opened while the images were made counts too)
   for (const path of (main.data.openLog as Set<string> | undefined) ?? []) paths.add(path);
   const opened = await signaturesOf(fs, paths, (main.data.openWritten as Set<string> | undefined) ?? new Set(), kernel.socketPaths ?? new Set());
@@ -626,17 +647,13 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
     procs: procs.map((p, i) => ({
       pid: p.pid, parent: procs.findIndex((q) => q.pid === p.ppid),
       path: p.path, argv: i ? p.argv : started.argv, env: i ? { ...p.env } : started.env, cwd: i ? p.cwd : started.cwd, umask: p.umask,
-      signals: {
-        dispositions: [...p.dispositions.entries()],
-        actions: [...p.sigactions.entries()].map(([sig, a]) => [sig, { flags: a.flags, mask: [...a.mask], restorer: a.restorer }]),
-        mask: [...p.sigmask],
-      },
+      signals: signals[i],
       fds: look.fds[i], image: raw[i].byteLength,
     })),
     files: look.files,
-    x: { index: rec.index, atoms: server.atomNames(), bytes: rec.bytes, time: server.time() },
+    x: { index: rec.index, atoms: server.atomNames(), bytes: before.bytes, time: server.time(), seq: before.seq },
     opened,
-    sizes: { image: raw.reduce((a, b) => a + b.byteLength, 0), stored: x.byteLength + images.reduce((a, b) => a + b.byteLength, 0), x: rec.bytes },
+    sizes: { image: raw.reduce((a, b) => a + b.byteLength, 0), stored: x.byteLength + images.reduce((a, b) => a + b.byteLength, 0), x: before.bytes },
   };
   if (started.cancelled?.()) return { ok: false, why: 'cancelled' };
   // (the processes may have moved on while the images were packed: that doesn't matter, the images are of then)
@@ -831,7 +848,14 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
         f = sk;
       } else {
         const tA = Date.now();
-        f = (await adoptXClient(kernel, 0, m.x.index, [requests])).sock;
+        const adopted = await adoptXClient(kernel, 0, m.x.index, [requests]);
+        // (the requests played back must leave the client where its process left it: else the first
+        // event it reads carries a sequence number it never reached, and Xlib aborts)
+        if (adopted.client.seq !== m.x.seq) {
+          void adopted.sock.close();
+          throw new Error(`its X requests end at sequence number ${adopted.client.seq}, not ${m.x.seq}`);
+        }
+        f = adopted.sock;
         tx = Date.now() - tA;
       }
       if (r.kind !== 'stdin' && r.kind !== 'output') { f.flags = r.flags; made.push(f); }

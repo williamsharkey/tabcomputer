@@ -370,13 +370,64 @@ export interface PkgOptions {
   /** Reinstall packages that are already installed */
   reinstall?: boolean;
   env?: Record<string, string>;
+  /** How long a download may get no data before it is tried again (tests shorten it) */
+  stallMs?: number;
 }
 
-async function download(url: string, sha256: string, opts: PkgOptions): Promise<Uint8Array> {
+/** A download that gets no data for this long is given up and tried once more */
+const STALL_MS = 30_000;
+
+class Stalled extends Error {}
+
+/**
+ * The body of `url`, read as it arrives. No data for `stallMs` (to the answer, or
+ * between two pieces of the body) is a Stalled: a CDN connection that hangs
+ * would otherwise keep `pkg install` waiting for ever.
+ */
+async function fetchBytes(url: string, stallMs: number): Promise<Uint8Array> {
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // (raced against each wait, so a fetch that ignores the signal cannot hold it either)
+  const quiet = () => new Promise<never>((_, reject) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { ctl.abort(); reject(new Stalled(`no data for ${Math.round(stallMs / 1000)} s`)); }, stallMs);
+  });
+  try {
+    const resp = await Promise.race([fetch(url, { signal: ctl.signal }), quiet()]);
+    if (!resp.ok) throw new Error(`download failed: ${url}: ${resp.status} ${resp.statusText || ''}`.trim());
+    if (!resp.body) return new Uint8Array(await Promise.race([resp.arrayBuffer(), quiet()]));
+    const reader = resp.body.getReader();
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), quiet()]);
+      if (done) break;
+      parts.push(value);
+      size += value.length;
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const p of parts) { bytes.set(p, at); at += p.length; }
+    return bytes;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function download(url: string, sha256: string, opts: PkgOptions): Promise<Uint8Array> {
   const full = resolveUrl(url, opts.env);
-  const resp = await fetch(full);
-  if (!resp.ok) throw new Error(`download failed: ${full}: ${resp.status} ${resp.statusText || ''}`.trim());
-  const bytes = new Uint8Array(await resp.arrayBuffer());
+  const stallMs = opts.stallMs ?? STALL_MS;
+  let bytes: Uint8Array;
+  try {
+    bytes = await fetchBytes(full, stallMs);
+  } catch (e) {
+    if (!(e instanceof Stalled)) throw e;
+    opts.log?.(`${full}: ${e.message}; trying again`);
+    try { bytes = await fetchBytes(full, stallMs); } catch (e2) {
+      if (e2 instanceof Stalled) throw new Error(`download stalled: ${full}: ${e2.message}, twice`);
+      throw e2;
+    }
+  }
   const got = await sha256Hex(bytes);
   if (got !== sha256) {
     throw new Error(`sha256 mismatch for ${full}\n  expected ${sha256}\n  got      ${got}`);

@@ -14,6 +14,20 @@ if ! swapon --show=NAME --noheadings | grep -q .; then
   grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 export NODE_OPTIONS="--max-old-space-size=1536${NODE_OPTIONS:+ $NODE_OPTIONS}"
+# /_deploy/status.json (nginx serves /var/www/tabdeploy): the commit asked for,
+# the one live, and on a failure the log's last lines, for scripts/predeploy.sh
+# --wait and for a person (#156). Never fails the release itself.
+deploy_dir=/var/www/tabdeploy
+live=$(cat "$root/current/DEPLOYED_SHA" 2>/dev/null || true)
+write_status() {
+  [ -d "$deploy_dir" ] || return 0
+  node -e 'const [state, asked, live, log] = process.argv.slice(1); let tail = "";
+    try { if (log) tail = require("fs").readFileSync(log, "utf8").trimEnd().split("\n").slice(-30).join("\n"); } catch {}
+    process.stdout.write(JSON.stringify({ state, asked, live, at: new Date().toISOString(), ...(tail ? { tail } : {}) }, null, 1) + "\n");' \
+    "$@" > "$deploy_dir/status.json.tmp" && mv -f "$deploy_dir/status.json.tmp" "$deploy_dir/status.json" || true
+}
+write_status building "$sha" "$live"
+trap 'write_status failed "$sha" "$live" "$deploy_dir/log.new"' ERR
 npm ci --no-audit --no-fund
 npm run build
 rel=$root/releases/$sha
@@ -52,6 +66,8 @@ install_set_tools() {
 }
 install_set_tools || echo "package set tools not installed"
 systemctl restart tabcomputer
+trap - ERR
+write_status live "$sha" "$sha"
 bash deploy/tabcomputer/tls-install.sh "$src" || true
 # Toolchain layers (docs/DEBIAN.md "Toolchain layers") build in the
 # background, outside the release, and never fail or hold up the deploy:

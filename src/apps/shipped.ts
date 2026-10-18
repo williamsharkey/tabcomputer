@@ -83,6 +83,11 @@ export function registerShippedApps(wm: WindowManager, open: (app: ShippedApp, l
     added.push(app.id);
     wm.registerApp({
       id: app.id, name: app.name, icon: app.icon || undefined, glyph: app.glyph, order: 40, dock: true,
+      remove: async () => {
+        setShippedHidden(app.id, true);
+        (wm as WindowManager & { unregisterApp?: (id: string) => void }).unregisterApp?.(app.id);
+        return `${app.name} is out of the dock. The site's apps page (/apps) has it.`;
+      },
       launch: (args) => {
         const r = wm.launches.request({
           id: app.id, name: app.name, icon: app.icon || undefined, placeholder: true,

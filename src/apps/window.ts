@@ -20,9 +20,9 @@ import type { DesktopWindow, WindowManager } from '../desktop/wm';
 import { placeholderId, type Launch } from '../desktop/launch-state';
 import { createAppFrame, type AppFrame } from './frame';
 import { AppInstance, appsDeps, homeDir, instanceFor, instanceOf, type AppRef, type AppView } from './runtime';
-import { AppError, findInstalled, listInstalled, loadManifest, type InstalledApp } from './registry';
+import { AppError, findInstalled, listInstalled, loadManifest, removeInstalled, type InstalledApp } from './registry';
 import { ManifestError } from './manifest';
-import { isShipped, shippedGlyph } from './shipped';
+import { isShipped, setShippedHidden, shippedGlyph } from './shipped';
 import { surface } from './surface';
 
 const STYLE_ID = 'tc-app-style';
@@ -385,6 +385,15 @@ export function registerInstalledApp(app: InstalledApp): void {
     id: app.id, name: app.name, icon: app.icon || monogramIcon(app.name, app.id), order: 40, dock: true,
     // (the site's own copy of a shipped app keeps the glyph its entry had before it was installed)
     glyph: app.source === 'site' ? shippedGlyph(app.id) : undefined,
+    // As `app remove ID`: the app goes, what it stored stays
+    remove: async () => {
+      const { fs } = appsDeps();
+      stopApp(app.id);
+      await removeInstalled(fs, app.id, { home: homeDir() });
+      unregisterInstalledApp(app.id);
+      setShippedHidden(app.id, true);
+      return `Removed ${app.name}. What it stored is kept (app remove --data deletes that too).`;
+    },
     menus: () => [{ title: 'App', items: [
       { label: 'Share as a Link…', action: () => void shareInstalled(app.id) },
       { label: 'Export with Its Data', action: () => void exportFromWindow(app.id, app.name) },

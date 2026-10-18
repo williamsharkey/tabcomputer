@@ -245,6 +245,14 @@ async function studio(s) {
     const name = await until(page, () => page.$eval('[data-k=name]', (i) => i.value));
     check(`${D} studio: an installed app opens for editing`, name === 'Expenses', name);
     await closeStudio(s);
+    // The dock's menu removes it, without a terminal; what it stored stays (#155)
+    if (!s.touch) {
+      await page.evaluate(() => { const b = [...document.querySelectorAll('.sd-dock-item')].find((x) => x.querySelector('.sd-dock-tip')?.textContent?.startsWith('Expenses')); b?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 })); });
+      await page.locator('text=Remove App').click({ timeout: 5000 }).catch(() => {});
+      const gone = await until(page, () => page.evaluate(() => !window.__shiroDesktop.apps().some((a) => a.id === 'expenses') || null), 10_000);
+      const kept = (await page.evaluate(() => new Promise((r) => { const sh = Object.assign(window.__tabcomputer.shell.fork(), { terminal: null }); let o = ''; sh.execute('app list; ls -d ~/.local/share/tabcomputer/apps/expenses 2>/dev/null || ls -d ~/Apps-data/expenses 2>/dev/null; echo end', (x) => { o += x; }, () => {}).then(() => r(o)); }))) ?? '';
+      check(`${D} studio: the dock's Remove App takes the app out, and app list no longer has it`, !!gone && !/expenses/.test(String(kept).split('\n').filter((l) => !l.includes('/')).join('\n')), kept);
+    }
   }
 
   // Started from one of the site's apps: the same three, each to a link

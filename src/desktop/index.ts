@@ -493,12 +493,16 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
       b.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         const wins = wm.visibleOrder().filter(w => w.appId === id);
+        const remove = wm.apps().find(a => a.id === id)?.remove;
+        const said = (t: string) => showToast(root, t.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`));
         const r = b.getBoundingClientRect();
         openMenu({ title: name, items: [
           ...wins.map(w => ({ label: w.title || name, checked: wm.focused() === w, action: () => w.focus() })),
           ...(wins.length ? ['separator' as const] : []),
           { label: 'New Window', action: () => void wm.openApp(id, { newWindow: true }) },
           ...(wins.length ? [{ label: wins.length > 1 ? 'Close All' : 'Close', action: () => wins.forEach(w => w.close()) }] : []),
+          // An app the person installed, or one of the site's (shipped.ts): out of the dock without a terminal
+          ...(remove ? ['separator' as const, { label: 'Remove App', action: () => void remove().then(said, (e: Error) => said(e.message)) }] : []),
         ] }, r.left, r.top - 6, true);
       });
       dock.append(b);

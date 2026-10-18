@@ -212,6 +212,11 @@ export interface AppDescriptor {
    * what Classic shows.
    */
   glyph?: string;
+  /**
+   * Remove App in the dock's menu: for an app the person installed, or one of the
+   * site's own before it is installed. Resolves to what to tell the person.
+   */
+  remove?: () => Promise<string>;
 }
 
 /**

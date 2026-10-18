@@ -1,0 +1,28 @@
+name: rg-hang
+# Temporary (tabcomputer#157): the ripgrep test, alone, many times, to see whether it hangs and where.
+on:
+  push:
+    branches: ['unix/rg-hang']
+jobs:
+  repeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: { n: [1, 2, 3, 4, 5] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
+        working-directory: tests
+      - name: compat-tools x4
+        working-directory: tests
+        run: |
+          for i in $(seq 1 3); do
+            s=$(date +%s)
+            if timeout 600 npx vitest run --config vitest.config.ts shiro-vitest/compat-tools.test.ts > out-$i.txt 2>&1; then r=ok; else r=FAIL; fi
+            echo "run $i: $r in $(( $(date +%s) - s ))s"
+            [ $r = ok ] || grep -a -E 'FAIL|✓|×|timed out' out-$i.txt | tail -40
+          done

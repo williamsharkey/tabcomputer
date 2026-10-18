@@ -375,7 +375,12 @@ if (!only || only === 'packed') {
       await page.evaluate((app) => { const k = window.__tabcomputer.kernel; for (const p of k.procs.values()) if ((p.comm ?? '').includes(app)) k.kill(p.pid, 9); }, app);
       for (let i = 0; i < 100 && (await procs(page, app)).some((p) => p.state !== 'zombie'); i++) await page.waitForTimeout(100);
       await page.evaluate(async (app) => {
-        await new Promise((res) => { const r = indexedDB.open('tabcomputer-gui-snapshots'); r.onsuccess = () => { const db = r.result; const t = db.transaction(['snapshots', 'index'], 'readwrite'); t.objectStore('snapshots').delete(app); t.objectStore('index').delete(app); t.oncomplete = () => { db.close(); res(); }; }; r.onerror = () => res(); });
+        await new Promise((res) => {
+          const r = indexedDB.open('tabcomputer-gui-snapshots');
+          r.onupgradeneeded = () => r.transaction.abort();
+          r.onsuccess = () => { const db = r.result; const t = db.transaction(['snapshots', 'index'], 'readwrite'); t.objectStore('snapshots').delete(app); t.objectStore('index').delete(app); t.oncomplete = () => { db.close(); res(); }; t.onerror = () => { db.close(); res(); }; };
+          r.onerror = () => res();
+        });
       }, app);
       await page.waitForFunction(() => (window.__shiroX?.server.clients.size ?? 0) <= 1, null, { timeout: 30_000, polling: 100 });
     }

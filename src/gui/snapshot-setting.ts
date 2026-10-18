@@ -7,9 +7,10 @@
  *     `all` on for every app, `0` off, unset the default
  *   TABCOMPUTER_GUI_SNAPSHOTS=0 (exported in ~/.profile): off; =1 and =all as above
  *
- * The default is off (SNAPSHOT_DEFAULT_ON): one restored process in about a
- * hundred ended at once in the tests, for a reason not found yet
- * (GUI_SNAPSHOTS.md "Before it can be on by default"). When that constant is
+ * The default is off (SNAPSHOT_DEFAULT_ON) until GUI_SNAPSHOTS.md "Before it
+ * can be on by default" is decided. The one restore failure seen there (a
+ * restored process that ended at once with SIGABRT) is explained and fixed
+ * (#142). When that constant is
  * true the default is on for the tested apps, in the browsers and on the
  * machines the tests have run on: a Chromium browser that is not a phone's,
  * with 4 GB of memory or more.

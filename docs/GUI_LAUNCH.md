@@ -433,16 +433,17 @@ the setting on, every app but the two terminals is at its usable window in
 FeatherPad in that run (2.6 s, a usual start). Geany: 0.3 and 0.5 s against
 5.6 and 6.2 s. GIMP: 1.0 and 0.9 s against 15 and 16 s. That holds after a
 quit that saved settings too, because the snapshot is taken again in the
-background. The setting is still off unless set: one restored process in
-about 130 aborted and the cause is not known ("Before it can be on by
-default" there).
+background. The setting is still off unless set ("Before it can be on by
+default" there); the one restored process that aborted, in about 130, is
+explained and fixed (#142: X requests sent after the image were kept with
+it).
 
 What would close the rest, in the order of what it buys:
 
 1. **Snapshots on by default.** They are the only thing here that gets
    Geany and GIMP under 2 s, and they do it on 11 of 13 apps. What is
-   missing is listed in the research doc: the cause of the one restored
-   process that aborted, a soak test, other browsers. (The retake in the
+   missing is listed in the research doc: a soak test, other browsers (the
+   one restored process that aborted is explained and fixed, #142). (The retake in the
    background, the place in Settings, the cap and eviction are done.) The first-start cost stays (a snapshot is of a
    start that happened).
 2. **The first start**: 0.6 to 5 s of install (fetching and decoding `.deb`s

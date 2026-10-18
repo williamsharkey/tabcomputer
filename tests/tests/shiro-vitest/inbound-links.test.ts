@@ -6,7 +6,7 @@
  * (the base element), which is only safe together with the question.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -279,5 +279,14 @@ describe('server.mjs: the app starts at the addresses it acts on', () => {
       // (where the server keeps no seeds, a seed link's page stays as it was: it has nothing to load)
       expect(await based(off + p), `sharing off: ${p}`).toBe(link?.kind === 'repo');
     }
+  }, 30_000);
+  it('a repository whose name has a dot gets the app, a missing file of the site a 404', async () => {
+    const base = await start({});
+    mkdirSync(join(dirs.at(-1)!, 'fonts'));
+    for (const p of ['/socketio/socket.io', '/vercel/next.js']) {
+      expect(inboundCodeLink(p)?.kind, p).toBe('repo');
+      expect(await based(base + p), p).toBe(true);
+    }
+    for (const p of ['/fonts/missing.woff2', '/assets/x.js', '/nope.js']) expect((await fetch(base + p)).status, p).toBe(404);
   }, 30_000);
 });

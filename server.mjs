@@ -544,6 +544,16 @@ export function appLinkPath(pathname, seedShare = process.env.TABCOMPUTER_SEED_S
   return m && !REPO_LINK_RESERVED.includes(m[1].toLowerCase()) ? 'repo' : null;
 }
 
+/**
+ * A repository link whose name has a dot (`/socketio/socket.io`, `/vercel/next.js`): the
+ * app shell, though the address looks like a file. Never under a folder of the site's own,
+ * where a missing file stays a 404.
+ */
+async function dottedRepoLink(pathname) {
+  if (appLinkPath(pathname) !== 'repo') return false;
+  try { await stat(join(STATIC_DIR, pathname.split('/')[1])); return false; } catch { return true; }
+}
+
 // --- Static file server ---
 async function handleStatic(req, res, guest = null, guests = null) {
   let pathname = new URL(req.url, 'http://localhost').pathname;
@@ -559,7 +569,7 @@ async function handleStatic(req, res, guest = null, guests = null) {
     const s = await stat(filePath);
     if (s.isDirectory()) filePath = join(filePath, 'index.html');
   } catch {
-    if (pathname.startsWith('/assets/') || requestExt) {
+    if (pathname.startsWith('/assets/') || (requestExt && !(await dottedRepoLink(pathname)))) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...staticHeaders });
       return res.end('Not found');
     }

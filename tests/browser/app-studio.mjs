@@ -336,6 +336,7 @@ async function codeFlow(s, app, id, template, name, opts = {}) {
   await tap(s, c, '.tc-app-share [data-act=copy]');
   record(s, 'Code', app === 'resize-pictures' ? 'Make pictures smaller' : name, c, Date.now() - t0, link);
   check(`${D} code ${app}: Share in the bar gives the readable link`, link.startsWith(`${origin}/#`), link.slice(0, 100));
+  check(`${D} code ${app}: its share screen has the QR code too`, await page.$('.tc-app-share [data-part=qr] svg') !== null);
   await shot(s, `code-${id}`);
   await page.evaluate(() => { for (const w of window.__shiroDesktop.windows()) if (w.appId === 'code' || w.appId === 'app-share') w.close(true); });
   await page.waitForTimeout(400);

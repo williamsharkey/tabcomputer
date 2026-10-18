@@ -611,6 +611,8 @@ if (wants('link')) for (const device of DEVICES) {
   check(`${D} link: Make a gist sends the script to GitHub as a secret gist and gives #gist:USER/ID`, !!gisted && gisted.link === `${origin}/#gist:octocat/${GIST_SH}` && posted?.method === 'POST' && posted.auth === 'Bearer gho_standin'
     && posted.body.public === false && posted.body.files['setup.sh'].content === `echo ${noise}\n`, JSON.stringify(gisted && gisted.link));
   await page.click('.tc-link [data-act=close]');
+  // (gone before the next one opens: a window still closing is read first otherwise)
+  await page.waitForSelector('.tc-link', { state: 'detached', timeout: 10_000 }).catch(() => {});
   // the System menu's item opens the same window
   if (!device.hasTouch) {
     await page.click('[aria-label="System menu"]');

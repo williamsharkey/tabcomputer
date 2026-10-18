@@ -172,6 +172,8 @@ class Preview {
     if (prev?.kind === 'table' && (prev.table !== m.table || JSON.stringify(prev.columns) !== JSON.stringify(m.columns))) {
       await this.ctx.fs.rm(`${this.dataDir}/${prev.table}`).catch(() => {});
     }
+    // (a changed app is not tried yet: its page starts as a person would see it)
+    this.inst.samples = null;
     this.inst.setManifest(m);
     this.inst.reload();
   }
@@ -597,6 +599,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
 
   // ── Try it ──
   async function tryOut(): Promise<void> {
+    if (timer) { clearTimeout(timer); timer = null; }
     const m = state.preview();
     if (!m || !preview) { state.tried = true; problems(); say('Try it runs the app once the problems above are fixed.'); return; }
     // (one column: the app is below the form, out of sight)

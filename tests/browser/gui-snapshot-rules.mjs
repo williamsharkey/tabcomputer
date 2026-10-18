@@ -9,6 +9,11 @@
 //   display size (the usual start then lays its window out for the new one),
 //   or by an app that read a sign-in; a restored process that ends at once is
 //   followed by a usual start; the setting; what `doctor` reports.
+// packed (l3afpad): an app that goes on sending X requests while its snapshot is
+//   packed (L3afpad's caret blinks; the packing is made 1.5 s slower, as on a
+//   loaded machine) is restored and keeps running: the requests kept are the
+//   image's own (#142: those sent meanwhile were kept too, and the restored
+//   process aborted in Xlib at its first event).
 // retake (geany by default): after a quit that outdated the snapshot, the app
 //   is started again where nobody sees it (no window, no mark in the dock)
 //   once the tab is quiet, its snapshot is kept, and the next launch is a
@@ -19,7 +24,7 @@
 //   memory it took (the browser's renderer processes, from `ps`).
 //
 //   npx vite build && PORT=5391 STATIC_DIR=$PWD/dist node server.mjs &
-//   node tests/browser/gui-snapshot-rules.mjs [URL] [--only rules|retake] [--retake APP,...] [--json FILE]
+//   node tests/browser/gui-snapshot-rules.mjs [URL] [--only rules|packed|retake] [--retake APP,...] [--json FILE]
 //
 // PLAYWRIGHT=/path/to/playwright-core and CHROMIUM=/path/to/chrome pick the tools. Exits 1 on a failure.
 import { execFileSync } from 'node:child_process';
@@ -38,7 +43,7 @@ const LIMIT = Number(process.env.GUI_LAUNCH_LIMIT_MS || 600_000);
 const READY = { gimp: 'GNU Image Manipulation Program' };
 
 const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
-const results = { rules: {}, retake: {} };
+const results = { rules: {}, packed: {}, retake: {} };
 let failed = 0;
 
 /** The setting on, in every document of the context (until a test says otherwise) */
@@ -280,6 +285,11 @@ if (!only || only === 'rules') {
       await page.waitForTimeout(3000);
       if ((await procs(page, app)).length !== 1) throw new Error(`not exactly one process of it: ${JSON.stringify(await procs(page, app))}`);
       if (await entry(page, app)) throw new Error('the snapshot that did not run is still stored');
+      // what it left is kept past the page: its status in words, for the next report (#142)
+      const failure = log.find((e) => e.restored === false);
+      if (!/killed by SIGABRT/.test(failure?.how ?? '')) throw new Error(`the failure's status is not said: ${JSON.stringify(failure)}`);
+      const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('tabcomputer-gui-snapshot-failures') ?? '[]'));
+      if (!kept.some((f) => f.app === app && /SIGABRT/.test(f.how))) throw new Error(`the failure is not kept in the profile: ${JSON.stringify(kept).slice(0, 300)}`);
       await quit(page, app);
       await page.evaluate(() => { window.__guiSnapshotKillRestored = false; });
       // nothing is started in the background for it (it is remembered until the build or a setting changes) ...
@@ -324,6 +334,53 @@ if (!only || only === 'rules') {
       await page.evaluate(() => { for (const w of window.__tabcomputer.desktop.windows()) if (w.appId === 'settings') w.close(); });
     });
   }
+  if (errors.length) { failed++; console.log(`FAIL  page errors: ${errors.join('; ').slice(0, 400)}`); }
+  await context.close();
+}
+
+// ── an app that talks while its snapshot is packed ──
+if (!only || only === 'packed') {
+  const app = 'l3afpad';
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await settingOn(page);
+  await page.goto(url + (url.includes('?') ? '&' : '?') + 'ui=desktop');
+  await boot(page, app);
+  await check('packed', 'an app that sends X requests while its snapshot is packed is restored and keeps running', async () => {
+    const notes = [];
+    // three rounds: the caret blinks about every 0.6 s, so 1.5 s of packing takes in a blink or two
+    for (let round = 0; round < 3; round++) {
+      await page.evaluate(() => { window.__guiSnapshotPackDelayMs = 1500; });
+      const first = await open(page, app);
+      if (first.restore?.restored) throw new Error('a start that should keep a snapshot was a restore');
+      const t = await taken(page, app);
+      if (!t.taken) throw new Error(`no snapshot: ${t.why}`);
+      // killed, not closed: a quit would rewrite its settings and outdate the snapshot
+      await page.evaluate((app) => { const k = window.__tabcomputer.kernel; for (const p of k.procs.values()) if ((p.comm ?? '').includes(app)) k.kill(p.pid, 9); }, app);
+      for (let i = 0; i < 100 && (await procs(page, app)).some((p) => p.state !== 'zombie'); i++) await page.waitForTimeout(100);
+      await page.waitForFunction(() => (window.__shiroX?.server.clients.size ?? 0) <= 1, null, { timeout: 30_000, polling: 100 });
+      await page.reload();
+      await boot(page, app);
+      const o = await open(page, app);
+      if (!o.restore?.restored) throw new Error(`round ${round + 1}: not restored: ${JSON.stringify(o.restore)}`);
+      await page.waitForTimeout(6000);
+      const log = await page.evaluate((app) => (window.__guiSnapshots ?? []).filter((e) => e.app === app), app);
+      const ended = log.find((e) => e.restored === false);
+      if (ended) throw new Error(`round ${round + 1}: ${ended.why} (${ended.how ?? ''}): ${String(ended.output ?? '').slice(-300)}`);
+      if (!(await procs(page, app)).some((p) => p.state === 'running')) throw new Error(`round ${round + 1}: the restored process is gone`);
+      notes.push(`${o.ms} ms`);
+      // and it is snapshotted again from a usual start next round
+      await page.evaluate((app) => { const k = window.__tabcomputer.kernel; for (const p of k.procs.values()) if ((p.comm ?? '').includes(app)) k.kill(p.pid, 9); }, app);
+      for (let i = 0; i < 100 && (await procs(page, app)).some((p) => p.state !== 'zombie'); i++) await page.waitForTimeout(100);
+      await page.evaluate(async (app) => {
+        await new Promise((res) => { const r = indexedDB.open('tabcomputer-gui-snapshots'); r.onsuccess = () => { const db = r.result; const t = db.transaction(['snapshots', 'index'], 'readwrite'); t.objectStore('snapshots').delete(app); t.objectStore('index').delete(app); t.oncomplete = () => { db.close(); res(); }; }; r.onerror = () => res(); });
+      }, app);
+      await page.waitForFunction(() => (window.__shiroX?.server.clients.size ?? 0) <= 1, null, { timeout: 30_000, polling: 100 });
+    }
+    return `restored and running three times; windows after ${notes.join(', ')}`;
+  });
   if (errors.length) { failed++; console.log(`FAIL  page errors: ${errors.join('; ').slice(0, 400)}`); }
   await context.close();
 }

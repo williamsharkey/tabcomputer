@@ -629,6 +629,9 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
     actions: [...p.sigactions.entries()].map(([sig, a]) => [sig, { flags: a.flags, mask: [...a.mask], restorer: a.restorer }]),
     mask: [...p.sigmask],
   }));
+  // (tests: the rest takes this much longer, as on a loaded machine, so that the app sends more meanwhile)
+  const packDelay = Number((globalThis as { __guiSnapshotPackDelayMs?: number }).__guiSnapshotPackDelayMs) || 0;
+  if (packDelay > 0) await new Promise((res) => setTimeout(res, packDelay));
   const again = family(kernel, main);
   const look2 = again.length === procs.length && again.every((p, i) => p === procs[i]) ? await lookAtFiles(procs, xSock, started.output) : 'its processes changed meanwhile';
   if (typeof look2 === 'string' || JSON.stringify(look2) !== JSON.stringify(look)) return { ok: false, why: typeof look2 === 'string' ? look2 : 'its descriptors changed, or its processes talked, meanwhile' };

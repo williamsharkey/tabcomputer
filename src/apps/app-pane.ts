@@ -144,11 +144,46 @@ export async function appPane(o: { fs: FileSystem; shell: Shell; dir: string; co
       ]);
       const wm = (globalThis as { __shiroDesktop?: import('../desktop/wm').DesktopAPI }).__shiroDesktop ?? null;
       let shown: import('./share-ui').ShareShown;
+      const origin = siteOriginOf(location, !!guestInfo());
+      // A gist holds text files side by side: the app can be one when it is that (Save to a gist, as in the Studio)
+      let texts: Record<string, string> | null = null;
+      let name = '';
       try {
         const m = await registry.loadManifest(fs, dir);
-        shown = await shareFiles(await collectAppFiles(fs, dir), { id: m.id, name: m.name }, siteOriginOf(location, !!guestInfo()));
+        name = m.name;
+        const files = await collectAppFiles(fs, dir);
+        shown = await shareFiles(files, { id: m.id, name: m.name }, origin);
+        texts = {};
+        for (const [path, bytes] of files) {
+          let text: string | null = null;
+          try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* not text */ }
+          if (path.includes('/') || text === null || text.includes('\0')) { texts = null; break; }
+          texts[path] = text;
+        }
       } catch (e) { shown = { name: inst?.manifest.name ?? 'The app', problem: (e as Error).message }; }
-      showShareScreen(shown, wm, (t) => writeClipboard(t).catch(() => false));
+      let signedIn = false;
+      try { signedIn = !!localStorage.getItem((await import('../github-auth')).GITHUB_TOKEN_KEY); } catch { /* no storage */ }
+      let win: ReturnType<typeof showShareScreen> = null;
+      win = showShareScreen(shown, wm, (t) => writeClipboard(t).catch(() => false), {
+        qr: true,
+        actions: (status) => {
+          if (!signedIn || !texts || 'problem' in shown) return [];
+          const gist = document.createElement('button');
+          gist.type = 'button';
+          gist.dataset.act = 'gist';
+          gist.textContent = 'Save to a gist';
+          gist.title = 'GitHub keeps the app as a secret gist of your account. The link then names the gist.';
+          gist.addEventListener('click', () => {
+            gist.disabled = true;
+            status('The app is being sent to GitHub.');
+            void import('../commands/link').then(({ saveGist }) => saveGist(texts!, name, origin)).then((g) => {
+              win?.close(true);
+              showShareScreen({ id: (shown as { id: string }).id, name, kind: 'gist', url: `${origin}/?app=gist:${g.id}`, repo: `gist.github.com/${g.id}`, asks: true }, wm, (t) => writeClipboard(t).catch(() => false), { qr: true });
+            }, (e: unknown) => { status((e as Error)?.message ?? 'No gist was made.'); gist.disabled = false; });
+          });
+          return [gist];
+        },
+      });
     },
     problems(lines) {
       typed.replaceChildren(...lines.map((l) => { const d = document.createElement('div'); d.className = 'bad'; d.textContent = `app.json: ${l}`; return d; }));

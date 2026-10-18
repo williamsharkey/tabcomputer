@@ -241,6 +241,10 @@ describe('link: the rules, one at a time', () => {
     expect(editorFiles(e('nano ~/site/notes.txt', '/tmp', 0, { changed: [`${HOME}/site/notes.txt`, '/tmp/x'] }))).toEqual([`${HOME}/site/notes.txt`]);
     const r = trim([vi], { cwd: `${HOME}/site`, files: [[`${HOME}/site/notes.txt`, { text: 'n\n' }], ['/var/lib/pkg/status.json', { text: '{}' }]] });
     expect(r.script).toBe('cd ~/site\ncat > notes.txt <<\'EOF\'\nn\nEOF\n');
+    // a file that holds a private key stays out, as one with a token does
+    const key = trim([vi], { cwd: `${HOME}/site`, files: [[`${HOME}/site/notes.txt`, { text: '-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn\n' }]] });
+    expect(key.script).not.toContain('PRIVATE KEY');
+    expect(key.notInLink.join(' ')).toContain('is not in the link');
     // an install is kept by its name, also when nothing it wrote was recorded
     expect(trim([e('pkg install jq', HOME, 0), e('python3 main.py', HOME, 0)]).script).toBe('pkg install jq\n');
   });
@@ -250,10 +254,14 @@ describe('link: the rules, one at a time', () => {
       ['export OPENAI_API_KEY=abc123', 'OPENAI_API_KEY'], ['GITHUB_TOKEN=x gh repo list > repos.txt', 'GITHUB_TOKEN'], ['export DB_PASSWORD="hunter two"', 'DB_PASSWORD'],
       ['curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123" https://api.github.com/user -o me.json', 'a token'], ['npm config set //registry.npmjs.org/:_authToken=abcdef', '_authToken'],
       ['mysql --password=s3cret -e "create database x"', 'password'], ['tool login --token abc123', 'token'], ['echo sk-abcdefghijklmnopqrstuvwxyz > key.txt', 'a token'],
+      ['git clone https://me:hunter2@git.example.com/a/b.git', 'a password in an address'], ['curl -H "Authorization: Basic bWU6cHc=" https://x.example/a -o a', 'an Authorization header'],
+      ['curl -H \'Authorization: token abcdef123456\' https://x.example/a', 'an Authorization header'], ['curl -u me:hunter2 https://x.example/a -o a', 'a password'],
+      ['wget --user=me:hunter2 https://x.example/a', 'a password'], ['echo glpat-abcdefghijklmnopqrstu > t', 'a token'], ['huggingface-cli login --token hf_abcdefghijklmnopqrstuvwxyz012345', 'a token'],
     ];
     for (const [line, name] of secrets) expect(secretIn(line), line).toBe(name);
     // a name alone gives nothing away
-    for (const line of ['export PATH=$PATH:~/bin', 'export API_KEY=$OTHER_KEY', 'tool login --token "$TOKEN"', 'export NODE_ENV=production', 'git clone https://github.com/a/b', 'ssh-keygen -t ed25519', 'tool --password']) expect(secretIn(line), line).toBe('');
+    for (const line of ['export PATH=$PATH:~/bin', 'export API_KEY=$OTHER_KEY', 'tool login --token "$TOKEN"', 'export NODE_ENV=production', 'git clone https://github.com/a/b', 'ssh-keygen -t ed25519', 'tool --password',
+      'git clone https://$USER:$PASS@git.example.com/a/b.git', 'curl -H "Authorization: Bearer $TOKEN" https://x.example/a', 'curl -u me https://x.example/a', 'curl -u "$CREDS" https://x.example/a', 'ssh me@host', 'echo "see https://example.com/a:b@c"']) expect(secretIn(line), line).toBe('');
     const r = trim([
       e('export OPENAI_API_KEY=abc123', HOME, 0),
       e('export NODE_ENV=production', HOME, 0),

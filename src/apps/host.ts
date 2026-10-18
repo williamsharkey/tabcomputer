@@ -95,9 +95,9 @@ export interface HostApp {
   /** This site ships the app: its supplied page may say what the site checked */
   reviewed?: boolean;
   /**
-   * The Studio's "Try it" (src/apps/studio.ts): the next page that says hello runs with these,
-   * as if they were given to it. Files in the app's data folder for a files app; true for a
-   * form (it runs once with the values it starts with). Read once.
+   * The Studio's "Try it" (src/apps/studio.ts): a page that says hello runs with these, as if
+   * they were given to it. Files in the app's data folder for a files app; true for a form (it
+   * runs once with the values it starts with). Kept until the Studio changes the app.
    */
   takeSamples?(): { path: string; rel: string }[] | true | null;
 }

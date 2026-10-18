@@ -79,7 +79,7 @@ export async function shareInstalled(id: string): Promise<void> {
     const why = (e as Error)?.message ?? String(e);
     shown = { name: app?.name ?? id, problem: /[.!?]$/.test(why) ? why : `${why}.` };
   }
-  showShareScreen(shown, inAppMode() ? null : desktop(), (text) => writeClipboard(text).catch(() => false));
+  showShareScreen(shown, inAppMode() ? null : desktop(), (text) => writeClipboard(text).catch(() => false), { qr: true });
 }
 
 /** Export an installed app with its data to the person's disk (the menu, the mark's button). A failure is said in a window. */

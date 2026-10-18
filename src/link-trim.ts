@@ -256,9 +256,18 @@ const sizeText = (n: number): string => (n < 1000 ? `${n} bytes` : n < 1e6 ? `${
 const RUN_LINK = /^\.\s+~\/run\/([a-z0-9][a-z0-9-]*)\/\.run-link$/;
 
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL)/i;
-const SECRET_SHAPE = /(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})/;
-/** The same shapes in a file's text, where they must start a word (`task-list-container-wrapper` is no key) */
-const FILE_SECRET = new RegExp('(?<![A-Za-z0-9_-])' + SECRET_SHAPE.source);
+const SECRET_SHAPE = /(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|npm_[A-Za-z0-9]{36}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}|AIza[0-9A-Za-z_-]{35}|[sr]k_live_[A-Za-z0-9]{20,})/;
+/** The same shapes in a file's text, where they must start a word (`task-list-container-wrapper` is no key), and a private key */
+const FILE_SECRET = new RegExp('(?<![A-Za-z0-9_-])' + SECRET_SHAPE.source + '|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----');
+/** A password in an address (`https://me:pw@host`), unless it is a variable */
+const ADDRESS_PASSWORD = /\b[a-z][a-z0-9+.-]*:\/\/[^\s\/:@'"]+:(?!\$)[^\s\/@'"]+@/i;
+/** An Authorization header with a value (`Authorization: Bearer abc…`), unless the value is a variable */
+function authHeader(line: string): boolean {
+  const m = /\bAuthorization:\s*([^'"\n]*)/i.exec(line);
+  const words = m ? m[1].trim().split(/\s+/) : [];
+  const value = words.length > 1 ? words[1] : words[0];
+  return !!value && value.length >= 6 && !value.startsWith('$');
+}
 
 /**
  * What a line may give away: the name it sets a secret under
@@ -268,6 +277,8 @@ const FILE_SECRET = new RegExp('(?<![A-Za-z0-9_-])' + SECRET_SHAPE.source);
  */
 export function secretIn(line: string): string {
   if (SECRET_SHAPE.test(line)) return 'a token';
+  if (ADDRESS_PASSWORD.test(line)) return 'a password in an address';
+  if (authHeader(line)) return 'an Authorization header';
   for (const cmd of simpleCommands(line)) {
     for (let i = 0; i < cmd.words.length; i++) {
       const m = /([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/.exec(cmd.words[i]);
@@ -275,6 +286,10 @@ export function secretIn(line: string): string {
       const flag = /^--?([A-Za-z][A-Za-z0-9-]*)$/.exec(cmd.words[i]);
       const next = cmd.words[i + 1];
       if (flag && SECRET_NAME.test(flag[1].replace(/-/g, '_')) && next && !next.startsWith('-') && !/^\$[{(A-Za-z_]/.test(next)) return flag[1];
+      // curl and wget's user:password (`-u me:pw`, `--user=me:pw`)
+      const user = /^(?:-u|--user|--http-user)(?:=(.*))?$/.exec(cmd.words[i]);
+      const pair = user && (user[1] ?? next);
+      if (pair && /^[^$:]+:(?!\$).+/.test(pair)) return 'a password';
     }
   }
   return '';
@@ -483,7 +498,7 @@ export function trimSession(input: TrimInput): Trimmed {
     // A file that holds text shaped like a token stays out, as a typed line that holds one does:
     // its whole text would otherwise be in a link made for other people
     if (FILE_SECRET.test(now.text)) {
-      notInLink.push(`${shown} is not in the link: it holds text shaped like a token, and a link is for other people. Add it by hand if it holds none.`);
+      notInLink.push(`${shown} is not in the link: it holds text shaped like a token or a private key, and a link is for other people. Add it by hand if it holds none.`);
       continue;
     }
     // Where the editor was started, when the file is under it: the path then reads as it was typed

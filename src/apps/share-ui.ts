@@ -114,16 +114,18 @@ export function buildShareScreen(share: ShareShown, copy: (text: string) => Prom
 }
 
 /** Show the share screen: a desktop window, or an overlay where there is no desktop (or the tab is an app) */
-export function showShareScreen(share: ShareShown, wm: DesktopAPI | null, copy: (text: string) => Promise<boolean>): DesktopWindow | null {
+export function showShareScreen(share: ShareShown, wm: DesktopAPI | null, copy: (text: string) => Promise<boolean>, opts: ShareScreenOptions = {}): DesktopWindow | null {
   ensureShareStyle();
   let close = () => {};
-  const content = buildShareScreen(share, copy, () => close());
+  const content = buildShareScreen(share, copy, () => close(), opts);
+  // (room for the QR code under the link)
+  const tall = !!opts.qr && !('problem' in share);
   let win: DesktopWindow | null = null;
   if (wm) {
     const wa = wm.workArea();
     const w = win = wm.createWindow({
       appId: 'app-share', title: ('problem' in share && share.title) || `Share ${share.name}`, content: { kind: 'dom', element: content },
-      width: Math.min(520, Math.max(280, wa.width - 40)), height: Math.min(330, Math.max(240, wa.height - 80)), minWidth: 280, minHeight: 220,
+      width: Math.min(520, Math.max(280, wa.width - 40)), height: Math.min(tall ? 560 : 330, Math.max(240, wa.height - 80)), minWidth: 280, minHeight: 220,
     });
     close = () => { w.close(true); };
     w.focus();

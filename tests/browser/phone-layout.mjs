@@ -635,6 +635,9 @@ async function fresh(width, height, theme, welcome) {
       await s.page.waitForTimeout(600);
       const w = await s.page.evaluate(() => { const e = document.querySelector('.sd-welcome'); if (!e) return null; const r = e.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), top: Math.round(r.top), home: document.getElementById('shiro-desktop').classList.contains('sd-at-home') }; });
       check(`${T} sheets: on a first visit the Welcome is a sheet over Home`, !!w && w.home && w.left === 0 && w.right === s.W && w.bottom === s.H && w.top > 0, w);
+      // Got It is in view without scrolling the sheet, on its side too (#166)
+      const gotIt = await s.page.evaluate(() => { const e = document.querySelector('.sd-welcome'), b = [...(e?.querySelectorAll('.sd-welcome-foot [data-act=close]') ?? [])].pop(); if (!b) return null; const r = b.getBoundingClientRect(), w = e.getBoundingClientRect(); return { bottom: Math.round(r.bottom), sheet: Math.round(w.bottom), scrolls: e.scrollHeight > e.clientHeight + 1 }; });
+      check(`${T} sheets: the Welcome's Got It is in view, the sheet does not scroll`, !!gotIt && !gotIt.scrolls && gotIt.bottom <= gotIt.sheet, gotIt);
       await shot(s, '15-welcome');
       await targets(s, 'The Welcome', ['.sd-welcome']);
       await tapOn(s, '.sd-welcome-demo[data-demo=python]');
@@ -830,7 +833,7 @@ for (const [w, h] of sizes) for (const theme of themes) {
   if (['home', 'apps', 'pill', 'switcher', 'terminal', 'keyboard', 'sheets', 'gui', 'rotate'].some(part)) await phone(w, h, theme, n === 0);
   n++;
 }
-if (part('sheets')) await fresh(sizes[0][0], sizes[0][1], themes[0], true);
+if (part('sheets')) for (const [w, h] of sizes) await fresh(w, h, themes[0], true);
 if (part('python')) await fresh(sizes[0][0], sizes[0][1], themes[0], false);
 if (part('link')) await link(sizes[0][0], sizes[0][1], themes[0]);
 if (part('desktop')) await desktop();

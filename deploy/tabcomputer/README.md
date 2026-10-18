@@ -23,6 +23,11 @@ droplet are not involved.
   release.sh sets up). The build log is at `/_deploy/log`. `https://tabcomputer.com/deployed.txt` shows the live
   commit. A commit whose build fails is recorded in `/opt/tabcomputer/FAILED_SHA`
   and skipped; the previous release keeps serving. The last 3 releases are kept.
+  `/_deploy/status.json` (written by release.sh) says `building`, `live` or
+  `failed`, with the commit asked for, the commit that was live, and on a failure the
+  log's last 30 lines. `scripts/predeploy.sh` reads CI's verdict on a commit before
+  the push (`--local` builds a clean copy as the droplet does), and
+  `scripts/predeploy.sh --wait` follows status.json after it.
 - **Disk caches:** `/claude-releases/` (server.mjs, `claude install`) keeps
   Anthropic's sha256-checked native Claude Code builds in `$TMPDIR/shiro-claude`
   (`TABCOMPUTER_CLAUDE_CACHE`): the newest 3 versions (`TABCOMPUTER_CLAUDE_KEEP`)

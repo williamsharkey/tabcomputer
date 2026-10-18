@@ -273,8 +273,14 @@ if (wants('app')) for (const device of DEVICES) {
   let f = await ready(page, id);
   const first = f && await until(page, () => f.evaluate(() => (window.__app?.output ? window.__app.output : null)), 30_000);
   time(`${D} app: Install to its first result`, Date.now() - t1);
-  const mode = await page.evaluate(() => ({ become: document.body.classList.contains('become-active'), path: location.pathname, hash: location.hash }));
-  check(`${D} app: Install opens it${phone ? ' as the app' : ' in a window'}, and it works`, first === '"Ada"\n"Grace"\n' && mode.become === phone && (!phone || mode.path === `/${id}`) && mode.hash === '', JSON.stringify({ first, mode }));
+  const mode = await page.evaluate((id) => {
+    const wm = window.__shiroDesktop, w = wm?.focused?.(), r = w?.element?.getBoundingClientRect?.();
+    return { become: document.body.classList.contains('become-active'), path: location.pathname, hash: location.hash,
+      // the desktop's phone layout (#154) shows the app on the whole screen, with the pill, instead
+      layout: !!document.getElementById('shiro-desktop')?.classList.contains('sd-phone'), focused: w?.appId ?? null, whole: !!r && Math.round(r.width) === innerWidth };
+  }, id);
+  const asApp = mode.layout ? !mode.become && mode.focused === id && mode.whole : mode.become && mode.path === `/${id}`;
+  check(`${D} app: Install opens it${phone ? ' as the app' : ' in a window'}, and it works`, first === '"Ada"\n"Grace"\n' && (phone ? asApp : !mode.become) && mode.hash === '', JSON.stringify({ first, mode }));
   const installed = await side(page, `app list -l; cat ~/Apps/${id}/app.json`);
   check(`${D} app: what is installed is one app.json, from the link`, /link:[0-9a-f]{16}/.test(installed.o) && installed.o.includes('"run": "jq {filter}"') && (await side(page, `ls ~/Apps/${id}`)).o === 'app.json', installed.o.slice(0, 300));
   // app share gives the readable form back
@@ -605,6 +611,8 @@ if (wants('link')) for (const device of DEVICES) {
   check(`${D} link: Make a gist sends the script to GitHub as a secret gist and gives #gist:USER/ID`, !!gisted && gisted.link === `${origin}/#gist:octocat/${GIST_SH}` && posted?.method === 'POST' && posted.auth === 'Bearer gho_standin'
     && posted.body.public === false && posted.body.files['setup.sh'].content === `echo ${noise}\n`, JSON.stringify(gisted && gisted.link));
   await page.click('.tc-link [data-act=close]');
+  // (gone before the next one opens: a window still closing is read first otherwise)
+  await page.waitForSelector('.tc-link', { state: 'detached', timeout: 10_000 }).catch(() => {});
   // the System menu's item opens the same window
   if (!device.hasTouch) {
     await page.click('[aria-label="System menu"]');

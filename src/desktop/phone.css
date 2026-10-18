@@ -265,6 +265,15 @@
 @media (min-width: 560px) { .sd-phone .sd-welcome-demos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .sd-phone .sd-welcome-foot > span { display: none; }
 .sd-phone .sd-welcome-foot { justify-content: flex-end; }
+/* A phone on its side: two rows of three and no lede, so Got It stays in view (#166) */
+@media (orientation: landscape) and (max-height: 480px) {
+  .sd-phone .sd-welcome { padding-top: 12px; }
+  .sd-phone .sd-welcome h2 { font-size: 17px; margin-bottom: 8px; }
+  .sd-phone .sd-welcome-lede { display: none; }
+  .sd-phone .sd-welcome-demos { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sd-phone .sd-welcome-demo { min-height: 48px; }
+  .sd-phone .sd-welcome-foot { margin-top: 8px; }
+}
 
 /* ── The apps' own controls (the desktop's shared ones), sized for a finger ── */
 .sd-phone .sd-win .sd-btn, .sd-phone .sd-win .sd-seg button { min-height: 44px; }

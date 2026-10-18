@@ -268,7 +268,11 @@ export class AppInstance {
   private offs: (() => void)[] = [];
   /** The window its tab.js calls act on */
   window: HostDeps['window'] = null;
-  /** The Studio's "Try it": what the next page that loads runs with (host.ts `takeSamples`) */
+  /**
+   * The Studio's "Try it": what each page that loads runs with (host.ts `takeSamples`), until the
+   * Studio changes the app. Not used up by the first page: one still loading when Try it reloads
+   * could take it and be replaced.
+   */
   samples: { path: string; rel: string }[] | true | null = null;
 
   constructor(ref: AppRef) {
@@ -286,7 +290,7 @@ export class AppInstance {
     const d = appsDeps();
     const self = this;
     return new AppHost({ manifest: this.manifest, dir: this.dir, dataDir: this.dataDir, reviewed: this.source === 'site', get confined() { return self.confined; },
-      takeSamples: () => { const s = self.samples; self.samples = null; return s; },
+      takeSamples: () => self.samples,
     }, {
       fs: d.fs as unknown as HostDeps['fs'],
       home: homeDir(),

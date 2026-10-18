@@ -233,6 +233,13 @@ async function studio(s) {
     check(`${D} studio expenses: Install says where it is`, s.touch ? /on Home now/.test(said ?? '') : /in the dock now/.test(said ?? ''), said);
     check(`${D} studio expenses: the desktop has it`, await page.evaluate(() => window.__shiroDesktop.apps().some((a) => a.id === 'expenses')));
     await closeStudio(s);
+    // The draft is kept across a reload of the tab: the start offers to go on with it (#165)
+    await page.reload();
+    await booted(page);
+    await openStudio(s, new Count(s.touch));
+    const resume = await until(page, () => page.$eval('[data-act=resume]', (b) => b.textContent).catch(() => null), 10_000);
+    check(`${D} studio: after a reload the start offers to go on with the draft`, resume === 'Go on with Expenses', resume);
+    await closeStudio(s);
     // An installed app opened for editing (its App menu's Edit in Studio)
     await page.evaluate(() => window.__shiroDesktop.openApp('studio', { id: 'expenses' }));
     const name = await until(page, () => page.$eval('[data-k=name]', (i) => i.value));
@@ -329,6 +336,7 @@ async function codeFlow(s, app, id, template, name, opts = {}) {
   await tap(s, c, '.tc-app-share [data-act=copy]');
   record(s, 'Code', app === 'resize-pictures' ? 'Make pictures smaller' : name, c, Date.now() - t0, link);
   check(`${D} code ${app}: Share in the bar gives the readable link`, link.startsWith(`${origin}/#`), link.slice(0, 100));
+  check(`${D} code ${app}: its share screen has the QR code too`, await page.$('.tc-app-share [data-part=qr] svg') !== null);
   await shot(s, `code-${id}`);
   await page.evaluate(() => { for (const w of window.__shiroDesktop.windows()) if (w.appId === 'code' || w.appId === 'app-share') w.close(true); });
   await page.waitForTimeout(400);

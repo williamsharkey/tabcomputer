@@ -51,7 +51,14 @@ async function harness(env: Record<string, string> = {}) {
     }
     throw new Error(`${packages}: never got there`);
   };
-  return { dir, sets: join(dir, 'layers/sets'), port, get, set, settled, until, spawned: () => get('/__spawned') as Promise<{ file: string; args: string[]; env: Record<string, string> }[]> };
+  const spawned = () => get('/__spawned') as Promise<{ file: string; args: string[]; env: Record<string, string> }[]>;
+  /** The builders started, once there are `n` (a build is 'building' a moment before its builder says it started) */
+  const spawnedN = async (n: number) => {
+    let list = await spawned();
+    for (let i = 0; i < 50 && list.length < n; i++) { await new Promise((r) => setTimeout(r, 100)); list = await spawned(); }
+    return list;
+  };
+  return { dir, sets: join(dir, 'layers/sets'), port, get, set, settled, until, spawned, spawnedN };
 }
 afterAll(() => { for (const p of procs) p.kill(); });
 
@@ -246,13 +253,13 @@ describe('one build at a time, and limits per address', () => {
     expect(await h.settled('hold-a')).toMatchObject({ state: 'ready' });
     // the next one started by itself
     expect((await h.until('hold-b', (x) => x.state === 'building')).key).toBe(b.key);
-    expect(await h.spawned()).toHaveLength(2);
+    expect(await h.spawnedN(2)).toHaveLength(2);
     await h.get(`/__release?key=${b.key}`);
     const c = await h.set('hold-c', '', '10.1.0.2');
     await h.get(`/__release?key=${c.key}`);
     expect(await h.settled('hold-b')).toMatchObject({ state: 'ready' });
     expect(await h.settled('hold-c')).toMatchObject({ state: 'ready' });
-    expect(await h.spawned()).toHaveLength(3);
+    expect(await h.spawnedN(3)).toHaveLength(3);
   }, 30_000);
 
   it('an address starts only so many builds in an hour', async () => {

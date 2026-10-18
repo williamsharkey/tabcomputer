@@ -79,6 +79,8 @@ const CSS = `
   .sd-launch-note { display: none; }
   .sd-launch-actions { margin-top: 4px; }
 }
+/* Shorter still: the name says which app, so the icon goes and Cancel stays in view (#166) */
+@container (max-height: 240px) { .sd-launch-icon { display: none; } }
 /* A phone on its side: the stage, the bar and the buttons (the menu bar has the name) */
 @container (max-height: 190px) {
   .sd-launch { gap: 3px; padding: 0 16px 6px; }

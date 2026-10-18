@@ -639,8 +639,12 @@ describe('WASM packages', () => {
     expect((await sh('/usr/bin/rg -t py -l alpha')).out).toBe('src/b.py\n');
     step('rg 3');
     expect((await sh("/usr/bin/rg -g '*.rs' -c fn")).out).toBe('src/a.rs:2\n');
-    step('rg 4');
-    expect((await sh('/usr/bin/rg --version | head -1; /usr/bin/rg nothing-here; echo rc=$?')).out).toBe('ripgrep 15.2.0 (rev b05740ceb6)\nrc=1\n');
+    step('rg 4a version|head');
+    const v = await sh('/usr/bin/rg --version | head -1');
+    step('rg 4b nothing-here');
+    const n = await sh('/usr/bin/rg nothing-here; echo rc=$?');
+    step('rg 4c');
+    expect(v.out + n.out).toBe('ripgrep 15.2.0 (rev b05740ceb6)\nrc=1\n');
     step('done');
     clearInterval(iv);
   }, 180_000);

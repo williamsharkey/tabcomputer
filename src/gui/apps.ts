@@ -643,6 +643,26 @@ async function snapshotPlan(kernel: Kernel, m: AppsManifest, name: string, app: 
   }
 }
 
+/**
+ * A restored process ended within seconds, and not cleanly: what it left. Logged
+ * to the kernel log (dmesg) and kept in the profile (`restoreFailures` in
+ * snapshot.ts), since the app is started again at once and its output with it.
+ */
+async function restoreFailure(plan: Plan, name: string, pid: number, status: number, ms: number, output: string, klogAt: number): Promise<import('./snapshot').RestoreFailure> {
+  const { klog, LOG_WARNING } = await import('../kernel/klog');
+  const meta = plan.stored!.meta;
+  const failure: import('./snapshot').RestoreFailure = {
+    app: name, at: Date.now(), status, how: plan.S.statusWords(status), ms,
+    engine: plan.S.buildIds().engine, hidden: !!meta.hidden, samePid: pid === meta.procs[0].pid,
+    output: output.slice(-4000),
+    klog: klog.since(Math.max(klogAt, klog.firstSeq)).map((r) => r.text).slice(-40),
+  };
+  const last = output.trim().split('\n').filter(Boolean).slice(-3);
+  klog.log(LOG_WARNING, `gui: ${name}[${pid}] restored from its snapshot ended after ${ms} ms (${failure.how}); its snapshot is dropped and the app started the usual way${last.length ? `. Its last output: ${last.join(' | ').slice(0, 400)}` : ''}`);
+  plan.S.noteRestoreFailure(failure);
+  return failure;
+}
+
 /** What snapshots did, newest last (`window.__guiSnapshots`: tests and the benchmark read it) */
 function snapshotLog(app: string, what: Record<string, unknown>): void {
   const g = globalThis as { __guiSnapshots?: Record<string, unknown>[] };
@@ -701,9 +721,12 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
   let p: Process | null = null;
   const restoredPids: number[] = [];
   let restoredAt = 0;
+  // (where the kernel log was when the restore began: a restore that ends at once reports what it logged)
+  let klogAt = 0;
   if (plan?.stored) {
     const t0 = Date.now();
     try {
+      klogAt = (await import('../kernel/klog')).klog.lastSeq;
       // (its windows name the pid it had then)
       if (!kernel.procs.has(plan.stored.meta.procs[0].pid) && !ids.pidAppIds.has(plan.stored.meta.procs[0].pid)) { ids.pidAppIds.set(plan.stored.meta.procs[0].pid, name); restoredPids.push(plan.stored.meta.procs[0].pid); }
       const r = await plan.S.restoreSnapshot(kernel, plan.stored, { stdin: new BufferFile(''), output: out });
@@ -747,7 +770,9 @@ export async function launchApp(kernel: Kernel, name: string, args: string[] = [
     // keeps a new one). The person asked for the app: it is started the usual way now
     if (restoredAt && plan && st !== 0 && Date.now() - restoredAt < 5000) {
       const why = `the restored process ended at once (${st})`;
-      snapshotLog(name, { restored: false, why });
+      // What it left, kept past this page (tabcomputer#142): its status, what it wrote, the kernel log
+      const failure = await restoreFailure(plan, name, first.pid, st, Date.now() - restoredAt, out.text(), klogAt);
+      snapshotLog(name, { restored: false, why, how: failure.how, output: failure.output.slice(-2000), klog: failure.klog });
       await plan.S.dropSnapshot(name);
       plan.S.setSkip(name, plan.key, why);
       ids.pidAppIds.delete(first.pid);

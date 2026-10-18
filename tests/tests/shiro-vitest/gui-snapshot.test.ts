@@ -384,6 +384,45 @@ describe('GUI snapshots: storage', () => {
     expect(await S.listSnapshots()).toEqual([]);
   });
 
+  it('reads a snapshot\'s metadata and images from one save, even when another is saved as it is read (#142)', async () => {
+    await createTestShell();   // (fake-indexeddb)
+    const S = await import('@shiro/gui/snapshot');
+    await S.dropAllSnapshots();
+    // (the key names the save; the image's length says which save it came from)
+    const snap = (key: string, bytes: number) => ({ meta: { v: S.VERSION, app: 'l3afpad', key, taken: Date.now(), procs: [], files: [], x: { index: 200, atoms: [], bytes: 0, time: 0 }, opened: [], sizes: { image: bytes, stored: bytes, x: 0 } }, images: [new ArrayBuffer(bytes)], x: new ArrayBuffer(0) }) as never;
+    for (let round = 0; round < 20; round++) {
+      await S.saveSnapshot(snap('a', 100), 1e6);
+      const [got] = await Promise.all([S.loadSnapshot('l3afpad'), S.saveSnapshot(snap('b', 200), 1e6)]);
+      expect(got).not.toBeNull();
+      expect(got!.images[0].byteLength).toBe(got!.meta.key === 'a' ? 100 : 200);
+    }
+    await S.dropAllSnapshots();
+  });
+
+  it('a restore that ends at once is kept with its status, its output and the kernel log, the newest five (#142)', async () => {
+    const S = await import('@shiro/gui/snapshot');
+    expect(S.statusWords(6)).toBe('killed by SIGABRT');
+    expect(S.statusWords(6 | 0x80)).toBe('killed by SIGABRT (core dumped)');
+    expect(S.statusWords(11)).toBe('killed by SIGSEGV');
+    expect(S.statusWords(1 << 8)).toBe('exit status 1');
+    const store = new Map<string, string>();
+    const real = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } } });
+    try {
+      expect(S.restoreFailures()).toEqual([]);
+      const f = (n: number) => ({ app: 'l3afpad', at: n, status: 6, how: S.statusWords(6), ms: 40, engine: 'engines/blink/v-1/', hidden: false, samePid: true, output: 'x'.repeat(5000) + `run ${n}`, klog: [`traps: l3afpad[104] blink aborted: run ${n}`] });
+      for (let n = 1; n <= 7; n++) S.noteRestoreFailure(f(n));
+      const kept = S.restoreFailures();
+      expect(kept.map((k) => k.at)).toEqual([3, 4, 5, 6, 7]);
+      expect(kept[4].output.length).toBe(4000);
+      expect(kept[4].output.endsWith('run 7')).toBe(true);
+      expect(kept[4].klog).toEqual(['traps: l3afpad[104] blink aborted: run 7']);
+      expect(kept[4].how).toBe('killed by SIGABRT');
+    } finally {
+      if (real) Object.defineProperty(globalThis, 'localStorage', real); else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+
   it('remembers an app that can take no snapshot until what it was asked with changes', async () => {
     const S = await import('@shiro/gui/snapshot');
     const store = new Map<string, string>();

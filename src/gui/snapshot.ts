@@ -42,6 +42,7 @@ import type { XServer } from '../x11/server';
 import type { EngineCheckpoint } from '../x86-engine/blink';
 
 import { credentialFileReason } from '../credentials';
+import { SIGNAL_NAMES } from '../kernel/abi';
 import { snapshotsOn } from './snapshot-setting';
 export { snapshotsOn as snapshotsEnabled, setSnapshotsEnabled } from './snapshot-setting';
 
@@ -153,12 +154,18 @@ async function tx<T>(mode: IDBTransactionMode, run: (snapshots: IDBObjectStore, 
 export const listSnapshots = (): Promise<IndexEntry[]> => tx<IndexEntry[]>('readonly', (_s, i) => i.getAll()).then((v) => v ?? [], () => []);
 export const snapshotEntry = (app: string): Promise<IndexEntry | null> => tx<IndexEntry | undefined>('readonly', (_s, i) => i.get(app)).then((v) => v ?? null, () => null);
 
+/**
+ * The whole snapshot. Its index entry and its images are read in one
+ * transaction: a snapshot saved meanwhile (a retake finishing as the app is
+ * launched, another tab) is never read as one's metadata with the other's
+ * images.
+ */
 export async function loadSnapshot(app: string): Promise<StoredSnapshot | null> {
   try {
-    const entry = await snapshotEntry(app);
-    if (!entry) return null;
-    const body = await tx<{ images: ArrayBuffer[]; x: ArrayBuffer } | undefined>('readonly', (s) => s.get(app));
-    return body ? { meta: entry.meta, images: body.images, x: body.x } : null;
+    let entry: IDBRequest<IndexEntry | undefined> | null = null;
+    const body = await tx<{ images: ArrayBuffer[]; x: ArrayBuffer } | undefined>('readonly', (s, i) => { entry = i.get(app); return s.get(app); });
+    const meta = (entry as IDBRequest<IndexEntry | undefined> | null)?.result?.meta;
+    return body && meta ? { meta, images: body.images, x: body.x } : null;
   } catch { return null; }
 }
 
@@ -685,6 +692,58 @@ export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, re
     return finish({ ok: false, never: true, why: `never quiet: ${why}` });
   })().catch((e) => ({ ok: false, why: String((e as Error)?.message ?? e) }));
   return { done, cancel: () => { cancelled = true; } };
+}
+
+// ── a restore that did not run ──
+
+const FAILURES = 'tabcomputer-gui-snapshot-failures';
+/** How many failed restores are kept, newest last, and how much of each one's output */
+const FAILURES_KEPT = 5, FAILURE_OUTPUT = 4000;
+
+export interface RestoreFailure {
+  app: string; at: number;
+  /** The wait status, and in words: "killed by SIGABRT", "exit status 1" */
+  status: number; how: string;
+  /** How long after the restore began it ended */
+  ms: number;
+  /** The engine's version and whether the snapshot came from a hidden start: what to compare across reports */
+  engine: string; hidden: boolean; samePid: boolean;
+  /** What the restored processes wrote (stdout and stderr: the engine's own report of an abort goes there too), the end of it */
+  output: string;
+  /** Kernel log lines from the restore on (traps, an engine abort, out of memory) */
+  klog: string[];
+}
+
+/** A wait status in words */
+export function statusWords(status: number): string {
+  const sig = status & 0x7f;
+  if (sig && sig !== 0x7f) return `killed by SIG${SIGNAL_NAMES[sig] ?? sig}${status & 0x80 ? ' (core dumped)' : ''}`;
+  return `exit status ${(status >> 8) & 0xff}`;
+}
+
+/**
+ * Keep what a restore that ended at once left (tabcomputer#142): its status,
+ * the end of what it wrote and the kernel log meanwhile, in the profile's
+ * localStorage, the newest FAILURES_KEPT. A failure that happens once in
+ * a hundred restores is gone with the page otherwise.
+ */
+export function noteRestoreFailure(f: RestoreFailure): RestoreFailure[] {
+  const store = ls();
+  let all: RestoreFailure[] = [];
+  try { all = JSON.parse(store?.getItem(FAILURES) ?? '[]') as RestoreFailure[]; } catch { /* start over */ }
+  if (!Array.isArray(all)) all = [];
+  all.push({ ...f, output: f.output.slice(-FAILURE_OUTPUT), klog: f.klog.slice(-40) });
+  all = all.slice(-FAILURES_KEPT);
+  try { store?.setItem(FAILURES, JSON.stringify(all)); } catch { /* full: the page's log still has it */ }
+  return all;
+}
+
+/** The failed restores kept by noteRestoreFailure, oldest first */
+export function restoreFailures(): RestoreFailure[] {
+  try {
+    const all = JSON.parse(ls()?.getItem(FAILURES) ?? '[]') as RestoreFailure[];
+    return Array.isArray(all) ? all : [];
+  } catch { return []; }
 }
 
 // ── restoring one ──

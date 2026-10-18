@@ -343,6 +343,27 @@ export class StudioState {
     }
   }
 
+  /** What is kept across a reload of the tab (the desktop's Studio stores it): the kind and its drafts */
+  saved(): { kind: StudioKind; drafts: Draft[] } | null {
+    return this.kind ? { kind: this.kind, drafts: [...this.drafts.values()] } : null;
+  }
+
+  /** Back to what `saved` gave. False, and nothing changed, for anything that is not that. */
+  restore(v: unknown): boolean {
+    const o = v as { kind?: unknown; drafts?: unknown } | null;
+    if (!o || !KINDS.some((k) => k.kind === o.kind) || !Array.isArray(o.drafts)) return false;
+    const drafts = new Map<StudioKind, Draft>();
+    for (const d of o.drafts as Partial<Draft>[]) {
+      if (!d || !KINDS.some((k) => k.kind === d.kind) || drafts.has(d.kind!)) continue;
+      // (a draft saved by an older Studio gets the parts it lacks)
+      drafts.set(d.kind!, { ...blankDraft(d.kind!), ...d });
+    }
+    if (!drafts.has(o.kind as StudioKind)) return false;
+    this.drafts = drafts;
+    this.kind = o.kind as StudioKind;
+    return true;
+  }
+
   /** Start from an app.json (one of the site's), or edit an installed one (`edit`: its id). False: it is not a one-file app. */
   load(raw: Record<string, unknown>, opts: { edit?: string } = {}): boolean {
     const d = rawToDraft(raw);

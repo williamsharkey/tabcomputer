@@ -331,3 +331,34 @@ describe('app mode in the Code app: app.json checked as it is typed', () => {
     expect(locateProblems('{"name": "Cat", "run": "cat {in}"}')).toEqual([]);
   });
 });
+
+describe('Studio: a draft kept across a reload', () => {
+  it('saved and restored, the drafts of each kind come back; anything else changes nothing', () => {
+    const s = new StudioState();
+    expect(s.saved()).toBeNull();
+    s.choose('form');
+    s.set('name', 'Count');
+    s.set('run', 'seq {to}');
+    s.choose('table');
+    s.set('name', 'Count');
+    s.choose('form');
+    const kept = JSON.parse(JSON.stringify(s.saved()));
+    const t = new StudioState();
+    expect(t.restore(kept)).toBe(true);
+    expect(t.kind).toBe('form');
+    expect(t.draft.run).toBe('seq {to}');
+    expect(t.draft.inputs.map((i) => i.name)).toEqual(['to']);
+    t.choose('table');
+    expect(t.draft.name).toBe('Count');
+    // a draft from an older Studio gets the parts it lacks
+    const old = new StudioState();
+    expect(old.restore({ kind: 'files', drafts: [{ kind: 'files', name: 'Old', run: 'cat {in}' }] })).toBe(true);
+    expect(old.draft.accept).toBe('');
+    expect(old.check().raw).toBeTruthy();
+    for (const junk of [null, 'x', {}, { kind: 'nope', drafts: [] }, { kind: 'form', drafts: 'x' }, { kind: 'form', drafts: [{ kind: 'table' }] }]) {
+      const u = new StudioState();
+      expect(u.restore(junk), JSON.stringify(junk)).toBe(false);
+      expect(u.kind).toBeNull();
+    }
+  });
+});

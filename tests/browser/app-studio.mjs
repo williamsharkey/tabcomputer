@@ -233,6 +233,13 @@ async function studio(s) {
     check(`${D} studio expenses: Install says where it is`, s.touch ? /on Home now/.test(said ?? '') : /in the dock now/.test(said ?? ''), said);
     check(`${D} studio expenses: the desktop has it`, await page.evaluate(() => window.__shiroDesktop.apps().some((a) => a.id === 'expenses')));
     await closeStudio(s);
+    // The draft is kept across a reload of the tab: the start offers to go on with it (#165)
+    await page.reload();
+    await booted(page);
+    await openStudio(s, new Count(s.touch));
+    const resume = await until(page, () => page.$eval('[data-act=resume]', (b) => b.textContent).catch(() => null), 10_000);
+    check(`${D} studio: after a reload the start offers to go on with the draft`, resume === 'Go on with Expenses', resume);
+    await closeStudio(s);
     // An installed app opened for editing (its App menu's Edit in Studio)
     await page.evaluate(() => window.__shiroDesktop.openApp('studio', { id: 'expenses' }));
     const name = await until(page, () => page.$eval('[data-k=name]', (i) => i.value));

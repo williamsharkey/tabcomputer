@@ -24,6 +24,8 @@ import {
 } from '../../apps/studio';
 
 const STYLE_ID = 'tc-studio-style';
+/** The draft, kept across a reload of the tab (StudioState.saved) */
+const DRAFT_KEY = 'tabcomputer-studio-draft';
 const STYLE = `
 .st { font: 13px/1.45 var(--sd-font); }
 .st * { box-sizing: border-box; }
@@ -231,6 +233,8 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
   narrow.observe(root);
 
   const state = new StudioState();
+  // The draft of the last visit: the start offers to go on with it
+  try { state.restore(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? 'null')); } catch { /* none, or no storage */ }
   let preview: Preview | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let shape = '';
@@ -593,7 +597,11 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
       problems();
     }
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; void preview?.show(state.preview()).then(waiting); }, 350);
+    timer = setTimeout(() => {
+      timer = null;
+      void preview?.show(state.preview()).then(waiting);
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify(state.saved())); } catch { /* full, or no storage */ }
+    }, 350);
     gistLink = '';
   }
 

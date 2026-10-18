@@ -284,7 +284,7 @@ describe('GUI snapshots: the kernel side', () => {
 
 describe('GUI snapshots: the setting', () => {
   const chromium = { userAgentData: { brands: [{ brand: 'Chromium' }, { brand: 'Google Chrome' }], mobile: false }, deviceMemory: 8 };
-  it('is off unless asked for: one restored process in about a hundred ended at once, and the cause is not known', async () => {
+  it('is off unless asked for (GUI_SNAPSHOTS.md "Before it can be on by default")', async () => {
     const { snapshotMode, SNAPSHOT_DEFAULT_ON } = await import('@shiro/gui/snapshot-setting');
     expect(SNAPSHOT_DEFAULT_ON).toBe(false);
     expect(snapshotMode({ stored: null, env: {}, safe: false, nav: chromium })).toBe('off');

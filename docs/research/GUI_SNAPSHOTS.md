@@ -26,7 +26,7 @@ Code: `src/gui/snapshot.ts`, `src/gui/snapshot-setting.ts`,
 (`recordXClient`, `adoptXClient`), Blink patch 0551. Tests:
 `tests/browser/gui-snapshot.mjs` (real apps),
 `tests/browser/gui-snapshot-rules.mjs` (each rule below, and the retake),
-`gui-snapshot.test.ts`, `gui-retake.test.ts`, `x11.test.ts`,
+`gui-snapshot.test.ts`, `gui-snapshot-take.test.ts`, `gui-retake.test.ts`, `x11.test.ts`,
 `x86-engine.test.ts`.
 
 Why: [GUI_LAUNCH.md](../GUI_LAUNCH.md) measured that a launch is the
@@ -448,7 +448,10 @@ those is followed by a hidden start.
 
 One IndexedDB database, `tabcomputer-gui-snapshots`: the images and X
 requests per app (gzip), and an index that holds everything else, so that
-validity, `doctor` and Settings never read an image. Stored bytes per app,
+validity, `doctor` and Settings never read an image. A restore reads a
+snapshot's index entry and its images in one transaction, so a snapshot
+saved meanwhile (a retake, another tab) is never read as one's metadata
+with the other's images. Stored bytes per app,
 from the test:
 
 | xeyes | xclock | Dillo | GPicView | L3afpad | Galculator | Geany | Mousepad | FeatherPad | Inkscape | GIMP |
@@ -522,7 +525,7 @@ into; in `gui-snapshot.mjs` it restores after a reload).
    snapshots are dropped and taken again), and a restore whose replay ends
    at another sequence number is refused, which gives a usual start. Every
    app that draws while it is idle (a blinking caret: Geany, Mousepad,
-   FeatherPad; xeyes) was exposed the same way.
+   FeatherPad) was exposed the same way.
 
    Measured on 2026-10-18 (Apple M3, 8 GB, headless Chrome 155, a local
    build; scripts in `~/dev/tc-tools/snap/`: `loop.mjs` restores one
@@ -535,9 +538,22 @@ into; in `gui-snapshot.mjs` it restores after a reload).
    | before | take and restore, 6x CPU throttling, 4 CPU burners | 15 of 15 restored, 0 failures |
    | before | take and restore, a busy tab (a shell loop in the page) | 4 of 6 restored processes ended about 2.3 s later with exit status 1 and no output: their snapshots held 23 KB of X requests, taken early in the start (a good one holds 93 KB) |
    | before | take and restore, packing made 1.5 s slower (`__guiSnapshotPackDelayMs`) | 6 of 6 restored processes ended 43 to 61 ms later with status 134 and the Xlib assertion above |
+   | before's capture, after's check at restore | a busy tab | 2 of 4 snapshots refused at restore, both of the 23 KB kind: "its X requests end at sequence number 185, not 183", two requests sent after the image |
    | after | packing made 1.5 s slower | 6 of 6 restored and running |
-   | after | a busy tab | AFTER_BUSY |
-   | after | AFTER_MORE | AFTER_MORE_RESULT |
+   | after | a busy tab | 14 of 14 restored and running, 11 of them of the 23 KB kind |
+   | after | restore only, as the first row, L3afpad | 94 restores of 100 launches (47 of a hidden start's snapshot), 0 failures; the 6 usual starts (a quit that rewrote `l3afpadrc`, a retake ended by the launch) each took a new snapshot at 4x CPU throttling, and each was restored after |
+   | after | restore only, as the first row, Geany | 88 restores of 100 launches, 0 failures; 12 usual starts (`geany.conf` rewritten by a quit, a retake ended by the launch), each followed by a new snapshot that restored |
+
+   In a busy tab the same cause showed another way: the restored process
+   ended with exit status 1 after about 2.3 s, with no output. Those
+   snapshots were taken early in L3afpad's start (23 KB of X requests,
+   against 93 KB once it is idle), while it still sent requests in bursts;
+   a build with the old capture and the new check refused them at restore,
+   two requests past the image each time. `gui-snapshot-take.test.ts` holds
+   the race with a stand-in engine and display, `gui-snapshot-rules.mjs
+   --only packed` with L3afpad (it fails on the old capture: "its X
+   requests end at sequence number 272, not 243"), and `gui-snapshot.mjs
+   l3afpad geany` and `--only rules` pass on the fixed build.
 
    A restore that still ends at once is kept with what it left: its status
    in words, the end of its output and the kernel log from the restore on,

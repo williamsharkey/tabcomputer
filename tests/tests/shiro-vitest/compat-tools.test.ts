@@ -618,7 +618,12 @@ describe('WASM packages', () => {
   }, 180_000);
 
   it('ripgrep: recursive search, globs, types, .gitignore, counts', async () => {
+    const t0 = Date.now();
+    const step = (w: string) => console.log(`[rg-step] ${Date.now() - t0}ms ${w}`);
+    const iv = setInterval(() => step('still waiting'), 20000);
+    step('install');
     await install('ripgrep');
+    step('installed');
     await fs.mkdir('/home/user/w/rgp/src', { recursive: true });
     await fs.mkdir('/home/user/w/rgp/.git', { recursive: true });
     await fs.writeFile('/home/user/w/rgp/src/a.rs', 'fn alpha() {}\nfn beta() {}\n');
@@ -626,11 +631,18 @@ describe('WASM packages', () => {
     await fs.writeFile('/home/user/w/rgp/skip.log', 'alpha\n');
     await fs.writeFile('/home/user/w/rgp/.gitignore', '*.log\n');
     // the package is /usr/bin/rg; `rg` stays Shiro's builtin (its "shadow": false)
+    step('rg 1');
     const r = await sh('cd rgp && /usr/bin/rg --sort path -n alpha');
+    step('rg 1 done');
     expect(r.out).toBe('src/a.rs:1:fn alpha() {}\nsrc/b.py:1:def alpha(): pass\n');
+    step('rg 2');
     expect((await sh('/usr/bin/rg -t py -l alpha')).out).toBe('src/b.py\n');
+    step('rg 3');
     expect((await sh("/usr/bin/rg -g '*.rs' -c fn")).out).toBe('src/a.rs:2\n');
+    step('rg 4');
     expect((await sh('/usr/bin/rg --version | head -1; /usr/bin/rg nothing-here; echo rc=$?')).out).toBe('ripgrep 15.2.0 (rev b05740ceb6)\nrc=1\n');
+    step('done');
+    clearInterval(iv);
   }, 180_000);
 
   it('sqlite3: creates a database file, queries it, and reads SQL from stdin', async () => {

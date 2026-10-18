@@ -58,6 +58,13 @@ export class ProcExit extends Error {
 /** Thrown out of a WASIX libc default signal handler once the kernel took the default action. */
 class SignalDone extends Error {}
 
+/** `e` is a trap in `fn`'s own code: the top WebAssembly frame is that export's function (its `name` is its index). */
+function trappedIn(e: unknown, fn: () => void): boolean {
+  if (!(e instanceof WebAssembly.RuntimeError)) return false;
+  const top = /wasm-function\[(\d+)\]/.exec(e.stack ?? '');
+  return !!top && top[1] === fn.name;
+}
+
 /** What an asyncify unwind was started for (the driver in guest-worker.ts acts on it). */
 export type StackAction =
   | { op: 'checkpoint'; snapshot: number }
@@ -686,12 +693,7 @@ export class WasiGuest {
           const first = this.sigCallback === null;
           this.sigCallback = this.str(p, l);
           if (first) yield* this.call(SYS_wasix_signal, WASIX_SIG_CATCH);
-          // The host may run the callback on a signal thread (host.ts), but not while it's "blocked"
-          const active = typeof this.exports?.[this.sigCallback] === 'function' ? this.sigCallback : null;
-          if (active !== this.announcedCallback) {
-            this.announcedCallback = active;
-            this.opts.onSignalCallback?.(active);
-          }
+          this.announceCallback();
           this.flushHeldSignals();
           return 0;
         }),
@@ -1023,16 +1025,36 @@ export class WasiGuest {
       return;
     }
     const prevSig = this.inSignal, prevCallback = this.sigCallback;
+    const sp = this.exports?.__stack_pointer;
+    const spBefore = sp instanceof WebAssembly.Global ? sp.value : undefined;
     this.inSignal = sig;
     try {
       fn(sig);
     } catch (e) {
-      if (!(e instanceof SignalDone)) throw e;
-      // Unwound out of libc's default handler: undo its "block signals" on the way in
+      // Some WASIX libcs (ripgrep's) reach a default action through a function
+      // pointer that their startup sets only when proc_signals_get reported an
+      // ignored signal; unset, the call traps in the callback itself. Then the
+      // kernel takes the default action, as the libc meant to: SIGPIPE ends
+      // `rg --version | head -1` quietly, SIGWINCH is ignored (#157). A trap in a
+      // handler the program installed (a frame below the callback) stays a trap.
+      const libcDefault = !(e instanceof SignalDone) && trappedIn(e, fn) && !!this.direct;
+      if (!(e instanceof SignalDone) && !libcDefault) throw e;
+      // Unwound out of libc's code: undo its "block signals" on the way in, and its stack
+      if (spBefore !== undefined) (sp as WebAssembly.Global).value = spBefore;
       this.sigCallback = prevCallback;
+      this.announceCallback();
+      if (libcDefault) this.direct!.call(SYS_wasix_signal, WASIX_SIG_DEFAULT, sig);
     } finally {
       this.inSignal = prevSig;
     }
+  }
+
+  /** Tell the host which callback export is active (it may run it on a signal thread, host.ts), but not while it's "blocked". */
+  private announceCallback(): void {
+    const active = this.sigCallback && typeof this.exports?.[this.sigCallback] === 'function' ? this.sigCallback : null;
+    if (active === this.announcedCallback) return;
+    this.announcedCallback = active;
+    this.opts.onSignalCallback?.(active);
   }
 
   /** After a syscall returned -EINTR: true when only restartable signals interrupted it (the caller re-issues it). */
@@ -1441,10 +1463,17 @@ export class WasiGuest {
     throw new ProcExit(A.W_EXITCODE(code));
   }
 
-  /** End the process by a signal (default action: terminate with that status). */
+  /**
+   * End the process by a signal, whatever the program did with it: the kernel's
+   * default action. Not kill(getpid(), sig): a WASIX libc catches every signal,
+   * so that would hand it to the program's callback, and the process would
+   * outlive the program and keep its pipes open (#157).
+   */
   *exitBySignal(sig: number): Sys<never> {
-    const pid = yield* this.call(A.SYS_getpid);
-    yield* this.call(A.SYS_kill, pid, sig);
+    const r = yield* this.call(SYS_wasix_signal, WASIX_SIG_DEFAULT, sig);
+    if (r === -A.ENOSYS) yield* this.call(A.SYS_kill, yield* this.call(A.SYS_getpid), sig);
+    // Still here: a signal whose default action doesn't end a process
+    yield* this.call(A.SYS_exit_group, 128 + sig);
     throw new ProcExit(A.W_TERMSIG(sig));
   }
 

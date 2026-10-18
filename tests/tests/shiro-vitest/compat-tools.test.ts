@@ -16,6 +16,11 @@ import { TtySession } from '@shiro/kernel/pty';
 import { createTestShell } from './helpers';
 import { jobsCmd, fgCmd, bgCmd, waitCmd } from '@shiro/commands/jobs';
 import { installPathShims } from '@shiro/path-shims';
+import { kernelForContext } from '@shiro/wasi/run-command';
+import { resolveKernelProgram } from '@shiro/shell-kernel';
+import { createPipe } from '@shiro/kernel/pipe';
+import { SinkFile } from '@shiro/wasi/stdio';
+import { SYS_read, SIGWINCH } from '@shiro/kernel/abi';
 import type { Shell } from '@shiro/shell';
 import type { FileSystem } from '@shiro/filesystem';
 
@@ -632,6 +637,32 @@ describe('WASM packages', () => {
     expect((await sh("/usr/bin/rg -g '*.rs' -c fn")).out).toBe('src/a.rs:2\n');
     expect((await sh('/usr/bin/rg --version | head -1; /usr/bin/rg nothing-here; echo rc=$?')).out).toBe('ripgrep 15.2.0 (rev b05740ceb6)\nrc=1\n');
   }, 180_000);
+
+  it('ripgrep: a signal it leaves at its default action takes it (SIGPIPE ends it, SIGWINCH is ignored), never a hang', async () => {
+    // (#157: its WASIX libc trapped reaching a default action, and the process outlived the trap)
+    await install('ripgrep');
+    // echo doesn't read: rg's first write finds no reader, and SIGPIPE ends it quietly
+    expect(await sh('/usr/bin/rg --version | echo x; echo "${PIPESTATUS[@]}"')).toEqual({ out: 'x\n141 0\n', err: '', exitCode: 0 });
+    // SIGWINCH while it waits for its input: ignored, and the search goes on
+    const kernel = kernelForContext({ fs, shell } as any);
+    const prog = (await resolveKernelProgram(shell, '/usr/bin/rg', ['alpha', '-']))!;
+    const [input, feed] = createPipe();
+    let out = '', err = '';
+    const p = kernel.spawn({
+      path: prog.path ?? prog.argv[0], argv: prog.argv, env: { ...shell.env, ...prog.env }, cwd: '/home/user/w', run: prog.run,
+      fds: { 0: input, 1: new SinkFile((t) => { out += t; }), 2: new SinkFile((t) => { err += t; }) },
+    });
+    await until(() => p.calls.some((c) => c.nr === SYS_read), 'rg reading its input');
+    expect(kernel.kill(p.pid, SIGWINCH)).toBe(0);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(p.exitStatus).toBeUndefined();
+    await feed.write(new TextEncoder().encode('alpha\nbeta\n'));
+    await feed.close();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const status = await Promise.race([p.wait(), new Promise((r) => { timer = setTimeout(() => r('still running after 30 s'), 30_000); })]);
+    clearTimeout(timer);
+    expect({ status, out, err }).toEqual({ status: 0, out: 'alpha\n', err: '' });
+  }, 120_000);
 
   it('sqlite3: creates a database file, queries it, and reads SQL from stdin', async () => {
     await install('sqlite');

@@ -15,16 +15,18 @@ restore (xeyes, xclock, Dillo, GPicView, L3afpad, Galculator, Geany,
 Mousepad, FeatherPad, Inkscape, GIMP); the two terminals don't (a shell on a
 pty).
 
-What keeps it off by default is one failure with no known cause: in 1 of 12
-runs of the test with L3afpad, its restored process ended at once with
-SIGABRT ("Before it can be on by default").
+The one restore failure seen (in 1 of 12 runs of the test with L3afpad, its
+restored process ended at once with SIGABRT) is explained and fixed: the X
+requests kept could include ones the process sent after its image (#142,
+"Before it can be on by default"). The setting is still off by default
+until that list is decided.
 
 Code: `src/gui/snapshot.ts`, `src/gui/snapshot-setting.ts`,
 `src/gui/retake.ts`, the launcher in `src/gui/apps.ts`, `src/x11/display.ts`
 (`recordXClient`, `adoptXClient`), Blink patch 0551. Tests:
 `tests/browser/gui-snapshot.mjs` (real apps),
 `tests/browser/gui-snapshot-rules.mjs` (each rule below, and the retake),
-`gui-snapshot.test.ts`, `gui-retake.test.ts`, `x11.test.ts`,
+`gui-snapshot.test.ts`, `gui-snapshot-take.test.ts`, `gui-retake.test.ts`, `x11.test.ts`,
 `x86-engine.test.ts`.
 
 Why: [GUI_LAUNCH.md](../GUI_LAUNCH.md) measured that a launch is the
@@ -173,6 +175,15 @@ the socket either way, no byte written to any pipe between the processes
 up after 60 busy answers, when the process ends, and at the first key or
 button press anywhere in the display: an image that every later launch
 starts from must not hold what someone typed.
+
+The X requests kept are the ones recorded at that check, copied in the
+same turn of the event loop, with the client's sequence number then
+(`meta.x.seq`). The process runs on while the rest is looked at and
+packed, and a request it sends meanwhile is not in its image: kept as
+well, it would put the server's sequence number ahead of the restored
+process's, and Xlib aborts at the first event it reads (#142, "Before it
+can be on by default"). A restore checks that the replay ends at that
+sequence number, and refuses the snapshot (a usual start) when it does not.
 
 ### What a snapshot is good for (validity)
 
@@ -437,7 +448,10 @@ those is followed by a hidden start.
 
 One IndexedDB database, `tabcomputer-gui-snapshots`: the images and X
 requests per app (gzip), and an index that holds everything else, so that
-validity, `doctor` and Settings never read an image. Stored bytes per app,
+validity, `doctor` and Settings never read an image. A restore reads a
+snapshot's index entry and its images in one transaction, so a snapshot
+saved meanwhile (a retake, another tab) is never read as one's metadata
+with the other's images. Stored bytes per app,
 from the test:
 
 | xeyes | xclock | Dillo | GPicView | L3afpad | Galculator | Geany | Mousepad | FeatherPad | Inkscape | GIMP |
@@ -486,19 +500,67 @@ into; in `gui-snapshot.mjs` it restores after a reload).
 
 ## Before it can be on by default
 
-1. **A restored process that aborted.** On 2026-10-13, in one run of
-   `gui-snapshot.mjs` out of twelve with L3afpad, the process restored after
-   a reload ended at once with SIGABRT (wait status 134). The machine was
-   under heavy load at the time (minutes after a restart, load average 12).
-   Its output was not captured then (the test prints it now), and eleven
-   further runs of L3afpad, eight of them in a row, restored and worked. Over
-   that day about 130 restores of the eleven apps were checked, with this
-   one failure. An abort means the image or the replayed X state was not what
-   the process expected: an X error under GDK, or Xlib's sequence check, are
-   the likely ways. Until the cause is known, an image cannot be called
-   sound, and one that is wrong without crashing cannot be ruled out. With
-   the setting on, the person gets a usual start after such a failure (the
-   window comes, goes, and the app starts again).
+1. **A restored process that aborted: explained and fixed (#142).** On
+   2026-10-13, in one run of `gui-snapshot.mjs` out of twelve with L3afpad,
+   under heavy load, the process restored after a reload ended at once with
+   wait status 134: SIGABRT that the guest raised itself (an engine abort
+   ends a process with status 6, without the core flag). The cause was in
+   `takeSnapshot`: it checked that no X byte had moved while the image was
+   made, then looked at the descriptors again and fetched the display's
+   session, and only then copied the X requests from the recording, while
+   the process ran on. L3afpad's caret blinks (GTK redraws it about every
+   0.6 s), and a blink that fell in that window was kept with an image that
+   had not sent it. The replay then left the server's sequence number ahead
+   of the process's, and Xlib aborts at the first event it reads:
+
+   ```
+   [xcb] Unknown sequence number while processing queue
+   [xcb] Aborting, sorry about that.
+   l3afpad: ../../src/xcb_io.c:278: poll_for_event: Assertion `!xcb_xlib_threads_sequence_lost' failed.
+   ```
+
+   On a quiet machine the window is a few milliseconds; on a loaded one it
+   can take in a blink. Now the requests are copied in the same turn as the
+   check, the snapshot keeps the client's sequence number (format 4: older
+   snapshots are dropped and taken again), and a restore whose replay ends
+   at another sequence number is refused, which gives a usual start. Every
+   app that draws while it is idle (a blinking caret: Geany, Mousepad,
+   FeatherPad) was exposed the same way.
+
+   Measured on 2026-10-18 (Apple M3, 8 GB, headless Chrome 155, a local
+   build; scripts in `~/dev/tc-tools/snap/`: `loop.mjs` restores one
+   snapshot again and again, `cycle.mjs` takes a snapshot under load and
+   restores it, each cycle a new one):
+
+   | Build | Load | Result |
+   |---|---|---|
+   | before | restore only, 4 CPU burners (load average 10 to 12), every other launch at 4x CPU throttling, reloads, early launches, retakes | 66 restores of 72 launches (13 of a hidden start's snapshot), 0 failures |
+   | before | take and restore, 6x CPU throttling, 4 CPU burners | 15 of 15 restored, 0 failures |
+   | before | take and restore, a busy tab (a shell loop in the page) | 4 of 6 restored processes ended about 2.3 s later with exit status 1 and no output: their snapshots held 23 KB of X requests, taken early in the start (a good one holds 93 KB) |
+   | before | take and restore, packing made 1.5 s slower (`__guiSnapshotPackDelayMs`) | 6 of 6 restored processes ended 43 to 61 ms later with status 134 and the Xlib assertion above |
+   | before's capture, after's check at restore | a busy tab | 2 of 4 snapshots refused at restore, both of the 23 KB kind: "its X requests end at sequence number 185, not 183", two requests sent after the image |
+   | after | packing made 1.5 s slower | 6 of 6 restored and running |
+   | after | a busy tab | 14 of 14 restored and running, 11 of them of the 23 KB kind |
+   | after | restore only, as the first row, L3afpad | 94 restores of 100 launches (47 of a hidden start's snapshot), 0 failures; the 6 usual starts (a quit that rewrote `l3afpadrc`, a retake ended by the launch) each took a new snapshot at 4x CPU throttling, and each was restored after |
+   | after | restore only, as the first row, Geany | 88 restores of 100 launches, 0 failures; 12 usual starts (`geany.conf` rewritten by a quit, a retake ended by the launch), each followed by a new snapshot that restored |
+
+   In a busy tab the same cause showed another way: the restored process
+   ended with exit status 1 after about 2.3 s, with no output. Those
+   snapshots were taken early in L3afpad's start (23 KB of X requests,
+   against 93 KB once it is idle), while it still sent requests in bursts;
+   a build with the old capture and the new check refused them at restore,
+   two requests past the image each time. `gui-snapshot-take.test.ts` holds
+   the race with a stand-in engine and display, `gui-snapshot-rules.mjs
+   --only packed` with L3afpad (it fails on the old capture: "its X
+   requests end at sequence number 272, not 243"), and `gui-snapshot.mjs
+   l3afpad geany` and `--only rules` pass on the fixed build.
+
+   A restore that still ends at once is kept with what it left: its status
+   in words, the end of its output and the kernel log from the restore on,
+   in `window.__guiSnapshots`, in a `gui:` line in `dmesg`, and in the
+   profile (`restoreFailures()` in `src/gui/snapshot.ts`, localStorage
+   `tabcomputer-gui-snapshot-failures`, the newest five), since the app is
+   started the usual way at once and its output with it.
 2. **One machine, one browser.** Chrome 155 on an 8 GB Mac, headless.
    Firefox, Safari, a 4 GB Chromebook and phones are not tried; the default
    would be Chromium on a desktop with 4 GB or more for that reason.

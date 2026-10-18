@@ -42,6 +42,7 @@ import type { XServer } from '../x11/server';
 import type { EngineCheckpoint } from '../x86-engine/blink';
 
 import { credentialFileReason } from '../credentials';
+import { SIGNAL_NAMES } from '../kernel/abi';
 import { snapshotsOn } from './snapshot-setting';
 export { snapshotsOn as snapshotsEnabled, setSnapshotsEnabled } from './snapshot-setting';
 
@@ -49,7 +50,12 @@ const ATOMS = 'tabcomputer-x-atoms';
 const SLOTS = 'tabcomputer-gui-snapshot-slots';
 const SKIP = 'tabcomputer-gui-snapshot-skip';
 const DB = 'tabcomputer-gui-snapshots';
-export const VERSION = 3;
+/**
+ * The snapshot format. 4: the X requests are the image's own, taken as the
+ * image is checked, with the client's sequence number (#142): a snapshot of
+ * version 3 could hold requests the process sent after its image.
+ */
+export const VERSION = 4;
 
 /**
  * The most the snapshots take together, in bytes of what is stored (gzip).
@@ -104,8 +110,12 @@ export interface SnapshotMeta {
   /** The app's process first, then its children, each after its parent */
   procs: ProcRecord[];
   files: FileRecord[];
-  /** The X client: its number, the server's atoms when it was taken (ids from 1), how many request bytes, the server's time */
-  x: { index: number; atoms: string[]; bytes: number; time: number };
+  /**
+   * The X client: its number, the server's atoms when it was taken (ids from
+   * 1), how many request bytes, the server's time, and its sequence number
+   * (16 bits) after those requests: a replay that ends anywhere else is refused
+   */
+  x: { index: number; atoms: string[]; bytes: number; time: number; seq: number };
   /** Every path the processes opened or looked for, with what was there ('' nothing) */
   opened: [string, string][];
   sizes: { image: number; stored: number; x: number };
@@ -153,12 +163,18 @@ async function tx<T>(mode: IDBTransactionMode, run: (snapshots: IDBObjectStore, 
 export const listSnapshots = (): Promise<IndexEntry[]> => tx<IndexEntry[]>('readonly', (_s, i) => i.getAll()).then((v) => v ?? [], () => []);
 export const snapshotEntry = (app: string): Promise<IndexEntry | null> => tx<IndexEntry | undefined>('readonly', (_s, i) => i.get(app)).then((v) => v ?? null, () => null);
 
+/**
+ * The whole snapshot. Its index entry and its images are read in one
+ * transaction: a snapshot saved meanwhile (a retake finishing as the app is
+ * launched, another tab) is never read as one's metadata with the other's
+ * images.
+ */
 export async function loadSnapshot(app: string): Promise<StoredSnapshot | null> {
   try {
-    const entry = await snapshotEntry(app);
-    if (!entry) return null;
-    const body = await tx<{ images: ArrayBuffer[]; x: ArrayBuffer } | undefined>('readonly', (s) => s.get(app));
-    return body ? { meta: entry.meta, images: body.images, x: body.x } : null;
+    let entry: IDBRequest<IndexEntry | undefined> | null = null;
+    const body = await tx<{ images: ArrayBuffer[]; x: ArrayBuffer } | undefined>('readonly', (s, i) => { entry = i.get(app); return s.get(app); });
+    const meta = (entry as IDBRequest<IndexEntry | undefined> | null)?.result?.meta;
+    return body && meta ? { meta, images: body.images, x: body.x } : null;
   } catch { return null; }
 }
 
@@ -602,14 +618,29 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
   // (a turn of the event loop: bytes a process wrote before its image are where they went by now)
   await new Promise((res) => setTimeout(res, 0));
   if (rec.bytes !== before.bytes || client.seq !== before.seq || client.sent !== before.sent || queued().rxQueue || queued().txQueue) return { ok: false, why: 'the app was talking to the display' };
+  // The image's X requests are the ones recorded now, taken now. The process runs on while the rest
+  // is looked at and packed, and what it sends meanwhile (a caret's blink) is not in its image:
+  // played back as well, it would put the server's sequence number ahead of the process's, and
+  // Xlib aborts at the first event it reads ("Unknown sequence number while processing queue": #142)
+  const chunks = rec.chunks.slice();
+  // (the kernel's view of their signals, now too: a handler or mask set after the image is not its)
+  const signals: ProcRecord['signals'][] = procs.map((p) => ({
+    dispositions: [...p.dispositions.entries()],
+    actions: [...p.sigactions.entries()].map(([sig, a]) => [sig, { flags: a.flags, mask: [...a.mask], restorer: a.restorer }]),
+    mask: [...p.sigmask],
+  }));
+  // (tests: the rest takes this much longer, as on a loaded machine, so that the app sends more meanwhile)
+  const packDelay = Number((globalThis as { __guiSnapshotPackDelayMs?: number }).__guiSnapshotPackDelayMs) || 0;
+  if (packDelay > 0) await new Promise((res) => setTimeout(res, packDelay));
   const again = family(kernel, main);
   const look2 = again.length === procs.length && again.every((p, i) => p === procs[i]) ? await lookAtFiles(procs, xSock, started.output) : 'its processes changed meanwhile';
   if (typeof look2 === 'string' || JSON.stringify(look2) !== JSON.stringify(look)) return { ok: false, why: typeof look2 === 'string' ? look2 : 'its descriptors changed, or its processes talked, meanwhile' };
   const { getXSession } = await import('../x11/session');
   const { server } = await getXSession(0);
-  const requests = new Uint8Array(rec.bytes);
+  const requests = new Uint8Array(before.bytes);
   let at = 0;
-  for (const c of rec.chunks) { requests.set(c, at); at += c.length; }
+  for (const c of chunks) { requests.set(c, at); at += c.length; }
+  if (at !== before.bytes) return { ok: false, why: `its X requests were ${at} bytes, not ${before.bytes}` };
   // (again: what it opened while the images were made counts too)
   for (const path of (main.data.openLog as Set<string> | undefined) ?? []) paths.add(path);
   const opened = await signaturesOf(fs, paths, (main.data.openWritten as Set<string> | undefined) ?? new Set(), kernel.socketPaths ?? new Set());
@@ -619,17 +650,13 @@ export async function takeSnapshot(kernel: Kernel, app: string, main: Process, r
     procs: procs.map((p, i) => ({
       pid: p.pid, parent: procs.findIndex((q) => q.pid === p.ppid),
       path: p.path, argv: i ? p.argv : started.argv, env: i ? { ...p.env } : started.env, cwd: i ? p.cwd : started.cwd, umask: p.umask,
-      signals: {
-        dispositions: [...p.dispositions.entries()],
-        actions: [...p.sigactions.entries()].map(([sig, a]) => [sig, { flags: a.flags, mask: [...a.mask], restorer: a.restorer }]),
-        mask: [...p.sigmask],
-      },
+      signals: signals[i],
       fds: look.fds[i], image: raw[i].byteLength,
     })),
     files: look.files,
-    x: { index: rec.index, atoms: server.atomNames(), bytes: rec.bytes, time: server.time() },
+    x: { index: rec.index, atoms: server.atomNames(), bytes: before.bytes, time: server.time(), seq: before.seq },
     opened,
-    sizes: { image: raw.reduce((a, b) => a + b.byteLength, 0), stored: x.byteLength + images.reduce((a, b) => a + b.byteLength, 0), x: rec.bytes },
+    sizes: { image: raw.reduce((a, b) => a + b.byteLength, 0), stored: x.byteLength + images.reduce((a, b) => a + b.byteLength, 0), x: before.bytes },
   };
   if (started.cancelled?.()) return { ok: false, why: 'cancelled' };
   // (the processes may have moved on while the images were packed: that doesn't matter, the images are of then)
@@ -685,6 +712,58 @@ export function snapshotWhenQuiet(kernel: Kernel, app: string, proc: Process, re
     return finish({ ok: false, never: true, why: `never quiet: ${why}` });
   })().catch((e) => ({ ok: false, why: String((e as Error)?.message ?? e) }));
   return { done, cancel: () => { cancelled = true; } };
+}
+
+// ── a restore that did not run ──
+
+const FAILURES = 'tabcomputer-gui-snapshot-failures';
+/** How many failed restores are kept, newest last, and how much of each one's output */
+const FAILURES_KEPT = 5, FAILURE_OUTPUT = 4000;
+
+export interface RestoreFailure {
+  app: string; at: number;
+  /** The wait status, and in words: "killed by SIGABRT", "exit status 1" */
+  status: number; how: string;
+  /** How long after the restore began it ended */
+  ms: number;
+  /** The engine's version and whether the snapshot came from a hidden start: what to compare across reports */
+  engine: string; hidden: boolean; samePid: boolean;
+  /** What the restored processes wrote (stdout and stderr: the engine's own report of an abort goes there too), the end of it */
+  output: string;
+  /** Kernel log lines from the restore on (traps, an engine abort, out of memory) */
+  klog: string[];
+}
+
+/** A wait status in words */
+export function statusWords(status: number): string {
+  const sig = status & 0x7f;
+  if (sig && sig !== 0x7f) return `killed by SIG${SIGNAL_NAMES[sig] ?? sig}${status & 0x80 ? ' (core dumped)' : ''}`;
+  return `exit status ${(status >> 8) & 0xff}`;
+}
+
+/**
+ * Keep what a restore that ended at once left (tabcomputer#142): its status,
+ * the end of what it wrote and the kernel log meanwhile, in the profile's
+ * localStorage, the newest FAILURES_KEPT. A failure that happens once in
+ * a hundred restores is gone with the page otherwise.
+ */
+export function noteRestoreFailure(f: RestoreFailure): RestoreFailure[] {
+  const store = ls();
+  let all: RestoreFailure[] = [];
+  try { all = JSON.parse(store?.getItem(FAILURES) ?? '[]') as RestoreFailure[]; } catch { /* start over */ }
+  if (!Array.isArray(all)) all = [];
+  all.push({ ...f, output: f.output.slice(-FAILURE_OUTPUT), klog: f.klog.slice(-40) });
+  all = all.slice(-FAILURES_KEPT);
+  try { store?.setItem(FAILURES, JSON.stringify(all)); } catch { /* full: the page's log still has it */ }
+  return all;
+}
+
+/** The failed restores kept by noteRestoreFailure, oldest first */
+export function restoreFailures(): RestoreFailure[] {
+  try {
+    const all = JSON.parse(ls()?.getItem(FAILURES) ?? '[]') as RestoreFailure[];
+    return Array.isArray(all) ? all : [];
+  } catch { return []; }
 }
 
 // ── restoring one ──
@@ -772,7 +851,14 @@ export async function restoreSnapshot(kernel: Kernel, snap: StoredSnapshot, stdi
         f = sk;
       } else {
         const tA = Date.now();
-        f = (await adoptXClient(kernel, 0, m.x.index, [requests])).sock;
+        const adopted = await adoptXClient(kernel, 0, m.x.index, [requests]);
+        // (the requests played back must leave the client where its process left it: else the first
+        // event it reads carries a sequence number it never reached, and Xlib aborts)
+        if (adopted.client.seq !== m.x.seq) {
+          void adopted.sock.close();
+          throw new Error(`its X requests end at sequence number ${adopted.client.seq}, not ${m.x.seq}`);
+        }
+        f = adopted.sock;
         tx = Date.now() - tA;
       }
       if (r.kind !== 'stdin' && r.kind !== 'output') { f.flags = r.flags; made.push(f); }

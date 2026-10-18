@@ -273,8 +273,14 @@ if (wants('app')) for (const device of DEVICES) {
   let f = await ready(page, id);
   const first = f && await until(page, () => f.evaluate(() => (window.__app?.output ? window.__app.output : null)), 30_000);
   time(`${D} app: Install to its first result`, Date.now() - t1);
-  const mode = await page.evaluate(() => ({ become: document.body.classList.contains('become-active'), path: location.pathname, hash: location.hash }));
-  check(`${D} app: Install opens it${phone ? ' as the app' : ' in a window'}, and it works`, first === '"Ada"\n"Grace"\n' && mode.become === phone && (!phone || mode.path === `/${id}`) && mode.hash === '', JSON.stringify({ first, mode }));
+  const mode = await page.evaluate((id) => {
+    const wm = window.__shiroDesktop, w = wm?.focused?.(), r = w?.element?.getBoundingClientRect?.();
+    return { become: document.body.classList.contains('become-active'), path: location.pathname, hash: location.hash,
+      // the desktop's phone layout (#154) shows the app on the whole screen, with the pill, instead
+      layout: !!document.getElementById('shiro-desktop')?.classList.contains('sd-phone'), focused: w?.appId ?? null, whole: !!r && Math.round(r.width) === innerWidth };
+  }, id);
+  const asApp = mode.layout ? !mode.become && mode.focused === id && mode.whole : mode.become && mode.path === `/${id}`;
+  check(`${D} app: Install opens it${phone ? ' as the app' : ' in a window'}, and it works`, first === '"Ada"\n"Grace"\n' && (phone ? asApp : !mode.become) && mode.hash === '', JSON.stringify({ first, mode }));
   const installed = await side(page, `app list -l; cat ~/Apps/${id}/app.json`);
   check(`${D} app: what is installed is one app.json, from the link`, /link:[0-9a-f]{16}/.test(installed.o) && installed.o.includes('"run": "jq {filter}"') && (await side(page, `ls ~/Apps/${id}`)).o === 'app.json', installed.o.slice(0, 300));
   // app share gives the readable form back

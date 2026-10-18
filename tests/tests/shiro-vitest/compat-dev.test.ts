@@ -539,7 +539,7 @@ describe('make and clang (llvm package)', () => {
   }, 180_000);
 
   it('a real project: zlib 1.3.1 builds with its Makefile and passes its own test', async () => {
-    const tgz = await cachedDownload('https://zlib.net/fossils/zlib-1.3.1.tar.gz', '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23');
+    const tgz = await cachedDownload('https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz', '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23');
     for (const e of await readTarball(tgz)) {
       if (e.type !== '0' || !/^zlib-1\.3\.1\/(test\/)?[^/]+$/.test(e.name)) continue;
       const p = `/home/user/${e.name}`;

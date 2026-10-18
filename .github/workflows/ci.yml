@@ -42,3 +42,49 @@ jobs:
       - name: build, as the droplet builds it
         if: always()
         run: npm run build
+
+  # The browser checks that need no outside service (tests/browser/*.mjs), one
+  # after another against the built site served by server.mjs, in the runner's
+  # own Chrome. Each is its own step so one run shows every failing check;
+  # screenshots are kept when anything fails (tabcomputer#156).
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CHROMIUM: /usr/bin/google-chrome
+      PLAYWRIGHT: playwright-core
+      SHOTS: ${{ github.workspace }}/shots
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: serve dist/
+        run: |
+          mkdir -p "$SHOTS"
+          PORT=5299 STATIC_DIR=$PWD/dist nohup node server.mjs > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:5299/ > /dev/null && exit 0; sleep 1; done
+          cat server.log; exit 1
+      - { name: first-run, if: always(), run: 'node tests/browser/first-run.mjs http://localhost:5299 --shots "$SHOTS/first-run"' }
+      - { name: phone-layout, if: always(), run: 'node tests/browser/phone-layout.mjs http://localhost:5299 --shots "$SHOTS/phone-layout"' }
+      - { name: small-screens, if: always(), run: 'node tests/browser/small-screens.mjs http://localhost:5299 --shots "$SHOTS/small-screens"' }
+      - { name: data-flow, if: always(), run: 'node tests/browser/data-flow.mjs http://app.localhost:5299/ --shots "$SHOTS/data-flow"' }
+      - { name: app-studio, if: always(), run: 'node tests/browser/app-studio.mjs http://localhost:5299 --shots "$SHOTS/app-studio"' }
+      - { name: app-declarative, if: always(), run: 'node tests/browser/app-declarative.mjs http://localhost:5299 --shots "$SHOTS/app-declarative"' }
+      - { name: app-toolkit, if: always(), run: 'node tests/browser/app-toolkit.mjs http://localhost:5299 --shots "$SHOTS/app-toolkit"' }
+      - { name: app-export, if: always(), run: 'node tests/browser/app-export.mjs http://localhost:5299 --shots "$SHOTS/app-export"' }
+      - { name: app-converter, if: always(), run: 'node tests/browser/app-converter.mjs http://localhost:5299 --shots "$SHOTS/app-converter"' }
+      - { name: link-is-computer, if: always(), run: 'node tests/browser/link-is-computer.mjs http://localhost:5299 --shots "$SHOTS/link-is-computer"' }
+      - { name: run-links, if: always(), run: 'node tests/browser/run-links.mjs http://localhost:5299 --shots "$SHOTS/run-links"' }
+      - name: keep the screenshots and the server's log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-shots
+          path: |
+            shots/
+            server.log
+          retention-days: 7

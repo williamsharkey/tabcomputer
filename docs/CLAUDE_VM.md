@@ -49,6 +49,12 @@ when the storage quota has less than 400 MB free.
   with the release in DIR/VERSION/ (manifest.json, linux-x64-musl/claude).
   Measured for 2.1.316 (local Chrome, fresh profile): ready ~24 s after the
   page loaded, then the prompt in 2.05 s, keys echoed in 26 ms (median).
+  After a reload (`--reload`): 2.2 s in one run, 8.3 s in another (2 runs,
+  not explained yet; the first `claude` of a page also registers the
+  code-cache service worker and waits up to 5 s for it).
+  `tests/browser/claude-restore.mjs` with `CLAUDE_BUILD=vm PREINSTALLED=1 TOOL=1`
+  (server with that TABCOMPUTER_CLAUDE_CACHE): the preinstall, a model turn
+  with a Bash tool call, and the session resumed after a reload.
 - **CA roots.** 2.1.316 refuses to start with no root certificate to trust
   ("No certificate authority to trust"): its default store is the runtime's
   bundled roots, `tls.rootCertificates`, which was empty here. node-compat's

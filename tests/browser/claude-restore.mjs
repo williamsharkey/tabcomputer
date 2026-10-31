@@ -25,6 +25,9 @@ let chromium;
 const url = process.argv[2] ?? 'http://localhost:5299/';
 const exe = chromiumPath('/opt/pw-browsers/chromium-1194/chrome-linux/chrome');
 const build = ['native', 'vm'].includes(process.env.CLAUDE_BUILD) ? process.env.CLAUDE_BUILD : 'npm';
+// PREINSTALLED=1 (with CLAUDE_BUILD=vm): no binary in the tab; the boot's preinstall, from a server
+// whose TABCOMPUTER_CLAUDE_CACHE holds the pinned release (bench/claude-tui.mjs --preinstalled)
+const PREINSTALLED = build === 'vm' && !!process.env.PREINSTALLED;
 const START_MS = build === 'native' ? 240_000 : build === 'vm' ? 150_000 : 60_000; // (vm: the first start extracts)
 const REPLY = 'pong-from-the-stand-in';
 const KEY = 'sk-ant-api03-' + 'x'.repeat(80) + '-standin00AA';
@@ -129,7 +132,11 @@ const typeIn = (text) => page.evaluate((text) => {
 try {
   await boot();
   await sh('mkdir -p ~/proj');
-  if (build !== 'npm') {
+  if (PREINSTALLED) {
+    // no binary: the boot's preinstall (src/claude-vm/preinstall.ts), from the server's /claude-releases/
+    await page.waitForFunction(() => window.__tabcomputer.fs.stat('/var/lib/tabcomputer/claude-vm.json').then(() => true, () => false), null, { timeout: 180_000, polling: 500 });
+    check(true, 'the boot preinstalled Claude Code');
+  } else if (build !== 'npm') {
     await page.evaluate(async () => {
       for (const [src, dst] of [['/__bench/claude-native', '/home/user/.local/bin/claude'], ['/__bench/ld-musl-x86_64.so.1', '/lib/ld-musl-x86_64.so.1']]) {
         const r = await fetch(src);

@@ -116,7 +116,7 @@ describe('shims a profile turns off', () => {
     shell.commands.register(claudeCmd);
     withShims({ claude: 'native' });
     const r = await run(shell, 'CLAUDE_NATIVE_PATH=/nowhere/claude claude --version');
-    expect(r.output).toContain('no binary at /nowhere/claude');
+    expect(r.output).toContain("Claude Code isn't installed here"); // (nor could the test's site send the preinstalled build)
     const ctx: any = { args: ['--npm', 'update'], env: {}, stdout: '', stderr: '', fs: null, shell };
     expect(await claudeCmd.exec(ctx)).toBe(0);
     expect(ctx.stdout).toContain('pinned');

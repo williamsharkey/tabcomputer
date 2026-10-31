@@ -7,10 +7,55 @@ JavaScript out of the binary the user installed and runs it on tabcomputer's
 Node runtime in the page's own JS engine, the way `claude --npm` runs the
 pinned 2.1.112 npm build, with a shim for the Bun APIs it uses.
 
-The extracted code is Anthropic's. It is extracted on the user's machine from
-the binary they installed (`claude install`, sha256-checked against
-Anthropic's manifest) and cached there, keyed by the binary's sha256.
-tabcomputer never serves it.
+The extracted code is Anthropic's. It is extracted on the user's machine, and
+cached there keyed by the release's sha256, from either the binary they
+installed (`claude install`, sha256-checked against Anthropic's manifest) or
+byte ranges of the server's copy of the unchanged release file (the
+preinstall, below). tabcomputer never serves extracted or changed code: only
+Anthropic's file, whole or in byte ranges.
+
+## The preinstalled build
+
+tabcomputer's profile has `preinstall: claude-native`: after boot (8 s, then an
+idle moment), the page fetches the pinned release (`CLAUDE_VM_PINNED` in
+`src/claude-vm/preinstall.ts`) and lays it out, so the first `claude` starts at
+once. Not in safe mode, a guest that keeps nothing, a tab without network, or
+when the storage quota has less than 400 MB free.
+
+- **Only what `--vm` runs.** In 2.1.316 the files' bytes (54.6 MB), their names
+  and the module table sit together at the end of the `.bun` section, after
+  the JSC bytecode and Bun itself. `remote-graph.ts` runs the same parser as
+  for a whole file (`bun-graph.ts`, over a `ByteSource`) on the ranges fetched
+  so far; it says which ranges it needs next (`NeedBytes`), all at once. First
+  the file's last 512 KiB (section headers, names, module table) and its ELF
+  header, then the section's length, then the contents: 55 MB in 10 requests
+  over 3 round trips, 8 MiB pieces, 4 at a time. Over 160 MB in all and it
+  stops (another layout).
+- **The server** (`server.mjs` `/claude-releases/`) answers one `Range:
+  bytes=a-b | a- | -n` with a 206 of the file it keeps (only once its sha256
+  matched the manifest); several ranges get the whole file, a start past the
+  end a 416.
+- **Precedence.** A non-empty file at `$CLAUDE_NATIVE_PATH` (default
+  `~/.local/bin/claude`, from `claude install` or `claude update`) is the
+  user's and runs instead; the boot then skips the preinstall. Without one,
+  `claude` uses the preinstalled layout, waits for a preinstall in progress, or
+  downloads it then. A site without the route or without ranges (shiro, older
+  servers): `claude` says to run `claude install` or use `--npm`.
+- `/var/lib/tabcomputer/claude-vm.json` records the preinstalled version;
+  `TABCOMPUTER_CLAUDE_VERSION` says it to an agent inside.
+- **Moving the pin**: read the new release's `Bun.*` calls (2.1.316 added
+  `Bun.SHA256.hash` and `Bun.hash.xxHash64`, both in the shim now), then
+  `TABCOMPUTER_CLAUDE_CACHE=DIR node bench/claude-tui.mjs --build vm --preinstalled`
+  with the release in DIR/VERSION/ (manifest.json, linux-x64-musl/claude).
+  Measured for 2.1.316 (local Chrome, fresh profile): ready ~24 s after the
+  page loaded, then the prompt in 2.05 s, keys echoed in 26 ms (median).
+- **CA roots.** 2.1.316 refuses to start with no root certificate to trust
+  ("No certificate authority to trust"): its default store is the runtime's
+  bundled roots, `tls.rootCertificates`, which was empty here. node-compat's
+  `tls.rootCertificates` and `getCACertificates()` are now the machine's
+  bundle (`$SSL_CERT_FILE`, else `/etc/ssl/certs/ca-certificates.crt` from the
+  `ca-certificates` package, which the profile preinstalls and `claude`
+  installs if missing). The browser still does the TLS checks.
 
 Everything below was read from 2.1.296 (linux-x64-musl, sha256 `94a1ccc6…417f`).
 

@@ -150,6 +150,46 @@ describe('/claude-releases/', () => {
     expect(head.headers.get('content-length')).toBe(String(GOOD.length));
   });
 
+  it('serves byte ranges of the binary (claude --vm reads only its JavaScript): a-b, a-, -n; 416 past the end', async () => {
+    const url = '/claude-releases/1.0.0/linux-x64-musl/claude';
+    const r = await get(url, { headers: { Range: 'bytes=100-199' } });
+    expect(r.status).toBe(206);
+    expect(r.headers.get('content-range')).toBe(`bytes 100-199/${GOOD.length}`);
+    expect(r.headers.get('content-length')).toBe('100');
+    expect(r.headers.get('accept-ranges')).toBe('bytes');
+    expect(Buffer.from(await r.arrayBuffer()).equals(GOOD.subarray(100, 200))).toBe(true);
+    const open = await get(url, { headers: { Range: `bytes=${GOOD.length - 10}-` } });
+    expect(open.status).toBe(206);
+    expect((await open.arrayBuffer()).byteLength).toBe(10);
+    const suffix = await get(url, { headers: { Range: 'bytes=-64' } });
+    expect(suffix.status).toBe(206);
+    expect(suffix.headers.get('content-range')).toBe(`bytes ${GOOD.length - 64}-${GOOD.length - 1}/${GOOD.length}`);
+    // an end past the file is cut to it; a start past it is a 416
+    const cut = await get(url, { headers: { Range: `bytes=${GOOD.length - 5}-${GOOD.length + 1000}` } });
+    expect((await cut.arrayBuffer()).byteLength).toBe(5);
+    const past = await get(url, { headers: { Range: `bytes=${GOOD.length}-` } });
+    expect(past.status).toBe(416);
+    expect(past.headers.get('content-range')).toBe(`bytes */${GOOD.length}`);
+    // several ranges, or another unit: the whole file, as a server may
+    expect((await get(url, { headers: { Range: 'bytes=0-1,5-6' } })).status).toBe(200);
+    expect((await get(url, { headers: { Range: 'items=0-1' } })).status).toBe(200);
+    expect(hitsFor('1.0.0/linux-x64-musl/claude')).toBe(1); // all from disk
+  });
+
+  it('parseByteRange: one range of a file, or the whole file, or unsatisfiable', () => {
+    const server = new URL('../../../server.mjs', import.meta.url).href;
+    const cases = [[undefined, 10], ['bytes=2-4', 10], ['bytes=-3', 10], ['bytes=-30', 10], ['bytes=4-2', 10], ['bytes=-0', 10], ['bytes=10-', 10], ['bytes=3-', 10], ['bytes=-', 10]];
+    // Plain Node, as above
+    const out = execFileSync('node', ['--input-type=module', '-e', `
+      const m = await import(${JSON.stringify(server)});
+      console.log(JSON.stringify(${JSON.stringify(cases)}.map(([h, n]) => m.parseByteRange(h ?? undefined, n))));
+      process.exit(0);`,
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    expect(JSON.parse(out.trim().split('\n').pop()!)).toEqual([
+      null, { start: 2, end: 4 }, { start: 7, end: 9 }, { start: 0, end: 9 }, 'unsatisfiable', 'unsatisfiable', 'unsatisfiable', { start: 3, end: 9 }, null,
+    ]);
+  });
+
   it('refuses, and doesn\'t keep, a binary that fails the manifest\'s sha256', async () => {
     expect((await get('/claude-releases/1.0.1/linux-x64-musl/claude')).status).toBe(502);
     expect((await get('/claude-releases/1.0.1/linux-x64-musl/claude')).status).toBe(502);

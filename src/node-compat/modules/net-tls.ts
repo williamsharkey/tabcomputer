@@ -698,10 +698,39 @@ export function createTlsModule(deps: TlsDeps): any {
     getCiphers: () => ['TLS_AES_256_GCM_SHA384'],
     DEFAULT_MIN_VERSION: 'TLSv1.2',
     DEFAULT_MAX_VERSION: 'TLSv1.3',
-    // The page's fetch verifies TLS with the browser's own roots, so node code gets no
-    // bundle of its own (an empty list, as an array: Claude Code spreads it)
-    rootCertificates: Object.freeze([] as string[]),
-    getCACertificates: (_type?: string) => [] as string[],
+    // The page's fetch verifies TLS with the browser's own roots. Node code that reads the
+    // list gets the machine's CA bundle (the ca-certificates package; [] without it):
+    // Claude Code 2.1.316 and later refuse to start with no root to trust
+    get rootCertificates() { return machineRoots(getBuiltinModule); },
+    getCACertificates: (type = 'default') => {
+      if (type === 'extra') {
+        const file = getBuiltinModule('process')?.env?.NODE_EXTRA_CA_CERTS;
+        return file ? pemCertificates(readText(getBuiltinModule, file)) : [];
+      }
+      return [...machineRoots(getBuiltinModule)];
+    },
     connect,
   };
+}
+
+const EMPTY: readonly string[] = Object.freeze([]);
+let roots: readonly string[] | null = null;
+
+const readText = (getBuiltinModule: TlsDeps['getBuiltinModule'], path: string): string => {
+  try { return String(getBuiltinModule('fs').readFileSync(path, 'utf8') ?? ''); } catch { return ''; }
+};
+
+/** The PEM certificates in a bundle, each as Node lists them (no trailing newline) */
+export const pemCertificates = (text: string): string[] =>
+  text.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
+
+/** $SSL_CERT_FILE, else Debian's bundle; read once found (an empty answer is asked again: it may be installed later) */
+function machineRoots(getBuiltinModule: TlsDeps['getBuiltinModule']): readonly string[] {
+  if (roots) return roots;
+  const env = getBuiltinModule('process')?.env ?? {};
+  for (const path of [env.SSL_CERT_FILE, '/etc/ssl/certs/ca-certificates.crt'].filter(Boolean)) {
+    const list = pemCertificates(readText(getBuiltinModule, path));
+    if (list.length) return (roots = Object.freeze(list));
+  }
+  return EMPTY;
 }

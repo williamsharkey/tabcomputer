@@ -43,7 +43,7 @@ describe('claude --vm: the Bun module graph', () => {
     expect(g.entry.name).toBe('/$bunfs/root/cli');
     const head = new TextDecoder().decode(g.entry.contents.subarray(0, 200));
     expect(head.startsWith('// @bun')).toBe(true);
-    expect(head).toContain('Claude Code');
+    expect(head).toContain('Anthropic'); // (2.1.296's header named Claude Code; 2.1.316's names the legal agreements)
     const js = g.modules.filter((m) => m.loader === BunLoader.js);
     expect(js.length).toBeGreaterThan(1000);
     expect(js.every((m) => m.contents.length > 0)).toBe(true);

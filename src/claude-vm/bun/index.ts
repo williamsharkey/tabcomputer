@@ -5,7 +5,8 @@
  * bundle's module scope only, never as a page global (npm packages test `typeof Bun`).
  */
 import { stringWidth, stripANSI, sliceAnsi, wrapAnsi } from './text';
-import { crc32 } from './hash';
+import { crc32, xxHash64, toBytes } from './hash';
+import { sha256sync } from '../../commands/jseval/crypto';
 import { order, satisfies } from './semver';
 import { deepEquals } from './deep-equals';
 import { YAML, TOML } from './formats';
@@ -64,6 +65,14 @@ export function createBun(env: BunEnv): Record<string, unknown> {
   const toBuffer = (b: Uint8Array) => (env.Buffer ? env.Buffer.from(b.buffer, b.byteOffset, b.byteLength) : b);
   const hash: any = (data: unknown) => crc32(data); // (Bun's default is wyhash; nothing here calls it bare)
   hash.crc32 = crc32;
+  hash.xxHash64 = xxHash64;
+  // Bun.SHA256.hash(data, encoding?): the digest as bytes, or a string in that encoding (hex, base64, ...)
+  const SHA256 = {
+    hash: (data: unknown, enc?: string) => {
+      const d = toBuffer(sha256sync(toBytes(data))) as any;
+      return typeof enc === 'string' && env.Buffer ? env.Buffer.from(d).toString(enc) : d;
+    },
+  };
   // Claude Code runs itself again through process.execPath: this launcher, not node (self-exec.ts)
   const self = env.main ? ensureSelfExec(env.fs, env.main) : null;
   if (self) { try { env.process.execPath = self; } catch { /* read-only: left as node's */ } }
@@ -73,6 +82,7 @@ export function createBun(env: BunEnv): Record<string, unknown> {
     isStandaloneExecutable: true,
     stringWidth, stripANSI, sliceAnsi, wrapAnsi,
     hash,
+    SHA256,
     semver: { order, satisfies },
     deepEquals,
     YAML, TOML,

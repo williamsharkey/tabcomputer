@@ -1113,6 +1113,21 @@ async function main() {
       .then(() => console.log('[tabcomputer] Claude Code ready'))
       .catch((e) => console.warn('[tabcomputer] Claude Code background install failed:', e?.message || e));
   }, 3000);
+  // The native build's JavaScript, which plain `claude` runs (claude-vm/preinstall.ts): ~55 MB
+  // of byte ranges from this site, then laid out once (~40 s of work, mostly off the main
+  // thread), so the first `claude` starts at once. Not for a guest that keeps nothing.
+  if (!safe && !guest?.noNetwork && !guest?.ephemeral && profile.preinstall.includes('claude-native')) setTimeout(() => {
+    const idle = (window as any).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 0));
+    idle(() => {
+      const home = shell.env['HOME'] || '/home/user';
+      sessionBackground(Promise.all([import('./claude-vm/preinstall'), import('./commands/claude')])
+        .then(([m, c]) => m.preinstallClaudeVmInBackground(fs as any, home, c.nativeClaudePath(shell.env), {
+          origin: getShiroOrigin(), say: (l) => console.log(`[claude-vm] ${l.trimEnd()}`),
+        })))
+        .then((r) => console.log(r === 'ready' ? '[tabcomputer] Claude Code (native) ready' : '[tabcomputer] Claude Code preinstall skipped (a binary of the user\'s, or no storage room)'))
+        .catch((e) => console.warn('[tabcomputer] Claude Code (native) background preinstall failed:', e?.message || e));
+    }, { timeout: 10_000 });
+  }, 8000);
   // A tab that compiled Java this week gets its warm compiler started now, not at
   // the first `javac` (half a minute): java-defaults.ts has the conditions
   scheduleJavacPrestart({
@@ -1139,7 +1154,7 @@ async function main() {
   }, 20_000);
   // The other preinstall names are pkg packages (ca-certificates: the CA bundle
   // native programs' TLS looks for at /etc/ssl/certs/ca-certificates.crt).
-  const pkgPreinstall = safe ? [] : profile.preinstall.filter((n) => n !== 'claude-code');
+  const pkgPreinstall = safe ? [] : profile.preinstall.filter((n) => n !== 'claude-code' && n !== 'claude-native');
   if (pkgPreinstall.length) setTimeout(() => {
     sessionBackground(import('./pkg-manager').then((m) => m.preinstallPackages(fs, pkgPreinstall)))
       .then((done) => { if (done.length) console.log(`[tabcomputer] preinstalled ${done.join(', ')}`); })

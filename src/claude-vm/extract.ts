@@ -12,7 +12,7 @@
  * puts the shim there; process-global.ts keeps it out of other processes).
  * zstd-compressed assets are stored decompressed.
  */
-import { parseBunGraph, BunLoader } from './bun-graph';
+import { parseBunGraph, BunLoader, type BunGraph } from './bun-graph';
 import { zstdDecodeAll } from '../commands/compress/zstd-codec';
 
 export const VM_CACHE = '.cache/tabcomputer/claude-vm';
@@ -298,14 +298,44 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
   const mtime = typeof st.mtime === 'number' ? st.mtime : st.mtime.getTime();
   let bin: Uint8Array | null = null;
   let sha = index[binPath]?.size === st.size && index[binPath]?.mtime === mtime ? index[binPath].sha256 : '';
-  // (a first launch takes ~40 s: a line per stage so it doesn't look hung)
-  const t0 = Date.now();
-  const secs = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
   if (!sha) {
     say(`claude --vm: reading the native build (${Math.round(st.size / 2 ** 20)} MB)...\n`);
     bin = await fs.readFile(binPath) as Uint8Array;
     sha = await sha256Hex(bin);
   }
+  const layout = await ensureClaudeVmLayout(fs, sha, home, async () => parseBunGraph(bin ??= await fs.readFile(binPath) as Uint8Array), say);
+  index[binPath] = { size: st.size, mtime, sha256: sha };
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(indexPath, JSON.stringify(index, null, 2) + '\n');
+  return layout;
+}
+
+/** Layouts being made, by sha256: a boot preinstall and a `claude` typed meanwhile share one */
+const making = new Map<string, Promise<VmLayout>>();
+
+/** Whether the layout for `sha` is being made now (by the boot's preinstall, say) */
+export const layoutInProgress = (home: string, sha: string): boolean => making.has(`${home}\0${sha}`);
+
+/**
+ * The layout of the binary whose sha256 is `sha` (above), made first if needed;
+ * `graph` gives its module graph (from the whole file, or from byte ranges of
+ * the server's copy: remote-graph.ts) and is called only when stage 1 is to do.
+ */
+export function ensureClaudeVmLayout(fs: VmFs, sha: string, home: string, graph: () => Promise<BunGraph>, say: (s: string) => void = () => {}): Promise<VmLayout> {
+  const key = `${home}\0${sha}`;
+  let p = making.get(key);
+  if (!p) {
+    p = makeLayout(fs, sha, home, graph, say).finally(() => making.delete(key));
+    making.set(key, p);
+  }
+  return p;
+}
+
+async function makeLayout(fs: VmFs, sha: string, home: string, loadGraph: () => Promise<BunGraph>, say: (s: string) => void): Promise<VmLayout> {
+  const root = `${home}/${VM_CACHE}`;
+  // (a first launch takes ~40 s: a line per stage so it doesn't look hung)
+  const t0 = Date.now();
+  const secs = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
   const base = `${root}/${sha}`;
   const cjs = `${base}/cjs`;
   const dir = `${base}/nc-${buildKey()}`;
@@ -317,9 +347,8 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
 
   // Stage 1: the bundle out of the binary, as CommonJS
   if ((await readText(`${cjs}/complete`))?.trim() !== String(VM_LAYOUT)) {
+    const graph = await loadGraph();
     say('claude --vm: extracting Claude Code\'s JavaScript from the native build (once per version)...\n');
-    bin ??= await fs.readFile(binPath) as Uint8Array;
-    const graph = parseBunGraph(bin);
     const dec = new TextDecoder();
     const files: { rel: string; loader: number }[] = [];
     const { withEsbuild } = await import('../commands/build');
@@ -389,8 +418,5 @@ export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, sa
       if (name.startsWith('nc-') && `${base}/${name}` !== dir) await (fs as any).rm?.(`${base}/${name}`, { recursive: true, force: true }).catch?.(() => {});
     }
   }
-  index[binPath] = { size: st.size, mtime, sha256: sha };
-  await fs.mkdir(root, { recursive: true });
-  await fs.writeFile(indexPath, JSON.stringify(index, null, 2) + '\n');
   return { dir, launcher, sha256: sha, extracted };
 }

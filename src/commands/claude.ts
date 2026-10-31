@@ -140,31 +140,48 @@ export function quietEnv(env: Record<string, string>): Record<string, string> {
  * `claude --vm`: the native build's own JavaScript, taken out of the binary
  * and run on tabcomputer's node in the page's JS engine, with a Bun shim
  * (src/claude-vm/, docs/CLAUDE_VM.md). The binary is the one `claude install`
- * put at $CLAUDE_NATIVE_PATH; nothing else is downloaded.
+ * put at $CLAUDE_NATIVE_PATH; without one, the release tabcomputer preinstalls
+ * (claude-vm/preinstall.ts: only its JavaScript, by byte ranges from this site).
  */
 async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promise<number> {
   const path = nativeClaudePath(ctx.env);
+  // a file there is the user's (claude install / update, or their own): it runs, not the preinstalled build
   let elf = false;
   try {
     const st = await ctx.fs.stat(path);
-    elf = st.size > 1_000_000;
+    elf = st.size > 0;
   } catch { /* missing */ }
-  if (!elf) {
-    ctx.stderr += `claude --vm: native Claude Code is not installed (no binary at ${path}).\n`
-      + 'Run `claude install` first: --vm runs that build\'s JavaScript without the x86-64 emulator.\n'
-      + 'Or `claude --npm` for the pinned npm build, which needs no download.\n';
-    return 1;
-  }
   const home = ctx.env.HOME || '/home/user';
   const say = (t: string) => { if (ctx.terminal) ctx.terminal.writeOutput(t.replace(/\n/g, '\r\n')); else ctx.stderr += t; };
   let layout;
-  try {
-    const { ensureClaudeVm } = await import('../claude-vm/extract');
-    layout = await ensureClaudeVm(ctx.fs as any, path, home, say);
-  } catch (e: any) {
-    // (what --vm can't run yet, the native build in the emulator can)
-    say(`claude --vm: could not read the native build's JavaScript (${e?.message || e}); running it in the emulator instead\n`);
-    return runNative(ctx, args);
+  let version: string | null = null;
+  if (!elf) {
+    // No binary of the user's: the build tabcomputer preinstalls (claude-vm/preinstall.ts),
+    // made now if the boot's background preinstall hasn't finished it
+    try {
+      const [{ ensurePreinstalledClaudeVm, CLAUDE_VM_PINNED }, { layoutInProgress }, { getShiroOrigin }] = await Promise.all([
+        import('../claude-vm/preinstall'), import('../claude-vm/extract'), import('../utils/shiro-origin'),
+      ]);
+      if (layoutInProgress(home, CLAUDE_VM_PINNED.sha256)) say('claude: Claude Code is still being set up in the background; it starts when that is done...\n');
+      layout = await ensurePreinstalledClaudeVm(ctx.fs as any, home, { origin: getShiroOrigin(), say });
+      version = layout.version;
+    } catch (e: any) {
+      ctx.stderr += `claude: Claude Code isn't installed here, and this site couldn't send it (${e?.message || e}).\n`
+        + 'Run `claude install` to download the native build (about 300 MB),\n'
+        + 'or `claude --npm` for the pinned npm build.\n';
+      return 1;
+    }
+  } else {
+    try {
+      const { ensureClaudeVm } = await import('../claude-vm/extract');
+      layout = await ensureClaudeVm(ctx.fs as any, path, home, say);
+    } catch (e: any) {
+      // (what --vm can't run yet, the native build in the emulator can)
+      say(`claude --vm: could not read the native build's JavaScript (${e?.message || e}); running it in the emulator instead\n`);
+      return runNative(ctx, args);
+    }
+    const { nativeClaudeVersion } = await import('./claude-native');
+    version = await nativeClaudeVersion(ctx.fs, path);
   }
   args = loginArgs(args);
   // Sessions skip permission prompts, as runNative's and the npm build's do (#40)
@@ -176,8 +193,9 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   } catch { /* settings are Claude's own business; never block the run */ }
   const nodeCmd = ctx.shell.commands.get('node');
   if (!nodeCmd) { ctx.stderr += 'claude: node command not available\n'; return 127; }
-  const { nativeClaudeVersion } = await import('./claude-native');
-  const version = await nativeClaudeVersion(ctx.fs, path);
+  // Claude Code 2.1.316 and later won't start with no CA root to trust; node's list here is the
+  // machine's bundle (node-compat net-tls.ts), which the profile's ca-certificates preinstall puts in place
+  await ensureCaBundle(ctx.fs, say);
   // the service worker that serves the compiled bundle (src/claude-vm/code-cache.ts);
   // without it (or switched off) the launcher requires bundle.js
   const cached = ctx.env.TABCOMPUTER_VM_CODECACHE !== '0'
@@ -194,6 +212,16 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   ctx.stdout += nodeCtx.stdout;
   ctx.stderr += nodeCtx.stderr;
   return code;
+}
+
+/** The ca-certificates package, if it isn't installed yet (best effort: a failure leaves it to Claude Code to say) */
+export async function ensureCaBundle(fs: Parameters<Command['exec']>[0]['fs'], say: (s: string) => void = () => {}): Promise<void> {
+  try { await fs.stat('/etc/ssl/certs/ca-certificates.crt'); return; } catch { /* not installed */ }
+  try {
+    say('claude: installing ca-certificates (the CA roots Claude Code checks for)...\n');
+    const { preinstallPackages } = await import('../pkg-manager');
+    await preinstallPackages(fs as any, ['ca-certificates']);
+  } catch { /* below */ }
 }
 
 const CLAUDE_SUBCOMMANDS = new Set(['auth', 'mcp', 'config', 'doctor', 'install', 'update', 'upgrade', 'plugin', 'setup-token', 'migrate-installer']);

@@ -1412,15 +1412,50 @@ async function handleClaudeReleases(req, res, rest) {
   }
   const b = await claudeBinary(what.version, what.platform);
   if (!b.file) return fail(b.status, b.text);
-  res.writeHead(200, {
+  const headers = {
     'content-type': 'application/octet-stream',
-    'content-length': b.size,
     'cache-control': 'public, max-age=31536000, immutable',
     etag: `"sha256-${b.checksum}"`,
+    'accept-ranges': 'bytes',
     ...same,
-  });
+  };
+  // A byte range of the unchanged file: `claude --vm` reads only the part of
+  // the binary holding Claude Code's JavaScript (~55 of 315 MB, src/claude-vm/remote-graph.ts)
+  const range = parseByteRange(req.headers.range, b.size);
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, { ...headers, 'content-range': `bytes */${b.size}`, 'content-length': 0 });
+    return res.end();
+  }
+  if (range) {
+    res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${b.size}`, 'content-length': range.end - range.start + 1 });
+    if (head) return res.end();
+    return createReadStream(b.file, { start: range.start, end: range.end }).on('error', () => res.destroy()).pipe(res);
+  }
+  res.writeHead(200, { ...headers, 'content-length': b.size });
   if (head) return res.end();
   createReadStream(b.file).on('error', () => res.destroy()).pipe(res);
+}
+
+/**
+ * One `Range: bytes=…` of a file of `size` bytes: {start, end} (inclusive), null
+ * for the whole file (no header, another unit, several ranges), or
+ * 'unsatisfiable' (416). Forms: a-b, a-, -n (the last n bytes).
+ */
+export function parseByteRange(header, size) {
+  const m = typeof header === 'string' ? /^\s*bytes=(\d*)-(\d*)\s*$/.exec(header) : null;
+  if (!m || (m[1] === '' && m[2] === '')) return null;
+  let start, end;
+  if (m[1] === '') {
+    const n = Number(m[2]);
+    if (n === 0) return 'unsatisfiable';
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+    if (start >= size || end < start) return 'unsatisfiable';
+  }
+  return { start, end };
 }
 
 // --- Pyodide distribution (docs/research/PYTHON_NATIVE_WHEELS.md "Hosting") ---

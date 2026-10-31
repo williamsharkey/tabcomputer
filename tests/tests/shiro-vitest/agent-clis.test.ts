@@ -180,12 +180,13 @@ describe('curl -o', () => {
 });
 
 describe('claude --vm', () => {
-  it('without the native build says to install it', async () => {
+  it('without the native build, or the site\'s preinstalled one, says to install it', async () => {
     const { shell } = await createTestShell();
     shell.commands.register(claudeCmd);
     const r = await run(shell, 'CLAUDE_NATIVE_PATH=/nowhere/claude claude --vm --version');
     expect(r.exitCode).toBe(1);
-    expect(r.output).toContain('claude --vm: native Claude Code is not installed');
+    expect(r.output).toContain("claude: Claude Code isn't installed here, and this site couldn't send it");
+    expect(r.output).toContain('Run `claude install`');
   });
 
   it("falls back to the emulator when the build's JavaScript can't be read", async () => {

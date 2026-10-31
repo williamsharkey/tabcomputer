@@ -103,6 +103,42 @@ describe('claude --vm: the extracted modules', () => {
     expect([again.extracted, again.dir, lines]).toEqual([false, first.dir, []]);
   });
 
+  it('the preinstalled build: byte ranges of the site\'s copy, laid out once under the release\'s sha256; then nothing is fetched', async () => {
+    const { ensurePreinstalledClaudeVm, preinstallClaudeVmInBackground, PREINSTALL_RECORD } = await import('@shiro/claude-vm/preinstall');
+    const { fs } = await createTestShell();
+    const bin = fakeBunElf([
+      { name: '/$bunfs/root/chunk-a.js', contents: '// @bun\nexport const a = 1;\n', loader: BunLoader.js },
+      { name: '/$bunfs/root/cli', contents: '// @bun\nimport{a}from"/$bunfs/root/chunk-a.js";console.log(a);\n', loader: BunLoader.js },
+    ], 1);
+    const release = { version: '9.9.9', platform: 'linux-x64-musl', sha256: 'ab'.repeat(32), size: bin.length };
+    const asked: string[] = [];
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      const range = (init?.headers as any)?.Range as string;
+      asked.push(`${url} ${range}`);
+      const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number);
+      return new Response(bin.slice(s, e + 1), { status: 206, headers: { 'content-range': `bytes ${s}-${e}/${bin.length}` } });
+    }) as typeof fetch;
+    const lines: string[] = [];
+    const opts = { origin: 'https://tc.example/', fetch: fetchFn, release, say: (l: string) => lines.push(l) };
+    // the boot's and a typed `claude`'s at once: one download, one layout
+    const [a, b] = await Promise.all([ensurePreinstalledClaudeVm(fs as any, '/home/p', opts), ensurePreinstalledClaudeVm(fs as any, '/home/p', opts)]);
+    expect(a.dir).toBe(b.dir);
+    expect(a.dir).toContain(`/home/p/.cache/tabcomputer/claude-vm/${release.sha256}/nc-`);
+    expect(a.version).toBe('9.9.9');
+    expect(asked.length).toBe(1); // (the whole small file is the first suffix)
+    expect(asked[0]).toBe(`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude bytes=0-${bin.length - 1}`);
+    expect(lines.join('')).toMatch(/Downloading Claude Code 9\.9\.9/);
+    expect(await fs.readFile(a.launcher, 'utf8')).toContain('claude --vm');
+    expect(JSON.parse(await fs.readFile(PREINSTALL_RECORD, 'utf8') as string)).toMatchObject({ version: '9.9.9', sha256: release.sha256 });
+    const again = await ensurePreinstalledClaudeVm(fs as any, '/home/p', opts);
+    expect([again.extracted, again.dir, asked.length]).toEqual([false, a.dir, 1]);
+    // the boot leaves it alone where the user has a binary of their own
+    await fs.mkdir('/home/q/.local/bin', { recursive: true });
+    await fs.writeFile('/home/q/.local/bin/claude', new Uint8Array(1_100_000));
+    expect(await preinstallClaudeVmInBackground(fs as any, '/home/q', '/home/q/.local/bin/claude', opts)).toBe('skipped');
+    expect(asked.length).toBe(1);
+  });
+
   it("the code-cache module takes node-compat's module parameters, in require.ts's order", () => {
     const req = readFileSync(resolve(__dirname, '../../../src/node-compat/require.ts'), 'utf8');
     const inline = req.slice(req.indexOf('const fnParams = ['), req.indexOf('...(deps.scriptTimers'));

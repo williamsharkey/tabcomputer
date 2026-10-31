@@ -104,12 +104,14 @@ export function buildAgentsMd(ctx: ShiroRuntimeContext): string {
   const source = SOURCE[p.id] ?? SOURCE.tabcomputer;
   const claude = p.shims.claude === 'native'
     ? `- Plain \`claude\` runs Anthropic's native build's own JavaScript on this page's JS
-  engine (\`--vm\`): about 3 s to the prompt. \`claude install\` downloads the native build
-  (about 240 MB) it reads that JavaScript from, and \`claude update\` fetches a newer one.
-- \`claude --x86\` (or \`--native\`) runs the same binary in the x86-64 emulator instead:
+  engine (\`--vm\`): about 2 s to the prompt. ${name} preinstalls a pinned release in the
+  background after boot (only its JavaScript, about 55 MB). \`claude install\` downloads
+  the whole native build (about 300 MB) to ~/.local/bin/claude, which then runs instead,
+  and \`claude update\` fetches a newer one.
+- \`claude --x86\` (or \`--native\`) runs an installed binary in the x86-64 emulator instead:
   much slower (a minute or so to start), for comparing or when \`--vm\` misbehaves.
 - \`claude --npm\` runs the pinned pure-JavaScript build on ${name}'s Node runtime
-  instead: installed at boot, starts fast.`
+  instead (installed when first run).`
     : `- Plain \`claude\` runs the pinned pure-JavaScript build on ${name}'s Node runtime.
 - \`claude install --native\` downloads Anthropic's native build (about 240 MB). Then
   \`claude --vm\` runs its JavaScript on this page's JS engine, and \`claude --x86\` runs

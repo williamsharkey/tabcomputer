@@ -374,7 +374,7 @@ download is ~0.2 s; over a real network it is the download's time),
 | | before (Build 1037) | now |
 |---|---:|---:|
 | page load to Claude's prompt echoing a typed key, nothing cached (`--cold`) | 19.5 s | 6.1 s |
-| the same over 50 Mbps, 40 ms latency (`--cold --throttle 50`) | ~27 s (download 9.8 s) | 10.1 s (download 3.2 s) |
+| the same over 50 Mbps, 40 ms latency (`--cold --throttle 50`) | not measured (its 19.5 s plus a ~9.5 s download) | 10.1 s (download 3.2 s; 17.3 s uncompressed) |
 | of which the layout | 17 s | 4.7 s |
 | first `claude` of a page, preinstalled (`--preinstalled`) | 2.1 s | 1.1 s |
 | first `claude` after a reload (`--preinstalled --sessions 2`) | 1.6–2.2 s (once 8.3 s) | 1.05 s |

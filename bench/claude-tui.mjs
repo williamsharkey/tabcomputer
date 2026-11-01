@@ -13,6 +13,7 @@
 // N earlier sessions (`claude --version`, a reload) before the timed one. --chrome-trace FILE:
 // a Chrome trace of the start, every thread (the node worker's too). --throttle MBPS (--cold): the
 // page's network at that speed (the download is the page's).
+// --origin URL: a deployed site (e.g. https://tabcomputer.com) instead of a local server of dist/.
 // --preinstalled: no binary in the tab; boot's background preinstall (src/claude-vm/preinstall.ts)
 // downloads byte ranges from the server's /claude-releases/ and lays the build out, timed, then
 // plain `claude` runs it. Point the server at a cache holding the pinned release:
@@ -65,7 +66,9 @@ const log = (...a) => console.log(...a);
 const fx = prepareFixtures({ cacheDir: join(ROOT, 'bench/.cache'), publishDir: join(ROOT, 'dist/__bench'), log });
 if (binary) copyFileSync(binary, join(ROOT, 'dist/__bench/claude-native-alt'));
 if (build !== 'npm' && !binary && !preinstalled && !fx['claude-native']) { log('no bench/.cache/fixtures/claude-native (bench/README.md)'); process.exit(2); }
-const server = await startShiroServer({ staticDir: join(ROOT, 'dist'), isolated: true, tcpPorts: [], allowCidrs: [hostAddress() + '/32'], log: process.env.BENCH_SERVER_LOG ? (l) => log('[server]', l) : null });
+// --origin URL: a deployed tabcomputer (e.g. https://tabcomputer.com) instead of a local server of dist/
+const remote = opt('--origin');
+const server = remote ? { origin: remote.replace(/\/$/, ''), close: async () => {} } : await startShiroServer({ staticDir: join(ROOT, 'dist'), isolated: true, tcpPorts: [], allowCidrs: [hostAddress() + '/32'], log: process.env.BENCH_SERVER_LOG ? (l) => log('[server]', l) : null });
 const results = [];
 const h = new Harness({ mode: 'isolated', origin: server.origin, netcache: new NetCache(join(ROOT, 'bench/.cache/net'), { log: process.env.BENCH_VERBOSE ? log : () => {} }), runs, log, results });
 await h.launch();

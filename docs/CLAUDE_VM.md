@@ -381,6 +381,13 @@ download is ~0.2 s; over a real network it is the download's time),
 | `claude` again in the same tab (`--repeat 3`) | 0.25 s | 0.29 s |
 | key echo, median | 26 ms | 26 ms |
 
+On tabcomputer.com (Build 1038, 2026-11-01, `--origin https://tabcomputer.com`, from
+this Mac's home connection): `--cold` 8.4 s page load to a typed key echoed
+(download 1.4 s, the layout 5 s, one long task of 185 ms); the preinstall ready
+13.2 s after page load (its ~8 s boot delay included); `--preinstalled --sessions 2`
+1.35 s to the prompt, key echo median 26 ms. `--origin URL` points the bench at
+any deployed site instead of a local server of `dist/`.
+
 The first start of a page now: 0.09 s to the launcher (the node worker), 0.08 s
 to read `modules.js`, then Claude Code's own start with its modules compiled as
 it requires them. `--trace` prints each phase (`TABCOMPUTER_VM_TRACE=FILE`:

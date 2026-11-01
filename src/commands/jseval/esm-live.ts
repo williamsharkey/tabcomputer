@@ -27,6 +27,8 @@ const NAMED_IMPORT = /\bimport\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2\s*;?/g;
 const LOCAL_EXPORT = /\bexport\s*\{([^}]*)\}\s*;?/g;
 const OBJECT_AFTER_WORD = new Set(['const', 'let', 'var', 'return', 'typeof', 'in', 'of', 'yield', 'await', 'new', 'delete', 'void', 'throw', 'case']);
 const MEMBER_PREFIX = new Set(['get', 'set', 'static', 'async']);
+/** Keywords whose `(…) {` is a condition or a head, not parameters */
+const STATEMENT_HEAD = new Set(['if', 'while', 'for', 'switch', 'with', 'catch']);
 
 export function isEsbuildChunk(src: string): boolean {
   return HELPER_IMPORT.test(src);
@@ -44,16 +46,22 @@ function redeclared(src: string, inCode: (i: number) => boolean, locals: Map<str
     // (`{ key: name }`: the name after the colon)
     for (const m of list.matchAll(/(?:^|[,{[(:]|\.\.\.)\s*([A-Za-z_$][\w$]*)\s*(?=[,}\])=]|$)/g)) if (locals.has(m[1])) found.add(m[1]);
   };
-  for (const m of src.matchAll(/\bcatch\s*\(([^()]*)\)/g)) add(m[1], m.index!);
+  // (a catch clause, not a promise's `.catch(f)`)
+  for (const m of src.matchAll(/(?<![\w$.])catch\s*\(([^()]*)\)/g)) add(m[1], m.index!);
   for (const m of src.matchAll(/\bfunction\b\s*\*?\s*[\w$]*\s*\(([^()]*)\)/g)) add(m[1], m.index!);
   // (a method's parameters: `getFullName(test, separator) {` beside an imported `separator`;
   // an `if (…) {` condition's names come along, which only keeps them copies)
   // (found from the `(`, then the word character before it: a regex starting at every word
   // character was a quarter of this pass's time)
+  // (not a statement's condition: `if (x) {`, `while (x) {`, which declare nothing)
   for (const m of src.matchAll(/\(([^()]*)\)\s*\{/g)) {
     let k = m.index! - 1;
     while (k >= 0 && /\s/.test(src[k])) k--;
-    if (k >= 0 && isIdent(src.charCodeAt(k)) && src.charCodeAt(k) <= 127) add(m[1], k);
+    if (k < 0 || !isIdent(src.charCodeAt(k)) || src.charCodeAt(k) > 127) continue;
+    let w = k;
+    while (w > 0 && isIdent(src.charCodeAt(w - 1))) w--;
+    if (STATEMENT_HEAD.has(src.slice(w, k + 1)) && src[w - 1] !== '.') continue;
+    add(m[1], k);
   }
   for (const m of src.matchAll(/\(([^()]*)\)\s*=>/g)) add(m[1], m.index!);
   // (`x =>`: from each `=>`, the word before it)
@@ -121,6 +129,12 @@ function settled(src: string, inCode: (i: number) => boolean, settle: [string, s
   return `\n;try { __shiro_require.settle(__shiro_module.exports, {${ok.map(([name, local]) => `${JSON.stringify(name)}: ${local}`).join(', ')}}); } catch {}\n`;
 }
 
+/** (for tests and measurement) the imported names a module may declare again */
+export function redeclaredImports(src: string, names: string[]): string[] {
+  const mask = codeMask(src);
+  return [...redeclared(src, (i) => mask[i] === 1, new Map(names.map((n) => [n, 0])))];
+}
+
 export function liveEsbuildChunk(src: string): string {
   if (!isEsbuildChunk(src)) return src;
   return liveBindings(src, false);
@@ -134,15 +148,33 @@ export function liveEsbuildChunk(src: string): string {
  * module.exports while this one loads (a cycle) is re-read. Declared exports
  * (`export let n`) and re-exports are getters too.
  */
-export function liveModule(src: string): string {
+export function liveModule(src: string, opts: LiveOptions = {}): string {
   // (a byte order mark isn't a word's start: three's WebGLBindingStates.js begins with one)
-  return liveBindings(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src, true);
+  return liveBindings(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src, true, opts.unshadowed === true, opts.settle !== false);
+}
+
+export interface LiveOptions {
+  /**
+   * The module's nested bindings never take an imported name: every identifier spelled like
+   * an import is that import. True of Bun's minified chunks (claude --vm): its renamer,
+   * esbuild's, names nested scopes apart from every top-level symbol. Without it, a name
+   * that may be declared again (redeclared(), which takes `if (x) {` for a method's
+   * parameters too) stays a copy, read once; with it every one is live.
+   */
+  unshadowed?: boolean;
+  /**
+   * false: exports stay getters, never settled into plain values once the module has run.
+   * Settling redefines each export on its exports object, which V8 does one layout change
+   * at a time: quadratic in the exports a module has. Claude Code's 1776 export lists
+   * took 2 s that way, more than every read through a getter costs it.
+   */
+  settle?: boolean;
 }
 
 // (`import` the keyword: not the start of Astro's `importsRaw += \`import … from '${…}'\``)
 const STATIC_IMPORT = /(?<![\w$.])import(?![\w$])\s*(?:[\w$*{][^;'"()]*?\bfrom\s*)?(['"])([^'"\n]+)\1/g;
 
-function liveBindings(src: string, general: boolean): string {
+function liveBindings(src: string, general: boolean, unshadowed = false, settles = true): string {
   const mask = codeMask(src);
   const inCode = (i: number) => mask[i] === 1;
 
@@ -240,14 +272,28 @@ function liveBindings(src: string, general: boolean): string {
       if (inCode(m.index!)) { getters.push(getter(m[1], m[1])); settle.push([m[1], m[1]]); }
     }
   }
+  // Every other import statement stays as it is too (`import * as as from …`, `import D, { a as b } from …`:
+  // their names are the transform's, never references)
+  for (const m of src.matchAll(STATIC_IMPORT)) {
+    const at = m.index!;
+    if (!inCode(at) || skip.some(([a, b]) => at >= a && at < b) || keep.some(([a, b]) => at >= a && at < b)) continue;
+    keep.push([at, at + m[0].length]);
+  }
+  keep.sort((a, b) => a[0] - b[0]);
   // An imported name the module declares again (rolldown's chunks reuse names in nested
   // scopes, `catch (error)` beside an imported `error`; esbuild renames those) keeps the copy
-  if (locals.size) for (const name of redeclared(src, inCode, locals)) locals.delete(name);
+  if (locals.size && !unshadowed) for (const name of redeclared(src, inCode, locals)) locals.delete(name);
   if (!locals.size && !getters.length) return src;
 
   const out: string[] = [];
   let last = 0;
   const emit = (from: number, to: number, text: string) => { out.push(src.slice(last, from), text); last = to; };
+  /** Each imported name rewritten: where, and its replacement's index in `out` (an arrow's parameter takes it back) */
+  const rewrites: { at: number; k: number; word: string }[] = [];
+  /** (unshadowed) import statements whose names may all be live, by their text's index in `out` */
+  const droppable: { k: number; names: string[] }[] = [];
+  /** Imported names with an occurrence left as it was: their statement stays, and so its copies */
+  const unrewritten = new Set<string>();
   // At the top of the module: the getters first (a dependency loaded below
   // may call back into this module), then each imported module's exports
   // object, which is its live namespace even while its body is still
@@ -282,7 +328,7 @@ function liveBindings(src: string, general: boolean): string {
   const directives = /^(?:\s*(?:(['"])use [\w ]+\1\s*;?))*/.exec(src)![0];
   if (directives) { out.push(directives); last = directives.length; }
   out.push(header);
-  const tail = general ? settled(src, inCode, settle, locals) : '';
+  const tail = general && settles ? settled(src, inCode, settle, locals) : '';
   // (no imported name to rewrite: only the export lists go, no need to read the code)
   if (!locals.size) {
     for (const [from, to] of removals) emit(from, to, '');
@@ -295,13 +341,45 @@ function liveBindings(src: string, general: boolean): string {
   let prev = '';        // last significant code character ('w' after a word, 'a' after a literal)
   let prevWord = '';
   let classDepth = -1;  // stack depth where a `class` keyword's body `{` will open
+  let forAwait = false; // `for await`: its `(` opens a for head too
+  const opens: number[] = [];               // where each bracket on the stack opened
+  let lastParens: [number, number] = [0, 0]; // the last `( … )` closed
+  let beforeEq = '', beforeEqWord = '';      // what came before the last `=` (an arrow's `=>`)
+  let wordAt = 0;                            // where the last word started
+  /** An arrow's parameters, until its body starts */
+  let body: Set<string> | null = null;
+  /** Arrow parameters in scope: the names, the stack depth their body is at, and whether it is an expression */
+  const shadows: { names: Set<string>; depth: number; expr: boolean }[] = [];
+  const shadowed = (w: string) => shadows.some((sh) => sh.names.has(w));
+  function startBody(block: boolean) {
+    // (a block body is the `{` about to be pushed: it ends when the stack is back to this depth)
+    shadows.push({ names: body!, depth: stack.length, expr: !block });
+    body = null;
+  }
+  /** Bodies that end here: a bracket closed below an expression body or its block, or a `,`/`;` ending an expression */
+  function endShadows(separator: boolean) {
+    while (shadows.length) {
+      const sh = shadows[shadows.length - 1];
+      if (separator ? sh.expr && stack.length === sh.depth : stack.length < sh.depth || (!sh.expr && stack.length === sh.depth)) shadows.pop();
+      else break;
+    }
+  }
   let skipI = 0, remI = 0, keepI = 0;
   const len = src.length;
   let i = 0;
   while (i < len) {
+    // (a range that starts inside one passed over is passed too)
+    while (keepI < keep.length && keep[keepI][0] < i) keepI++;
     if (skipI < skip.length && i === skip[skipI][0]) {
       // (the statement stays: a position the pass can't classify reads its copy, which the
-      // exporter's getters let it take while that module still loads)
+      // exporter's getters let it take while that module still loads; unshadowed, every
+      // reference is rewritten, so one whose names are all live goes: the header loads it)
+      const rec = imports[skipI];
+      // (decided once the whole module is read: `droppable`)
+      if (unshadowed && !rec.untouched && rec.items.length === rec.raw.length && rec.items.every(([local]) => locals.has(local))) {
+        emit(skip[skipI][0], skip[skipI][1], src.slice(skip[skipI][0], skip[skipI][1]));
+        droppable.push({ k: out.length - 1, names: rec.items.map(([local]) => local) });
+      }
       i = skip[skipI++][1]; prev = ';'; prevWord = '';
       continue;
     }
@@ -318,16 +396,29 @@ function liveBindings(src: string, general: boolean): string {
     const c = src.charCodeAt(i);
     const ch = src[i];
     if (ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r') { i++; continue; }
+    // an identifier with a unicode escape (a minifier's `{\u{430}:"a"}`): never an imported name
+    if (ch === '\\' && src[i + 1] === 'u') {
+      let j = i;
+      while (j < len && (src[j] === '\\' || isIdent(src.charCodeAt(j)) || ((src[j] === '{' || src[j] === '}') && /\\u\{[0-9a-fA-F]*$/.test(src.slice(Math.max(0, j - 8), j + (src[j] === '}' ? 0 : 1)))))) j++;
+      prev = 'w'; prevWord = ''; i = j;
+      continue;
+    }
     if (isIdentStart(c)) {
       let j = i + 1;
       while (j < len && isIdent(src.charCodeAt(j))) j++;
       const word = src.slice(i, j);
+      // (an arrow's expression body starts here: its parameters are in scope for this word too)
+      if (body) startBody(false);
       const hit = locals.get(word);
       if (hit && src[i - 1] !== '#' && (prev !== '.' || src.slice(i - 3, i) === '...')) {
-        const rep = replacement(word, hit, i, j);
-        if (rep !== null) emit(i, j, rep);
+        const rep = shadowed(word) ? null : replacement(word, hit, i, j);
+        if (rep !== null) { emit(i, j, rep); rewrites.push({ at: i, k: out.length - 1, word }); }
+        // (a key, a label, a parameter: or a reference this pass took for one, which then reads the copy)
+        else unrewritten.add(word);
       }
+      wordAt = i;
       if (word === 'class') classDepth = stack.length;
+      forAwait = word === 'await' && prevWord === 'for';
       prev = 'w';
       prevWord = word;
       i = j;
@@ -340,16 +431,42 @@ function liveBindings(src: string, general: boolean): string {
       prev = 'a'; prevWord = ''; i = j;
       continue;
     }
-    if (ch === '(' || ch === '[') stack.push(ch);
+    // an arrow function: its parameters are its own in its body (Bun's `.then((m) => …)`
+    // beside an imported `m`), so what was rewritten in them is taken back
+    if (ch === '>' && src[i - 1] === '=' && (beforeEq === ')' || beforeEq === 'w')) {
+      const [from, to] = beforeEq === ')' ? lastParens : [wordAt, wordAt + beforeEqWord.length];
+      const params = new Set<string>();
+      for (const m of src.slice(from, to).matchAll(/(?:^|[,{[(:]|\.\.\.)\s*([A-Za-z_$][\w$]*)\s*(?=[,}\])=]|$)/g)) if (locals.has(m[1])) params.add(m[1]);
+      if (params.size) {
+        for (const r of rewrites) if (r.at >= from && r.at < to && params.has(r.word)) out[r.k] = r.word;
+        body = params;
+      }
+      prev = '=>'; prevWord = ''; i++;
+      continue;
+    }
+    if (body) startBody(ch === '{');
+    // ('f': a for statement's head, where `of` is the keyword)
+    if (ch === '(') { stack.push(prev === 'w' && (prevWord === 'for' || (prevWord === 'await' && forAwait)) ? 'f' : '('); opens.push(i); }
+    else if (ch === '[') { stack.push(ch); opens.push(i); }
     else if (ch === '{') {
       if (classDepth === stack.length) { stack.push('c'); classDepth = -1; }
       else stack.push(isObjectBrace() ? 'o' : 'b');
-    } else if (ch === ')' || ch === ']' || ch === '}') stack.pop();
-    prev = ch === '>' && src[i - 1] === '=' ? '=>' : ch;
+      opens.push(i);
+    } else if (ch === ')' || ch === ']' || ch === '}') {
+      const at = opens.pop() ?? i;
+      if (ch === ')') lastParens = [at, i + 1];
+      stack.pop();
+      endShadows(false);
+    } else if ((ch === ',' || ch === ';') && shadows.length) endShadows(true);
+    if (ch === '=') { beforeEq = prev; beforeEqWord = prevWord; }
+    prev = ch;
     prevWord = '';
     i++;
   }
   out.push(src.slice(last), tail);
+  // (unshadowed) a statement none of whose names was left alone: every reference reads the
+  // live binding, so its copies would only cost (Claude Code: ~240k import statements)
+  for (const d of droppable) if (!d.names.some((n) => unrewritten.has(n))) out[d.k] = '';
 
   function isObjectBrace(): boolean {
     if (prev === 'w') return OBJECT_AFTER_WORD.has(prevWord);
@@ -378,7 +495,11 @@ function liveBindings(src: string, general: boolean): string {
     if (top === 'o' && prev === 'w' && MEMBER_PREFIX.has(prevWord)) return null;
     if (top === 'c' && (memberPos || (prev === 'w' && MEMBER_PREFIX.has(prevWord)) || prev === '*')) return null;
     if (prev === 'w' && /^(?:function|class|var|let|const|import|export)$/.test(prevWord)) return null;
-    if (next === ':' && (prev === '{' || prev === ';' || prev === '}' || prev === '')) return null; // label
+    // a label: `x: for …`, also after `case a:`, `if (c)`, `else`, `do`
+    if (next === ':' && (prev === '{' || prev === ';' || prev === '}' || prev === '' || (prev === ':' && top !== 'o') || prev === ')' || (prev === 'w' && /^(?:else|do)$/.test(prevWord)))) return null;
+    if (prev === 'w' && (prevWord === 'break' || prevWord === 'continue')) return null; // a label it names
+    // `for (const [a, b] of list)`: the keyword, where a minifier named an import `of`
+    if (word === 'of' && top === 'f' && (prev === ']' || prev === '}' || (prev === 'w' && !/^(?:const|let|var|of)$/.test(prevWord)))) return null;
     // (after `await`: `await (0, x.f)()` would call a function named await where top-level
     // await isn't allowed, not be the syntax error that compiles the module async: SvelteKit's
     // `await import_peer(…)`)

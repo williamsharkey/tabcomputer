@@ -47,14 +47,10 @@ when the storage quota has less than 400 MB free.
   `Bun.SHA256.hash` and `Bun.hash.xxHash64`, both in the shim now), then
   `TABCOMPUTER_CLAUDE_CACHE=DIR node bench/claude-tui.mjs --build vm --preinstalled`
   with the release in DIR/VERSION/ (manifest.json, linux-x64-musl/claude).
-  Measured for 2.1.316 (local Chrome, fresh profile): ready ~24 s after the
-  page loaded, then the prompt in 2.05 s, keys echoed in 26 ms (median).
-  After a reload (`--reload`): 2.2 s in one run, 8.3 s in another (2 runs,
-  not explained yet; the first `claude` of a page also registers the
-  code-cache service worker and waits up to 5 s for it).
-  `tests/browser/claude-restore.mjs` with `CLAUDE_BUILD=vm PREINSTALLED=1 TOOL=1`
-  (server with that TABCOMPUTER_CLAUDE_CACHE): the preinstall, a model turn
-  with a Bash tool call, and the session resumed after a reload.
+  Timings for 2.1.316: "Startup" below. `tests/browser/claude-restore.mjs` with
+  `CLAUDE_BUILD=vm PREINSTALLED=1 TOOL=1` (server with that
+  TABCOMPUTER_CLAUDE_CACHE): the preinstall, a model turn with a Bash tool
+  call, and the session resumed after a reload.
 - **CA roots.** 2.1.316 refuses to start with no root certificate to trust
   ("No certificate authority to trust"): its default store is the runtime's
   bundled roots, `tls.rootCertificates`, which was empty here. node-compat's
@@ -194,64 +190,73 @@ a module, tested against what Bun 1.4.2 returns for the same calls
 
 ## How `claude --vm` runs it
 
-- **Extraction** (`src/claude-vm/extract.ts`), on the user's machine from the
-  binary `claude install` put in place, under
-  `~/.cache/tabcomputer/claude-vm/<sha256>/`:
-  - `cjs/`, once per Claude Code version: every file of the graph
-    (`bun-graph.ts`). ES modules get Bun's paths and `import.meta` made
-    node's (`adaptModule`), then become CommonJS with the page's esbuild
-    (`toCommonJS`), so imports read their module's current exports where
-    they are used: Bun's chunks assign exports inside lazy initializers and
-    import each other in cycles, which node-compat's own ES module transform
-    (a copy of each import, made once) left `undefined`. zstd assets are
-    stored decompressed.
-  - `nc-<build>/`, once per tabcomputer build: what runs, with node-compat's
-    transforms done ahead and marked `PRETRANSFORMED` (they cost ~4 s a start
-    on 64 MB of code otherwise).
+- **The layout** (`src/claude-vm/extract.ts`), made on the user's machine once
+  per Claude Code version and tabcomputer build, from the binary `claude
+  install` put in place or the preinstall's byte ranges, under
+  `~/.cache/tabcomputer/claude-vm/<sha256>/nc-<build>/` (~5 s for 2.1.316's
+  2648 modules, transformed in a worker of their own, `layout-worker.ts`: on
+  the page they held it for 4.2 s in 70 long tasks, up to 326 ms each; now one
+  of ~200 ms):
+  - `modules.js`: every JS module, transformed, one after another (UTF-8);
+    `modules.json` has each one's byte offset and length by path. The assets
+    are files at their paths (zstd ones decompressed; `bun-assets.json` has
+    their loaders), `vm-main.mjs` is the launcher.
+  - Each module (`vmModuleTransform`): Bun's paths and `import.meta` made
+    node's (`adaptModule`; an import's specifier keeps Bun's
+    `/$bunfs/root/…`, which the loader maps to the layout: 2.1.316 has ~540k
+    of them, 67 MB as full paths), then live bindings (`esm-live.ts`
+    `liveModule`), then node-compat's ES module and async-context transforms.
+  - **Live bindings, exactly.** Bun's chunks assign exports in lazy
+    initializers and import each other in cycles, so an import has to read its
+    module's current export where it is used. `liveModule` rewrites every
+    identifier spelled like an import to a read of the exporter's exports
+    object. For Bun's output that is exact (`unshadowed`): its minifier,
+    esbuild's renamer, never gives a nested binding a top-level symbol's name.
+    The one exception is Bun's own glue (`.then((m) => …m.default…)`), so an
+    arrow function's parameters shadow imports in its body. An import none of
+    whose occurrences was left alone (a key, a label, a parameter) loses its
+    copy (`let { a } = require(…)`): 2.1.316 has ~240k import statements.
+    Exports stay getters (`settle: false`): settling them into plain values
+    redefines each one, which V8 does one layout change at a time (quadratic
+    in a module's exports: 2 s for 2.1.316's 1776 export lists).
+  - An ES module's namespace where Bun gives one: node-compat makes a default
+    export the module's exports (CommonJS interop), while
+    `import.meta.require(chunk).default` (how 2.1.316 loads its commands) and
+    `import()` want the namespace. The loader's `require.namespace` and its
+    `import()` give a live one (`module-store.ts`).
+  - Before, a first stage turned each module into CommonJS with the page's
+    esbuild (~14 s for 2.1.316's 50 MB: esbuild-wasm is single-threaded) and a
+    second added node-compat's transforms (~3 s); 19.5 s cold, page load to a
+    typed key echoed, against 6.1 s now ("Startup").
 - **The launcher** (`vm-main.mjs`) gives the process its `Bun`
   (`src/claude-vm/bun/`, through the `tabcomputer:claude-vm` builtin;
   `process-global.ts` keeps `Bun` process-local, so other programs' `typeof
-  Bun` checks are unaffected), then loads `cli.js`. `bun:ffi` and `bun:jsc`
-  are node-compat builtins (stand-ins), and `ws` a client over the page's
-  WebSocket.
-- **The compiled bundle** (`src/claude-vm/code-cache.ts`, `sw-host.ts`,
-  `public/vm-sw.js`): node-compat compiles a module with `new Function`,
-  which V8 never caches, so every start parsed bundle.js (~40 MB) again
-  (~1.35 s) after reading it through the kernel (~0.9 s). V8 does keep the
-  code for a script a service worker serves from CacheStorage, from its third
-  load on and on a new page too (not for `importScripts` in a dedicated
-  worker, nor for a Response the worker makes up). So:
-  - the first `claude --vm` registers `/vm-sw.js` at scope `/` and waits
-    for it to take the page (`clients.claim()` takes running workers too);
-    pages that never run `claude --vm` get no service worker;
-  - the launcher puts bundle.js into the `tabcomputer-vm` cache once, as an
-    ES module whose default export takes node-compat's module parameters
-    (the same list as `require.ts`; a test parses it), at
-    `/__vm/<claude sha256>/nc-<tabcomputer build>/bundle.mjs`, removing any
-    other layout's, and imports it from there;
-  - `vm-sw.js` answers `/__vm/probe.mjs` and `/__vm/*` from that cache and
-    nothing else: a static route (`addRoutes`) sends every other request
-    straight to the network where the browser has them, and its fetch
-    handler returns without answering anything outside `/__vm/` where not;
-  - the launcher requires bundle.js as before when the worker isn't there
-    or doesn't control its node worker yet (the probe, a new URL each time,
-    fails), when registration fails or times out (5 s), when the import
-    fails (the entry gone), or with `TABCOMPUTER_VM_CODECACHE=0`.
-
-  **Off switch**: deploy `public/vm-sw.js` with `const ENABLED = false;` (or
-  delete it). Each `claude --vm` reads `/vm-sw.js` first; switched off or
-  gone, the page unregisters the worker and deletes the cache, and that
-  launch requires bundle.js. A browser that updates the worker gets one
-  that unregisters itself and empties the cache when it activates. Until a
-  page reloads, the worker it had keeps answering `/__vm/` for it, but
-  nothing new is stored and launches don't use it.
-
-  Tests: `claude-vm-codecache.test.ts` (the worker's routing with and
-  without static routes, the off switch, every fallback),
-  `tests/browser/claude-vm-codecache.mjs` (the real app with a synthetic
-  Bun executable: first launch, reload, the off switch, a worker that takes
-  the page mid-launch), and `tests/browser/with-vm-sw.mjs`, which runs any
-  browser test with the worker in every page.
+  Bun` checks are unaffected), then requires `cli.js` through the loader.
+  `bun:ffi` and `bun:jsc` are node-compat builtins (stand-ins), and `ws` a
+  client over the page's WebSocket.
+- **The loader** (`src/claude-vm/module-store.ts`): a module is decoded from
+  `modules.js` and compiled (`new Function`, strict, named by its path for
+  stack traces) when it is first required; 2.1.316 compiles 1399 of its 2648
+  modules (35 of 70 MB) to its prompt. The bytes come from CacheStorage
+  (`tabcomputer-claude-vm`, read in the node worker itself: ~0.1 s), else
+  from `modules.js` in the tab's files, which then goes into the cache. The
+  worker keeps the bytes and the compiled modules for its next process: a
+  node worker runs one process at a time and goes back to a pool when it
+  ends, and a compiled module holds nothing of a process's (its globals and
+  its module are parameters). So `claude` again in the same tab is ~0.3 s.
+- **No code cache.** Earlier builds put the bundle in CacheStorage and imported
+  it through a service worker (`public/vm-sw.js`), for V8 to keep its compiled
+  code. Chrome 156 keeps none for a module script a service worker serves a
+  dedicated worker from CacheStorage: not at any size, not when the worker
+  cached it at install, not in the page either; a plain HTTP response is
+  cached from its third load (62 MB: 720 ms every load from the worker against
+  ~105 ms over HTTP from the third). Tab-made code can't come over HTTP, so
+  compiling only what runs is the lever. `vm-sw.js` ships switched off (a
+  browser that updates it gets one that unregisters itself and empties its
+  cache), and `claude` takes it out of a page that still has it
+  (`sw-host.ts`). Native ES modules (the chunks served to the worker's own
+  loader) were no faster either: 0.7 s for the 1399 startup modules, as long
+  as the whole bundle took.
 - **`Bun.ant.CellSegmenter`** (`bun/cell-segmenter.ts`) is written from the
   renderer that calls it: segment styled text into graphemes, widths, SGR
   style runs (with their close codes) and OSC 8 links, and paint them into
@@ -348,14 +353,34 @@ extraction):
 | native 2.1.296 in Blink | 45 s | 200 ms (457) |
 | npm 2.1.112 | 2.2 s | 22 ms (24) |
 
-The next session's start (a reload, then `claude --vm`), local Chromium, 2
-runs: 4.0 s and 509 MiB renderer RSS at the prompt requiring bundle.js;
-2.3 s and 430 MiB with the compiled bundle from the cache.
+Those rows predate the layout below; the 2.1.316 ones are in "Startup".
 
-Extraction: ~40 s once per version (both stages); a new tabcomputer build
-redoes only the second. `tests/browser/claude-restore.mjs` with
-`CLAUDE_BUILD=vm TOOL=1`: a model turn (a local stand-in for the Messages
-API), a Bash tool call, and the session resumed after a reload.
+### Startup
+
+2.1.316, local Chrome 156 on an M-series Mac, local server (so the 55 MB
+download is ~0.2 s; over a real network it is the download's time),
+`bench/claude-tui.mjs --build vm`:
+
+| | before (Build 1037) | now |
+|---|---:|---:|
+| page load to Claude's prompt echoing a typed key, nothing cached (`--cold`) | 19.5 s | 6.1 s |
+| of which the layout | 17 s | 4.7 s |
+| first `claude` of a page, preinstalled (`--preinstalled`) | 2.1 s | 1.1 s |
+| first `claude` after a reload (`--preinstalled --sessions 2`) | 1.6–2.2 s (once 8.3 s) | 1.05 s |
+| `claude` again in the same tab (`--repeat 3`) | 0.25 s | 0.29 s |
+| key echo, median | 26 ms | 26 ms |
+
+The first start of a page now: 0.09 s to the launcher (the node worker), 0.08 s
+to read `modules.js`, then Claude Code's own start with its modules compiled as
+it requires them. `--trace` prints each phase (`TABCOMPUTER_VM_TRACE=FILE`:
+`claude.ts` and the launcher append `<epoch ms> <phase>` lines), `--chrome-trace
+FILE` records a Chrome trace of the start (the node worker's thread included).
+
+`tests/browser/claude-restore.mjs` with `CLAUDE_BUILD=vm TOOL=1`: a model turn
+(a local stand-in for the Messages API), a Bash tool call, and the session
+resumed after a reload; `tests/browser/claude-vm-layout.mjs`: the layout with
+a synthetic Bun executable (the cache, an earlier build's service worker taken
+out, a reload, the cache entry gone).
 
 ## Sign-in
 

@@ -53,7 +53,8 @@ function bunRequire(env: BunEnv) {
         if (loader === 13) return env.fs.readFileSync(id, 'utf8');
         if (loader === 5) return id;
         if (loader === 10) return addon(id);
-        return r(id);
+        // (an ES module's namespace, as Bun gives: `import.meta.require(chunk).default`; module-store.ts)
+        return r.namespace ? r.namespace(id) : r(id);
       }, { resolve: r.resolve, cache: r.cache, main: r.main });
       made.set(r, f);
     }

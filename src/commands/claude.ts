@@ -144,6 +144,8 @@ export function quietEnv(env: Record<string, string>): Record<string, string> {
  * (claude-vm/preinstall.ts: only its JavaScript, by byte ranges from this site).
  */
 async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promise<number> {
+  const mark = vmTracer(ctx);
+  mark('claude');
   const path = nativeClaudePath(ctx.env);
   // a file there is the user's (claude install / update, or their own): it runs, not the preinstalled build
   let elf = false;
@@ -183,6 +185,7 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
     const { nativeClaudeVersion } = await import('./claude-native');
     version = await nativeClaudeVersion(ctx.fs, path);
   }
+  mark('layout');
   args = loginArgs(args);
   // Sessions skip permission prompts, as runNative's and the npm build's do (#40)
   const bypass = needsSession(args) && !args.some(a => a === '--dangerously-skip-permissions' || a === '--permission-mode');
@@ -196,22 +199,38 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
   // Claude Code 2.1.316 and later won't start with no CA root to trust; node's list here is the
   // machine's bundle (node-compat net-tls.ts), which the profile's ca-certificates preinstall puts in place
   await ensureCaBundle(ctx.fs, say);
-  // the service worker that serves the compiled bundle (src/claude-vm/code-cache.ts);
-  // without it (or switched off) the launcher requires bundle.js
-  const cached = ctx.env.TABCOMPUTER_VM_CODECACHE !== '0'
-    && await import('../claude-vm/sw-host').then((m) => m.ensureVmServiceWorker()).catch(() => false);
+  // (the service worker earlier builds registered for a code cache Chrome never kept: sw-host.ts)
+  void import('../claude-vm/sw-host').then((m) => m.retireVmServiceWorker()).catch(() => {});
   const search = nativeSearchSetup(args, ctx.env);
   const quiet = quietEnv(ctx.env);
   const env: Record<string, string> = {
     FORCE_HYPERLINK: '1', ...quiet, ...(search.env ? { USE_BUILTIN_RIPGREP: '0' } : {}), ...ctx.env,
     TABCOMPUTER_CLAUDE_BUILD: 'vm', TABCOMPUTER_CLAUDE_VERSION: version ?? 'unknown',
-    ...(cached ? {} : { TABCOMPUTER_VM_CODECACHE: '0' }),
   };
   const nodeCtx = { ...ctx, env, args: [layout.launcher, ...search.args], stdout: '', stderr: '' };
+  mark('node');
   const code = await nodeCmd.exec(nodeCtx);
   ctx.stdout += nodeCtx.stdout;
   ctx.stderr += nodeCtx.stderr;
   return code;
+}
+
+/**
+ * TABCOMPUTER_VM_TRACE=FILE: a line per startup phase appended to FILE, "<epoch ms> <phase>"
+ * (the launcher adds its own: extract.ts launcherSource). For measuring; nothing otherwise.
+ */
+function vmTracer(ctx: Parameters<Command['exec']>[0]): (phase: string) => void {
+  const file = ctx.env.TABCOMPUTER_VM_TRACE;
+  if (!file) return () => {};
+  let chain = Promise.resolve();
+  return (phase) => {
+    const line = `${(performance.timeOrigin + performance.now()).toFixed(1)} ${phase}\n`;
+    chain = chain.then(async () => {
+      let old = '';
+      try { old = await ctx.fs.readFile(file, 'utf8') as string; } catch { /* new */ }
+      await ctx.fs.writeFile(file, old + line);
+    }).catch(() => {});
+  };
 }
 
 /** The ca-certificates package, if it isn't installed yet (best effort: a failure leaves it to Claude Code to say) */

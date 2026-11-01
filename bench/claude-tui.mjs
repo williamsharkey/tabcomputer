@@ -4,7 +4,14 @@
 //   node bench/claude-tui.mjs [--build native|npm] [--runs N] [--keys N]
 //        [--env 'K=V K2=V2'] [--args '...'] [--tui fullscreen|default]
 //        [--settle S] [--binary FILE] [--prewarm CMD [--reload]] [--out file.json] [--shot file.png]
-//        [--preinstalled [--reload]]
+//        [--preinstalled [--reload]] [--cold]
+// --cold: nothing in the tab and nothing cached; `claude` is typed as soon as the shell's first
+// prompt shows, and the clock starts at navigation: page load to Claude's prompt to the first
+// typed key echoed (the download and the layout included), with each setup line's time.
+// --trace: each start's phases (TABCOMPUTER_VM_TRACE: claude.ts vmTracer, the launcher) and how
+// many modules it compiled. --repeat N: N starts in one page. --sessions N (with --preinstalled):
+// N earlier sessions (`claude --version`, a reload) before the timed one. --chrome-trace FILE:
+// a Chrome trace of the start, every thread (the node worker's too).
 // --preinstalled: no binary in the tab; boot's background preinstall (src/claude-vm/preinstall.ts)
 // downloads byte ranges from the server's /claude-releases/ and lays the build out, timed, then
 // plain `claude` runs it. Point the server at a cache holding the pinned release:
@@ -43,7 +50,12 @@ const out = opt('--out');
 const shot = opt('--shot');
 const binary = opt('--binary'); // another linux-x64-musl build, e.g. bench/.cache/fixtures/claude-native-2.1.112
 const tui = opt('--tui');
-const preinstalled = argv.includes('--preinstalled');
+const cold = argv.includes('--cold');
+// --trace: each startup phase's time (claude.ts vmTracer), and Claude Code's own startup report
+const trace = argv.includes('--trace');
+// --repeat N: N starts in the same page (the node worker keeps the compiled modules: module-store.ts)
+const repeat = Number(opt('--repeat', 1));
+const preinstalled = argv.includes('--preinstalled') || cold;
 const prewarm = opt('--prewarm'); // a command run untimed first (e.g. `claude --vm --version`: the extraction) // fullscreen | default: Claude's renderer (settings.json `tui`)
 const promptRe = new RegExp(opt('--prompt', '^\\s*(❯|│ >|> )'), 'm');
 const TIMEOUT = Number(opt('--timeout', 300)) * 1000;
@@ -99,8 +111,44 @@ try {
   for (let run = 0; run < runs; run++) {
     await h.page?.context().close().catch(() => {});
     // npm: boot's background preinstall puts the build in place (not timed, and not run)
-    await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm' });
+    await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm', ...(cold ? { settleQuietMs: 0 } : {}) });
     const home = '/home/user';
+    if (cold) {
+      // (onboarding done and the home directory trusted, as below: the prompt, not the theme picker)
+      await h.eval(({ json, home }) => window.__tabcomputer.fs.writeFile(home + '/.claude.json', json), { json: CLAUDE_JSON(home), home });
+      await h.eval(SETUP);
+      const t = await h.eval(async ({ promptSrc, TIMEOUT, cmd }) => {
+        const B = window.__claudeBench;
+        const promptRe = new RegExp(promptSrc, 'm');
+        const shell = window.__bench.marks.firstPrompt;
+        const lines = {};
+        const watch = [['downloaded', /MB in [\d.]+ s/], ['ready', /ready \([\d.]+ s\)/]];
+        for (const [k, re] of watch) B.until((s) => re.test(s), TIMEOUT).then((ms) => { lines[k] = ms; }, () => {});
+        const typed = performance.now();
+        const lt0 = window.__bench.longTasks.length;
+        B.inject(cmd + '\r');
+        const prompt = await B.until((s) => promptRe.test(s), TIMEOUT);
+        const k0 = performance.now();
+        B.inject('x');
+        const echo = await B.until((s) => s.split('\n').some((l) => promptRe.test(l) && l.replace(promptRe, '').trim().startsWith('x')), 30000);
+        B.inject('\x7f');
+        // (the page's long tasks from `claude` to its prompt: what the setup held the page for)
+        const lt = window.__bench.longTasks.slice(lt0).filter(([st]) => st < prompt).map(([, d]) => d);
+        return { shell, typed, ...lines, prompt, echo, key: echo - k0, longTasks: lt.length, longestTask: lt.length ? Math.max(...lt) : 0, longTaskMs: lt.reduce((a, b) => a + b, 0) };
+      }, { promptSrc: promptRe.source, TIMEOUT, cmd: `${extraEnv ? extraEnv + ' ' : ''}claude${extraArgs ? ' ' + extraArgs : ''}` }).catch(async (e) => {
+        log(await h.eval(() => window.__claudeBench.screen()));
+        // (Claude's own debug log, with --args --debug)
+        log(await h.eval(async () => { const fs = window.__tabcomputer.fs; let o = ''; try { for (const n of await fs.readdir('/home/user/.claude/debug')) o += await fs.readFile('/home/user/.claude/debug/' + n, 'utf8'); } catch { /* none */ } return o.split('\n').filter((l) => /Error|error|at /.test(l)).slice(0, 60).join('\n'); }));
+        throw e;
+      });
+      const f = (ms) => ms == null ? '—' : `${(ms / 1000).toFixed(2)} s`;
+      log(`run ${run} (cold, from navigation): shell prompt ${f(t.shell)}, claude typed ${f(t.typed)}, downloaded ${f(t.downloaded)}, laid out ${f(t.ready)}, Claude's prompt ${f(t.prompt)}, first key echoed ${f(t.echo)} (${t.key.toFixed(0)} ms); page long tasks meanwhile: ${t.longTasks}, longest ${t.longestTask.toFixed(0)} ms, ${t.longTaskMs.toFixed(0)} ms in all`);
+      (M.cold ??= []).push(t.echo);
+      (M.cold_claude ??= []).push(t.echo - t.typed);
+      await h.eval(() => { window.__claudeBench.inject('\x03'); setTimeout(() => window.__claudeBench.inject('\x03'), 300); });
+      await h.page.waitForTimeout(1500);
+      continue;
+    }
     await h.eval(async ({ build, json, home, tui, binary, preinstalled }) => {
       if ((build === 'native' || build === 'vm') && !preinstalled) {
         await window.__bench.fetchInto(binary ? '/__bench/claude-native-alt' : '/__bench/claude-native', home + '/.local/bin/claude');
@@ -126,57 +174,97 @@ try {
       log(`  preinstall (from page load + ~8 s boot delay): ${((Date.now() - t0) / 1000).toFixed(1)} s, ${ok ? 'ready' : 'NOT READY'}`);
       if (!ok) throw new Error('the boot preinstall did not finish');
       if (argv.includes('--reload')) await h.boot({ context: h.context, page: h.page, path: '/?ui=terminal' });
+      // --sessions N: N earlier sessions first, each `claude --version` then a reload: the timed
+      // start is a returning user's first of a session
+      for (let i = 0; i < Number(opt('--sessions', 0)); i++) {
+        const t0 = Date.now(); const r = await h.sh('claude --version');
+        log(`  session ${i + 1}: claude --version ${((Date.now() - t0) / 1000).toFixed(2)} s, exit ${r.code}; reload`);
+        await h.boot({ context: h.context, page: h.page, path: '/?ui=terminal' });
+      }
     }
     if (prewarm) { const t0 = Date.now(); const r = await h.sh(prewarm); log(`  prewarm \`${prewarm}\`: ${((Date.now() - t0) / 1000).toFixed(1)} s, exit ${r.code}`); }
     // --reload: a new page on the same storage, as the user's next session (the prewarm's caches gone)
     if (prewarm && argv.includes('--reload')) await h.boot({ context: h.context, page: h.page, path: '/?ui=terminal' });
     await h.eval(SETUP);
-    const cmd = `${extraEnv ? extraEnv + ' ' : ''}claude${preinstalled ? '' : ` --${build}`}${extraArgs ? ' ' + extraArgs : ''}`;
-    const rss0 = await h.rendererRss();
-    const t = await h.eval(async ({ cmd, promptSrc, TIMEOUT }) => {
-      const B = window.__claudeBench;
-      const promptRe = new RegExp(promptSrc, 'm');
-      window.__tabcomputer.terminal.term.clear();
-      const t0 = performance.now();
-      B.inject(cmd + '\r');
-      // The alternate screen (fullscreen renderer), else Claude's header or input box
-      const first = await B.until((s) => B.alt() || /Claude Code|^\s*(❯|│ >)/m.test(s), TIMEOUT);
-      const prompt = await B.until((s) => promptRe.test(s), TIMEOUT).catch(() => null);
-      return { first: first - t0, prompt: prompt == null ? null : prompt - t0 };
-    }, { cmd, promptSrc: promptRe.source, TIMEOUT });
-    if (t.prompt == null) {
-      log(await h.eval(() => window.__claudeBench.screen()));
-      throw new Error('no prompt within the timeout');
-    }
-    const m = await h.memory({ uasm: false });
-    log(`run ${run}: first screen ${(t.first / 1000).toFixed(1)} s, prompt ${(t.prompt / 1000).toFixed(1)} s, rss ${(m.rendererRss / MB).toFixed(0)} MiB (+${((m.rendererRss - rss0) / MB).toFixed(0)}), heap ${(m.jsHeapUsed / MB).toFixed(0)} MiB`);
-    M.first_screen.push(t.first); M.prompt.push(t.prompt); M.rss.push(m.rendererRss / MB); M.heap.push(m.jsHeapUsed / MB);
-    // Let the startup burst die down a little, then type
-    await h.page.waitForTimeout(Number(opt('--settle', 5)) * 1000);
-    const lat = await h.eval(async ({ keys, promptSrc }) => {
-      const B = window.__claudeBench;
-      const promptRe = new RegExp(promptSrc);
-      const text = 'thequickbrownfoxjumpsoverthelazydog'.repeat(4).slice(0, keys);
-      const out = [];
-      for (let i = 0; i < text.length; i++) {
-        const want = text.slice(0, i + 1);
+    for (let rep = 0; rep < repeat; rep++) {
+      if (rep) log(`  (again in the same page, start ${rep + 1})`);
+      const traceEnv = trace ? 'TABCOMPUTER_VM_TRACE=/tmp/vm-trace.log CLAUDE_CODE_PROFILE_STARTUP=1 ' : '';
+      if (trace) await h.eval(() => window.__tabcomputer.fs.writeFile('/tmp/vm-trace.log', ''));
+      const cmd = `${traceEnv}${extraEnv ? extraEnv + ' ' : ''}claude${preinstalled ? '' : ` --${build}`}${extraArgs ? ' ' + extraArgs : ''}`;
+      const rss0 = await h.rendererRss();
+      // --chrome-trace FILE: a Chrome trace of the start (every thread: the page, the node worker)
+      const ctrace = opt('--chrome-trace');
+      if (ctrace) await h.browser.startTracing(h.page, { path: ctrace, categories: ['v8', 'v8.execute', 'disabled-by-default-v8.compile', 'disabled-by-default-v8.gc', 'devtools.timeline', 'blink', 'loading', 'ServiceWorker', 'disabled-by-default-devtools.timeline'] });
+      const t = await h.eval(async ({ cmd, promptSrc, TIMEOUT }) => {
+        const B = window.__claudeBench;
+        const promptRe = new RegExp(promptSrc, 'm');
+        window.__tabcomputer.terminal.term.clear();
         const t0 = performance.now();
-        B.inject(text[i]);
-        // the input line itself (the screen may hold the same letters elsewhere)
-        const t1 = await B.until((s) => s.split('\n').some((l) => promptRe.test(l) && l.replace(promptRe, '').trim().startsWith(want)), 30000).catch(() => null);
-        out.push(t1 == null ? 30000 : t1 - t0);
-        await new Promise((r) => setTimeout(r, 150));
+        B.inject(cmd + '\r');
+        // The alternate screen (fullscreen renderer), else Claude's header or input box
+        const first = await B.until((s) => B.alt() || /Claude Code|^\s*(❯|│ >)/m.test(s), TIMEOUT);
+        const prompt = await B.until((s) => promptRe.test(s), TIMEOUT).catch(() => null);
+        return { first: first - t0, prompt: prompt == null ? null : prompt - t0, epoch0: performance.timeOrigin + t0 };
+      }, { cmd, promptSrc: promptRe.source, TIMEOUT });
+      if (ctrace) await h.browser.stopTracing();
+      if (t.prompt == null) {
+        log(await h.eval(() => window.__claudeBench.screen()));
+        throw new Error('no prompt within the timeout');
       }
-      return out;
-    }, { keys, promptSrc: promptRe.source });
-    const s = summarize(lat);
-    log(`  keys: median ${s.median.toFixed(0)} ms, p90 ${s.p90.toFixed(0)} ms, max ${s.max.toFixed(0)} ms  [${lat.map((x) => x.toFixed(0)).join(' ')}]`);
-    M.key.push(...lat); M.key_p90.push(s.p90);
-    if (shot) await h.page.screenshot({ path: shot });
-    await h.eval(() => { window.__claudeBench.inject('\x03'); setTimeout(() => window.__claudeBench.inject('\x03'), 300); });
-    await h.page.waitForTimeout(1500);
+      const m = await h.memory({ uasm: false });
+      log(`run ${run}: first screen ${(t.first / 1000).toFixed(1)} s, prompt ${(t.prompt / 1000).toFixed(1)} s, rss ${(m.rendererRss / MB).toFixed(0)} MiB (+${((m.rendererRss - rss0) / MB).toFixed(0)}), heap ${(m.jsHeapUsed / MB).toFixed(0)} MiB`);
+      M.first_screen.push(t.first); M.prompt.push(t.prompt); M.rss.push(m.rendererRss / MB); M.heap.push(m.jsHeapUsed / MB);
+      // Let the startup burst die down a little, then type
+      await h.page.waitForTimeout(Number(opt('--settle', 5)) * 1000);
+      const lat = await h.eval(async ({ keys, promptSrc }) => {
+        const B = window.__claudeBench;
+        const promptRe = new RegExp(promptSrc);
+        const text = 'thequickbrownfoxjumpsoverthelazydog'.repeat(4).slice(0, keys);
+        const out = [];
+        for (let i = 0; i < text.length; i++) {
+          const want = text.slice(0, i + 1);
+          const t0 = performance.now();
+          B.inject(text[i]);
+          // the input line itself (the screen may hold the same letters elsewhere)
+          const t1 = await B.until((s) => s.split('\n').some((l) => promptRe.test(l) && l.replace(promptRe, '').trim().startsWith(want)), 30000).catch(() => null);
+          out.push(t1 == null ? 30000 : t1 - t0);
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        return out;
+      }, { keys, promptSrc: promptRe.source });
+      const s = summarize(lat);
+      log(`  keys: median ${s.median.toFixed(0)} ms, p90 ${s.p90.toFixed(0)} ms, max ${s.max.toFixed(0)} ms  [${lat.map((x) => x.toFixed(0)).join(' ')}]`);
+      M.key.push(...lat); M.key_p90.push(s.p90);
+      if (trace) {
+        const r = await h.eval(async () => {
+          const fs = window.__tabcomputer.fs;
+          const log = await fs.readFile('/tmp/vm-trace.log', 'utf8').catch(() => '');
+          let perf = '';
+          try { const d = '/home/user/.claude/startup-perf'; for (const n of await fs.readdir(d)) if (n.endsWith('.txt')) perf += await fs.readFile(d + '/' + n, 'utf8'); } catch { /* none */ }
+          return { log, perf };
+        });
+        let prev = t.epoch0;
+        for (const l of r.log.trim().split('\n').filter(Boolean)) {
+          const [ms, ...p] = l.split(' ');
+          log(`  ${((Number(ms) - t.epoch0) / 1000).toFixed(3).padStart(7)} s  (+${(Number(ms) - prev).toFixed(0).padStart(5)} ms)  ${p.join(' ')}`);
+          prev = Number(ms);
+        }
+        log(`  ${(t.prompt / 1000).toFixed(3).padStart(7)} s  (+${(t.epoch0 + t.prompt - prev).toFixed(0).padStart(5)} ms)  prompt on screen`);
+        if (r.perf) log(r.perf);
+      }
+      if (shot) await h.page.screenshot({ path: shot });
+      await h.eval(() => { window.__claudeBench.inject('\x03'); setTimeout(() => window.__claudeBench.inject('\x03'), 300); });
+      await h.page.waitForTimeout(1500);
+    }
   }
   const rec = (name, samples, unit, notes) => { const s = summarize(samples); results.push({ name, unit, median: round(s.median), p90: round(s.p90), min: round(s.min), max: round(s.max), n: s.n, samples: samples.map(round), notes }); };
+  if (cold) {
+    rec('claude_tui.cold.page_to_input', M.cold, 'ms', 'navigation (nothing cached) to Claude\'s prompt echoing a typed key');
+    rec('claude_tui.cold.claude_to_input', M.cold_claude, 'ms', '`claude` typed at the first shell prompt to that echo');
+    log('\n| metric | median | p90 | n |\n|---|---:|---:|---:|');
+    for (const r of results) log(`| ${r.name} | ${r.median} ${r.unit} | ${r.p90} | ${r.n} |`);
+    if (out) { mkdirSync(join(out, '..'), { recursive: true }); writeFileSync(out, JSON.stringify({ env: { build: 'cold', date: new Date().toISOString() }, results }, null, 2) + '\n'); }
+  } else {
   rec(`claude_tui.${build}.first_screen`, M.first_screen, 'ms', '`claude` + Enter to its first screen');
   rec(`claude_tui.${build}.prompt`, M.prompt, 'ms', 'to the input box');
   rec(`claude_tui.${build}.key`, M.key, 'ms', 'key to echo, all keys of all runs');
@@ -184,6 +272,7 @@ try {
   log('\n| metric | median | p90 | n |\n|---|---:|---:|---:|');
   for (const r of results) log(`| ${r.name} | ${r.median} ${r.unit} | ${r.p90} | ${r.n} |`);
   if (out) { mkdirSync(join(out, '..'), { recursive: true }); writeFileSync(out, JSON.stringify({ env: { build, binary, tui, extraEnv, extraArgs, date: new Date().toISOString() }, results }, null, 2) + '\n'); }
+  }
 } catch (e) {
   log('FAILED:', e.message);
   if (h.page) await h.page.screenshot({ path: shot || 'bench/.cache/claude-tui-fail.png' }).catch(() => {});

@@ -1,23 +1,33 @@
 /**
  * `claude --vm`: native Claude Code's JavaScript, taken out of the binary the
- * user installed and laid out as files tabcomputer's node runs
- * (docs/CLAUDE_VM.md). Done once per binary, keyed by its sha256, under
- * ~/.cache/tabcomputer/claude-vm/<sha256>/. The files are Anthropic's code
- * from the user's own copy; tabcomputer never serves them.
+ * user installed (or byte ranges of the site's copy: preinstall.ts) and laid
+ * out for tabcomputer's node (docs/CLAUDE_VM.md). Done once per binary and
+ * tabcomputer build, keyed by its sha256, under
+ * ~/.cache/tabcomputer/claude-vm/<sha256>/nc-<build>/. The code is Anthropic's
+ * from the user's own copy; tabcomputer never serves it.
  *
- * The bundle's ES modules import each other as "/$bunfs/root/…": that prefix
- * becomes the cache directory. Bun-only syntax becomes node's:
- * `import.meta.require` is the module's require as Bun has it (assets by
- * their loader: bun-assets.json), `import.meta.dir` its dirname. Each module reads `Bun` from its process's global (the launcher
+ * Bun's ES modules become node-compat's CommonJS with live bindings
+ * (esm-live.ts liveModule): Bun's chunks assign exports in lazy initializers
+ * and import each other in cycles, so an import must read its module's
+ * current exports where it is used. That rewrite is exact for Bun's output:
+ * its minifier (esbuild's renamer) never gives a nested binding the name of
+ * a top-level one, so every identifier spelled like an import is that import.
+ * The bundle's paths ("/$bunfs/root/…") become the layout's directory and
+ * Bun-only syntax node's: `import.meta.require` is the module's require as
+ * Bun has it (assets by their loader: bun-assets.json), `import.meta.dir` its
+ * dirname. Each module reads `Bun` from its process's global (the launcher
  * puts the shim there; process-global.ts keeps it out of other processes).
  * zstd-compressed assets are stored decompressed.
  */
 import { parseBunGraph, BunLoader, type BunGraph } from './bun-graph';
 import { zstdDecodeAll } from '../commands/compress/zstd-codec';
+import { adaptModule, vmModuleTransform, transformModules } from './vm-transform';
+
+export { adaptModule, vmModuleTransform };
 
 export const VM_CACHE = '.cache/tabcomputer/claude-vm';
 /** Bumped when the layout written here changes: an older extraction is redone */
-export const VM_LAYOUT = 8;
+export const VM_LAYOUT = 9;
 
 export interface VmFs {
   readFile(path: string, enc?: string): Promise<any>;
@@ -28,58 +38,31 @@ export interface VmFs {
 
 const BUNFS = '/$bunfs/root/';
 
-/**
- * One extracted JS module's text with Bun's names made node's, before it
- * becomes CommonJS (toCommonJS): the bundle's paths, Bun's require (an
- * embedded asset gives its text or its path, by its loader: bun/index.ts),
- * and import.meta, which CommonJS doesn't have.
- */
-export function adaptModule(source: string, dir: string): string {
-  let s = source.split(BUNFS).join(dir + '/');
-  s = s.replace(/\bimport\.meta\.require\b/g, 'Bun.__require(require)');
-  s = s.replace(/\bimport\.meta\.(?:dirname|dir)\b/g, '__dirname');
-  s = s.replace(/\bimport\.meta\.filename\b/g, '__filename');
-  s = s.replace(/\bimport\.meta\.url\b/g, 'require("url").pathToFileURL(__filename).href');
-  // (the first line stays first: `// @bun @bytecode` is a pragma comment)
-  return 'var Bun = globalThis.Bun;\n' + s;
-}
+/** The process's globals a module's code reads, as the launcher has them (module-store.ts) */
+const LAUNCHER_GLOBALS = ['console', 'process', 'global', 'Buffer', 'globalThis', 'Function',
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate',
+  'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'];
 
-/**
- * An adapted ES module as CommonJS, with esbuild (the page's): imports read
- * their module's exports where they are used, as ES module bindings are live.
- * Bun's chunks assign exports in lazy initializers and import each other in
- * cycles; node-compat's own transform copies an import once, when it runs, so
- * those stayed undefined. Strict, as an ES module is.
- */
-export async function toCommonJS(esbuild: { transform(code: string, opts: object): Promise<{ code: string }> }, code: string): Promise<string> {
-  const r = await esbuild.transform(code, { format: 'cjs', loader: 'js', target: 'esnext', logLevel: 'silent', minifyWhitespace: true });
-  return '"use strict";' + r.code;
-}
-
-/** The launcher: the process's Bun, then Claude Code's entry. */
-// (MODULE_PARAMS from console on: the launcher's own, or undefined where it has none)
-const LAUNCHER_PASSES = [
-  ...['console', 'process', 'global', 'Buffer'].map((n) => `typeof ${n} === 'undefined' ? undefined : ${n}`),
-  "{ url: 'file://' + __dirname + '/bundle.js', dirname: __dirname, filename: __dirname + '/bundle.js' }", 'm', 'require',
-  ...['__dynamic_import', '__shiro_require_ready', 'globalThis', 'Function', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
-    'setImmediate', 'clearImmediate', 'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'].map((n) => `typeof ${n} === 'undefined' ? undefined : ${n}`),
-].join(', ');
-
+/** The launcher: the process's Bun, then Claude Code's entry, its modules compiled as they are required. */
 export function launcherSource(): string {
   return [
-    '// tabcomputer: claude --vm (src/claude-vm/extract.ts)',
-    "const { createBun } = await require('tabcomputer:claude-vm').load();",
-    "const assets = JSON.parse(require('fs').readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
-    "globalThis.Bun = createBun({ fs: require('fs'), process: process, childProcess: require('child_process'), net: require('net'), http: require('http'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js', transform: require('tabcomputer:claude-vm').transformSync });",
-    // bundle.js through V8's code cache when a service worker serves /__vm/ (code-cache.ts):
-    // the parameters node-compat gives a module, the bundle's own module first
-    "const { loadCompiled } = await require('tabcomputer:claude-vm').codeCache();",
-    "const bundle = process.env.TABCOMPUTER_VM_CODECACHE === '0' ? null : await loadCompiled(__dirname, () => require('fs').readFileSync(__dirname + '/bundle.js', 'utf8')).catch(() => null);",
-    'if (bundle) {',
-    "  const file = __dirname + '/bundle.js';",
-    '  const m = { exports: {}, id: file, filename: file, loaded: false, children: [] };',
-    `  bundle.apply(m.exports, [m, m.exports, require, file, __dirname, ${LAUNCHER_PASSES}]);`,
-    "} else require('./bundle.js');",
+    '// tabcomputer: claude --vm (src/claude-vm/extract.ts, module-store.ts)',
+    // (TABCOMPUTER_VM_TRACE: claude.ts vmTracer)
+    "const __vmTrace = process.env.TABCOMPUTER_VM_TRACE ? (p) => { try { require('fs').appendFileSync(process.env.TABCOMPUTER_VM_TRACE, (performance.timeOrigin + performance.now()).toFixed(1) + ' ' + p + '\\n'); } catch {} } : () => {};",
+    "__vmTrace('launcher');",
+    "const vm = require('tabcomputer:claude-vm');",
+    "const fs = require('fs');",
+    "const [{ createBun }, store] = await Promise.all([vm.load(), vm.modules()]);",
+    "const assets = JSON.parse(fs.readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
+    "globalThis.Bun = createBun({ fs, process: process, childProcess: require('child_process'), net: require('net'), http: require('http'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js', transform: vm.transformSync });",
+    "const [bytes, index] = [await store.loadModules(__dirname, () => fs.readFileSync(__dirname + '/modules.js')), JSON.parse(fs.readFileSync(__dirname + '/modules.json', 'utf8'))];",
+    "__vmTrace('modules read');",
+    `const globals = { ${LAUNCHER_GLOBALS.map((n) => `${n}: typeof ${n} === 'undefined' ? undefined : ${n}`).join(', ')} };`,
+    'const loader = store.createModuleLoader({ dir: __dirname, bytes, index, outer: require, globals, live: require.live, settle: require.settle });',
+    "if (process.env.TABCOMPUTER_VM_TRACE) for (const s of [1, 3, 10]) setTimeout(() => { const t = loader.stats(); __vmTrace(`modules compiled after ${s} s: ${t.compiled} of ${t.modules}, ${(t.compiledBytes / 1048576).toFixed(1)} of ${(t.bytes / 1048576).toFixed(1)} MB`); }, s * 1000).unref?.();",
+    "loader.require(__dirname)('./cli.js');",
+    "__vmTrace('cli.js returned');",
+    "process.stdout.write('', () => __vmTrace('first stdout flush'));",
     '',
   ].join('\n');
 }
@@ -215,50 +198,6 @@ module.exports.default = WebSocket;
 `;
 }
 
-/**
- * bundle.js: every module of the tree as a function in one table, with a
- * CommonJS loader over it, in one file. One read and one compile instead of
- * 2345 (a start read each through the kernel); anything outside the table
- * (node's builtins, ws, the assets) is the process's own require.
- */
-export function bundleHeader(dir: string): string {
-  return `const __vmMods = Object.create(null), __vmCache = Object.create(null), __vmOuter = require;
-const __vmDir = (p) => p.slice(0, p.lastIndexOf('/')) || '/';
-const __vmKey = (from, id) => {
-  if (typeof id !== 'string') return null;
-  let p = id.startsWith('/') ? id : id.startsWith('./') || id.startsWith('../') ? require('path').resolve(from, id) : null;
-  if (p === null) return null;
-  return __vmMods[p] ? p : __vmMods[p + '.js'] ? p + '.js' : null;
-};
-const __vmRequire = (from) => {
-  const r = (id) => {
-    const key = __vmKey(from, id);
-    if (key === null) return __vmOuter(id);
-    let m = __vmCache[key];
-    if (m) return m.exports;
-    m = __vmCache[key] = { exports: {}, id: key, filename: key, loaded: false, children: [] };
-    const dir = __vmDir(key);
-    __vmMods[key].call(m.exports, m, m.exports, __vmRequire(dir), key, dir, __vmImport(dir));
-    m.loaded = true;
-    return m.exports;
-  };
-  r.resolve = (id) => __vmKey(from, id) ?? __vmOuter.resolve(id);
-  r.cache = __vmCache;
-  return r;
-};
-// import(): the module's exports, as Bun's ES modules give their namespace
-const __vmImport = (from) => (id) => Promise.resolve().then(() => {
-  const e = __vmRequire(from)(String(id).replace(/^file:\\/\\//, ''));
-  return e && (e.__esModule || typeof e !== 'object') ? (e.__esModule ? e : { default: e }) : Object.assign({ default: e }, e);
-});
-`;
-}
-
-/** One module of bundle.js */
-export function bundleEntry(path: string, code: string): string {
-  return `__vmMods[${JSON.stringify(path)}] = function (module, exports, require, __filename, __dirname, __dynamic_import) {\n${code}\n};\n`;
-}
-
 const isZstd = (b: Uint8Array) => b.length >= 4 && b[0] === 0x28 && b[1] === 0xb5 && b[2] === 0x2f && b[3] === 0xfd;
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -268,9 +207,6 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 export interface VmLayout { dir: string; launcher: string; sha256: string; extracted: boolean }
 
-/** Where stage 1 has the bundle's own directory; stage 2 puts the real one there */
-const ROOT_TOKEN = '/__tabcomputer_vm_root__';
-
 const buildKey = (): string => {
   const sha = typeof __BUILD_SHA__ === 'string' && __BUILD_SHA__ ? __BUILD_SHA__ : 'dev';
   let h = 0x811c9dc5;
@@ -279,13 +215,15 @@ const buildKey = (): string => {
 };
 
 /**
- * The layout for the binary at `binPath`, made first if needed, in two stages
- * under ~/.cache/tabcomputer/claude-vm/<sha256>/:
- *   cjs/          once per Claude Code version: the bundle's files, its ES
- *                 modules as CommonJS (toCommonJS: esbuild, the slow part)
- *   nc-<build>/   once per tabcomputer build: what runs. node-compat's own
- *                 transforms are done here, not at every launch (64 MB of
- *                 code: ~4 s a start), and the files say so (PRETRANSFORMED)
+ * The layout for the binary at `binPath`, made first if needed, under
+ * ~/.cache/tabcomputer/claude-vm/<sha256>/nc-<build>/ (once per Claude Code
+ * version and tabcomputer build: node-compat's transforms are this build's):
+ *   modules.js    every JS module, transformed for node-compat, one after another
+ *                 (UTF-8); modules.json has each one's [offset, length] by path.
+ *                 The launcher compiles a module when it is first required
+ *                 (module-store.ts); its bytes are also in CacheStorage.
+ *   the assets    by their paths, as Bun's file system had them (bun-assets.json)
+ *   vm-main.mjs   the launcher
  * `say` reports progress.
  */
 export async function ensureClaudeVm(fs: VmFs, binPath: string, home: string, say: (s: string) => void = () => {}): Promise<VmLayout> {
@@ -333,90 +271,59 @@ export function ensureClaudeVmLayout(fs: VmFs, sha: string, home: string, graph:
 
 async function makeLayout(fs: VmFs, sha: string, home: string, loadGraph: () => Promise<BunGraph>, say: (s: string) => void): Promise<VmLayout> {
   const root = `${home}/${VM_CACHE}`;
-  // (a first launch takes ~40 s: a line per stage so it doesn't look hung)
   const t0 = Date.now();
   const secs = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
   const base = `${root}/${sha}`;
-  const cjs = `${base}/cjs`;
   const dir = `${base}/nc-${buildKey()}`;
   const launcher = `${dir}/vm-main.mjs`;
   const made = new Set<string>();
   const mkdirOnce = async (d: string) => { if (!made.has(d)) { made.add(d); await fs.mkdir(d, { recursive: true }); } };
   const readText = async (p: string) => { try { return await fs.readFile(p, 'utf8') as string; } catch { return null; } };
-  let extracted = false;
+  if ((await readText(`${dir}/complete`))?.trim() === String(VM_LAYOUT)) return { dir, launcher, sha256: sha, extracted: false };
 
-  // Stage 1: the bundle out of the binary, as CommonJS
-  if ((await readText(`${cjs}/complete`))?.trim() !== String(VM_LAYOUT)) {
-    const graph = await loadGraph();
-    say('claude --vm: extracting Claude Code\'s JavaScript from the native build (once per version)...\n');
-    const dec = new TextDecoder();
-    const files: { rel: string; loader: number }[] = [];
-    const { withEsbuild } = await import('../commands/build');
-    let n = 0;
-    const jsCount = graph.modules.filter((m) => m.loader === BunLoader.js).length;
-    say(`  ${jsCount} modules, ${graph.modules.length - jsCount} assets; converting to CommonJS (${secs()})\n`);
-    await withEsbuild(async (esbuild) => {
-      for (const m of graph.modules) {
-        if (!m.name.startsWith(BUNFS)) continue;
-        const rel = m === graph.entry ? 'cli.js' : m.name.slice(BUNFS.length);
-        const path = `${cjs}/${rel}`;
-        await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
-        files.push({ rel, loader: m.loader });
-        if (m.loader === BunLoader.js) {
-          await fs.writeFile(path, await toCommonJS(esbuild as any, adaptModule(dec.decode(m.contents), ROOT_TOKEN)));
-          if (++n % 500 === 0) say(`  ${n}/${jsCount} modules (${secs()})\n`);
-        }
-        // zstd assets (skills, docs; the code checks the magic, not the name) stored
-        // decompressed: node's sync reads find text in its cache, and no zstd at run time
-        else if (isZstd(m.contents)) await fs.writeFile(path, zstdDecodeAll(m.contents));
-        else await fs.writeFile(path, m.contents.slice());
-      }
-    });
-    await fs.writeFile(`${cjs}/files.json`, JSON.stringify(files));
-    await fs.writeFile(`${cjs}/complete`, String(VM_LAYOUT));
-    say(`  extracted (${secs()})\n`);
-    extracted = true;
+  const graph = await loadGraph();
+  say('claude --vm: preparing Claude Code\'s JavaScript (once per version and tabcomputer build)...\n');
+  const { putModules } = await import('./module-store');
+  const js: { path: string; contents: Uint8Array }[] = [];
+  const assets: Record<string, number> = {};
+  for (const m of graph.modules) {
+    if (!m.name.startsWith(BUNFS)) continue;
+    const path = `${dir}/${m === graph.entry ? 'cli.js' : m.name.slice(BUNFS.length)}`;
+    if (m.loader === BunLoader.js) { js.push({ path, contents: m.contents }); continue; }
+    await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
+    assets[path] = m.loader;
+    // zstd assets (skills, docs; the code checks the magic, not the name) stored
+    // decompressed: node's sync reads find text in its cache, and no zstd at run time
+    await fs.writeFile(path, isZstd(m.contents) ? zstdDecodeAll(m.contents) : m.contents.slice());
   }
-
-  // Stage 2: what runs, transformed for this build's node
-  if ((await readText(`${dir}/complete`))?.trim() !== String(VM_LAYOUT)) {
-    say('claude --vm: preparing Claude Code for this tabcomputer build...\n');
-    const files: { rel: string; loader: number }[] = JSON.parse((await readText(`${cjs}/files.json`)) ?? '[]');
-    const [{ transformESModules }, { carryAsyncContext, carriesAsyncContext }, { PRETRANSFORMED }] = await Promise.all([
-      import('../commands/jseval/module-transform'), import('../node-compat/async-context'), import('../node-compat/require'),
-    ]);
-    const assets: Record<string, number> = {};
-    const bundle: string[] = [PRETRANSFORMED, bundleHeader(dir)];
-    const jsCount = files.filter((f) => f.loader === BunLoader.js).length;
-    let n = 0;
-    for (const f of files) {
-      const path = `${dir}/${f.rel}`;
-      await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
-      if (f.loader === BunLoader.js) {
-        const code = ((await readText(`${cjs}/${f.rel}`)) ?? '').split(ROOT_TOKEN + '/').join(dir + '/');
-        const done = transformESModules(code, carriesAsyncContext(code) ? carryAsyncContext : undefined);
-        await fs.writeFile(path, PRETRANSFORMED + done);
-        bundle.push(bundleEntry(path, done));
-        if (++n % 500 === 0) say(`  ${n}/${jsCount} modules (${secs()})\n`);
-      } else {
-        assets[path] = f.loader;
-        await fs.writeFile(path, await fs.readFile(`${cjs}/${f.rel}`) as Uint8Array);
-      }
-    }
-    await mkdirOnce(`${dir}/node_modules/ws`);
-    await fs.writeFile(`${dir}/node_modules/ws/index.js`, wsShimSource());
-    await fs.writeFile(`${dir}/node_modules/ws/package.json`, JSON.stringify({ name: 'ws', main: 'index.js' }));
-    await fs.writeFile(`${dir}/package.json`, JSON.stringify({ type: 'commonjs' }));
-    await fs.writeFile(`${dir}/bun-assets.json`, JSON.stringify(assets));
-    bundle.push(`__vmRequire(${JSON.stringify(dir)})(${JSON.stringify(dir + '/cli.js')});\n`);
-    await fs.writeFile(`${dir}/bundle.js`, bundle.join(''));
-    await fs.writeFile(launcher, launcherSource());
-    await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
-    say(`  ready (${secs()}); starting Claude Code\n`);
-    // an earlier build's tree is no longer used
-    for (const name of await (fs as any).readdir?.(base).catch?.(() => []) ?? []) {
-      if (name.startsWith('nc-') && `${base}/${name}` !== dir) await (fs as any).rm?.(`${base}/${name}`, { recursive: true, force: true }).catch?.(() => {});
-    }
+  // (off the page: vm-transform.ts)
+  let shown = 0;
+  const parts = await transformModules(dir, js.map((m) => m.contents), (n) => {
+    if (n - shown < 500 && n < js.length) return;
+    shown = n;
+    say(`  ${n}/${js.length} modules (${secs()})\n`);
+  });
+  const index: Record<string, [number, number]> = {};
+  let size = 0;
+  js.forEach((m, k) => { index[m.path] = [size, parts[k].length]; size += parts[k].length; });
+  const modules = new Uint8Array(size);
+  for (let k = 0, at = 0; k < parts.length; at += parts[k].length, k++) modules.set(parts[k], at);
+  parts.length = 0;
+  await mkdirOnce(`${dir}/node_modules/ws`);
+  await fs.writeFile(`${dir}/modules.js`, modules);
+  await fs.writeFile(`${dir}/modules.json`, JSON.stringify(index));
+  await fs.writeFile(`${dir}/node_modules/ws/index.js`, wsShimSource());
+  await fs.writeFile(`${dir}/node_modules/ws/package.json`, JSON.stringify({ name: 'ws', main: 'index.js' }));
+  await fs.writeFile(`${dir}/package.json`, JSON.stringify({ type: 'commonjs' }));
+  await fs.writeFile(`${dir}/bun-assets.json`, JSON.stringify(assets));
+  await fs.writeFile(launcher, launcherSource());
+  // (the launcher's fast read; without it, it reads modules.js and puts it there itself)
+  await putModules(dir, modules).catch(() => {});
+  await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
+  say(`  ready (${secs()}); starting Claude Code\n`);
+  // an earlier build's tree, and an earlier layout's cjs/ stage, are no longer used
+  for (const name of await (fs as any).readdir?.(base).catch?.(() => []) ?? []) {
+    if ((name.startsWith('nc-') || name === 'cjs') && `${base}/${name}` !== dir) await (fs as any).rm?.(`${base}/${name}`, { recursive: true, force: true }).catch?.(() => {});
   }
-  return { dir, launcher, sha256: sha, extracted };
+  return { dir, launcher, sha256: sha, extracted: true };
 }

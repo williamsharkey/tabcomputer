@@ -341,7 +341,7 @@ export async function executeNodeScript(
         // go over its messages to the page, node in the page calls them itself)
         case 'tabcomputer:claude-vm': return {
           load: () => import('../claude-vm/bun').then((m) => ({ ...m, createBun: (env: any) => m.createBun({ page: guest?.page?.call ? { call: guest.page.call } : undefined, ...env }) })),
-          codeCache: () => import('../claude-vm/code-cache'),
+          modules: () => import('../claude-vm/module-store'),
           transformSync: guest?.transformSync,
           // the page's origin, whose server.mjs has /api/ws-proxy (ws's shim: extract.ts wsShimSource)
           origin: () => getShiroOrigin(),

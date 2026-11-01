@@ -1969,9 +1969,40 @@ describe('live ES module bindings (tabcomputer#35, TABCOMPUTER_ESM_LIVE=1)', () 
     // a top-level await of an imported function is still top-level await (a sync compile refuses it)
     expect(live(`import { peer } from './p.js';\nconst { V } = await peer('x');\nexport { V };\n`)).toContain('await __shiro_live0.peer(');
   });
+
+  it("what a minifier names things: labels, `of`, unicode escapes, import statements, and an arrow's parameters are left alone", () => {
+    const live = (src: string) => transformESModules(src, undefined, true);
+    const compile = (src: string) => new Function('__shiro_module', '__shiro_require', 'require', 'module', 'exports', '__dynamic_import', '__import_meta', live(src));
+    // (each was a SyntaxError: names rewritten as `__shiro_live0.x` where only a name may be)
+    for (const src of [
+      `import{t}from"./a.js";export function f(x){t:for(;;){if(x)break t;continue t}return t}`,
+      `import{e}from"./a.js";export function f(o){switch(o){case 1:e:{break e}}return e}`,
+      `import{of}from"./a.js";export function f(){let n=0;for(const[a,b]of of)n+=a+b;return n}`,
+      `import{u}from"./a.js";export var G={\\u{430}:"a",u};`,
+      `import{as}from"./a.js";import*as path from"path";export const f=()=>as+path.sep;`,
+      `import{readdir}from"./a.js";import B,{basename as X,readdir as $d}from"path";export const f=()=>readdir+X+$d+B;`,
+      `import{m}from"./a.js";export const f=(p)=>p.then((m)=>m.default),g=()=>m;`,
+    ]) expect(() => compile(src), src).not.toThrow();
+    // (the arrow's own `m`; declared again, the import stays a copy here, live in unshadowed mode: below)
+    expect(live(`import{m}from"./a.js";export const f=(p)=>p.then((m)=>m.default),g=()=>m;`)).toContain('.then((m)=>m.default),g=()=>m');
+    // an `if (x) {` condition and a promise's `.catch(f)` declare nothing: those imports stay live
+    expect(live(`import{x,f}from"./a.js";export function g(){if(x){return 1}return p.catch(f)}`)).toContain('if(__shiro_live0.x){');
+    expect(live(`import{x,f}from"./a.js";export function g(){if(x){return 1}return p.catch(f)}`)).toContain('.catch(__shiro_live0.f)');
+  });
+
+  it('for a minifier\'s output (unshadowed): every import live, its statement gone where nothing reads a copy; settling optional', () => {
+    const t = (src: string, opts: object) => liveModule(src, opts);
+    const out = t(`import{a,b}from"./a.js";import{c}from"./c.js";export function f(){return a+b}export const g=(p)=>p.then((c)=>c.d),h=()=>c;`, { unshadowed: true, settle: false });
+    // (a and b: every occurrence rewritten, no copy; c is an arrow's parameter too, so its statement stays)
+    expect(out).not.toContain('import{a,b}');
+    expect(out).toContain('import{c}from"./c.js"');
+    expect(out).toContain('.then((c)=>c.d),h=()=>__shiro_live1.c');
+    expect(out).not.toContain('__shiro_require.settle(');
+    expect(t(`import{a}from"./a.js";export const f=()=>a;`, {})).toContain('__shiro_require.settle(');
+  });
 });
 
-import { liveEsbuildChunk } from '@shiro/commands/jseval/esm-live';
+import { liveEsbuildChunk, liveModule } from '@shiro/commands/jseval/esm-live';
 
 describe('live bindings for code-split chunks: an import named like a member keyword', () => {
   it('exported function declarations are there while a cyclic import is loading (Astro middleware)', async () => {

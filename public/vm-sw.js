@@ -1,16 +1,10 @@
-// claude --vm's compiled code (src/claude-vm/code-cache.ts, docs/CLAUDE_VM.md).
-// V8 keeps the code it compiled for a script a service worker serves from
-// CacheStorage, which it never does for node-compat's `new Function`: bundle.js
-// is put in the 'tabcomputer-vm' cache and imported from /__vm/. Registered by
-// the first `claude --vm` (src/claude-vm/sw-host.ts). Every other request skips
-// this worker (a static route where the browser has them; otherwise the fetch
-// handler returns without answering, and the browser fetches it as usual).
-//
-// Off switch: deploy this file with ENABLED = false (or delete it). The next
-// `claude --vm` reads it first, and on either the page unregisters the worker
-// and empties the cache; a browser that updates this worker gets one that
-// does the same. Launches until then require bundle.js as before.
-const ENABLED = true;
+// Switched off. Earlier builds registered this worker at the first `claude --vm`
+// to serve Claude Code's bundle from CacheStorage so that V8 would keep its
+// compiled code; Chrome keeps none for a script a service worker serves a
+// dedicated worker (docs/CLAUDE_VM.md). A browser that updates it gets this
+// one, which unregisters itself and empties its cache (and `claude` does the
+// same in a page that still has it: src/claude-vm/sw-host.ts).
+const ENABLED = false;
 const PREFIX = '/__vm/';
 const CACHE = 'tabcomputer-vm';
 

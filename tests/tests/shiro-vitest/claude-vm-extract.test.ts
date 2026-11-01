@@ -1,90 +1,152 @@
 /**
- * src/claude-vm/extract.ts: native Claude Code's ES modules made runnable on
- * tabcomputer's node (docs/CLAUDE_VM.md): Bun's paths and import.meta, and
- * CommonJS with live imports (Bun's chunks assign exports in lazy
- * initializers and import each other in cycles).
+ * src/claude-vm/extract.ts and module-store.ts: native Claude Code's ES modules
+ * made runnable on tabcomputer's node (docs/CLAUDE_VM.md): Bun's paths and
+ * import.meta, live imports (Bun's chunks assign exports in lazy initializers
+ * and import each other in cycles), and a loader that compiles a module when
+ * it is first required.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { transform } from 'esbuild';
-import { adaptModule, toCommonJS, launcherSource, bundleHeader, bundleEntry, ensureClaudeVm } from '@shiro/claude-vm/extract';
+import { describe, it, expect } from 'vitest';
+import { adaptModule, launcherSource, ensureClaudeVm, vmModuleTransform } from '@shiro/claude-vm/extract';
+import { createModuleLoader, loadModules, putModules, storeKey, MODULE_CACHE, type ModuleIndex } from '@shiro/claude-vm/module-store';
 import { BunLoader } from '@shiro/claude-vm/bun-graph';
 import { fakeBunElf } from './fake-bun-elf.mjs';
-import { MODULE_PARAMS, moduleSource, bundleUrl } from '@shiro/claude-vm/code-cache';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { PRETRANSFORMED } from '@shiro/node-compat/require';
-import { createTestShell, run } from './helpers';
+import { liveExports } from '@shiro/node-compat/require';
+import { createTestShell } from './helpers';
 
-// (native esbuild for extraction's own: esbuild-wasm wants the page's asset URL)
-vi.mock('@shiro/commands/build', () => ({ withEsbuild: async (f: (e: unknown) => unknown) => f(esbuild) }));
-
-const esbuild = { transform: (code: string, opts: object) => transform(code, opts as any) };
+/** Modules (Bun's names, ES module source) laid out as extract.ts does, and a loader over them */
+async function layout(mods: Record<string, string>, dir = '/vm', outer: (id: string) => any = (id) => { throw new Error('no ' + id); }) {
+  const toRun = await vmModuleTransform();
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  const index: ModuleIndex = {};
+  let size = 0;
+  for (const [name, src] of Object.entries(mods)) {
+    const b = enc.encode(toRun(src, dir));
+    index[`${dir}/${name}`] = [size, b.length];
+    parts.push(b);
+    size += b.length;
+  }
+  const bytes = new Uint8Array(size);
+  parts.reduce((at, p) => (bytes.set(p, at), at + p.length), 0);
+  const loader = createModuleLoader({
+    dir, bytes, index, outer, live: liveExports, settle: () => {},
+    globals: { console, process, global: globalThis, Buffer, globalThis, Function, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, self: undefined },
+  });
+  // (Bun's import.meta.require: the shim's bunRequire hands a namespace-aware require on)
+  (globalThis as any).Bun = { __require: (r: any) => (id: string) => r.namespace(id) };
+  return { loader, req: loader.require(dir), code: (name: string) => new TextDecoder().decode(bytes.subarray(...(([a, l]) => [a, a + l])(index[`${dir}/${name}`]))) };
+}
 
 describe('claude --vm: the extracted modules', () => {
-  it("rewrites Bun's paths, import.meta and require; reads Bun from the process", () => {
-    const src = '// @bun @bytecode\nimport{a}from"/$bunfs/root/chunk-a.js";var r=import.meta.require,d=import.meta.dir,e=import.meta.dirname,u=import.meta.url;';
+  it("rewrites Bun's paths and import.meta; an import's specifier keeps Bun's root; reads Bun from the process", () => {
+    const src = '// @bun @bytecode\nimport{a}from"/$bunfs/root/chunk-a.js";var p="/$bunfs/root/SKILL.md",x=import("/$bunfs/root/chunk-b.js"),r=import.meta.require,d=import.meta.dir,e=import.meta.dirname,u=import.meta.url;';
     const out = adaptModule(src, '/home/u/.cache/vm');
     expect(out.startsWith('var Bun = globalThis.Bun;\n// @bun @bytecode\n')).toBe(true);
-    expect(out).toContain('from"/home/u/.cache/vm/chunk-a.js"');
+    expect(out).toContain('from"/$bunfs/root/chunk-a.js"');
+    expect(out).toContain('import("/$bunfs/root/chunk-b.js")');
+    expect(out).toContain('p="/home/u/.cache/vm/SKILL.md"');
     expect(out).toContain('r=Bun.__require(require)');
     expect(out).toContain('d=__dirname,e=__dirname');
     expect(out).toContain('u=require("url").pathToFileURL(__filename).href');
-    expect(out).not.toContain('$bunfs');
     expect(out).not.toContain('import.meta');
   });
 
-  it('as CommonJS, an import reads the exporter\'s current value (a lazy initializer, a cycle)', async () => {
-    // b's export is assigned by an initializer a calls after importing it
-    const a = await toCommonJS(esbuild, 'import{v,init}from"./b.js";init();export const seen=v;');
-    const b = await toCommonJS(esbuild, 'export var v;export function init(){v=42}');
-    const mods: Record<string, any> = {};
-    const load = (name: string, code: string) => {
-      const module = { exports: {} as any };
-      mods[name] = module;
-      new Function('module', 'exports', 'require', code)(module, module.exports, (p: string) => mods[p.replace('./', '')].exports);
-      return module.exports;
-    };
-    load('b.js', b);
-    expect(load('a.js', a).seen).toBe(42);
-    expect(a.startsWith('"use strict";')).toBe(true);
+  it('an import reads the exporter\'s current value: a lazy initializer, a cycle', async () => {
+    const { req } = await layout({
+      'cli.js': 'import{v,init,getA}from"/$bunfs/root/b.js";init();export const seen=v;export const back=getA();',
+      'b.js': 'import{a}from"/$bunfs/root/cli.js";export var v;export function init(){v=42}export function getA(){return a}',
+      // (a is the entry's, which b imports while the entry is still loading)
+    });
+    const cli = req('./cli.js');
+    expect([cli.seen, cli.back]).toEqual([42, undefined]);
+    expect(req('./b.js').getA()).toBe(undefined);
   });
 
-  it('the launcher sets the process\'s Bun before Claude Code\'s entry runs', () => {
+  it("Bun's import.meta.require of a chunk is its namespace: `.default` is the default export", async () => {
+    const { req } = await layout({
+      'cli.js': 'var t=import.meta.require("/$bunfs/root/cmd.js").default,n=import.meta.require("/$bunfs/root/cmd.js").other;export{t,n};',
+      'cmd.js': 'var o={name:"workflows"},q=1;export{o as default,q as other};',
+    });
+    expect([req('./cli.js').t?.name, req('./cli.js').n]).toEqual(['workflows', 1]);
+  });
+
+  it('import() of a chunk is its namespace, live', async () => {
+    const { req } = await layout({
+      'cli.js': 'export const p=import("/$bunfs/root/late.js");',
+      'late.js': 'export let n=1;export function bump(){n++}export default {d:1};',
+    });
+    const ns = await req('./cli.js').p;
+    expect([ns.default.d, ns.n]).toEqual([1, 1]);
+    ns.bump();
+    expect(ns.n).toBe(2);
+    // (node-compat's default is the exports object, so its own keys come along: `d`)
+    expect(Object.keys(ns)).toEqual(expect.arrayContaining(['bump', 'default', 'n']));
+  });
+
+  it('what a minifier makes of names: an arrow parameter shadows an import; labels, `of`, unicode escapes are left alone', async () => {
+    const { req, code } = await layout({
+      'cli.js': 'import{m,t,of,u}from"/$bunfs/root/lib.js";'
+        + 'export const viaArrow=Promise.resolve({default:7}).then((m)=>m.default);'
+        + 'export const outer=m;'
+        + 'export function loop(){let n=0;t:for(const[a,b]of of){n+=a+b;if(n>2)break t;continue t}return n}'
+        + 'export const esc={\\u{430}:"a",u};',
+      // (as Bun writes them: declarations, then one export list)
+      'lib.js': 'var m="import m",t=0,of=[[1,1],[2,2]],u="U";export{m,t,of,u};',
+    });
+    const cli = req('./cli.js');
+    expect([await cli.viaArrow, cli.outer, cli.loop(), cli.esc['а'], cli.esc.u]).toEqual([7, 'import m', 6, 'a', 'U']);
+    // (names left alone here, a parameter and a label, keep the statement's copies too)
+    expect(code('cli.js')).toMatch(/let \{m, t, of, u\} = /);
+  });
+
+  it('a module is compiled when first required, never before; node\'s builtins come from the process', async () => {
+    const { loader, req, code } = await layout({
+      'cli.js': 'import{a}from"/$bunfs/root/a.js";import{EOL}from"os";export const x=a+EOL;',
+      'a.js': 'export const a="A";',
+      'unused.js': 'export const never=1;',
+    }, '/vm', (id) => (id === 'os' ? { EOL: '\n' } : (() => { throw new Error('no ' + id); })()));
+    expect(req('./cli.js').x).toBe('A\n');
+    expect(loader.stats()).toMatchObject({ compiled: 2, modules: 3 });
+    // (every reference to `a` reads the live binding: no copy of it is made)
+    expect(code('cli.js')).not.toMatch(/let \{a\}/);
+    expect(code('cli.js')).toContain('__shiro_live0.a');
+  });
+
+  it('modules.js: in CacheStorage for the next launch, one layout at a time; read from the files once if it is not', async () => {
+    const store = new Map<string, Uint8Array>();
+    const cache = {
+      keys: async () => [...store.keys()].map((url) => ({ url })),
+      delete: async (r: { url: string }) => store.delete(r.url),
+      put: async (url: string, res: Response) => { store.set(url, new Uint8Array(await res.arrayBuffer())); },
+      match: async (url: string) => (store.has(url) ? new Response(store.get(url) as BodyInit) : undefined),
+    };
+    const deps = { caches: { open: async (n: string) => (expect(n).toBe(MODULE_CACHE), cache) } as any, origin: 'https://tc.example' };
+    await putModules('/c/aaa/nc-1', new Uint8Array([1]), deps);
+    await putModules('/c/bbb/nc-2', new Uint8Array([2, 3]), deps);
+    expect([...store.keys()]).toEqual([storeKey('https://tc.example', '/c/bbb/nc-2')]);
+    expect(storeKey('https://tc.example/', '/h/.cache/tabcomputer/claude-vm/bbb/nc-2')).toBe('https://tc.example/__claude-vm/bbb/nc-2/modules.js');
+    let read = 0;
+    expect([...await loadModules('/c/ccc/nc-3', () => (read++, new Uint8Array([9])), deps)]).toEqual([9]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect([read, [...store.keys()]]).toEqual([1, [storeKey('https://tc.example', '/c/ccc/nc-3')]]);
+    // (the same worker's next launch: what it has, not even the cache)
+    expect([...await loadModules('/c/ccc/nc-3', () => (read++, new Uint8Array()), { caches: undefined, origin: undefined })]).toEqual([9]);
+    expect(read).toBe(1);
+  });
+
+  it('the launcher sets the process\'s Bun before Claude Code\'s entry runs, and loads modules through the store', () => {
     const l = launcherSource();
-    expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("require('./bundle.js')"));
+    expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("loader.require(__dirname)('./cli.js')"));
+    expect(l).toContain('store.loadModules(__dirname');
+    expect(l).toContain('createModuleLoader({ dir: __dirname');
     // (spelled out: node-compat's transform drops a shorthand `Buffer` property)
     expect(l).toContain('Buffer: Buffer');
+    // (it parses: an async module body, as node-compat runs it)
+    const AsyncFn = Object.getPrototypeOf(async () => {}).constructor;
+    expect(() => new AsyncFn('require', '__dirname', 'process', l)).not.toThrow();
   });
 
-  it('a module transformed ahead (PRETRANSFORMED) loads as it is; others get node-compat\'s transforms', async () => {
-    // (an await in a module that names AsyncLocalStorage is rewritten to carry its stores)
-    const body = 'const { AsyncLocalStorage } = require("async_hooks"); async function f() { await 1 } module.exports = String(f);';
-    const { fs, shell } = await createTestShell();
-    await fs.mkdir('/tmp/pre', { recursive: true });
-    await fs.writeFile('/tmp/pre/ahead.js', PRETRANSFORMED + body);
-    await fs.writeFile('/tmp/pre/plain.js', body);
-    const r = await run(shell, `node -e "console.log(JSON.stringify([require('/tmp/pre/ahead.js'), require('/tmp/pre/plain.js')]))"`);
-    const [ahead, plain] = JSON.parse(r.output.trim().split('\n').pop()!);
-    expect(ahead).toBe('async function f() { await 1 }');
-    expect(plain).toContain('__shiroAls');
-  });
-
-  it('bundle.js: modules from one table, cycles as CommonJS, import() as exports, the rest from the process', async () => {
-    const dir = '/vm';
-    const src = bundleHeader(dir)
-      + bundleEntry('/vm/a.js', 'const b = require("/vm/b.js"); exports.a = 1; exports.fromB = () => b.b; exports.os = require("os").name;')
-      + bundleEntry('/vm/b.js', 'const a = require("/vm/a.js"); exports.b = 2; exports.seenA = () => a.a;')
-      + bundleEntry('/vm/c.js', 'module.exports = __dynamic_import("./b.js").then((ns) => ns.b);')
-      + 'module.exports = [__vmRequire("/vm")("/vm/a.js"), __vmRequire("/vm")("/vm/b.js"), __vmRequire("/vm")("/vm/c.js")];';
-    const module = { exports: {} as any };
-    const outer = Object.assign((id: string) => { if (id === 'os') return { name: 'fake-os' }; if (id === 'path') return require('path'); throw new Error('no ' + id); }, { resolve: (id: string) => id });
-    new Function('module', 'exports', 'require', src)(module, module.exports, outer);
-    const [a, b, c] = module.exports;
-    expect([a.a, a.fromB(), b.seenA(), a.os]).toEqual([1, 2, 1, 'fake-os']);
-    expect(await c).toBe(2);
-  });
-
-  it('a first launch says what each stage is doing; the next one says nothing', async () => {
+  it('a first launch says what it is doing, lays out modules.js and drops an earlier layout\'s; the next one says nothing', async () => {
     const { fs } = await createTestShell();
     const bin = fakeBunElf([
       { name: '/$bunfs/root/chunk-a.js', contents: '// @bun\nexport const a = 1;\n', loader: BunLoader.js },
@@ -97,7 +159,11 @@ describe('claude --vm: the extracted modules', () => {
     const first = await ensureClaudeVm(fs as any, '/home/t/.local/bin/claude', '/home/t', (s) => lines.push(s));
     const said = lines.join('');
     expect(first.extracted).toBe(true);
-    for (const re of [/reading the native build/, /extracting/, /2 modules, 1 assets/, /extracted \(\d+\.\d s\)/, /preparing/, /ready \(\d+\.\d s\)/]) expect(said).toMatch(re);
+    for (const re of [/reading the native build/, /preparing/, /ready \(\d+\.\d s\)/]) expect(said).toMatch(re);
+    const index = JSON.parse(await fs.readFile(`${first.dir}/modules.json`, 'utf8') as string);
+    expect(Object.keys(index).sort()).toEqual([`${first.dir}/chunk-a.js`, `${first.dir}/cli.js`]);
+    expect(await fs.readFile(`${first.dir}/SKILL.md`, 'utf8')).toBe('# a skill\n');
+    expect(JSON.parse(await fs.readFile(`${first.dir}/bun-assets.json`, 'utf8') as string)).toEqual({ [`${first.dir}/SKILL.md`]: BunLoader.text });
     lines.length = 0;
     const again = await ensureClaudeVm(fs as any, '/home/t/.local/bin/claude', '/home/t', (s) => lines.push(s));
     expect([again.extracted, again.dir, lines]).toEqual([false, first.dir, []]);
@@ -120,15 +186,20 @@ describe('claude --vm: the extracted modules', () => {
     }) as typeof fetch;
     const lines: string[] = [];
     const opts = { origin: 'https://tc.example/', fetch: fetchFn, release, say: (l: string) => lines.push(l) };
+    // an earlier layout's trees, which this one replaces
+    const base = `/home/p/.cache/tabcomputer/claude-vm/${release.sha256}`;
+    await fs.mkdir(`${base}/cjs`, { recursive: true });
+    await fs.mkdir(`${base}/nc-00000000`, { recursive: true });
     // the boot's and a typed `claude`'s at once: one download, one layout
     const [a, b] = await Promise.all([ensurePreinstalledClaudeVm(fs as any, '/home/p', opts), ensurePreinstalledClaudeVm(fs as any, '/home/p', opts)]);
     expect(a.dir).toBe(b.dir);
-    expect(a.dir).toContain(`/home/p/.cache/tabcomputer/claude-vm/${release.sha256}/nc-`);
+    expect(a.dir).toContain(`${base}/nc-`);
     expect(a.version).toBe('9.9.9');
     expect(asked.length).toBe(1); // (the whole small file is the first suffix)
     expect(asked[0]).toBe(`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude bytes=0-${bin.length - 1}`);
     expect(lines.join('')).toMatch(/Downloading Claude Code 9\.9\.9/);
     expect(await fs.readFile(a.launcher, 'utf8')).toContain('claude --vm');
+    expect((await fs.readdir(base)).sort()).toEqual([a.dir.slice(base.length + 1)]);
     expect(JSON.parse(await fs.readFile(PREINSTALL_RECORD, 'utf8') as string)).toMatchObject({ version: '9.9.9', sha256: release.sha256 });
     const again = await ensurePreinstalledClaudeVm(fs as any, '/home/p', opts);
     expect([again.extracted, again.dir, asked.length]).toEqual([false, a.dir, 1]);
@@ -137,49 +208,5 @@ describe('claude --vm: the extracted modules', () => {
     await fs.writeFile('/home/q/.local/bin/claude', new Uint8Array(1_100_000));
     expect(await preinstallClaudeVmInBackground(fs as any, '/home/q', '/home/q/.local/bin/claude', opts)).toBe('skipped');
     expect(asked.length).toBe(1);
-  });
-
-  it("the code-cache module takes node-compat's module parameters, in require.ts's order", () => {
-    const req = readFileSync(resolve(__dirname, '../../../src/node-compat/require.ts'), 'utf8');
-    const inline = req.slice(req.indexOf('const fnParams = ['), req.indexOf('...(deps.scriptTimers'));
-    const names = [...inline.matchAll(/'([\w$]+)'/g)].map((m) => m[1]);
-    expect(MODULE_PARAMS.slice(0, names.length)).toEqual(names);
-    expect(MODULE_PARAMS.slice(names.length)).toEqual(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate', 'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope']);
-    const fn = new Function(moduleSource('return [module.id, this.x, typeof require];').replace('export default function', 'return function'))();
-    expect(fn.length).toBe(MODULE_PARAMS.length);
-    expect(fn.call({ x: 1 }, { id: 'm' }, {}, () => 0)).toEqual(['m', 1, 'function']);
-    expect(bundleUrl('/home/u/.cache/tabcomputer/claude-vm/abc/nc-123')).toBe('/__vm/abc/nc-123/bundle.mjs');
-  });
-
-  const runLauncher = async (compiled: ((...a: unknown[]) => unknown) | null, load = async () => compiled) => {
-    const required: string[] = [];
-    const require = (id: string): any => {
-      required.push(id);
-      if (id === 'tabcomputer:claude-vm') return { load: async () => ({ createBun: () => ({}) }), codeCache: async () => ({ loadCompiled: load }) };
-      if (id === 'fs') return { readFileSync: () => '{}' };
-      return {};
-    };
-    const globals = { console: { tag: 'console' }, process: { env: {}, tag: 'process' }, global: { tag: 'global' }, Buffer: { tag: 'Buffer' } };
-    const AsyncFn = Object.getPrototypeOf(async () => {}).constructor;
-    await new AsyncFn('require', '__dirname', 'console', 'process', 'global', 'Buffer', '__dynamic_import', 'self', launcherSource())(
-      require, '/vm', globals.console, globals.process, globals.global, Object.assign({}, globals.Buffer), 'dyn', undefined);
-    return required;
-  };
-
-  it('the launcher runs the compiled bundle with the bundle\'s own module and the process\'s globals', async () => {
-    let args: unknown[] = [];
-    const required = await runLauncher(function (this: unknown, ...a: unknown[]) { args = a; });
-    const at = (n: string) => args[MODULE_PARAMS.indexOf(n as any)];
-    expect(args.length).toBe(MODULE_PARAMS.length);
-    expect((at('module') as any).id).toBe('/vm/bundle.js');
-    expect(at('__shiro_module')).toBe(at('module'));
-    expect([at('__filename'), at('__dirname'), (at('console') as any).tag, (at('process') as any).tag, at('__dynamic_import'), at('self')]).toEqual(['/vm/bundle.js', '/vm', 'console', 'process', 'dyn', undefined]);
-    expect((at('__import_meta') as any).url).toBe('file:///vm/bundle.js');
-    expect(required).not.toContain('./bundle.js');
-  });
-
-  it('without the service worker, or when the import fails, the launcher requires bundle.js as before', async () => {
-    expect(await runLauncher(null)).toContain('./bundle.js');
-    expect(await runLauncher(null, async () => { throw new TypeError('Failed to fetch dynamically imported module'); })).toContain('./bundle.js');
   });
 });

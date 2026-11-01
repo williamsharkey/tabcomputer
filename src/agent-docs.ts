@@ -104,7 +104,7 @@ export function buildAgentsMd(ctx: ShiroRuntimeContext): string {
   const source = SOURCE[p.id] ?? SOURCE.tabcomputer;
   const claude = p.shims.claude === 'native'
     ? `- Plain \`claude\` runs Anthropic's native build's own JavaScript on this page's JS
-  engine (\`--vm\`): about 2 s to the prompt. ${name} preinstalls a pinned release in the
+  engine (\`--vm\`): about 1 s to the prompt. ${name} preinstalls a pinned release in the
   background after boot (only its JavaScript, about 55 MB). \`claude install\` downloads
   the whole native build (about 300 MB) to ~/.local/bin/claude, which then runs instead,
   and \`claude update\` fetches a newer one.

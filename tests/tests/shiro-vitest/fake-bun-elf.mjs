@@ -1,6 +1,6 @@
 /**
  * A synthetic Bun standalone executable (docs/CLAUDE_VM.md) for the claude --vm
- * tests: vitest's and tests/browser/claude-vm-codecache.mjs (plain node, so
+ * tests: vitest's and tests/browser/claude-vm-layout.mjs (plain node, so
  * bun-graph.ts's trailer is spelled out here; the graph tests parse what this makes).
  */
 const BUN_TRAILER = '\n---- Bun! ----\n';

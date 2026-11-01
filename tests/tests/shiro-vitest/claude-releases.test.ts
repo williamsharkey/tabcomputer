@@ -176,6 +176,23 @@ describe('/claude-releases/', () => {
     expect(hitsFor('1.0.0/linux-x64-musl/claude')).toBe(1); // all from disk
   });
 
+  it('?range=a-b: exactly those bytes, compressed for the wire and kept once; 416 for a bad range', async () => {
+    const url = '/claude-releases/1.0.0/linux-x64-musl/claude';
+    for (const enc of ['gzip', 'br']) {
+      const r = await get(`${url}?range=1000-200999`, { headers: { 'accept-encoding': enc } });
+      expect(r.status).toBe(200);
+      expect(r.headers.get('content-encoding')).toBe(enc);
+      expect(r.headers.get('x-tabcomputer-range')).toBe(`bytes 1000-200999/${GOOD.length}`);
+      expect(Number(r.headers.get('content-length'))).toBeLessThan(10_000);
+      expect(Buffer.from(await r.arrayBuffer()).equals(GOOD.subarray(1000, 201000))).toBe(true);
+    }
+    // (a browser that takes no encoding: the bytes as they are)
+    const plain = await get(`${url}?range=0-9`, { headers: { 'accept-encoding': 'identity' } });
+    expect([plain.status, plain.headers.get('content-encoding'), (await plain.arrayBuffer()).byteLength]).toEqual([200, null, 10]);
+    expect(readdirSync(join(CACHE, '1.0.0', 'linux-x64-musl', 'slices')).sort()).toEqual(['1000-200999.br', '1000-200999.gzip']);
+    for (const bad of [`${GOOD.length}-`, 'x', '', '0-99999999']) expect((await get(`${url}?range=${bad}`)).status).toBe(bad === '0-99999999' ? 200 : 416);
+  });
+
   it('parseByteRange: one range of a file, or the whole file, or unsatisfiable', () => {
     const server = new URL('../../../server.mjs', import.meta.url).href;
     const cases = [[undefined, 10], ['bytes=2-4', 10], ['bytes=-3', 10], ['bytes=-30', 10], ['bytes=4-2', 10], ['bytes=-0', 10], ['bytes=10-', 10], ['bytes=3-', 10], ['bytes=-', 10]];

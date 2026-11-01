@@ -11,7 +11,8 @@
 // --trace: each start's phases (TABCOMPUTER_VM_TRACE: claude.ts vmTracer, the launcher) and how
 // many modules it compiled. --repeat N: N starts in one page. --sessions N (with --preinstalled):
 // N earlier sessions (`claude --version`, a reload) before the timed one. --chrome-trace FILE:
-// a Chrome trace of the start, every thread (the node worker's too).
+// a Chrome trace of the start, every thread (the node worker's too). --throttle MBPS (--cold): the
+// page's network at that speed (the download is the page's).
 // --preinstalled: no binary in the tab; boot's background preinstall (src/claude-vm/preinstall.ts)
 // downloads byte ranges from the server's /claude-releases/ and lays the build out, timed, then
 // plain `claude` runs it. Point the server at a cache holding the pinned release:
@@ -111,7 +112,10 @@ try {
   for (let run = 0; run < runs; run++) {
     await h.page?.context().close().catch(() => {});
     // npm: boot's background preinstall puts the build in place (not timed, and not run)
-    await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm', ...(cold ? { settleQuietMs: 0 } : {}) });
+    // --throttle MBPS (with --cold): the page's network at that speed, 20 ms each way (Chrome's emulation)
+    const throttle = Number(opt('--throttle', 0));
+    await h.boot({ path: '/?ui=terminal', waitSettled: build === 'npm', ...(cold ? { settleQuietMs: 0, keepNetwork: !!throttle } : {}) });
+    if (throttle) await h.cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 40, downloadThroughput: throttle * 125000, uploadThroughput: throttle * 125000 / 4 });
     const home = '/home/user';
     if (cold) {
       // (onboarding done and the home directory trusted, as below: the prompt, not the theme picker)

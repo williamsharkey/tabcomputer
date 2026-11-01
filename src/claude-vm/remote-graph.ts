@@ -7,7 +7,7 @@
  *
  * The server sends exact slices of Anthropic's unchanged file
  * (server.mjs /claude-releases/, which keeps a binary only once its sha256
- * matches the release manifest).
+ * matches the release manifest), compressed for the wire where it can (httpRangeGet).
  */
 import { parseBunGraph, NeedBytes, type BunGraph, type ByteSource } from './bun-graph';
 
@@ -107,9 +107,32 @@ export async function fetchBunGraph(size: number, get: RangeGet, opts: RemoteGra
 
 export class RangesUnsupported extends Error {}
 
-/** A RangeGet over the page's fetch for `url`: each answer must be a 206 for exactly that range. */
+/**
+ * A RangeGet over the page's fetch for `url`. Each range is asked for as `?range=a-b`
+ * first: this site's server sends exactly those bytes, content-encoded (server.mjs
+ * claudeSlice: 2.1.316's ~55 MB come as ~16 MB), which a `Range:` request can't be (Fetch
+ * sends one with `Accept-Encoding: identity`). The answer must name that range
+ * (x-tabcomputer-range); a server without the form (an older one sends the whole file)
+ * is left at once, and `Range:` is used from then on: a 206 for exactly that range.
+ */
 export function httpRangeGet(url: string, fetchFn: typeof fetch = fetch): RangeGet {
+  let sliced = true;
+  const slice = async (start: number, end: number): Promise<Uint8Array | null> => {
+    const ac = new AbortController();
+    const r = await fetchFn(`${url}${url.includes('?') ? '&' : '?'}range=${start}-${end - 1}`, { cache: 'no-store', signal: ac.signal });
+    if (r.status !== 200 || !r.headers.get('x-tabcomputer-range')?.startsWith(`bytes ${start}-${end - 1}/`)) {
+      ac.abort();
+      return null;
+    }
+    const b = new Uint8Array(await r.arrayBuffer());
+    return b.length === end - start ? b : null;
+  };
   return async (start, end) => {
+    if (sliced) {
+      const b = await slice(start, end).catch(() => null);
+      if (b) return b;
+      sliced = false;
+    }
     const ac = new AbortController();
     const r = await fetchFn(url, { headers: { Range: `bytes=${start}-${end - 1}` }, cache: 'no-store', signal: ac.signal });
     if (r.status !== 206) {

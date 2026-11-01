@@ -35,6 +35,16 @@ when the storage quota has less than 400 MB free.
   bytes=a-b | a- | -n` with a 206 of the file it keeps (only once its sha256
   matched the manifest); several ranges get the whole file, a start past the
   end a 416.
+- **Compressed on the wire.** A `Range:` request can't be compressed (Fetch
+  sends it with `Accept-Encoding: identity`), so the page asks for
+  `?range=a-b` first: the same bytes of the same file, content-encoded (zstd,
+  else br, else gzip), with `x-tabcomputer-range` naming the range
+  (`claudeSlice`). 2.1.316's 55 MB are 16 MB that way. The page's slices are
+  the same for every visitor, so the server compresses each once and keeps it
+  beside the binary (`slices/`, at most 64, pruned with the version); 16 MiB
+  at most a slice, four compressed at a time, others sent as they are. A
+  server without the form sends the whole file for it: the page leaves that
+  response at once and uses `Range:` from then on.
 - **Precedence.** A non-empty file at `$CLAUDE_NATIVE_PATH` (default
   `~/.local/bin/claude`, from `claude install` or `claude update`) is the
   user's and runs instead; the boot then skips the preinstall. Without one,
@@ -364,6 +374,7 @@ download is ~0.2 s; over a real network it is the download's time),
 | | before (Build 1037) | now |
 |---|---:|---:|
 | page load to Claude's prompt echoing a typed key, nothing cached (`--cold`) | 19.5 s | 6.1 s |
+| the same over 50 Mbps, 40 ms latency (`--cold --throttle 50`) | ~27 s (download 9.8 s) | 10.1 s (download 3.2 s) |
 | of which the layout | 17 s | 4.7 s |
 | first `claude` of a page, preinstalled (`--preinstalled`) | 2.1 s | 1.1 s |
 | first `claude` after a reload (`--preinstalled --sessions 2`) | 1.6–2.2 s (once 8.3 s) | 1.05 s |

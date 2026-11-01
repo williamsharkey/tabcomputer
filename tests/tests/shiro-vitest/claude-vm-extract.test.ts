@@ -178,11 +178,11 @@ describe('claude --vm: the extracted modules', () => {
     ], 1);
     const release = { version: '9.9.9', platform: 'linux-x64-musl', sha256: 'ab'.repeat(32), size: bin.length };
     const asked: string[] = [];
-    const fetchFn = (async (url: string, init?: RequestInit) => {
-      const range = (init?.headers as any)?.Range as string;
-      asked.push(`${url} ${range}`);
-      const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number);
-      return new Response(bin.slice(s, e + 1), { status: 206, headers: { 'content-range': `bytes ${s}-${e}/${bin.length}` } });
+    // (as server.mjs answers `?range=`: those bytes, naming the range)
+    const fetchFn = (async (url: string) => {
+      asked.push(url);
+      const [, s, e] = /\?range=(\d+)-(\d+)$/.exec(url)!.map(Number);
+      return new Response(bin.slice(s, e + 1), { status: 200, headers: { 'x-tabcomputer-range': `bytes ${s}-${e}/${bin.length}` } });
     }) as typeof fetch;
     const lines: string[] = [];
     const opts = { origin: 'https://tc.example/', fetch: fetchFn, release, say: (l: string) => lines.push(l) };
@@ -196,7 +196,7 @@ describe('claude --vm: the extracted modules', () => {
     expect(a.dir).toContain(`${base}/nc-`);
     expect(a.version).toBe('9.9.9');
     expect(asked.length).toBe(1); // (the whole small file is the first suffix)
-    expect(asked[0]).toBe(`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude bytes=0-${bin.length - 1}`);
+    expect(asked[0]).toBe(`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude?range=0-${bin.length - 1}`);
     expect(lines.join('')).toMatch(/Downloading Claude Code 9\.9\.9/);
     expect(await fs.readFile(a.launcher, 'utf8')).toContain('claude --vm');
     expect((await fs.readdir(base)).sort()).toEqual([a.dir.slice(base.length + 1)]);

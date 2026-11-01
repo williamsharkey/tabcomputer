@@ -65,6 +65,31 @@ describe('claude --vm: the module graph by byte ranges', () => {
     await expect(httpRangeGet('/x', server(404))(10, 13)).rejects.toThrow('HTTP 404');
   });
 
+  it('httpRangeGet: `?range=` first (compressed by this site\'s server); a server without it is left for `Range:`', async () => {
+    const body = Uint8Array.from({ length: 100 }, (_, i) => i);
+    const asked: string[] = [];
+    const sliced = (async (url: string, init?: RequestInit) => {
+      asked.push(url + ((init?.headers as any)?.Range ? ' ' + (init!.headers as any).Range : ''));
+      const [, s, e] = /range=(\d+)-(\d+)/.exec(url)!.map(Number);
+      return new Response(body.slice(s, e + 1), { status: 200, headers: { 'x-tabcomputer-range': `bytes ${s}-${e}/100` } });
+    }) as typeof fetch;
+    const get = httpRangeGet('/x', sliced);
+    expect([...await get(10, 13), ...await get(0, 1)]).toEqual([10, 11, 12, 0]);
+    expect(asked).toEqual(['/x?range=10-12', '/x?range=0-0']);
+    // an older server: the whole file for `?range=`, then a 206 for `Range:` (and no more `?range=`)
+    asked.length = 0;
+    const older = (async (url: string, init?: RequestInit) => {
+      const range = (init?.headers as any)?.Range;
+      asked.push(range ? `${url} ${range}` : url);
+      if (!range) return new Response(body, { status: 200 });
+      const [, s, e] = /bytes=(\d+)-(\d+)/.exec(range)!.map(Number);
+      return new Response(body.slice(s, e + 1), { status: 206, headers: { 'content-range': `bytes ${s}-${e}/100` } });
+    }) as typeof fetch;
+    const old = httpRangeGet('/x', older);
+    expect([...await old(10, 13), ...await old(20, 21)]).toEqual([10, 11, 12, 20]);
+    expect(asked).toEqual(['/x?range=10-12', '/x bytes=10-12', '/x bytes=20-20']);
+  });
+
   const native = resolve(__dirname, '../../../bench/.cache/fixtures/claude-native');
   it.skipIf(!existsSync(native))('native Claude Code: the same graph from a fraction of the file', async () => {
     const bin = new Uint8Array(readFileSync(native));

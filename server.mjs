@@ -1387,6 +1387,54 @@ async function claudePrune() {
   for (const v of versions.slice(CLAUDE_RELEASES.keep)) await rm(join(dir, v.name), { recursive: true, force: true });
 }
 
+/**
+ * `?range=a-b` of a release binary: those bytes, exactly, content-encoded (zstd, else br,
+ * else gzip, as the browser takes them). A `Range:` request can't be: Fetch sends one with
+ * `Accept-Encoding: identity`. 2.1.316's ~55 MB that `claude --vm` reads are ~16 MB this way.
+ * The client's slices are the same for every visitor (src/claude-vm/remote-graph.ts: the
+ * file's end, then 8 MiB pieces), so each is compressed once and kept beside the binary
+ * (slices/, at most CLAUDE_SLICE_KEEP of them; pruned with its version). A slice is at most
+ * CLAUDE_SLICE_MAX, and at most four (the client's requests at once) are compressed at a time: beyond that it goes as it is.
+ */
+const CLAUDE_SLICE_MAX = 16 << 20;
+const CLAUDE_SLICE_KEEP = 64;
+const claudeSlicing = new Map();
+async function claudeSlice(b, start, end, accept) {
+  const zlib = await import('node:zlib');
+  const takes = (e) => new RegExp(`(^|[\\s,])${e}(;|,|$|\\s)`).test(accept);
+  const encoding = takes('zstd') && zlib.zstdCompress ? 'zstd' : takes('br') ? 'br' : takes('gzip') ? 'gzip' : null;
+  if (!encoding) return { size: end - start + 1 };
+  const dir = join(b.file.slice(0, b.file.lastIndexOf('/')), 'slices');
+  const file = join(dir, `${start}-${end}.${encoding}`);
+  try { return { file, size: (await stat(file)).size, encoding }; } catch { /* not made yet */ }
+  let p = claudeSlicing.get(file);
+  if (!p) {
+    if (claudeSlicing.size >= 4) return { size: end - start + 1 };
+    p = (async () => {
+      const fh = await open(b.file, 'r');
+      const data = Buffer.alloc(end - start + 1);
+      try { await fh.read(data, 0, data.length, start); } finally { await fh.close(); }
+      const body = await new Promise((ok, fail) => {
+        const done = (e, out) => (e ? fail(e) : ok(out));
+        if (encoding === 'zstd') zlib.zstdCompress(data, done);
+        else if (encoding === 'br') zlib.brotliCompress(data, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: data.length } }, done);
+        else zlib.gzip(data, { level: 6 }, done);
+      });
+      try {
+        await mkdir(dir, { recursive: true });
+        if ((await readdir(dir)).length < CLAUDE_SLICE_KEEP) {
+          const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}`;
+          await writeFile(tmp, body);
+          await rename(tmp, file);
+        }
+      } catch { /* served, not kept */ }
+      return { body, size: body.length, encoding };
+    })().finally(() => claudeSlicing.delete(file));
+    claudeSlicing.set(file, p);
+  }
+  return p;
+}
+
 async function handleClaudeReleases(req, res, rest) {
   const cfg = CLAUDE_RELEASES;
   const what = cfg.enabled && (req.method === 'GET' || req.method === 'HEAD') ? claudeReleaseRequest(rest, cfg.platforms) : null;
@@ -1419,6 +1467,23 @@ async function handleClaudeReleases(req, res, rest) {
     'accept-ranges': 'bytes',
     ...same,
   };
+  // ?range=a-b: those bytes of the unchanged file, content-encoded for the wire (claudeSlice)
+  const asked = new URL(req.url, 'http://x').searchParams.get('range');
+  if (asked !== null) {
+    const r = parseByteRange(`bytes=${asked}`, b.size);
+    if (!r || r === 'unsatisfiable' || r.end - r.start + 1 > CLAUDE_SLICE_MAX) {
+      res.writeHead(416, { ...headers, 'content-range': `bytes */${b.size}`, 'content-length': 0 });
+      return res.end();
+    }
+    const s = await claudeSlice(b, r.start, r.end, String(req.headers['accept-encoding'] || ''));
+    res.writeHead(200, {
+      ...headers, vary: 'accept-encoding', 'x-tabcomputer-range': `bytes ${r.start}-${r.end}/${b.size}`,
+      ...(s.encoding ? { 'content-encoding': s.encoding } : {}), 'content-length': s.size,
+    });
+    if (head) return res.end();
+    if (s.body) return res.end(s.body);
+    return createReadStream(s.file ?? b.file, s.file ? {} : { start: r.start, end: r.end }).on('error', () => res.destroy()).pipe(res);
+  }
   // A byte range of the unchanged file: `claude --vm` reads only the part of
   // the binary holding Claude Code's JavaScript (~55 of 315 MB, src/claude-vm/remote-graph.ts)
   const range = parseByteRange(req.headers.range, b.size);

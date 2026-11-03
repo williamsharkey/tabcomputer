@@ -14,3 +14,6 @@ bench/.cache/
 dist-dev
 .gui-score/
 .toolchain-build/
+
+# agent worktrees (Claude Code)
+.claude/worktrees/

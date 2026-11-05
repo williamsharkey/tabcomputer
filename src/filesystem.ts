@@ -718,12 +718,16 @@ function storableNode(node: FSNode): FSNode {
  * IndexedDB-backed filesystem with an in-memory node cache and write-behind.
  *
  * Mutations update the cache immediately and resolve; the IndexedDB writes are
- * queued (`_dirty`, latest value per path wins) and committed in ONE readwrite
- * transaction per flush. A flush is scheduled as a macrotask after the first
- * dirty write, so a burst of writes (npm install, `echo >> f` in a loop, a
- * shell history update per command) costs one transaction instead of one per
- * write. Only one flush transaction is in flight at a time; writes made while
- * it commits go into the next one.
+ * queued (`_dirty`, latest value per path wins) and committed in readwrite
+ * transactions of at most COMMIT_MAX_BYTES, in queue order. A flush is
+ * scheduled as a macrotask after the first dirty write, so a burst of writes
+ * (npm install, `echo >> f` in a loop, a shell history update per command)
+ * costs one transaction instead of one per write, until the batch is bigger
+ * than that cap. Chrome stores large values as blobs and refuses one
+ * transaction of about 450 MB of them even when the origin is nearly empty
+ * (tabcomputer#167); a git clone's 1 MB blocks used to commit in one
+ * transaction and trip that. Only one flush is in flight at a time; writes
+ * made while it commits go into the next one.
  *
  * Crash safety: a write is durable once the flush that carries it commits,
  * normally within one event-loop turn. `sync()` (the `sync` command, kernel
@@ -746,13 +750,23 @@ export class FileSystem {
   /** First error from a failed background flush, reported by the next sync(). */
   private _flushError: unknown = null;
   /**
-   * The browser refused a commit for lack of space (QuotaExceededError). The
-   * failed batch stays queued (nothing of it reached IndexedDB: one
-   * transaction), and writes that need more space fail with ENOSPC until a
-   * commit goes through: the user deletes something and the next flush
-   * carries the deletes and the queued writes together.
+   * The browser refused a commit for lack of space (QuotaExceededError) and
+   * the origin really is near its quota. The failed batch stays queued
+   * (nothing of it reached IndexedDB: one transaction), and writes that need
+   * more space fail with ENOSPC until a commit goes through: the user deletes
+   * something and the next flush carries the deletes and the queued writes
+   * together.
+   *
+   * A refusal while usage is far below the quota is Chrome's per-transaction
+   * blob limit, not a full disk (tabcomputer#167). That sets `_throttled`
+   * instead: writes stay in memory, and the commit is retried on
+   * THROTTLE_DELAYS. After that ladder it counts as full, and a retry every
+   * 30 s clears it on its own when the browser accepts commits again.
    */
   private _full = false;
+  private _throttled = false;
+  /** Index into THROTTLE_DELAYS for the next wait; past the end, the 30 s full retry. */
+  private _throttleStep = 0;
   private _fullListeners: Set<(full: boolean) => void> = new Set();
   /** Bytes written this page load, for onBigWrite. */
   private _bytesWritten = 0;
@@ -789,6 +803,12 @@ export class FileSystem {
 
   /** Browser storage is full (see _full). */
   get storageFull(): boolean { return this._full; }
+
+  /**
+   * A commit was refused while the origin is not near its quota
+   * (tabcomputer#167). Writes are kept in memory and retried.
+   */
+  get storageThrottled(): boolean { return this._throttled; }
 
   /** Called with true when a commit fails for lack of space, false once one succeeds again. */
   onStorageFull(fn: (full: boolean) => void): () => void {
@@ -1188,11 +1208,14 @@ export class FileSystem {
   private _scheduleFlush(): void {
     if (this._lost) return;
     if (this._full) {
-      // Retry the failed batch once a burst of deletes has freed something,
-      // not after every write (each retry clones the whole batch)
+      // A disk that is really full is retried soon, so a delete is committed
+      // with the queued writes. A throttle that used up its ladder retries
+      // every 30 s: Chrome accepts blob commits again after a few minutes,
+      // and that clears the refusal without anyone deleting a file (#167).
       if (!this._flushScheduled && !this._flushing) {
         this._flushScheduled = true;
-        setTimeout(() => { this._flushScheduled = false; void this._flush(); }, 250);
+        const ms = this._throttleStep >= FileSystem.THROTTLE_DELAYS.length ? 30_000 : 250;
+        setTimeout(() => { this._flushScheduled = false; void this._flush(); }, ms);
       }
       return;
     }
@@ -1241,20 +1264,78 @@ export class FileSystem {
 
   /** Main-thread time a commit spends issuing requests before it lets the page run (_commit). */
   static COMMIT_SLICE_MS = 8;
+  /**
+   * Most one commit transaction may carry (tabcomputer#167). Chrome refuses a
+   * transaction of about 450 MB of blobs with an empty QuotaExceededError.
+   */
+  static COMMIT_MAX_BYTES = 64 << 20;
+  /** Waits after a refusal that is not a full disk, then one more marks it full. */
+  static THROTTLE_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 
-  /** Commit everything dirty in one transaction; loops while new writes arrive. */
+  /**
+   * A prefix of the queue, in order, of at most COMMIT_MAX_BYTES. One record
+   * bigger than the cap is its own transaction. Bytes left in `_dirty` stay
+   * queued for the next transaction.
+   */
+  private _takeCommitBatch(): Map<string, FSNode | null> {
+    if (this._dirtyBytes <= FileSystem.COMMIT_MAX_BYTES) {
+      const batch = this._dirty;
+      this._dirty = new Map();
+      this._inflightBytes = this._dirtyBytes;
+      this._dirtyBytes = 0;
+      return batch;
+    }
+    const batch = new Map<string, FSNode | null>();
+    let bytes = 0;
+    for (const [p, n] of this._dirty) {
+      const b = storedBytes(n);
+      if (batch.size > 0 && bytes + b > FileSystem.COMMIT_MAX_BYTES) break;
+      batch.set(p, n);
+      bytes += b;
+    }
+    for (const p of batch.keys()) this._dirty.delete(p);
+    this._dirtyBytes -= bytes;
+    this._inflightBytes = bytes;
+    return batch;
+  }
+
+  /** Put a failed batch back under writes that arrived while it was committing. */
+  private _requeue(batch: Map<string, FSNode | null>): void {
+    for (const [p, n] of this._dirty) { batch.delete(p); batch.set(p, n); }
+    this._dirty = batch;
+    this._dirtyBytes = 0;
+    for (const n of batch.values()) this._dirtyBytes += storedBytes(n);
+  }
+
+  /** A QuotaExceededError while the origin is not near its quota: Chrome's blob transaction limit. */
+  private async _quotaIsThrottle(): Promise<boolean> {
+    try {
+      const est = await navigator.storage?.estimate?.();
+      if (!est?.quota) return true;
+      return (est.usage ?? 0) / est.quota < 0.9;
+    } catch { return true; }
+  }
+
+  private _noteThrottled(): void {
+    if (this._throttled) return;
+    this._throttled = true;
+    console.warn('[fs] browser storage refused a commit while the disk is not full; writes stay in memory and are retried (tabcomputer#167)');
+    void import('./kernel/klog').then(({ klog, LOG_WARNING }) => klog.log(LOG_WARNING, 'tabcomputer-fs: a commit was refused while storage is not full; retrying (tabcomputer#167)')).catch(() => {});
+  }
+
+  /** Commit queued writes, at most COMMIT_MAX_BYTES per transaction; loops while new writes arrive. */
   private _flush(durability: 'default' | 'strict' | 'relaxed' = 'relaxed'): Promise<void> {
     if (this._flushing) return this._flushing;
     if (this._dirty.size === 0) return Promise.resolve();
     const run = async () => {
       while (this._dirty.size > 0) {
-        const batch = this._dirty;
-        this._dirty = new Map();
+        const batch = this._takeCommitBatch();
         this._inflight = batch;
-        this._inflightBytes = this._dirtyBytes;
-        this._dirtyBytes = 0;
+        let retryMs: number | null = null;
         try {
           await this._commit(batch, durability);
+          this._throttleStep = 0;
+          this._throttled = false;
           this._setFull(false);
           if (this._ranges.size) {
             for (const p of batch.keys()) if (p.startsWith(RANGE) && !this._dirty.has(p)) this._ranges.delete(p.slice(RANGE.length));
@@ -1263,32 +1344,33 @@ export class FileSystem {
           if (this._lost) {
             // Nothing to commit to: keep every write in memory (newer wins), for
             // reads and for saving before a reload, and stop flushing
-            for (const [p, n] of this._dirty) { batch.delete(p); batch.set(p, n); }
-            this._dirty = batch;
-            this._dirtyBytes = 0;
-            for (const n of batch.values()) this._dirtyBytes += storedBytes(n);
+            this._requeue(batch);
             break;
           }
           if (FileSystem._isQuotaError(e)) {
-            // Requeue it under the writes made meanwhile (newer wins) and
-            // stop: the next flush is a retry, after the user frees space
-            // (re-inserted, so they stay after any older range delete of theirs)
-            for (const [p, n] of this._dirty) { batch.delete(p); batch.set(p, n); }
-            this._dirty = batch;
-            this._dirtyBytes = 0;
-            for (const n of batch.values()) this._dirtyBytes += storedBytes(n);
-            if (!this._full) console.error('[fs] browser storage is full; writes fail with ENOSPC until space is freed:', e);
-            this._setFull(true);
-            break;
+            // Requeue it under the writes made meanwhile (newer wins). A
+            // refusal under quota waits and tries again; a full disk stops.
+            this._requeue(batch);
+            const delays = FileSystem.THROTTLE_DELAYS;
+            if (await this._quotaIsThrottle() && this._throttleStep < delays.length) {
+              this._noteThrottled();
+              retryMs = delays[this._throttleStep++];
+            } else {
+              if (!this._full) console.error('[fs] browser storage is full; writes fail with ENOSPC until space is freed:', e);
+              this._setFull(true);
+              break;
+            }
+          } else {
+            // Keep the cache (the session goes on with what the user wrote) but
+            // report it; the next sync() rejects with it.
+            console.error('[fs] IndexedDB write failed:', e);
+            if (!this._flushError) this._flushError = e;
           }
-          // Keep the cache (the session goes on with what the user wrote) but
-          // report it; the next sync() rejects with it.
-          console.error('[fs] IndexedDB write failed:', e);
-          if (!this._flushError) this._flushError = e;
         } finally {
           this._inflight = null;
           this._inflightBytes = 0;
         }
+        if (retryMs != null) await new Promise((r) => setTimeout(r, retryMs!));
       }
     };
     this._flushing = run().finally(() => { this._flushing = null; });

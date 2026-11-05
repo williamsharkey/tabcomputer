@@ -247,6 +247,12 @@ async function storageCheck(ctx: CommandContext): Promise<Check> {
     };
   }
   const st = g.navigator?.storage;
+  if (ctx.fs.storageThrottled) {
+    return {
+      label: 'storage', status: 'WARN',
+      detail: 'browser storage is refusing large commits (Chrome\'s blob limit, not a full disk); writes are held in memory and retried (tabcomputer#167)',
+    };
+  }
   if (!st?.estimate) return { label: 'storage', status: 'INFO', detail: 'StorageManager unavailable' };
   const [est, persisted] = await Promise.all([st.estimate(), st.persisted?.().catch(() => false) ?? false]);
   const used = est.usage ?? 0;

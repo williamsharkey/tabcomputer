@@ -344,7 +344,9 @@ export async function runDoctorChecks(ctx: CommandContext): Promise<Check[]> {
 
 export function formatChecks(checks: Check[]): string {
   const w = Math.max(...checks.map((c) => c.label.length));
-  return checks.map((c) => `${c.status.padEnd(4)}  ${c.label.padEnd(w)}  ${c.detail}`).join('\n') + '\n';
+  // One line per check, whatever a detail quotes (a probe's stack trace, a program's output)
+  const oneLine = (s: string) => s.replace(/\s*[\r\n]+\s*/g, ' ⏎ ').trim();
+  return checks.map((c) => `${c.status.padEnd(4)}  ${c.label.padEnd(w)}  ${oneLine(c.detail)}`).join('\n') + '\n';
 }
 
 export const doctorCmd: Command = {

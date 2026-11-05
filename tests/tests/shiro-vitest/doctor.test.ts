@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTestShell } from './helpers';
-import { doctorCmd, tabinfoCmd } from '@shiro/commands/doctor';
+import { doctorCmd, tabinfoCmd, formatChecks } from '@shiro/commands/doctor';
 
 const SECRET = 'ghp_doNotPrintThisToken123';
 
@@ -31,6 +31,16 @@ async function doctor(name = 'doctor', fetchImpl?: (url: string, init?: any) => 
 }
 
 describe('doctor', () => {
+  it('keeps a multi-line detail (a stack trace) on its check\'s line', () => {
+    const out = formatChecks([
+      { label: 'x86 engine', status: 'FAIL', detail: "a static exit(0) program exited 1: Error: bad\n    at initRuntime (x.js:1)\r\n    at y" },
+      { label: 'kernel', status: 'OK', detail: '5 processes' },
+    ] as any);
+    const lines = out.trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^FAIL\s+x86 engine\s+a static exit\(0\) program exited 1: Error: bad ⏎ at initRuntime \(x\.js:1\) ⏎ at y$/);
+  });
+
   it('warns when this tab was built from another commit than the server deployed (reload)', async () => {
     vi.stubGlobal('__BUILD_SHA__', 'fedcba9876543210fedcba9876543210fedcba98');
     const { out } = await doctor();

@@ -129,24 +129,54 @@ interface Pooled {
   returning: ReturnType<typeof setTimeout> | null;
   /** In the pool: when it goes unused for POOL_IDLE_MS it is terminated */
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** This worker compiled Claude Code's modules, or ran `claude` (module-store.ts) */
+  claudeWarm?: boolean;
+  /** Stay in the pool this long instead of POOL_IDLE_MS */
+  holdMs?: number;
 }
 interface Lease { msg: ((m: unknown) => void)[]; err: ((e: unknown) => void)[]; exit: ((c: number) => void)[] }
 const idle: Pooled[] = [];
 const MAX_IDLE = 2;
 /**
  * How long a pooled worker waits for the next node: it keeps the last program's heap
- * (an exited claude --vm's ~150 MB) until it runs another one or goes
+ * (an exited claude --vm's ~150 MB) until it runs another one or the idle time ends.
+ * A worker that holds Claude Code's compiled modules stays longer, so the next
+ * `claude` does not compile them again, and is dropped when the page goes away.
  */
 let POOL_IDLE_MS = 120_000;
+/** How long a Claude Code worker stays ready while the tab is open */
+const CLAUDE_HOLD_MS = 30 * 60 * 1000;
 /** (tests) */
 export function setNodeWorkerPoolIdleMs(ms: number): void { POOL_IDLE_MS = ms; }
 
-/** Into the pool (or gone, when it is full) */
+let pageHideHooked = false;
+function hookPageHide(): void {
+  if (pageHideHooked || typeof window === 'undefined') return;
+  pageHideHooked = true;
+  window.addEventListener('pagehide', () => {
+    for (const p of [...idle]) if (p.claudeWarm) discard(p);
+  });
+}
+
+/** `claude` and its module warm-up keep the worker (warm.ts, claude.ts) */
+function noteClaude(p: Pooled, env?: Record<string, string | undefined>): void {
+  if (env?.TABCOMPUTER_CLAUDE_BUILD !== 'vm' && env?.TABCOMPUTER_CLAUDE_WARM !== '1') return;
+  p.claudeWarm = true;
+  p.holdMs = Math.max(p.holdMs ?? 0, CLAUDE_HOLD_MS);
+  hookPageHide();
+}
+
+/** Into the pool (or gone, when it is full). A warm Claude worker takes a cold one's place. */
 function pool(p: Pooled): void {
-  if (idle.length >= MAX_IDLE) { discard(p); return; }
+  if (idle.length >= MAX_IDLE) {
+    const victim = p.claudeWarm ? idle.findIndex((x) => !x.claudeWarm) : -1;
+    if (victim < 0) { discard(p); return; }
+    discard(idle[victim]);
+  }
   idle.push(p);
   clearTimeout(p.idleTimer);
-  p.idleTimer = setTimeout(() => discard(p), POOL_IDLE_MS);
+  const ms = p.holdMs && p.holdMs > POOL_IDLE_MS ? p.holdMs : POOL_IDLE_MS;
+  p.idleTimer = setTimeout(() => discard(p), ms);
 }
 
 function discard(p: Pooled): void {
@@ -159,10 +189,21 @@ function discard(p: Pooled): void {
   try { void p.w.terminate(); } catch { /* gone */ }
 }
 
-function pooledWorker(): Pooled {
-  const reused = idle.pop();
-  if (reused) { clearTimeout(reused.idleTimer); return reused; }
+function pooledWorker(env?: Record<string, string | undefined>): Pooled {
+  let reused: Pooled | undefined;
+  // The next `claude` takes the worker that already compiled its modules
+  if (env?.TABCOMPUTER_CLAUDE_BUILD === 'vm') {
+    const i = idle.findIndex((p) => p.claudeWarm);
+    if (i >= 0) reused = idle.splice(i, 1)[0];
+  }
+  if (!reused) reused = idle.pop();
+  if (reused) {
+    clearTimeout(reused.idleTimer);
+    noteClaude(reused, env);
+    return reused;
+  }
   const p: Pooled = { w: createNodeWorker(), lease: null, returning: null };
+  noteClaude(p, env);
   const giveBack = () => {
     if (p.returning) clearTimeout(p.returning);
     p.returning = null;
@@ -239,7 +280,7 @@ export function installNodeSyscalls(kernel: Kernel): void {
 /** The kernel Runner: the process's program is a node guest worker */
 export function nodeWorkerRunner(): Runner {
   return (proc, kernel) => (installNodeSyscalls(kernel), workerRunner((p) => {
-    const w = lease(pooledWorker());
+    const w = lease(pooledWorker(p.env));
     wire(w, p, kernel);
     return w;
   }, { dataSize: 1 << 20, startData: { pageOrigin: getShiroOrigin(), networkMode: networkMode() } })(proc, kernel));

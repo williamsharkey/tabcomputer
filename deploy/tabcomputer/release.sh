@@ -65,6 +65,31 @@ install_set_tools() {
   rm -rf "$tools.old"
 }
 install_set_tools || echo "package set tools not installed"
+# Claude Code's prepared modules (docs/CLAUDE_VM.md). One gzip beside the pin's
+# sha256. A failure leaves the page to lay the release out itself, and never
+# stops the deploy. The live server is still the previous release while this runs.
+pack_claude_layout() {
+  local out=/opt/tabcomputer/claude-vm-layout meta version sha layout dest bin
+  meta=$(node -e '
+    const fs = require("fs");
+    const pin = fs.readFileSync("src/claude-vm/preinstall.ts", "utf8");
+    const version = /version: '"'"'([^'"'"']+)'"'"'/.exec(pin)[1];
+    const sha = /sha256: '"'"'([0-9a-f]{64})'"'"'/.exec(pin)[1];
+    const layout = /VM_LAYOUT = (\d+)/.exec(fs.readFileSync("src/claude-vm/extract.ts", "utf8"))[1];
+    process.stdout.write(version + " " + sha + " " + layout);
+  ') || return 1
+  version=${meta%% *}; rest=${meta#* }; sha=${rest%% *}; layout=${rest##* }
+  dest=$out/$sha/$layout/pack.gz
+  if [ -s "$dest" ]; then echo "claude vm layout present ($dest)"; return 0; fi
+  bin=$(mktemp)
+  curl -fsSL --retry 3 -o "$bin" \
+    "https://downloads.claude.ai/claude-code-releases/${version}/linux-x64-musl/claude" || { rm -f "$bin"; return 1; }
+  echo "$sha  $bin" | sha256sum -c - || { rm -f "$bin"; return 1; }
+  node scripts/claude-vm/pack-layout.mjs "$bin" "$out" "$version" "$sha" || { rm -f "$bin"; return 1; }
+  rm -f "$bin"
+  [ -s "$dest" ]
+}
+pack_claude_layout || echo "claude vm layout not packed"
 systemctl restart tabcomputer
 trap - ERR
 write_status live "$sha" "$sha"

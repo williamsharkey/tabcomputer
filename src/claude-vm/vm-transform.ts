@@ -55,7 +55,7 @@ const BATCH = 4 << 20;
  * a module at a time with the page's event loop turning every 50 ms. `progress` gets the
  * count done so far.
  */
-export async function transformModules(dir: string, sources: Uint8Array[], progress: (done: number) => void = () => {}): Promise<Uint8Array[]> {
+export async function transformModules(dir: string, sources: Uint8Array[], progress: (done: number) => void = () => {}, yieldMs = 50): Promise<Uint8Array[]> {
   const viaWorker = typeof Worker !== 'undefined' && typeof window !== 'undefined' ? await inWorker(dir, sources, progress).catch(() => null) : null;
   if (viaWorker) return viaWorker;
   const toRun = await vmModuleTransform();
@@ -66,7 +66,7 @@ export async function transformModules(dir: string, sources: Uint8Array[], progr
   for (const s of sources) {
     out.push(enc.encode(toRun(dec.decode(s), dir)));
     progress(out.length);
-    if (performance.now() - slice > 50) { await new Promise((r) => setTimeout(r, 0)); slice = performance.now(); }
+    if (yieldMs > 0 && performance.now() - slice > yieldMs) { await new Promise((r) => setTimeout(r, 0)); slice = performance.now(); }
   }
   return out;
 }

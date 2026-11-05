@@ -22,6 +22,7 @@
 import { parseBunGraph, BunLoader, type BunGraph } from './bun-graph';
 import { zstdDecodeAll } from '../commands/compress/zstd-codec';
 import { adaptModule, vmModuleTransform, transformModules } from './vm-transform';
+import { LAUNCHER_GLOBAL_NAMES } from './module-store';
 
 export { adaptModule, vmModuleTransform };
 
@@ -38,12 +39,7 @@ export interface VmFs {
 
 const BUNFS = '/$bunfs/root/';
 
-/** The process's globals a module's code reads, as the launcher has them (module-store.ts) */
-const LAUNCHER_GLOBALS = ['console', 'process', 'global', 'Buffer', 'globalThis', 'Function',
-  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate',
-  'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'];
-
-/** The launcher: the process's Bun, then Claude Code's entry, its modules compiled as they are required. */
+/** The launcher: the process's Bun, then Claude Code's entry. Modules already compiled by the warm-up are reused. */
 export function launcherSource(): string {
   return [
     '// tabcomputer: claude --vm (src/claude-vm/extract.ts, module-store.ts)',
@@ -55,9 +51,10 @@ export function launcherSource(): string {
     "const [{ createBun }, store] = await Promise.all([vm.load(), vm.modules()]);",
     "const assets = JSON.parse(fs.readFileSync(__dirname + '/bun-assets.json', 'utf8'));",
     "globalThis.Bun = createBun({ fs, process: process, childProcess: require('child_process'), net: require('net'), http: require('http'), Buffer: Buffer, assets: assets, main: __dirname + '/cli.js', transform: vm.transformSync });",
-    "const [bytes, index] = [await store.loadModules(__dirname, () => fs.readFileSync(__dirname + '/modules.js')), JSON.parse(fs.readFileSync(__dirname + '/modules.json', 'utf8'))];",
+    "const bytes = await store.loadModules(__dirname, () => fs.readFileSync(__dirname + '/modules.js'));",
+    "const index = store.cachedIndex(__dirname) || JSON.parse(fs.readFileSync(__dirname + '/modules.json', 'utf8'));",
     "__vmTrace('modules read');",
-    `const globals = { ${LAUNCHER_GLOBALS.map((n) => `${n}: typeof ${n} === 'undefined' ? undefined : ${n}`).join(', ')} };`,
+    `const globals = { ${LAUNCHER_GLOBAL_NAMES.map((n) => `${n}: typeof ${n} === 'undefined' ? undefined : ${n}`).join(', ')} };`,
     'const loader = store.createModuleLoader({ dir: __dirname, bytes, index, outer: require, globals, live: require.live, settle: require.settle });',
     "if (process.env.TABCOMPUTER_VM_TRACE) for (const s of [1, 3, 10]) setTimeout(() => { const t = loader.stats(); __vmTrace(`modules compiled after ${s} s: ${t.compiled} of ${t.modules}, ${(t.compiledBytes / 1048576).toFixed(1)} of ${(t.bytes / 1048576).toFixed(1)} MB`); }, s * 1000).unref?.();",
     "loader.require(__dirname)('./cli.js');",
@@ -214,6 +211,48 @@ const buildKey = (): string => {
   return (h >>> 0).toString(16).padStart(8, '0');
 };
 
+/** Where a layout for this Claude Code sha and this tabcomputer build is written */
+export function claudeVmLayoutDir(home: string, sha: string): string {
+  return `${home}/${VM_CACHE}/${sha}/nc-${buildKey()}`;
+}
+
+export interface RenderedLayoutFile { rel: string; bytes: Uint8Array }
+
+/**
+ * The files of a layout for `dir` (the real directory, or a placeholder the
+ * pack substitutes later). `yieldMs` 0 keeps a Node packer in a tight loop.
+ */
+export async function renderVmLayout(graph: BunGraph, dir: string, onProgress?: (done: number, total: number) => void, yieldMs = 50): Promise<{ files: RenderedLayoutFile[]; modules: Uint8Array }> {
+  const enc = new TextEncoder();
+  const js: { rel: string; contents: Uint8Array }[] = [];
+  const files: RenderedLayoutFile[] = [];
+  const assets: Record<string, number> = {};
+  for (const m of graph.modules) {
+    if (!m.name.startsWith(BUNFS)) continue;
+    const rel = m === graph.entry ? 'cli.js' : m.name.slice(BUNFS.length);
+    if (m.loader === BunLoader.js) { js.push({ rel, contents: m.contents }); continue; }
+    const bytes = isZstd(m.contents) ? zstdDecodeAll(m.contents) : m.contents.slice();
+    files.push({ rel, bytes });
+    assets[`${dir}/${rel}`] = m.loader;
+  }
+  const parts = await transformModules(dir, js.map((m) => m.contents), (n) => onProgress?.(n, js.length), yieldMs);
+  const index: Record<string, [number, number]> = {};
+  let size = 0;
+  js.forEach((m, k) => { index[`${dir}/${m.rel}`] = [size, parts[k].length]; size += parts[k].length; });
+  const modules = new Uint8Array(size);
+  for (let k = 0, at = 0; k < parts.length; at += parts[k].length, k++) modules.set(parts[k], at);
+  files.push(
+    { rel: 'modules.js', bytes: modules },
+    { rel: 'modules.json', bytes: enc.encode(JSON.stringify(index)) },
+    { rel: 'bun-assets.json', bytes: enc.encode(JSON.stringify(assets)) },
+    { rel: 'package.json', bytes: enc.encode(JSON.stringify({ type: 'commonjs' })) },
+    { rel: 'vm-main.mjs', bytes: enc.encode(launcherSource()) },
+    { rel: 'node_modules/ws/index.js', bytes: enc.encode(wsShimSource()) },
+    { rel: 'node_modules/ws/package.json', bytes: enc.encode(JSON.stringify({ name: 'ws', main: 'index.js' })) },
+  );
+  return { files, modules };
+}
+
 /**
  * The layout for the binary at `binPath`, made first if needed, under
  * ~/.cache/tabcomputer/claude-vm/<sha256>/nc-<build>/ (once per Claude Code
@@ -274,7 +313,7 @@ async function makeLayout(fs: VmFs, sha: string, home: string, loadGraph: () => 
   const t0 = Date.now();
   const secs = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
   const base = `${root}/${sha}`;
-  const dir = `${base}/nc-${buildKey()}`;
+  const dir = claudeVmLayoutDir(home, sha);
   const launcher = `${dir}/vm-main.mjs`;
   const made = new Set<string>();
   const mkdirOnce = async (d: string) => { if (!made.has(d)) { made.add(d); await fs.mkdir(d, { recursive: true }); } };
@@ -284,41 +323,19 @@ async function makeLayout(fs: VmFs, sha: string, home: string, loadGraph: () => 
   const graph = await loadGraph();
   say('claude --vm: preparing Claude Code\'s JavaScript (once per version and tabcomputer build)...\n');
   const { putModules } = await import('./module-store');
-  const js: { path: string; contents: Uint8Array }[] = [];
-  const assets: Record<string, number> = {};
-  for (const m of graph.modules) {
-    if (!m.name.startsWith(BUNFS)) continue;
-    const path = `${dir}/${m === graph.entry ? 'cli.js' : m.name.slice(BUNFS.length)}`;
-    if (m.loader === BunLoader.js) { js.push({ path, contents: m.contents }); continue; }
-    await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
-    assets[path] = m.loader;
-    // zstd assets (skills, docs; the code checks the magic, not the name) stored
-    // decompressed: node's sync reads find text in its cache, and no zstd at run time
-    await fs.writeFile(path, isZstd(m.contents) ? zstdDecodeAll(m.contents) : m.contents.slice());
-  }
-  // (off the page: vm-transform.ts)
   let shown = 0;
-  const parts = await transformModules(dir, js.map((m) => m.contents), (n) => {
-    if (n - shown < 500 && n < js.length) return;
+  const rendered = await renderVmLayout(graph, dir, (n, total) => {
+    if (n - shown < 500 && n < total) return;
     shown = n;
-    say(`  ${n}/${js.length} modules (${secs()})\n`);
+    say(`  ${n}/${total} modules (${secs()})\n`);
   });
-  const index: Record<string, [number, number]> = {};
-  let size = 0;
-  js.forEach((m, k) => { index[m.path] = [size, parts[k].length]; size += parts[k].length; });
-  const modules = new Uint8Array(size);
-  for (let k = 0, at = 0; k < parts.length; at += parts[k].length, k++) modules.set(parts[k], at);
-  parts.length = 0;
-  await mkdirOnce(`${dir}/node_modules/ws`);
-  await fs.writeFile(`${dir}/modules.js`, modules);
-  await fs.writeFile(`${dir}/modules.json`, JSON.stringify(index));
-  await fs.writeFile(`${dir}/node_modules/ws/index.js`, wsShimSource());
-  await fs.writeFile(`${dir}/node_modules/ws/package.json`, JSON.stringify({ name: 'ws', main: 'index.js' }));
-  await fs.writeFile(`${dir}/package.json`, JSON.stringify({ type: 'commonjs' }));
-  await fs.writeFile(`${dir}/bun-assets.json`, JSON.stringify(assets));
-  await fs.writeFile(launcher, launcherSource());
+  for (const f of rendered.files) {
+    const path = `${dir}/${f.rel}`;
+    await mkdirOnce(path.slice(0, path.lastIndexOf('/')));
+    await fs.writeFile(path, f.bytes);
+  }
   // (the launcher's fast read; without it, it reads modules.js and puts it there itself)
-  await putModules(dir, modules).catch(() => {});
+  await putModules(dir, rendered.modules).catch(() => {});
   await fs.writeFile(`${dir}/complete`, String(VM_LAYOUT));
   say(`  ready (${secs()}); starting Claude Code\n`);
   // an earlier build's tree, and an earlier layout's cjs/ stage, are no longer used

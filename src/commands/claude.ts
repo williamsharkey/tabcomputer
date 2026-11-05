@@ -167,6 +167,14 @@ async function runVm(ctx: Parameters<Command['exec']>[0], args: string[]): Promi
       if (layoutInProgress(home, CLAUDE_VM_PINNED.sha256)) say('claude: Claude Code is still being set up in the background; it starts when that is done...\n');
       layout = await ensurePreinstalledClaudeVm(ctx.fs as any, home, { origin: getShiroOrigin(), say });
       version = layout.version;
+      // The boot's warm-up compiles modules in a worker and does not start Claude Code.
+      // Joining it means this command uses that worker instead of compiling again.
+      const { claudeWarmup } = await import('../claude-vm/warm');
+      const pending = claudeWarmup();
+      if (pending) {
+        say('claude: Claude Code is still being prepared in the background; it starts when that is done...\n');
+        await pending.catch(() => {});
+      }
     } catch (e: any) {
       ctx.stderr += `claude: Claude Code isn't installed here, and this site couldn't send it (${e?.message || e}).\n`
         + 'Run `claude install` to download the native build (about 300 MB),\n'

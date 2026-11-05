@@ -91,6 +91,9 @@ function _createHttpOrHttpsModule(deps: HttpDeps, isHttps: boolean): any {
     _opts: any;
     _ended = false;
     _aborted = false;
+    /** axios checks this after the response callback (a missing one is fine; false matches node) */
+    destroyed = false;
+    aborted = false;
     _timeout = 0;
     _abortController: AbortController | null = null;
 
@@ -120,10 +123,16 @@ function _createHttpOrHttpsModule(deps: HttpDeps, isHttps: boolean): any {
       return true;
     }
     end(data?: string | Uint8Array) {
-      if (this._ended) return;
+      if (this._ended) return this;
       this._ended = true;
       if (data) this.write(data);
-      if (this._aborted) return;
+      if (this._aborted) return this;
+      // axios listens for 'socket' on the wrapper follow-redirects re-emits from this request
+      this.emit('socket', {
+        setKeepAlive() { return this; }, setTimeout() { return this; }, setNoDelay() { return this; },
+        on() { return this; }, once() { return this; }, off() { return this; }, removeListener() { return this; },
+        destroy() {},
+      });
 
       // Build URL from opts
       const o = this._opts;
@@ -218,11 +227,14 @@ function _createHttpOrHttpsModule(deps: HttpDeps, isHttps: boolean): any {
         }
       }).catch(err => {
         clearTimeout(timeoutId);
+        this.destroyed = true;
         this.emit('error', err);
+        this.emit('close');
       });
+      return this;
     }
-    abort() { this._aborted = true; this._abortController?.abort(); this.emit('abort'); }
-    destroy(err?: Error) { this._aborted = true; this._abortController?.abort(); if (err) this.emit('error', err); }
+    abort() { this._aborted = true; this.aborted = true; this.destroyed = true; this._abortController?.abort(); this.emit('abort'); this.emit('close'); }
+    destroy(err?: Error) { this._aborted = true; this.aborted = true; this.destroyed = true; this._abortController?.abort(); if (err) this.emit('error', err); this.emit('close'); }
     setTimeout(ms: number, cb?: Function) { this._timeout = ms; if (cb) this.on('timeout', cb); return this; }
     flushHeaders() {}
     setNoDelay() {}

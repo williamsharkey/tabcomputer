@@ -41,6 +41,14 @@ droplet are not involved.
   (2048), the copies used longest ago removed first, plus at most 4 files in
   flight of at most 768 MB each. Deleting the directory is safe: files are
   fetched again.
+  `/claude-vm-layout/` (server.mjs, plain `claude`) serves a layout of the
+  pinned Claude Code release built by `release.sh` into
+  `/opt/tabcomputer/claude-vm-layout` (`TABCOMPUTER_CLAUDE_VM_LAYOUT`): one
+  gzip, about 20 MB, so the page does not transform the modules itself. The
+  build fetches Anthropic's binary once, checks its sha256, and skips the
+  step when the file is already there. A failure leaves the previous file, or
+  none, and the page lays the release out itself. Deleting the directory is
+  safe; the next deploy builds it again.
   `/pyodide/` (server.mjs, numpy and the other compiled Python packages)
   keeps the files of the pinned Pyodide version that browsers ask for in
   `/opt/tabcomputer/pyodide` (`TABCOMPUTER_PYODIDE_CACHE` in

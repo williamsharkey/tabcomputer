@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { adaptModule, launcherSource, ensureClaudeVm, vmModuleTransform } from '@shiro/claude-vm/extract';
-import { createModuleLoader, loadModules, putModules, storeKey, MODULE_CACHE, type ModuleIndex } from '@shiro/claude-vm/module-store';
+import { createModuleLoader, loadModules, precompile, cachedIndex, putModules, storeKey, MODULE_CACHE, LAUNCHER_GLOBAL_NAMES, type ModuleIndex } from '@shiro/claude-vm/module-store';
 import { BunLoader } from '@shiro/claude-vm/bun-graph';
 import { fakeBunElf } from './fake-bun-elf.mjs';
 import { liveExports } from '@shiro/node-compat/require';
@@ -112,6 +112,39 @@ describe('claude --vm: the extracted modules', () => {
     expect(code('cli.js')).toContain('__shiro_live0.a');
   });
 
+  it('precompile makes the functions, so the loader compiles none of them', async () => {
+    const dir = '/vm-warm';
+    const toRun = await vmModuleTransform();
+    const enc = new TextEncoder();
+    const sources: Record<string, string> = {
+      'cli.js': 'import{a}from"/$bunfs/root/a.js";export const x=a;',
+      'a.js': 'export const a="A";',
+    };
+    const parts: Uint8Array[] = [];
+    const index: ModuleIndex = {};
+    let size = 0;
+    for (const [name, src] of Object.entries(sources)) {
+      const b = enc.encode(toRun(src, dir));
+      index[`${dir}/${name}`] = [size, b.length];
+      parts.push(b);
+      size += b.length;
+    }
+    const bytes = new Uint8Array(size);
+    parts.reduce((at, p) => (bytes.set(p, at), at + p.length), 0);
+    expect(await precompile(dir, bytes, index)).toBe(2);
+    expect(await precompile(dir, bytes, index)).toBe(2);
+    expect(cachedIndex(dir)).toBe(index);
+    const globals: Record<string, unknown> = Object.fromEntries(LAUNCHER_GLOBAL_NAMES.map((n) => [n, undefined]));
+    // (the parameter named globalThis shadows the real one: the module reads Bun from it)
+    globals.globalThis = globalThis;
+    globals.global = globalThis;
+    const loader = createModuleLoader({
+      dir, bytes, index, outer: () => { throw new Error('no'); }, live: liveExports, settle: () => {}, globals,
+    });
+    expect(loader.require(dir)('./cli.js').x).toBe('A');
+    expect(loader.stats()).toMatchObject({ compiled: 0, modules: 2 });
+  });
+
   it('modules.js: in CacheStorage for the next launch, one layout at a time; read from the files once if it is not', async () => {
     const store = new Map<string, Uint8Array>();
     const cache = {
@@ -138,6 +171,7 @@ describe('claude --vm: the extracted modules', () => {
     const l = launcherSource();
     expect(l.indexOf('globalThis.Bun = createBun(')).toBeLessThan(l.indexOf("loader.require(__dirname)('./cli.js')"));
     expect(l).toContain('store.loadModules(__dirname');
+    expect(l).toContain('store.cachedIndex(__dirname)');
     expect(l).toContain('createModuleLoader({ dir: __dirname');
     // (spelled out: node-compat's transform drops a shorthand `Buffer` property)
     expect(l).toContain('Buffer: Buffer');
@@ -181,7 +215,11 @@ describe('claude --vm: the extracted modules', () => {
     // (as server.mjs answers `?range=`: those bytes, naming the range)
     const fetchFn = (async (url: string) => {
       asked.push(url);
-      const [, s, e] = /\?range=(\d+)-(\d+)$/.exec(url)!.map(Number);
+      if (url.includes('/claude-vm-layout/')) return new Response('no', { status: 404 });
+      const m = /\?range=(\d+)-(\d+)$/.exec(url);
+      if (!m) throw new Error('unexpected ' + url);
+      const s = Number(m[1]);
+      const e = Number(m[2]);
       return new Response(bin.slice(s, e + 1), { status: 200, headers: { 'x-tabcomputer-range': `bytes ${s}-${e}/${bin.length}` } });
     }) as typeof fetch;
     const lines: string[] = [];
@@ -195,18 +233,57 @@ describe('claude --vm: the extracted modules', () => {
     expect(a.dir).toBe(b.dir);
     expect(a.dir).toContain(`${base}/nc-`);
     expect(a.version).toBe('9.9.9');
-    expect(asked.length).toBe(1); // (the whole small file is the first suffix)
-    expect(asked[0]).toBe(`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude?range=0-${bin.length - 1}`);
+    const ranges = asked.filter((u) => u.includes('?range='));
+    expect(ranges).toEqual([`https://tc.example/claude-releases/9.9.9/linux-x64-musl/claude?range=0-${bin.length - 1}`]);
+    expect(asked.some((u) => u.includes(`/claude-vm-layout/${release.sha256}/`))).toBe(true);
     expect(lines.join('')).toMatch(/Downloading Claude Code 9\.9\.9/);
     expect(await fs.readFile(a.launcher, 'utf8')).toContain('claude --vm');
     expect((await fs.readdir(base)).sort()).toEqual([a.dir.slice(base.length + 1)]);
     expect(JSON.parse(await fs.readFile(PREINSTALL_RECORD, 'utf8') as string)).toMatchObject({ version: '9.9.9', sha256: release.sha256 });
+    const fetched = asked.length;
     const again = await ensurePreinstalledClaudeVm(fs as any, '/home/p', opts);
-    expect([again.extracted, again.dir, asked.length]).toEqual([false, a.dir, 1]);
+    expect([again.extracted, again.dir, asked.length]).toEqual([false, a.dir, fetched]);
     // the boot leaves it alone where the user has a binary of their own
     await fs.mkdir('/home/q/.local/bin', { recursive: true });
     await fs.writeFile('/home/q/.local/bin/claude', new Uint8Array(1_100_000));
     expect(await preinstallClaudeVmInBackground(fs as any, '/home/q', '/home/q/.local/bin/claude', opts)).toBe('skipped');
-    expect(asked.length).toBe(1);
+    expect(asked.length).toBe(fetched);
+  });
+
+  it('a prepared layout pack is installed and the release is not downloaded', async () => {
+    const { ensurePreinstalledClaudeVm } = await import('@shiro/claude-vm/preinstall');
+    const { parseBunGraph } = await import('@shiro/claude-vm/bun-graph');
+    const { renderVmLayout, VM_LAYOUT } = await import('@shiro/claude-vm/extract');
+    const { encodeLayoutPack, VM_DIR_PLACEHOLDER } = await import('@shiro/claude-vm/layout-pack');
+    const { fs } = await createTestShell();
+    const bin = fakeBunElf([
+      { name: '/$bunfs/root/chunk-a.js', contents: '// @bun\nexport const a = 1;\n', loader: BunLoader.js },
+      { name: '/$bunfs/root/cli', contents: '// @bun\nimport{a}from"/$bunfs/root/chunk-a.js";export const x=a;\n', loader: BunLoader.js },
+      { name: '/$bunfs/root/SKILL.md', contents: '# skill\n', loader: BunLoader.text },
+    ], 1);
+    const release = { version: '9.9.9', platform: 'linux-x64-musl', sha256: 'cd'.repeat(32), size: bin.length };
+    const rendered = await renderVmLayout(parseBunGraph(bin), VM_DIR_PLACEHOLDER, undefined, 0);
+    const pack = encodeLayoutPack({ vmLayout: VM_LAYOUT, placeholder: VM_DIR_PLACEHOLDER, sha256: release.sha256, version: release.version, files: rendered.files });
+    const asked: string[] = [];
+    const fetchFn = (async (url: string) => {
+      asked.push(url);
+      if (url.includes('/claude-vm-layout/')) return new Response(pack, { status: 200 });
+      throw new Error('release fetched ' + url);
+    }) as typeof fetch;
+    const layout = await ensurePreinstalledClaudeVm(fs as any, '/home/p', { origin: 'https://tc.example/', fetch: fetchFn, release, say: () => {} });
+    expect(asked).toEqual([`https://tc.example/claude-vm-layout/${release.sha256}/${VM_LAYOUT}/pack`]);
+    expect(layout.extracted).toBe(true);
+    const index = JSON.parse(await fs.readFile(`${layout.dir}/modules.json`, 'utf8') as string);
+    expect(Object.keys(index).sort()).toEqual([`${layout.dir}/chunk-a.js`, `${layout.dir}/cli.js`]);
+    expect(JSON.stringify(index)).not.toContain(VM_DIR_PLACEHOLDER);
+    const modules = await fs.readFile(`${layout.dir}/modules.js`) as Uint8Array;
+    const spans = Object.values(index) as [number, number][];
+    const end = spans.reduce((m, [off, len]) => Math.max(m, off + len), 0);
+    expect(end).toBe(modules.length);
+    const [off, len] = index[`${layout.dir}/cli.js`];
+    expect(() => new Function(new TextDecoder().decode(modules.subarray(off, off + len)))).not.toThrow();
+    expect(await fs.readFile(`${layout.dir}/SKILL.md`, 'utf8')).toBe('# skill\n');
+    const again = await ensurePreinstalledClaudeVm(fs as any, '/home/p', { origin: 'https://tc.example/', fetch: fetchFn, release, say: () => {} });
+    expect([again.extracted, asked.length]).toEqual([false, 1]);
   });
 });

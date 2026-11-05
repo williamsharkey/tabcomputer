@@ -16,11 +16,33 @@ Anthropic's file, whole or in byte ranges.
 
 ## The preinstalled build
 
-tabcomputer's profile has `preinstall: claude-native`: after boot (8 s, then an
-idle moment), the page fetches the pinned release (`CLAUDE_VM_PINNED` in
-`src/claude-vm/preinstall.ts`) and lays it out, so the first `claude` starts at
-once. Not in safe mode, a guest that keeps nothing, a tab without network, or
-when the storage quota has less than 400 MB free.
+tabcomputer's profile has `preinstall: claude-native`: at the first idle
+moment after boot (within 1.5 s, not on the way to the first paint), the page
+fetches a layout built offline (`scripts/claude-vm/pack-layout.mjs`,
+`/claude-vm-layout/<sha256>/<VM_LAYOUT>/pack`) and compiles its modules in a
+node worker (`warm.ts`). It does not start Claude Code. The worker stays for
+the next `claude` (up to 30 minutes, and it is dropped when the page goes
+away). A site without that file falls back to byte ranges of Anthropic's
+release and lays them out in the page. A binary from `claude install` or
+`claude update` is a different file and still runs instead. Not in safe mode,
+a guest that keeps nothing, a tab without network, or when the storage quota
+has less than 400 MB free.
+
+The pack is built offline and served by the droplet (`deploy/tabcomputer/release.sh`,
+`TABCOMPUTER_CLAUDE_VM_LAYOUT`):
+
+```
+node scripts/claude-vm/pack-layout.mjs BINARY OUT_DIR VERSION SHA256
+```
+
+`OUT_DIR/<sha256>/<VM_LAYOUT>/pack.gz` is the file. For 2.1.316 it is 19.5 MB
+gzip (80 MB of modules). The page substitutes its own layout directory one
+module at a time and rebuilds the index, then compiles in the worker. Local
+Chrome, cold profile, `bench/claude-ready.mjs`, two runs each: the page quiet
+at 1.7 s with the pack and without (the dock is up, the page's own resources
+have finished, and a second has passed with no long task; the Claude download
+is not in that clock). Navigation to Claude's prompt was 6.6 s without the
+pack and 2.1–2.2 s with it. `claude` was typed at the shell's first prompt.
 
 - **Only what `--vm` runs.** In 2.1.316 the files' bytes (54.6 MB), their names
   and the module table sit together at the end of the `.bun` section, after
@@ -49,8 +71,11 @@ when the storage quota has less than 400 MB free.
   `~/.local/bin/claude`, from `claude install` or `claude update`) is the
   user's and runs instead; the boot then skips the preinstall. Without one,
   `claude` uses the preinstalled layout, waits for a preinstall in progress, or
-  downloads it then. A site without the route or without ranges (shiro, older
-  servers): `claude` says to run `claude install` or use `--npm`.
+  downloads it then. A `claude` typed while the modules are still compiling
+  waits for that and then starts. A site without the route or without ranges
+  (shiro, older servers): `claude` says to run `claude install` or use `--npm`.
+  `claude install` and `claude update` still download a whole native build to
+  `$CLAUDE_NATIVE_PATH`, and that file runs instead of the preinstalled one.
 - `/var/lib/tabcomputer/claude-vm.json` records the preinstalled version;
   `TABCOMPUTER_CLAUDE_VERSION` says it to an agent inside.
 - **Moving the pin**: read the new release's `Bun.*` calls (2.1.316 added
@@ -388,9 +413,12 @@ this Mac's home connection): `--cold` 8.4 s page load to a typed key echoed
 1.35 s to the prompt, key echo median 26 ms. `--origin URL` points the bench at
 any deployed site instead of a local server of `dist/`.
 
-The first start of a page now: 0.09 s to the launcher (the node worker), 0.08 s
-to read `modules.js`, then Claude Code's own start with its modules compiled as
-it requires them. `--trace` prints each phase (`TABCOMPUTER_VM_TRACE=FILE`:
+The warm-up (`warm.ts`) compiles the modules in a worker before anyone runs
+`claude`, and it does not start Claude Code. A `claude` after that takes the
+repeat row above (0.29 s locally). Measured before that warm-up, the first
+start of a page was 0.09 s to the launcher (the node worker), 0.08 s to read
+`modules.js`, then Claude Code's own start with its modules compiled as it
+required them. `--trace` prints each phase (`TABCOMPUTER_VM_TRACE=FILE`:
 `claude.ts` and the launcher append `<epoch ms> <phase>` lines), `--chrome-trace
 FILE` records a Chrome trace of the start (the node worker's thread included).
 
@@ -426,8 +454,13 @@ nothing in it is `--vm`-specific. What 2.1.296 does:
   `/login` has its "Paste code here if prompted >" box. A pasted code ends the
   wait without the callback, and the token exchange (`POST
   https://platform.claude.com/v1/oauth/token`, axios) names the manual
-  redirect. node-compat's fetch sends it through the server's `/api/platform/`
-  proxy. Then come the profile, roles and bootstrap calls (`/api/anthropic/`),
+  redirect. The exchange is axios's node http adapter (`https.request`). That
+  adapter stays off unless `process` reports as `[object process]`
+  (`Symbol.toStringTag` on the node shim); otherwise Claude Code stops with
+  "adapter http is not supported by the environment". The request then goes
+  through node-compat's fetch, which sends `platform.claude.com` through the
+  server's `/api/platform/` proxy. Then come the profile, roles and bootstrap
+  calls (`/api/anthropic/`),
   and the tokens go to `~/.claude/.credentials.json`.
 
 `tests/browser/claude-vm-signin.mjs` runs all of it in Chromium on the real

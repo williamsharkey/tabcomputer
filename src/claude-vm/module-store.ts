@@ -1,8 +1,10 @@
 /**
  * claude --vm's modules at run time (docs/CLAUDE_VM.md): every module of the
  * layout (extract.ts) is one slice of modules.js, UTF-8, and is decoded and
- * compiled when it is first required, never before. Claude Code 2.1.316 runs
- * 1399 of its 2648 modules to its prompt; the rest are never parsed.
+ * compiled when it is first required. The boot's warm-up (warm.ts) compiles
+ * them ahead of `claude`, in the node worker that will run it, without
+ * starting Claude Code. Claude Code 2.1.316 runs 1399 of its 2648 modules to
+ * its prompt; the rest are never executed.
  *
  * The bytes come from CacheStorage (read in the node worker itself: ~0.1 s for
  * 70 MB, against ~1 s through the kernel), else from modules.js in the tab's
@@ -48,7 +50,21 @@ export async function putModules(dir: string, bytes: Uint8Array, deps: StoreDeps
  * (node-worker/host.ts), so the next `claude` it runs starts with them. A compiled
  * module holds nothing of a process's: its globals and its module are parameters.
  */
-let kept: { dir: string; bytes: Uint8Array; compiled: Map<string, Function>; params?: string } | null = null;
+let kept: { dir: string; bytes: Uint8Array; compiled: Map<string, Function>; params?: string; index?: ModuleIndex } | null = null;
+
+/**
+ * The process globals the launcher passes into every module, in this order.
+ * precompile() builds functions with these parameters; a later load reuses
+ * them only when the launcher's list still matches (createModuleLoader).
+ */
+export const LAUNCHER_GLOBAL_NAMES = ['console', 'process', 'global', 'Buffer', 'globalThis', 'Function',
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate',
+  'self', 'WorkerGlobalScope', 'DedicatedWorkerGlobalScope'] as const;
+
+/** The launcher's parsed modules.json, when this worker already read or compiled that layout */
+export function cachedIndex(dir: string): ModuleIndex | null {
+  return kept?.dir === dir && kept.index ? kept.index : null;
+}
 
 /** The layout's modules.js: kept in this worker, else from the cache, else `readFile` (and then into the cache, not waited for) */
 export async function loadModules(dir: string, readFile: () => Uint8Array, deps: StoreDeps = defaults()): Promise<Uint8Array> {
@@ -70,6 +86,38 @@ export async function loadModules(dir: string, readFile: () => Uint8Array, deps:
 
 /** What a module's code reads as its own (node-compat's module parameters) */
 const OWN = ['module', 'exports', 'require', '__filename', '__dirname', '__import_meta', '__shiro_module', '__shiro_require', '__dynamic_import', '__shiro_require_ready'] as const;
+
+/**
+ * Compile every module of a layout into this worker's cache, without running
+ * any of it. The next `claude` in this same worker (node-worker/host.ts keeps
+ * it) finds the functions already made. `yieldMs` gives the page back between
+ * slices when node is running here rather than in a worker.
+ */
+export async function precompile(dir: string, bytes: Uint8Array, index: ModuleIndex, yieldMs = 0): Promise<number> {
+  const params = [...OWN, ...LAUNCHER_GLOBAL_NAMES].join(',');
+  const keys = Object.keys(index);
+  if (kept?.dir === dir && kept.bytes === bytes && kept.params === params && kept.compiled.size >= keys.length) {
+    kept.index = index;
+    return kept.compiled.size;
+  }
+  const names = [...OWN, ...LAUNCHER_GLOBAL_NAMES];
+  const compiled = new Map<string, Function>();
+  const decoder = new TextDecoder();
+  let spent = performance.now();
+  for (const key of keys) {
+    const [at, len] = index[key];
+    const body = decoder.decode(bytes.subarray(at, at + len));
+    try {
+      compiled.set(key, new Function(...names, `"use strict";${body}\n//# sourceURL=${key}`));
+    } catch { /* the real load reports a module that does not compile */ }
+    if (yieldMs && performance.now() - spent >= yieldMs) {
+      await new Promise((r) => setTimeout(r, 0));
+      spent = performance.now();
+    }
+  }
+  kept = { dir, bytes, compiled, params, index };
+  return compiled.size;
+}
 
 /** Bun's root for the bundle's own files, which import specifiers keep (extract.ts adaptModule) */
 export const BUN_ROOT = '/$bunfs/root/';
@@ -158,7 +206,10 @@ export function createModuleLoader(o: LoaderOptions) {
 
   // (compiled with the same parameters only: the launcher's globals)
   const params = names.join(',');
-  if (kept?.dir === o.dir && kept.bytes === o.bytes) kept.params ??= params;
+  if (kept?.dir === o.dir && kept.bytes === o.bytes) {
+    kept.index = o.index;
+    kept.params ??= params;
+  }
   const reuse = kept?.dir === o.dir && kept.bytes === o.bytes && kept.params === params ? kept.compiled : null;
   const compile = (key: string): Function => {
     const had = reuse?.get(key);

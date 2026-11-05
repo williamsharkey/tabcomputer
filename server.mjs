@@ -531,7 +531,7 @@ export function sameSiteFrame(req) {
 }
 
 /** First path segments the app never reads as /<user>/<repo> (src/guest.ts RESERVED_PATHS; guest.test.ts checks the two agree) */
-export const REPO_LINK_RESERVED = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
+export const REPO_LINK_RESERVED = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'claude-vm-layout', 'apps', 'apphost'];
 
 /**
  * A page address below the root that the app acts on (inboundCodeLink in
@@ -1281,6 +1281,34 @@ export function claudeReleasesConfig(env = process.env) {
 }
 
 /** What /claude-releases/REST asks for, or null when it isn't one of the served shapes. */
+/**
+ * /claude-vm-layout/<sha256>/<VM_LAYOUT>/pack — gzip of a layout built by
+ * scripts/claude-vm/pack-layout.mjs. TABCOMPUTER_CLAUDE_VM_LAYOUT is that
+ * directory (<sha>/<layout>/pack.gz). No directory, or no file: 404, and the
+ * page lays the release out itself.
+ */
+export function claudeVmLayoutFile(rest, root) {
+  const m = /^([0-9a-f]{64})\/(\d+)\/pack$/.exec(rest);
+  if (!m || !root) return null;
+  return join(root, m[1], m[2], 'pack.gz');
+}
+
+function handleClaudeVmLayout(req, res, rest) {
+  const file = claudeVmLayoutFile(rest, process.env.TABCOMPUTER_CLAUDE_VM_LAYOUT || '');
+  if (!file) { res.writeHead(404); return res.end(); }
+  stat(file).then((st) => {
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-encoding': 'gzip',
+      'content-length': st.size,
+      'cache-control': 'public, max-age=31536000, immutable',
+      vary: 'accept-encoding',
+    });
+    if (req.method === 'HEAD') return res.end();
+    pipeline(createReadStream(file), res, () => {});
+  }).catch(() => { res.writeHead(404); res.end(); });
+}
+
 export function claudeReleaseRequest(rest, platforms = ['linux-x64-musl']) {
   if (rest === 'latest') return { kind: 'latest' };
   const parts = rest.split('/');
@@ -3073,6 +3101,10 @@ const server = createServer(async (req, res) => {
   }
   if (pathname.startsWith('/claude-releases/')) {
     return handleClaudeReleases(req, res, pathname.slice('/claude-releases/'.length));
+  }
+  // A layout built offline (scripts/claude-vm/pack-layout.mjs). Absent: the page transforms the release itself.
+  if (pathname.startsWith('/claude-vm-layout/')) {
+    return handleClaudeVmLayout(req, res, pathname.slice('/claude-vm-layout/'.length));
   }
   if (pathname.startsWith('/pyodide/v')) {
     // (only the shape of a distribution file: /pyodide/<repo> stays a repository link)

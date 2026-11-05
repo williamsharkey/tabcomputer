@@ -215,6 +215,15 @@ describe('Node Runtime (jseval.ts)', () => {
       expect(ctx.stdout.trim()).toBe('linux');
     });
 
+    // Axios enables its node http adapter only when Object.prototype.toString
+    // reports [object process]. Claude Code's sign-in posts through that adapter.
+    it('reports as a node process, so axios enables its http adapter', async () => {
+      const ctx = createCtx(shell, fs, ['-e', 'console.log(Object.prototype.toString.call(process).slice(8, -1).toLowerCase())']);
+      const exitCode = await nodeCmd.exec(ctx);
+      expect(exitCode).toBe(0);
+      expect(ctx.stdout.trim()).toBe('process');
+    });
+
     it('should have process.arch', async () => {
       const ctx = createCtx(shell, fs, ['-e', 'console.log(process.arch)']);
       const exitCode = await nodeCmd.exec(ctx);

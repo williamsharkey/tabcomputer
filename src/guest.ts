@@ -84,7 +84,7 @@ export function guestRequest(search: string): GuestRequest | null {
 }
 
 /** Paths main.ts never reads as /<user>/<repo> (server.mjs has the same list, REPO_LINK_RESERVED; guest.test.ts checks the two agree) */
-export const RESERVED_PATHS = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'apps', 'apphost'];
+export const RESERVED_PATHS = ['s', 'api', 'oauth', 'offer', 'answer', 'git-proxy', 'channel', 'assets', 'guest', 'browse', 'tcp', 'relay', 'debian', 'claude-releases', 'claude-vm-layout', 'apps', 'apphost'];
 
 /**
  * A page address that makes boot import or run someone else's code: a shared

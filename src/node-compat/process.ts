@@ -343,6 +343,14 @@ export function createFakeProcess(
     enumerable: true,
   });
 
+  // Node's process reports as [object process]. Axios's node build enables its
+  // http adapter only when kindOf(process) is 'process' (Object.prototype.toString).
+  // Without this, Claude Code's token exchange fails: "adapter http is not
+  // supported by the environment".
+  Object.defineProperty(fp, Symbol.toStringTag, {
+    value: 'process', writable: true, enumerable: false, configurable: true,
+  });
+
   return fp;
 }
 

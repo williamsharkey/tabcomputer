@@ -1241,18 +1241,58 @@ export class FileSystem {
 
   /** Main-thread time a commit spends issuing requests before it lets the page run (_commit). */
   static COMMIT_SLICE_MS = 8;
+  /**
+   * Bytes one commit transaction carries at most. Unlimited at first: one
+   * transaction keeps a batch all or nothing. But Chrome refused the single
+   * transaction of a whole `git clone` (hundreds of MB) with an empty
+   * QuotaExceededError at 1% of quota, and retrying that same batch failed
+   * forever (tabcomputer#167). So a refused batch halves this (down to
+   * TX_MIN_BYTES) and is committed again in pieces, in order; only a refused
+   * small transaction means storage is full.
+   */
+  static TX_MAX_BYTES = Infinity;
+  static TX_MIN_BYTES = 1024 * 1024;
+  private _txBytes = FileSystem.TX_MAX_BYTES;
+  /** _txBytes (an instance from before a hot swap has no such field) */
+  private _txLimit(): number { return this._txBytes > 0 ? this._txBytes : (this._txBytes = FileSystem.TX_MAX_BYTES); }
 
-  /** Commit everything dirty in one transaction; loops while new writes arrive. */
+  /**
+   * Take the oldest queued writes, up to _txBytes (at least one), off _dirty.
+   * A prefix in Map order keeps the batch's order: range deletes already
+   * dropped the writes they supersede, so a later chunk only holds later writes.
+   */
+  private _takeChunk(): Map<string, FSNode | null> {
+    const limit = this._txLimit();
+    if (this._dirtyBytes <= limit) {
+      const all = this._dirty;
+      this._dirty = new Map();
+      return all;
+    }
+    const chunk = new Map<string, FSNode | null>();
+    let bytes = 0;
+    for (const [p, n] of this._dirty) {
+      const b = storedBytes(n);
+      if (chunk.size > 0 && bytes + b > limit) break;
+      chunk.set(p, n);
+      bytes += b;
+    }
+    for (const p of chunk.keys()) this._dirty.delete(p);
+    return chunk;
+  }
+
+  /** Commit what is dirty, _txBytes per transaction; loops while new writes arrive. */
   private _flush(durability: 'default' | 'strict' | 'relaxed' = 'relaxed'): Promise<void> {
     if (this._flushing) return this._flushing;
     if (this._dirty.size === 0) return Promise.resolve();
     const run = async () => {
       while (this._dirty.size > 0) {
-        const batch = this._dirty;
-        this._dirty = new Map();
+        const batch = this._takeChunk();
+        let chunkBytes = 0;
+        for (const n of batch.values()) chunkBytes += storedBytes(n);
+        const chunkRecords = batch.size;
         this._inflight = batch;
-        this._inflightBytes = this._dirtyBytes;
-        this._dirtyBytes = 0;
+        this._inflightBytes = chunkBytes;
+        this._dirtyBytes = Math.max(0, this._dirtyBytes - chunkBytes);
         try {
           await this._commit(batch, durability);
           this._setFull(false);
@@ -1277,6 +1317,13 @@ export class FileSystem {
             this._dirty = batch;
             this._dirtyBytes = 0;
             for (const n of batch.values()) this._dirtyBytes += storedBytes(n);
+            // A big transaction may be what was refused, not the space: try
+            // smaller ones before calling storage full (tabcomputer#167)
+            if (chunkRecords > 1 && chunkBytes > FileSystem.TX_MIN_BYTES) {
+              this._txBytes = Math.max(FileSystem.TX_MIN_BYTES, Math.floor(Math.min(this._txLimit(), chunkBytes) / 2));
+              console.warn(`[fs] IndexedDB refused a ${chunkRecords}-record, ${(chunkBytes / 1048576).toFixed(1)} MB commit (${(e as any)?.name}); retrying ${(this._txBytes / 1048576).toFixed(1)} MB at a time`);
+              continue;
+            }
             if (!this._full) console.error('[fs] browser storage is full; writes fail with ENOSPC until space is freed:', e);
             this._setFull(true);
             break;

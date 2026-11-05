@@ -258,10 +258,19 @@ async function storageCheck(ctx: CommandContext): Promise<Check> {
   const lostBefore = again.length
     ? ` · the filesystem before this one was lost; to put back what it had: ${again.join(' ; ')}`
     : ctx.fs.previousVolumeLost ? ' · the filesystem before this load was lost' : '';
+  // The browser refused a commit (QuotaExceededError): writes that need space fail with ENOSPC (tabcomputer#167)
+  if (ctx.fs.storageFull) {
+    return {
+      label: 'storage', status: 'FAIL',
+      detail: `the browser refused to save (QuotaExceededError): writes that need space fail with ENOSPC; ${ctx.fs.pendingWrites} writes (${mb(ctx.fs.pendingBytes)}) wait in memory, saved once files are deleted · ${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%)`,
+    };
+  }
+  const pending = ctx.fs.pendingWrites > 1000 || ctx.fs.pendingBytes > 64 * 1048576
+    ? ` · ${ctx.fs.pendingWrites} writes (${mb(ctx.fs.pendingBytes)}) not yet saved` : '';
   return {
     label: 'storage',
     status: frac > 0.9 ? 'FAIL' : frac > 0.75 || !persisted || again.length ? 'WARN' : 'OK',
-    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%)${await snapshotsPart()} · ${persisted ? 'persisted' : NOT_PERSISTED}${lostBefore}`,
+    detail: `${mb(used)} of ${mb(quota)} (${(frac * 100).toFixed(1)}%)${await snapshotsPart()}${pending} · ${persisted ? 'persisted' : NOT_PERSISTED}${lostBefore}`,
   };
 }
 

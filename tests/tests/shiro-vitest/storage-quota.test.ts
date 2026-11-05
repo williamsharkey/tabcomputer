@@ -89,6 +89,34 @@ describe('FileSystem when browser storage is full', () => {
     expect(await onDisk('/tmp/q-new')).toBe('x');
   });
 
+  it('a batch too big for one transaction is committed in smaller ones, not reported as full (tabcomputer#167)', async () => {
+    const events: boolean[] = [];
+    fs.onStorageFull(f => events.push(f));
+    room = 3 * 1024 * 1024; // what one transaction may carry: a clone's batch is far more
+    for (let i = 0; i < 12; i++) await fs.writeFile(`/tmp/q-chunk${i}`, new Uint8Array(1024 * 1024).fill(i));
+    await fs.sync();
+    expect(fs.storageFull).toBe(false);
+    expect(events).toEqual([]);
+    expect(fs.pendingWrites).toBe(0);
+    for (const i of [0, 11]) {
+      const other = new FileSystem();
+      await other.init();
+      const got = await other.readFile(`/tmp/q-chunk${i}`) as Uint8Array;
+      expect(got.length).toBe(1024 * 1024);
+      expect(got[0]).toBe(i);
+    }
+  });
+
+  it('a batch over the transaction limit is split in order, and later writes win', async () => {
+    (fs as any)._txBytes = 1024 * 1024;
+    await fs.writeFile('/tmp/q-order', 'first');
+    for (let i = 0; i < 4; i++) await fs.writeFile(`/tmp/q-pad${i}`, new Uint8Array(700 * 1024));
+    await fs.writeFile('/tmp/q-order', 'last'); // same key: keeps its place, carries the newest node
+    await fs.sync();
+    expect(await onDisk('/tmp/q-order')).toBe('last');
+    expect(await onDisk('/tmp/q-pad3')).not.toBeNull();
+  });
+
   it('close(2) and fsync(2) report ENOSPC instead of losing the data silently', async () => {
     const { shell } = await createTestShell();
     const kernel = new Kernel({ shell, fs });

@@ -129,7 +129,7 @@ async function udpWorks(timeoutMs = 2500): Promise<boolean> {
 // MCP Protocol types
 interface MCPRequest {
   jsonrpc: "2.0";
-  id: number | string;
+  id?: number | string | null;
   method: string;
   params?: Record<string, unknown>;
 }
@@ -157,8 +157,10 @@ let activeConnection: RemoteConnection | null = null;
 // Console error tracking - accumulates errors pushed from Shiro
 let consoleErrors: Array<{ timestamp: number; message: string; source?: string; line?: number }> = [];
 
-// User messages from Shiro panel - accumulate and include in next tool response
+// User messages from the Remote window. A waiter takes them at once. Otherwise
+// they ride on the next tool result, and a logging notification is sent too.
 let userMessages: Array<{ timestamp: number; message: string }> = [];
+let messageWaiters: Array<(messages: string[]) => void> = [];
 
 // Tool definitions
 // Store the last used code for reconnection
@@ -187,6 +189,28 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {}, required: [] }
   },
   {
+    name: "wait",
+    description: "Wait until the person at the tab types in the Remote window, or until the timeout. Returns { messages: string[] }. Call this when you have nothing else to do. MCP does not deliver that line as a new chat turn. A logging notification is also sent, and a message you did not wait for is attached to the next tool result.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timeoutMs: { type: "number", description: "How long to wait. Default 120000, at most 600000." }
+      },
+      required: []
+    }
+  },
+  {
+    name: "say",
+    description: "Say a sentence in the tab's Remote window, as the agent. It shows on its own line, not as a shell command.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "The sentence the person should read." }
+      },
+      required: ["message"]
+    }
+  },
+  {
     name: "status",
     description: "Check connection status. Returns { connected: boolean, code?: string, status?: 'connecting'|'connected'|'disconnected' }",
     inputSchema: { type: "object", properties: {}, required: [] }
@@ -202,7 +226,9 @@ Shiro provides 140+ commands including standard Unix tools plus:
 - npm/node: Install packages and run JavaScript
 - console: View browser console (console -e for errors)
 
-Supports pipes (|), redirects (>, >>), &&, ||, and variables.`,
+Supports pipes (|), redirects (>, >>), &&, ||, and variables.
+
+A sentence the person types in the Remote window does not start a new turn. Call wait when you are idle, and reply with say.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -435,10 +461,11 @@ function handleIncoming(connection: RemoteConnection, msg: string | Buffer) {
 
     // Handle user messages from the Shiro panel input
     if (response.type === "user_message") {
-      userMessages.push({
-        timestamp: Date.now(),
-        message: response.message
-      });
+      const message = String(response.message ?? "");
+      notify("notifications/message", { level: "info", logger: "tabcomputer", data: message });
+      const waiter = messageWaiters.shift();
+      if (waiter) waiter([message]);
+      else userMessages.push({ timestamp: Date.now(), message });
       return;
     }
 
@@ -669,6 +696,29 @@ function disconnectShiro(): string {
   return "Disconnected";
 }
 
+function notify(method: string, params: Record<string, unknown>): void {
+  console.log(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function waitForMessages(timeoutMs: number): Promise<string[]> {
+  if (userMessages.length > 0) {
+    const messages = userMessages.map((m) => m.message);
+    userMessages = [];
+    return Promise.resolve(messages);
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      messageWaiters = messageWaiters.filter((w) => w !== onMessage);
+      resolve([]);
+    }, timeoutMs);
+    const onMessage = (messages: string[]) => {
+      clearTimeout(timer);
+      resolve(messages);
+    };
+    messageWaiters.push(onMessage);
+  });
+}
+
 /** Drain any pending user messages and attach them to a tool result */
 function attachUserMessages(result: any) {
   if (userMessages.length > 0) {
@@ -711,6 +761,20 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     case "disconnect":
       lastCode = null; // Clear saved code on explicit disconnect
       return disconnectShiro();
+
+    case "wait": {
+      const asked = Number(args.timeoutMs ?? 120000);
+      const timeoutMs = Math.min(600000, Math.max(0, Number.isFinite(asked) ? asked : 120000));
+      const messages = await waitForMessages(timeoutMs);
+      return { type: "user_messages", messages };
+    }
+
+    case "say": {
+      const message = String(args.message ?? "");
+      if (!message.trim()) throw new Error("message is required");
+      await sendCommand({ type: "agent_message", message });
+      return { type: "agent_message", ok: true };
+    }
 
     case "status":
       if (!activeConnection) {
@@ -808,7 +872,8 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 }
 
 async function handleRequest(request: MCPRequest): Promise<MCPResponse> {
-  const { id, method, params } = request;
+  const { method, params } = request;
+  const id = request.id ?? 0;
 
   try {
     switch (method) {
@@ -818,10 +883,13 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse> {
           id,
           result: {
             protocolVersion: "2024-11-05",
-            serverInfo: { name: "shiro", version: "1.0.0" },
-            capabilities: { tools: {} }
+            serverInfo: { name: "shiro", version: "1.1.0" },
+            capabilities: { tools: {}, logging: {} }
           }
         };
+
+      case "logging/setLevel":
+        return { jsonrpc: "2.0", id, result: {} };
 
       case "tools/list":
         return { jsonrpc: "2.0", id, result: { tools: TOOLS } };
@@ -850,6 +918,8 @@ const rl = createInterface({ input: process.stdin });
 rl.on("line", async (line) => {
   try {
     const request = JSON.parse(line) as MCPRequest;
+    // A notification has no id and gets no reply. notifications/initialized is one.
+    if (request.id === undefined || request.id === null || request.method.startsWith("notifications/")) return;
     const response = await handleRequest(request);
     console.log(JSON.stringify(response));
   } catch (error: any) {

@@ -127,6 +127,11 @@ async function connect() {
       channel.onMessage((msg) => {
         let data; try { data = JSON.parse(String(msg)); } catch { return; }
         if (data.type === 'console_error') { log({ event: 'console_error', message: data.message }); return; }
+        if (data.type === 'user_message') {
+          log({ event: 'user_message', message: data.message });
+          console.log('user_message: ' + data.message);
+          return;
+        }
         const { requestId, ...rest } = data;
         const p = requestId && pending.get(requestId);
         if (!p) return;
@@ -206,6 +211,7 @@ http.createServer(async (req, res) => {
       res.end(JSON.stringify(await request({ type: 'diag', limit: num('limit'), since: num('since'), kind: q.get('kind') || undefined, previous: q.get('previous') === '1' }, 60000)));
     }
     else if (req.url === '/exec') res.end(JSON.stringify(await request({ type: 'exec', command: body }, 300000)));
+    else if (req.url === '/say') res.end(JSON.stringify(await request({ type: 'agent_message', message: body }, 15000)));
     else res.end(connected ? 'connected' : 'disconnected');
   } catch (e) { res.statusCode = 500; res.end('ERR ' + e.message); }
 }).listen(+(process.env.PROBE_PORT || 7788), '127.0.0.1');

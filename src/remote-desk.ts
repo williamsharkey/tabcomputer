@@ -8,7 +8,7 @@
  * window does not drop the transcript.
  */
 
-export type LogType = 'exec' | 'read' | 'write' | 'eval' | 'info' | 'error' | 'user' | 'out';
+export type LogType = 'exec' | 'read' | 'write' | 'eval' | 'info' | 'error' | 'user' | 'out' | 'agent';
 export type RemoteStatus = 'connected' | 'disconnected' | 'connecting' | 'waiting';
 
 export interface RemotePanel {
@@ -38,6 +38,7 @@ const KIND: Record<LogType, string> = {
   error: 'err',
   user: 'you',
   out: 'out',
+  agent: 'agent',
 };
 
 /** 12×12 line icons, one stroke. */
@@ -50,6 +51,7 @@ const GLYPH: Record<LogType, string> = {
   error: 'M3 3l6 6M9 3L3 9',
   user: 'M8 3H3.5v6H8M6 6h4.5',
   out: 'M3 8.5V4.5h5M5 6.5l3-2',
+  agent: 'M4 3H8.5v6H4M6 6H1.5',
 };
 
 interface Tab {
@@ -422,7 +424,7 @@ const RD_CSS = `
 .rd-log:has(.rd-empty) { display: flex; align-items: center; justify-content: center; }
 .rd-row { display: grid; grid-template-columns: 64px 64px minmax(0, 1fr); gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--rd-line); }
 .rd-row[data-kind="error"] { box-shadow: inset 2px 0 0 var(--rd-red); }
-.rd-row[data-kind="user"] { box-shadow: inset 2px 0 0 var(--rd-accent); }
+.rd-row[data-kind="user"], .rd-row[data-kind="agent"] { box-shadow: inset 2px 0 0 var(--rd-accent); }
 .rd-row[data-kind="exec"] { box-shadow: inset 2px 0 0 var(--rd-green); }
 .rd-time { color: var(--rd-faint); font-variant-numeric: tabular-nums; }
 .rd-kind { display: inline-flex; align-items: center; gap: 4px; color: var(--rd-dim); }

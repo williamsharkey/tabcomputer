@@ -240,6 +240,12 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
       case 'ping':
         return JSON.stringify({ type: 'pong', ts: Date.now(), requestId });
 
+      case 'agent_message': {
+        const text = String(cmd.message ?? '').slice(0, 4000);
+        if (text) logActivity(session, 'agent', text);
+        return JSON.stringify({ type: 'agent_message_ack', requestId });
+      }
+
       case 'hello': {
         // MCP client identifies itself — update panel title
         const name = cmd.name || 'remote';

@@ -281,3 +281,21 @@ describe('/dev/full', () => {
     expect(r.out).toBe('failed\n 00 00 00\n');
   });
 });
+
+describe('/dev/kmsg', () => {
+  it('a shell redirect logs to the kernel log instead of creating a file; cat reads the records', async () => {
+    // A log of its own (the page global is the running tab's, in the in-tab runner)
+    const { KernelLog } = await import('../../../src/kernel/klog');
+    const g = globalThis as { __tabcomputerKlog?: unknown };
+    const saved = g.__tabcomputerKlog;
+    const klog = new KernelLog();
+    g.__tabcomputerKlog = klog;
+    const before = klog.lastSeq;
+    const r = await script("echo '<3>from the shell' >/dev/kmsg\necho 'plain line' >>/dev/kmsg\nls /dev | grep -x kmsg\ncat /dev/kmsg | grep -c 'from the shell'\ncat /dev/kmsg | tail -n 1\n");
+    g.__tabcomputerKlog = saved;
+    expect(r.err).toBe('');
+    expect(r.out).toMatch(/^kmsg\n1\n12,\d+,\d+,-;plain line\n$/);
+    const recs = klog.since(before);
+    expect(recs.map(x => [x.facility, x.level, x.text])).toEqual([[1, 3, 'from the shell'], [1, 4, 'plain line']]);
+  });
+});

@@ -170,6 +170,26 @@ export class KernelLog {
     return this.records.slice(this.head + (start - this.firstSeq));
   }
 
+  /**
+   * A userspace write to /dev/kmsg: an optional `<N>` prefix sets the
+   * priority (LOG_USER, level 4 when absent; userspace can't log as the
+   * kernel facility, Linux turns LOG_KERN into LOG_USER).
+   */
+  writeUser(text: string): void {
+    text = text.replace(/\n+$/, '');
+    let prio = LOG_USER * 8 + LOG_WARNING;
+    const m = /^<(\d+)>/.exec(text);
+    if (m) {
+      const p = Number(m[1]);
+      prio = p < 8 ? LOG_USER * 8 + p : p;
+      text = text.slice(m[0].length);
+    }
+    this.log(prio & 7, text, prio >> 3);
+  }
+
+  /** What reading /dev/kmsg from its first record returns, without blocking (in-page commands). */
+  kmsgText(): string { return this.since().map(formatKmsg).join(''); }
+
   /** Records after the last clear. */
   all(): KlogRecord[] { return this.since(this.clearSeq); }
 
@@ -291,16 +311,7 @@ export class KmsgFile implements OpenFile {
   }
 
   async write(buf: Uint8Array): Promise<number> {
-    let text = A.decodeText(buf).replace(/\n+$/, '');
-    let prio = LOG_USER * 8 + LOG_WARNING;
-    const m = /^<(\d+)>/.exec(text);
-    if (m) {
-      const p = Number(m[1]);
-      // Userspace can't log as the kernel facility (Linux turns LOG_KERN into LOG_USER)
-      prio = p < 8 ? LOG_USER * 8 + p : p;
-      text = text.slice(m[0].length);
-    }
-    this.log.log(prio & 7, text, prio >> 3);
+    this.log.writeUser(A.decodeText(buf));
     return buf.length;
   }
 

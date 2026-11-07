@@ -317,10 +317,18 @@ export interface VirtualFSProvider {
   lstat?(path: string): StatResult | null;
 }
 
+/**
+ * The kernel log (src/kernel/klog.ts), reached through its page global so
+ * this module doesn't import the kernel. Undefined until the kernel loads.
+ */
+function pageKlog(): { writeUser(text: string): void; kmsgText(): string } | undefined {
+  return (globalThis as { __tabcomputerKlog?: { writeUser(text: string): void; kmsgText(): string } }).__tabcomputerKlog;
+}
+
 /** /dev virtual provider */
 class DevProvider implements VirtualFSProvider {
   handles(path: string): boolean {
-    return path === '/dev/null' || path === '/dev/zero' || path === '/dev/full' || path === '/dev/random' || path === '/dev/urandom' || path === '/dev' || path === '/dev/stdin' || path === '/dev/stdout' || path === '/dev/stderr' || path === '/dev/fd';
+    return path === '/dev/null' || path === '/dev/kmsg' || path === '/dev/zero' || path === '/dev/full' || path === '/dev/random' || path === '/dev/urandom' || path === '/dev' || path === '/dev/stdin' || path === '/dev/stdout' || path === '/dev/stderr' || path === '/dev/fd';
   }
   readFile(path: string, encoding?: 'utf8'): string | Uint8Array | null {
     if (path === '/dev/null') return encoding === 'utf8' ? '' : new Uint8Array(0);
@@ -332,21 +340,30 @@ class DevProvider implements VirtualFSProvider {
       return encoding === 'utf8' ? decodeBytes(buf) : buf;
     }
     if (path === '/dev') return null; // directory
+    // The kernel log's records, as a kernel process reading /dev/kmsg sees them (without blocking at the end)
+    if (path === '/dev/kmsg') { const t = pageKlog()?.kmsgText() ?? ''; return encoding === 'utf8' ? t : encodeText(t); }
     return encoding === 'utf8' ? '' : new Uint8Array(0);
   }
   stat(path: string): StatResult | null {
     if (path === '/dev') return makeStat({ path, type: 'dir', content: null, mode: 0o755, mtime: 0, ctime: 0, size: 0 });
+    if (path === '/dev/kmsg') return makeStat({ path, type: 'file', content: new Uint8Array(0), mode: 0o644, mtime: 0, ctime: 0, size: 0 });
     if (this.handles(path)) return makeStat({ path, type: 'file', content: new Uint8Array(0), mode: 0o666, mtime: 0, ctime: 0, size: 0 });
     return null;
   }
   readdir(path: string): string[] | null {
     // shm: a real directory (shm_open's files), the rest synthetic
-    if (path === '/dev') return ['null', 'zero', 'full', 'random', 'urandom', 'stdin', 'stdout', 'stderr', 'fd', 'shm'];
+    if (path === '/dev') return ['null', 'zero', 'full', 'random', 'urandom', 'kmsg', 'stdin', 'stdout', 'stderr', 'fd', 'shm'];
     return null;
   }
   exists(path: string): boolean { return this.handles(path); }
-  writeFile(path: string): boolean {
+  writeFile(path: string, data?: Uint8Array | string): boolean {
     if (path === '/dev/null') return true; // silently discard
+    // A line for the kernel log, as a write to the kernel's /dev/kmsg (`echo '<3>msg' >/dev/kmsg`)
+    if (path === '/dev/kmsg') {
+      const text = typeof data === 'string' ? data : decodeBytes(data ?? new Uint8Array(0));
+      if (text) pageKlog()?.writeUser(text);
+      return true;
+    }
     // /dev/full: every write fails (`echo hi >/dev/full` exits 1, as on Linux)
     if (path === '/dev/full') throw fsError('ENOSPC', "ENOSPC: no space left on device, write '/dev/full'");
     return this.handles(path); // other dev files: accept but discard
@@ -2950,6 +2967,10 @@ export class FileSystem {
   /** Append to a file (created if missing). Appends in one flush window are
    *  committed as a single put of the final content. */
   async appendFile(path: string, data: Uint8Array | string): Promise<void> {
+    // /dev/kmsg takes just the new bytes: re-writing what it reads back would log
+    // every record again. Only it: other virtual files (/dom, /proc) keep
+    // read-modify-write, since the shell opens `>>` with appendFile(path, '').
+    if (path === '/dev/kmsg') return this.writeFile(path, data);
     let existing: Uint8Array;
     try {
       existing = await this.readFile(path) as Uint8Array;

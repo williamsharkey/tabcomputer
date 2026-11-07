@@ -735,8 +735,8 @@ function storableNode(node: FSNode): FSNode {
  * `visibilitychange` → hidden, `pagehide` and `freeze`, and `beforeunload`
  * warns while `pendingWrites > 0`. A tab or browser crash can lose writes
  * from the last moment before the flush (unlike a real disk's page cache, not
- * seconds' worth). Each flush is one transaction, so after a crash either
- * all of its writes are on disk or none are.
+ * seconds' worth). Each transaction is at most COMMIT_MAX_BYTES and is
+ * atomic, so a crash can leave a prefix of a large burst stored.
  */
 export class FileSystem {
   private db: IDBDatabase | null = null;
@@ -760,8 +760,13 @@ export class FileSystem {
    * A refusal while usage is far below the quota is Chrome's per-transaction
    * blob limit, not a full disk (tabcomputer#167). That sets `_throttled`
    * instead: writes stay in memory, and the commit is retried on
-   * THROTTLE_DELAYS. After that ladder it counts as full, and a retry every
-   * 30 s clears it on its own when the browser accepts commits again.
+   * THROTTLE_DELAYS. After that ladder it counts as full. New files then fail
+   * with ENOSPC. /tmp is the exception when that refusal was not a full disk:
+   * those files stay in memory so a tool can keep running (`_memResident`).
+   * A disk that is near its quota refuses /tmp too. A retry (FULL_RETRY_MS,
+   * or FULL_SOON_MS when the disk really is full) clears it on its own when
+   * the browser accepts a commit again, and the /tmp files kept aside are
+   * stored then.
    */
   private _full = false;
   private _throttled = false;
@@ -1172,11 +1177,49 @@ export class FileSystem {
     }
   }
 
+  /**
+   * /tmp is where a tool writes before it can run (tabcomputer#167). Claude
+   * Code's Bash tool creates a new file there for every command. While the
+   * browser is refusing saves those files stay in the cache (`_memResident`)
+   * instead of failing with ENOSPC. When a commit lands again they are stored.
+   * A reload before that drops them.
+   */
+  private _memoryOnly(path: string): boolean {
+    return path === '/tmp' || path.startsWith('/tmp/');
+  }
+
+  /** /tmp, and only while a refusal is the blob limit rather than a full disk. */
+  private _tmpHeld(path: string): boolean {
+    return this._full && this._throttled && this._memoryOnly(path);
+  }
+
+  /** Paths under /tmp written while storage is full: in the cache, not in the queue. */
+  private _memResident: Set<string> = new Set();
+
   /** Queue a put (node) or delete (null) for the next flush. */
   private _queue(path: string, node: FSNode | null): void {
+    // A delete still goes to IndexedDB, so a /tmp file stored before the
+    // refusal leaves with it. The put stays in memory until a commit lands.
+    if (!node) this._memResident.delete(path);
+    if (node && this._tmpHeld(path)) {
+      this._memResident.add(path);
+      return;
+    }
+    this._memResident.delete(path);
     this._dirtyBytes += storedBytes(node) - storedBytes(this._dirty.get(path));
     this._dirty.set(path, node);
     this._scheduleFlush();
+  }
+
+  /** Store /tmp files that were held back once the browser is accepting commits. */
+  private _adoptMemResident(): void {
+    if (this._memResident.size === 0) return;
+    const paths = [...this._memResident];
+    this._memResident.clear();
+    for (const p of paths) {
+      const n = this.cache.get(p);
+      if (n) this._queue(p, n);
+    }
   }
 
   /** Directories whose contents have a pending range delete (RANGE entries in _dirty or _inflight). */
@@ -1207,16 +1250,14 @@ export class FileSystem {
 
   private _scheduleFlush(): void {
     if (this._lost) return;
+    // A retry is already waiting. A new write must not start its own flush:
+    // that burned the whole backoff in a few seconds (tabcomputer#167).
+    if (this._pauseUntil > Date.now()) return;
     if (this._full) {
-      // A disk that is really full is retried soon, so a delete is committed
-      // with the queued writes. A throttle that used up its ladder retries
-      // every 30 s: Chrome accepts blob commits again after a few minutes,
-      // and that clears the refusal without anyone deleting a file (#167).
-      if (!this._flushScheduled && !this._flushing) {
-        this._flushScheduled = true;
-        const ms = this._throttleStep >= FileSystem.THROTTLE_DELAYS.length ? 30_000 : 250;
-        setTimeout(() => { this._flushScheduled = false; void this._flush(); }, ms);
-      }
+      // A delete (or anything that still queues) joins the retry already armed
+      // when storage was marked full. It is not armed from here while a flush
+      // is in progress: that flush arms it as it stops.
+      if (!this._flushing) this._armFullRetry();
       return;
     }
     if (!this._flushScheduled && !this._flushing) {
@@ -1265,12 +1306,30 @@ export class FileSystem {
   /** Main-thread time a commit spends issuing requests before it lets the page run (_commit). */
   static COMMIT_SLICE_MS = 8;
   /**
-   * Most one commit transaction may carry (tabcomputer#167). Chrome refuses a
-   * transaction of about 450 MB of blobs with an empty QuotaExceededError.
+   * Most one commit transaction may carry at first (tabcomputer#167). Chrome's
+   * limit is how many large values it will save in a short time, not only the
+   * size of one transaction: after a heavy save, a 64 MB commit is refused
+   * while a 1 MB one still lands. A refusal shrinks this for the rest of the
+   * page, down to COMMIT_MIN_BYTES.
    */
-  static COMMIT_MAX_BYTES = 64 << 20;
-  /** Waits after a refusal that is not a full disk, then one more marks it full. */
-  static THROTTLE_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
+  static COMMIT_MAX_BYTES = 16 << 20;
+  static COMMIT_MIN_BYTES = 1 << 20;
+  /**
+   * Waits after a refusal that is not a full disk, about five minutes in all,
+   * then one more marks it full. A retry stays on this clock: new writes do
+   * not start their own.
+   */
+  static THROTTLE_DELAYS = [2000, 4000, 8000, 15000, 30000, 30000, 60000, 60000, 60000];
+  /** Retry after the throttle ladder is used up. Chrome accepts large saves again after a few minutes. */
+  static FULL_RETRY_MS = 30_000;
+  /** Retry when the origin really is near its quota, so a delete is committed soon. */
+  static FULL_SOON_MS = 250;
+  /** When the next commit may run. New writes before then join the queue. */
+  private _pauseUntil = 0;
+  /** The timer that retries a commit after storage was marked full. */
+  private _fullRetry: ReturnType<typeof setTimeout> | null = null;
+  /** This page's cap, shrunk when a commit is refused. */
+  private _commitBytes = FileSystem.COMMIT_MAX_BYTES;
 
   /**
    * A prefix of the queue, in order, of at most COMMIT_MAX_BYTES. One record
@@ -1278,7 +1337,8 @@ export class FileSystem {
    * queued for the next transaction.
    */
   private _takeCommitBatch(): Map<string, FSNode | null> {
-    if (this._dirtyBytes <= FileSystem.COMMIT_MAX_BYTES) {
+    const cap = Math.min(this._commitBytes, FileSystem.COMMIT_MAX_BYTES);
+    if (this._dirtyBytes <= cap) {
       const batch = this._dirty;
       this._dirty = new Map();
       this._inflightBytes = this._dirtyBytes;
@@ -1289,7 +1349,7 @@ export class FileSystem {
     let bytes = 0;
     for (const [p, n] of this._dirty) {
       const b = storedBytes(n);
-      if (batch.size > 0 && bytes + b > FileSystem.COMMIT_MAX_BYTES) break;
+      if (batch.size > 0 && bytes + b > cap) break;
       batch.set(p, n);
       bytes += b;
     }
@@ -1336,7 +1396,10 @@ export class FileSystem {
           await this._commit(batch, durability);
           this._throttleStep = 0;
           this._throttled = false;
+          this._pauseUntil = 0;
+          this._clearFullRetry();
           this._setFull(false);
+          this._adoptMemResident();
           if (this._ranges.size) {
             for (const p of batch.keys()) if (p.startsWith(RANGE) && !this._dirty.has(p)) this._ranges.delete(p.slice(RANGE.length));
           }
@@ -1354,10 +1417,15 @@ export class FileSystem {
             const delays = FileSystem.THROTTLE_DELAYS;
             if (await this._quotaIsThrottle() && this._throttleStep < delays.length) {
               this._noteThrottled();
+              this._commitBytes = Math.max(FileSystem.COMMIT_MIN_BYTES, this._commitBytes >> 1);
               retryMs = delays[this._throttleStep++];
+              this._pauseUntil = Date.now() + retryMs;
             } else {
               if (!this._full) console.error('[fs] browser storage is full; writes fail with ENOSPC until space is freed:', e);
               this._setFull(true);
+              // Armed here, not from _scheduleFlush: this flush is still running,
+              // and a new file under /tmp does not queue a write that would arm it.
+              this._armFullRetry();
               break;
             }
           } else {
@@ -1370,11 +1438,29 @@ export class FileSystem {
           this._inflight = null;
           this._inflightBytes = 0;
         }
-        if (retryMs != null) await new Promise((r) => setTimeout(r, retryMs!));
+        if (retryMs != null) {
+          await new Promise((r) => setTimeout(r, retryMs!));
+          this._pauseUntil = 0;
+        }
       }
     };
     this._flushing = run().finally(() => { this._flushing = null; });
     return this._flushing;
+  }
+
+  /** Try the queued batch again after storage was marked full. One timer. */
+  private _armFullRetry(): void {
+    if (this._fullRetry) return;
+    const ms = this._throttleStep >= FileSystem.THROTTLE_DELAYS.length ? FileSystem.FULL_RETRY_MS : FileSystem.FULL_SOON_MS;
+    const t = setTimeout(() => { this._fullRetry = null; void this._flush(); }, ms);
+    (t as { unref?: () => void }).unref?.();
+    this._fullRetry = t;
+  }
+
+  private _clearFullRetry(): void {
+    if (!this._fullRetry) return;
+    clearTimeout(this._fullRetry);
+    this._fullRetry = null;
   }
 
   private async _commit(batch: Map<string, FSNode | null>, durability: 'default' | 'strict' | 'relaxed'): Promise<void> {
@@ -1640,6 +1726,8 @@ export class FileSystem {
     for (const p of this._meta.keys()) if (this.cache.has(p)) this._meta.delete(p); // (written or read again since)
     for (const [p, at] of this._contentUse) {
       if (now - at < FileSystem.CONTENT_IDLE_MS) break; // the rest were used more recently
+      // Held back while storage is full: the bytes exist only in this cache.
+      if (this._memResident.has(p)) continue;
       const node = this.cache.get(p)!;
       const size = node.content!.byteLength;
       if (size < FileSystem.CONTENT_SMALL ? this._smallHeld : size < FileSystem.CONTENT_BIG && total <= FileSystem.CONTENT_BUDGET) continue;
@@ -2060,7 +2148,7 @@ export class FileSystem {
   private _writeInode(ino: number, node: FSNode): void {
     const rec = this._inodes.get(ino)!;
     const bytes = (n: FSNode | undefined) => n?.blob ? n.size : n?.content?.byteLength ?? 0;
-    if (this._full && bytes(node) > bytes(rec)) throw this._enospc(node.path);
+    if (this._full && bytes(node) > bytes(rec) && !this._tmpHeld(node.path)) throw this._enospc(node.path);
     const { link: _l, nlink: _n, names: _ns, path, ...data } = node;
     if (node.type === 'symlink' || rec.type === 'symlink') this._canonDirs.clear();
     this._putInode({ ...data, path: inodeKey(ino), ino, names: rec.names });
@@ -2153,7 +2241,7 @@ export class FileSystem {
     const parent = await this._get(parentPath);
     if (!parent) throw fsError('ENOENT', `ENOENT: no such file or directory, link '${newPath}'`);
     if (parent.type !== 'dir') throw fsError('ENOTDIR', `ENOTDIR: not a directory, link '${newPath}'`);
-    if (this._full) throw this._enospc(newPath);
+    if (this._full && !this._tmpHeld(newPath)) throw this._enospc(newPath);
     if (node.lazy) node = await this._materialize(node);
     if (node.link !== undefined) await this._loadInode(node.link);
     if (this.cache.get(newPath)) throw fsError('EEXIST', `EEXIST: file already exists, link '${newPath}'`);
@@ -2436,7 +2524,7 @@ export class FileSystem {
     const bytes = (n: FSNode | undefined) => n?.blob ? n.size : n?.content?.byteLength ?? 0;
     const grow = bytes(node) - bytes(prev);
     // A new node or more bytes needs space; a rename (move) moves what is stored
-    if (this._full && !move && (prev === undefined || grow > 0)) throw this._enospc(node.path);
+    if (this._full && !move && (prev === undefined || grow > 0) && !this._tmpHeld(node.path)) throw this._enospc(node.path);
     if (grow > 0 && this._bigWrite && (this._bytesWritten += grow) >= this._bigWrite.bytes) {
       const { fn } = this._bigWrite;
       this._bigWrite = null;
@@ -2805,7 +2893,9 @@ export class FileSystem {
     if (existing?.type === 'dir') throw fsError('EISDIR', `EISDIR: illegal operation on a directory, write '${path}'`);
     const now = Date.now();
     let blob: string | undefined;
-    if (content.length >= FileSystem.BLOB_MIN) {
+    // A big file under /tmp, while storage is full, stays one memory record.
+    // Its blocks would be IndexedDB values, which is what a refused save is made of.
+    if (content.length >= FileSystem.BLOB_MIN && !this._tmpHeld(path)) {
       if (this._full) throw this._enospc(path);
       blob = this.newBlobId();
       this._queueBlocks(blob, content);
@@ -2928,7 +3018,9 @@ export class FileSystem {
    * and the file was lost). Falls back to mkdir() otherwise.
    */
   mkdirNow(path: string, options?: { recursive?: boolean }): Promise<void> {
-    if (this._full || this.virtualProviders.some((vp) => vp.handles(path))) return this.mkdir(path, options);
+    // /tmp is created in the cache even when storage is full: the caller's
+    // next writeFileSync looks the parent up in this same turn (tabcomputer#167).
+    if ((this._full && !this._tmpHeld(path)) || this.virtualProviders.some((vp) => vp.handles(path))) return this.mkdir(path, options);
     const parts = path.split('/').filter(Boolean);
     const made: string[] = [];
     let current = '';
@@ -3004,7 +3096,7 @@ export class FileSystem {
    * callers (node's fs.writeFileSync of binary data) that read the file right back.
    */
   writeNow(path: string, content: Uint8Array): Promise<void> {
-    if (this._full) return this.writeFile(path, content);
+    if (this._full && !this._tmpHeld(path)) return this.writeFile(path, content);
     // (an idle file whose bytes left memory keeps its inode number and mode)
     const prev = this.cache.has(path) ? this.cache.get(path) : this._meta.get(path);
     if (!prev) this._createdNow.add(path);
@@ -3051,7 +3143,7 @@ export class FileSystem {
    */
   writeCachedSync(path: string, content: Uint8Array, times: { mtime: number; mtimeNs?: number; atime?: number; atimeNs?: number }): boolean {
     const node = this.cache.get(path);
-    if (!node || node.type !== 'file' || node.lazy || node.special || this._full || content.length >= FileSystem.BLOB_MIN) return false;
+    if (!node || node.type !== 'file' || node.lazy || node.special || (this._full && !this._tmpHeld(path)) || content.length >= FileSystem.BLOB_MIN) return false;
     const { blob: _blob, ...plain } = node;
     this._putNow({
       ...plain, content, size: content.length, mtime: times.mtime,
@@ -3063,7 +3155,7 @@ export class FileSystem {
 
   /** Create a directory at canonical `path` now (the kernel's syscallSync checked the parent); false when it needs the async path. */
   createDirNow(path: string, mode: number): boolean {
-    if (this._full) return false;
+    if (this._full && !this._tmpHeld(path)) return false;
     const node = this._makeNode(path, 'dir');
     node.mode = mode & 0o7777;
     this._putNow(node);

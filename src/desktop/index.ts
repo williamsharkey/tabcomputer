@@ -325,6 +325,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     // Jupyter notebooks (docs/NOTEBOOK.md): `jupyter notebook`, a .ipynb opened in Files or Code, a lab's notebook
     { id: 'notebook', name: 'Notebook', icon: ICONS.notebook, glyph: 'M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7zM7 3.5v17M4.5 8h2.5M4.5 12h2.5M4.5 16h2.5M10.5 9h4.5M10.5 13h4.5', order: 5, launch: lazy(() => import('./apps/notebook')) },
     { id: 'activity', name: 'Activity', icon: ICONS.activity, order: 3, group: 'system', launch: focusOrLaunch('activity', lazy(() => import('./apps/activity'))) },
+    // Remote (src/remote-desk.ts): one tab per `remote start`, the agent's events, a line back
+    { id: 'remote', name: 'Remote', icon: ICONS.remote, glyph: 'M3 5h7v12H3zM14 7h7v12h-7zM10 11h4', order: 8, group: 'system', launch: focusOrLaunch('remote', lazy(() => import('./apps/remote'))) },
     // Studio (docs/APPS.md "Studio"): make a one-file app with a form, the app running beside it
     {
       id: 'studio', name: 'Studio', icon: STUDIO_ICON, glyph: STUDIO_GLYPH, order: 6, launch: lazy(() => import('./apps/studio')),
@@ -734,6 +736,7 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
     ...guestItems(),
     { label: 'Settings…', shortcut: 'Alt+Shift+,', action: () => void wm.openApp('settings') },
     { label: 'Activity', action: () => void wm.openApp('activity') },
+    { label: 'Remote', action: () => void wm.openApp('remote') },
     'separator',
     { label: 'Classic Terminal', action: () => { try { localStorage.setItem('tabcomputer-ui', 'terminal'); } catch {} reloadAfterFlush(); } },
     { label: 'Restart', action: () => reloadAfterFlush() },

@@ -102,7 +102,7 @@ destroyed), and the next Terminal window adopts it again.
   title bar. Drag it to the left or right edge to tile it, or to the top edge
   to maximize. Double-click the title bar to zoom. Drag any edge or corner to
   resize.
-- **The dock** shows Terminal, Files, Browser, Settings and Activity, then terminal
+- **The dock** shows Terminal, Files, Browser, Settings, Activity and Remote, then terminal
   programs: Vim, htop and Python, plus Neovim, Emacs, nano, tmux, Lua and
   SQLite once they are installed. A program that is not installed has a ↓
   badge; clicking it runs `apt install NAME && NAME` in a new Terminal
@@ -243,7 +243,7 @@ destroyed), and the next Terminal window adopts it again.
   nowhere. The classic UI keeps `src/mobile-input.ts`. The phone layout
   treats the keyboard differently: "Phone layout", "The keyboard".
 - **Dock stacks**: when the dock would not fit (phones), Settings and
-  Activity share a System stack and Vim, Python and installed programs a
+  Activity and Remote share a System stack and Vim, Python and installed programs a
   Programs stack; Terminal, Files and htop stay loose. Debian GUI apps stack
   once there are more than four, at any width. Tap a stack to open it.
 - **Fonts** are self-hosted: Inter and JetBrains Mono (latin, variable,

@@ -27,6 +27,12 @@ export const ICONS: Record<string, string> = {
     `<circle cx="32" cy="32" r="11" fill="#eef1f6"/><circle cx="32" cy="32" r="5" fill="#6c7586"/>`),
   activity: tile('act', '#28313f', '#0d1117',
     `<path d="M10 36h10l5-12 7 22 6-16 4 6h12" fill="none" stroke="#59f0a8" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`),
+  remote: tile('remote', '#2a3142', '#12151c',
+    `<rect x="12" y="16" width="16" height="28" rx="1.5" fill="none" stroke="#e7edf6" stroke-width="1.75"/>` +
+    `<path d="M16 22h8M16 27h5" stroke="#e7edf6" stroke-width="1.5" stroke-linecap="round"/>` +
+    `<rect x="36" y="20" width="16" height="28" rx="1.5" fill="none" stroke="#9aa6bd" stroke-width="1.75"/>` +
+    `<path d="M40 40h8M44 36v8" stroke="#7ef0c1" stroke-width="1.5" stroke-linecap="round"/>` +
+    `<path d="M28 30h8" stroke="#7ef0c1" stroke-width="1.5" stroke-dasharray="1.5 2" stroke-linecap="round"/>`),
   about: tile('about', '#8a7dff', '#4b3bd6', `<g color="#fff" transform="translate(11 15) scale(1.4)">${OTTER}</g>`),
   browser: tile('browser', '#5ec8ff', '#1f6fe0',
     `<circle cx="32" cy="32" r="17" fill="none" stroke="#fff" stroke-width="3.5"/>` +

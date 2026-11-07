@@ -47,7 +47,10 @@ describe('commit slices', { timeout: 60_000 }, () => {
     expect(ranAfter).toBeLessThan(calls); // during the run, not after it
   });
 
-  it('a 300 MB batch commits in slices the page runs between, and one failure stores none of that transaction', async () => {
+  // Not in the browser: two 300 MB batches spend Chrome's budget for large
+  // saves, and ordinary writes are then refused for minutes (tabcomputer#167).
+  it.skipIf(typeof indexedDB !== 'undefined' && indexedDB.constructor.name !== 'FDBFactory')(
+    'a 300 MB batch commits in slices the page runs between, and one failure stores none of that transaction', async () => {
     const fs = new FileSystem();
     await fs.init();
     await fs.mkdir('/tmp/cs3', { recursive: true });

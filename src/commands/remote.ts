@@ -1,6 +1,6 @@
 import { Command, CommandContext } from './index';
 import { Shell } from '../shell';
-import { createRemotePanel, type RemotePanel, type LogType } from '../remote-panel';
+import { createRemotePanel, presentRemoteDesk, setRemoteDeskActions, type RemotePanel, type LogType } from '../remote-panel';
 import { getShiroOrigin } from '../utils/shiro-origin';
 import {
   RelayChannel, newRelayInfo, newRemoteSecret, formatRemoteCode, parseRemoteCode, registerOffer, fetchAnswer,
@@ -164,69 +164,67 @@ function logActivity(session: RemoteSession, type: LogType, message: string) {
   }
 }
 
+/** The Remote window follows the session: status, the code's copy button, messages back. */
+function noteStatus(session: RemoteSession): void {
+  const panel = session.panel;
+  if (!panel) return;
+  const status = session.status === 'waiting' ? 'waiting'
+    : session.status === 'connected' ? 'connected'
+    : session.status === 'error' ? 'disconnected'
+    : 'connecting';
+  panel.setStatus(status);
+  panel.setDetail?.(session.transport === 'relay' ? 'HTTPS relay' : session.status === 'connected' ? 'WebRTC' : session.relay ? 'relay offered' : '');
+}
+
 /**
- * Open (or focus) the remote panel. Called from HUD link click.
- * Creates the panel if needed, replays buffered activity, resets the HUD dot.
+ * Open the Remote window on this session. One tab, named with the code's id.
+ * Reused across a reconnect so the transcript stays.
  */
-export function openRemotePanel(): void {
-  const session = window.__shiroRemoteSession;
-  if (!session) return;
-
-  if (session.panelOpen && session.panel) {
-    // Panel already open — just bring to front
-    session.panel.element.style.zIndex = '2147483647';
-    return;
+function attachPanel(session: RemoteSession): void {
+  if (!session.panel) {
+    const panel = createRemotePanel(session.parts.id, session.parts.id);
+    session.panel = panel;
+    session.panelOpen = true;
+    for (const entry of session.activityBuffer) panel.log(entry.type, entry.message);
+    session.activityBuffer = [];
+    const terminal = (window as any).__tabcomputer?.terminal;
+    terminal?.updateHudRemoteActivity?.(false);
   }
-
-  // Create panel
-  const panel = createRemotePanel(session.displayCode, `remote \u2194 ${session.displayCode}`);
-  session.panel = panel;
-  session.panelOpen = true;
-
-  // Set status based on current session state
-  panel.setStatus(session.status === 'connected' ? 'connected' : session.status === 'error' ? 'disconnected' : 'connecting');
-
-  // Replay buffered activity
-  for (const entry of session.activityBuffer) {
-    panel.log(entry.type, entry.message);
-  }
-  session.activityBuffer = [];
-
-  // Reset HUD activity dot
-  const terminal = (window as any).__tabcomputer?.terminal;
-  terminal?.updateHudRemoteActivity?.(false);
-
-  // Wire panel input → data channel
+  const panel = session.panel;
+  panel.setCopy?.(() => session.code);
   panel.onUserMessage = (text: string) => {
     if (session.dc?.readyState === 'open') {
       session.dc.send(JSON.stringify({ type: 'user_message', message: text }));
       panel.log('user', text);
+    } else {
+      panel.log('error', 'No agent is connected yet');
     }
   };
-
-  // Wire close button to mark panel as closed (so future activity buffers again)
-  const origClose = panel.close.bind(panel);
-  panel.close = () => {
-    session.panelOpen = false;
+  panel.onClose = () => {
+    if (window.__shiroRemoteSession !== session) return;
     session.panel = null;
-    origClose();
+    session.panelOpen = false;
+    cleanupSession();
+    localStorage.removeItem(REMOTE_CODE_KEY);
+    const terminal = (window as any).__tabcomputer?.terminal;
+    terminal?.updateHudRemoteCode?.(null);
+    terminal?.updateHudRemoteActivity?.(false);
   };
-  // Also intercept the close button click on the DOM element
-  const closeBtn = panel.element.querySelector('[style*="ff5f57"]') as HTMLElement | null;
-  if (closeBtn) {
-    const origClick = closeBtn.onclick;
-    closeBtn.onclick = (e) => {
-      session.panelOpen = false;
-      session.panel = null;
-      if (origClick) origClick.call(closeBtn, e);
-    };
-    const origTouch = closeBtn.ontouchend;
-    closeBtn.ontouchend = (e) => {
-      session.panelOpen = false;
-      session.panel = null;
-      if (origTouch) origTouch.call(closeBtn, e);
-    };
+  noteStatus(session);
+  presentRemoteDesk();
+  panel.focus?.();
+}
+
+/**
+ * Open (or focus) the Remote window. Called from the HUD link.
+ */
+export function openRemotePanel(): void {
+  const session = window.__shiroRemoteSession;
+  if (!session) {
+    presentRemoteDesk();
+    return;
   }
+  attachPanel(session);
 }
 
 /**
@@ -266,7 +264,7 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
           false, undefined, true, // skipHistory — remote commands shouldn't pollute user history
         );
 
-        if (stdout) logActivity(session, 'info', stdout.trimEnd());
+        if (stdout) logActivity(session, 'out', stdout.trimEnd());
         if (stderr) logActivity(session, 'error', stderr.trimEnd());
 
         return JSON.stringify({ type: 'exec_result', stdout, stderr, exitCode, requestId });
@@ -519,7 +517,7 @@ function wireSession(session: RemoteSession, dc: RemoteChannel) {
 
   dc.onopen = () => {
     session.status = 'connected';
-    if (session.panel) session.panel.setStatus('connected');
+    noteStatus(session);
     logActivity(session, 'info', 'Peer connected');
     console.log('[remote] Peer connected');
   };
@@ -535,7 +533,7 @@ function wireSession(session: RemoteSession, dc: RemoteChannel) {
 
     console.log('[remote] Peer disconnected');
     if (session.panel) session.panel.setStatus('disconnected');
-    logActivity(session, 'info', 'Peer disconnected — waiting for reconnect...');
+    logActivity(session, 'info', 'Peer disconnected. Waiting for the agent to join again.');
     const savedCode = session.code;
     // Keep panel alive across reconnect
     const savedPanel = session.panel;
@@ -631,6 +629,7 @@ async function startRemote(ctx: CommandContext): Promise<number> {
   };
 
   window.__shiroRemoteSession = session;
+  attachPanel(session);
 
   // Persist code immediately so auto-reconnect works after page reload
   localStorage.setItem(REMOTE_CODE_KEY, code);
@@ -643,7 +642,7 @@ async function startRemote(ctx: CommandContext): Promise<number> {
     session.error = err.message;
     // An older server would need the code itself: say so where the user is looking
     if (err instanceof RemoteProtocolError) (ctx.terminal as any)?.term?.writeln?.(`\r\n\x1b[31mremote: ${err.message}\x1b[0m`);
-    if (session.panel) session.panel.setStatus('disconnected');
+    noteStatus(session);
   });
 
   return 0;
@@ -691,6 +690,7 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
   await registerOffer(SIGNALING_URL, session.parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
 
   session.status = 'waiting';
+  noteStatus(session);
 
   // Start polling for answer
   pollForAnswer(session);
@@ -708,6 +708,7 @@ function switchToRelay(session: RemoteSession, v: 1 | 2 = 1) {
   console.log('[remote] Peer asked for the HTTPS relay');
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
   session.transport = 'relay';
+  noteStatus(session);
   // In the watchdog worker when it runs: `diag` then answers while this page is frozen
   // Keyed by the secret part and this offer's salt (never the whole code)
   const opts = { base: SIGNALING_URL, info: { ...session.relay!, v: Math.min(v, session.relay!.v) as 1 | 2 }, secret: session.parts.secret };
@@ -973,6 +974,7 @@ export async function startRemoteWithCode(
   };
 
   window.__shiroRemoteSession = session;
+  attachPanel(session);
 
   // Update HUD immediately (before signaling)
   if (terminal) {
@@ -1014,6 +1016,7 @@ export async function startRemoteWithCode(
     await registerOffer(SIGNALING_URL, parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
 
     session.status = 'waiting';
+    noteStatus(session);
 
     // Start polling for answer
     pollForAnswer(session);
@@ -1052,3 +1055,21 @@ export async function startRemoteWithCode(
     return false;
   }
 }
+
+setRemoteDeskActions({
+  onNew() {
+    const shell = window.__tabcomputer?.shell;
+    const ctx = {
+      args: ['start'],
+      stdout: '',
+      stderr: '',
+      stdin: '',
+      fs: window.__tabcomputer?.fs,
+      shell,
+      terminal: window.__tabcomputer?.terminal,
+      env: shell?.env ?? {},
+      cwd: shell?.cwd ?? '/',
+    };
+    void startRemote(ctx as CommandContext);
+  },
+});

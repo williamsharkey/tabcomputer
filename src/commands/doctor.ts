@@ -250,7 +250,7 @@ async function storageCheck(ctx: CommandContext): Promise<Check> {
   if (ctx.fs.storageThrottled) {
     return {
       label: 'storage', status: 'WARN',
-      detail: 'browser storage is refusing large commits (Chrome\'s blob limit, not a full disk); writes are held in memory and retried (tabcomputer#167)',
+      detail: 'browser storage is refusing large commits (Chrome\'s blob limit, not a full disk); writes are held in memory and retried, and files under /tmp still succeed (tabcomputer#167)',
     };
   }
   if (!st?.estimate) return { label: 'storage', status: 'INFO', detail: 'StorageManager unavailable' };

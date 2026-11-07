@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { FileSystem } from '@shiro/filesystem';
 import { createTestShell } from './helpers';
 import { Kernel } from '@shiro/kernel/kernel';
@@ -12,8 +12,16 @@ describe('FileSystem when browser storage is full', () => {
   let fs: FileSystem;
   /** Bytes one transaction may add before the "browser" refuses it. */
   let room: number;
+  const storage = Object.getOwnPropertyDescriptor(navigator, 'storage');
+
+  afterEach(() => {
+    if (storage) Object.defineProperty(navigator, 'storage', storage);
+  });
 
   beforeEach(async () => {
+    // Near the quota, so the refusal is a full disk. Far under it, the same
+    // error is Chrome's blob limit and is retried (tabcomputer#167).
+    Object.defineProperty(navigator, 'storage', { configurable: true, value: { estimate: async () => ({ usage: 95, quota: 100 }) } });
     fs = new FileSystem();
     await fs.init();
     await fs.sync();

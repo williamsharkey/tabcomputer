@@ -132,6 +132,10 @@ async function connect() {
           console.log('user_message: ' + data.message);
           return;
         }
+        if (data.type === 'ping') {
+          try { channel.sendMessage(JSON.stringify({ type: 'pong', requestId: data.requestId, ts: Date.now() })); } catch { /* closed */ }
+          return;
+        }
         const { requestId, ...rest } = data;
         const p = requestId && pending.get(requestId);
         if (!p) return;
@@ -146,6 +150,7 @@ async function connect() {
   const desc = pc.localDescription();
   await sendAnswer(SIGNAL, PARTS, { answer: { type: desc.type, sdp: desc.sdp }, candidates: ice });
   await Promise.race([opened, new Promise((_, rej) => setTimeout(() => rej(new Error('open timeout')), 30000))]);
+  startHeartbeat();
   if (process.env.PROBE_LITE) {
     log({ event: 'connected', install: 'skipped (PROBE_LITE)' });
     console.log('connected (lite)');
@@ -155,6 +160,23 @@ async function connect() {
   const install = await evalJs(INSTALL, 15000).catch((e) => 'install failed: ' + e.message);
   log({ event: 'connected', install });
   console.log('connected + ' + install);
+}
+
+let heartbeat = null;
+function startHeartbeat() {
+  if (heartbeat) clearInterval(heartbeat);
+  heartbeat = setInterval(async () => {
+    if (!connected) return;
+    try { await request({ type: 'ping' }, 10000); }
+    catch {
+      if (!connected) return;
+      connected = false;
+      console.log('disconnected');
+      log({ event: 'disconnected', why: 'ping' });
+      try { dc?.close(); } catch { /* already down */ }
+      reconnectLoop();
+    }
+  }, 20000);
 }
 
 let reconnecting = false;

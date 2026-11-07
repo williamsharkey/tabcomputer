@@ -130,6 +130,13 @@ interface RemoteSession {
   panel: RemotePanel | null;
   activityBuffer: Array<{ type: LogType; message: string }>;
   panelOpen: boolean;
+  /** Lines typed while the agent was gone. Sent when the channel opens. */
+  outbox: string[];
+  /** A heal is already putting this code back up. */
+  healing?: boolean;
+  heartbeat?: ReturnType<typeof setInterval>;
+  linkTimer?: ReturnType<typeof setTimeout>;
+  onPong?: () => void;
 }
 
 // Store session on window for global access
@@ -193,11 +200,12 @@ function attachPanel(session: RemoteSession): void {
   const panel = session.panel;
   panel.setCopy?.(() => session.code);
   panel.onUserMessage = (text: string) => {
+    panel.log('user', text);
     if (session.dc?.readyState === 'open') {
       session.dc.send(JSON.stringify({ type: 'user_message', message: text }));
-      panel.log('user', text);
     } else {
-      panel.log('error', 'No agent is connected yet');
+      session.outbox.push(text);
+      logActivity(session, 'info', 'Held until the agent is back');
     }
   };
   panel.onClose = () => {
@@ -238,6 +246,10 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
 
     switch (cmd.type) {
       case 'ping':
+        return JSON.stringify({ type: 'pong', ts: Date.now(), requestId });
+
+      case 'pong':
+        session.onPong?.();
         return JSON.stringify({ type: 'pong', ts: Date.now(), requestId });
 
       case 'agent_message': {
@@ -517,45 +529,81 @@ async function handleRemoteCommand(session: RemoteSession, message: string): Pro
 /**
  * Wire up a session with shadow shell, panel, and data channel handlers.
  */
+/**
+ * The peer went away. Put the same code back up so the agent can join again.
+ * `remote stop` has already cleared the session, so this does nothing then.
+ */
+function healSession(session: RemoteSession, why: string): void {
+  if (session.healing || window.__shiroRemoteSession !== session) return;
+  session.healing = true;
+  console.log(`[remote] ${why}; registering the code again`);
+  logActivity(session, 'info', `${why}. Waiting for the agent to join again.`);
+  session.panel?.setStatus('disconnected');
+  const { code, panel, shadowShell, panelOpen, activityBuffer, outbox } = session;
+  const dc = session.dc;
+  if (dc) { dc.onopen = null; dc.onclose = null; dc.onmessage = null; }
+  session.panel = null;
+  cleanupSession(true);
+  setTimeout(() => {
+    if (window.__shiroRemoteSession) return;
+    void startRemoteWithCode(code, undefined, panel, shadowShell, panelOpen, activityBuffer, outbox);
+  }, 500);
+}
+
+/** After a link has been up, a later failure puts the code back. A short `disconnected` may recover. */
+function watchLink(session: RemoteSession, pc: RTCPeerConnection): void {
+  pc.onconnectionstatechange = () => {
+    if (window.__shiroRemoteSession !== session || session.transport === 'relay' || session.pc !== pc) return;
+    const state = pc.connectionState;
+    if (state === 'connected' || state === 'connecting' || state === 'new') {
+      if (session.linkTimer) { clearTimeout(session.linkTimer); session.linkTimer = undefined; }
+      return;
+    }
+    if (state === 'failed' || state === 'closed') {
+      if (session.linkTimer) clearTimeout(session.linkTimer);
+      healSession(session, 'WebRTC connection failed');
+      return;
+    }
+    if (state === 'disconnected' && !session.linkTimer) {
+      session.linkTimer = setTimeout(() => {
+        session.linkTimer = undefined;
+        if (window.__shiroRemoteSession === session && pc.connectionState !== 'connected') {
+          healSession(session, 'WebRTC connection dropped');
+        }
+      }, 8000);
+    }
+  };
+}
+
+function startHeartbeat(session: RemoteSession, dc: RemoteChannel): void {
+  if (session.heartbeat) clearInterval(session.heartbeat);
+  session.heartbeat = setInterval(() => {
+    if (window.__shiroRemoteSession !== session || session.healing) return;
+    if (dc.readyState !== 'open') { healSession(session, 'Data channel closed'); return; }
+    const timer = setTimeout(() => healSession(session, 'The agent stopped answering'), 12000);
+    session.onPong = () => clearTimeout(timer);
+    try { dc.send(JSON.stringify({ type: 'ping', requestId: `hb-${Date.now()}` })); }
+    catch { clearTimeout(timer); healSession(session, 'Data channel closed'); }
+  }, 20000);
+}
+
 function wireSession(session: RemoteSession, dc: RemoteChannel) {
   session.dc = dc;
-  let closeFired = false;
 
   dc.onopen = () => {
     session.status = 'connected';
     noteStatus(session);
     logActivity(session, 'info', 'Peer connected');
     console.log('[remote] Peer connected');
+    const held = session.outbox.splice(0);
+    for (const text of held) dc.send(JSON.stringify({ type: 'user_message', message: text }));
+    if (held.length) logActivity(session, 'info', `Sent ${held.length} held ${held.length === 1 ? 'line' : 'lines'}`);
+    startHeartbeat(session, dc);
   };
 
   dc.onclose = () => {
-    // Guard against re-entrant/duplicate onclose fires
-    if (closeFired) return;
-    closeFired = true;
-    // `remote start`/`remote stop` replaced or ended this session on purpose; its
-    // close fires later, and re-registering here would kill the new session and
-    // bring the old code back.
-    if (window.__shiroRemoteSession !== session) return;
-
-    console.log('[remote] Peer disconnected');
-    if (session.panel) session.panel.setStatus('disconnected');
-    logActivity(session, 'info', 'Peer disconnected. Waiting for the agent to join again.');
-    const savedCode = session.code;
-    // Keep panel alive across reconnect
-    const savedPanel = session.panel;
-    const savedPanelOpen = session.panelOpen;
-    const savedBuffer = session.activityBuffer;
-    const savedShell = session.shadowShell;
-    // Null out dc before cleanup to prevent re-entrant close
-    session.dc = null;
-    cleanupSession(true); // keepPanel=true
-    // Re-register with same code so MCP can reconnect
-    setTimeout(() => {
-      if (!window.__shiroRemoteSession) {
-        console.log('[remote] Re-registering for reconnection...');
-        startRemoteWithCode(savedCode, undefined, savedPanel, savedShell, savedPanelOpen, savedBuffer);
-      }
-    }, 1000);
+    // `remote stop` cleared the session first. A close that arrives later must not bring the code back.
+    healSession(session, 'Peer disconnected');
   };
 
   dc.onmessage = async (event) => {
@@ -632,6 +680,7 @@ async function startRemote(ctx: CommandContext): Promise<number> {
     panel: null,
     activityBuffer: [{ type: 'info', message: 'Waiting for connection...' }],
     panelOpen: false,
+    outbox: [],
   };
 
   window.__shiroRemoteSession = session;
@@ -692,8 +741,11 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
     }
   });
 
+  // `remote stop` during gathering must not register the code afterward.
+  if (window.__shiroRemoteSession !== session) return;
   // Register with the signaling server: the id and a sealed offer, never the secret
   await registerOffer(SIGNALING_URL, session.parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
+  if (window.__shiroRemoteSession !== session) return;
 
   session.status = 'waiting';
   noteStatus(session);
@@ -710,10 +762,11 @@ async function setupSignaling(session: RemoteSession): Promise<void> {
 function switchToRelay(session: RemoteSession, v: 1 | 2 = 1) {
   const old = session.dc;
   if (old) { old.onopen = old.onclose = old.onmessage = null; old.close(); }
+  session.transport = 'relay';
+  session.pc.onconnectionstatechange = null;
   session.pc.close();
   console.log('[remote] Peer asked for the HTTPS relay');
   logActivity(session, 'info', 'Peer connecting over the HTTPS relay');
-  session.transport = 'relay';
   noteStatus(session);
   // In the watchdog worker when it runs: `diag` then answers while this page is frozen
   // Keyed by the secret part and this offer's salt (never the whole code)
@@ -732,14 +785,7 @@ async function pollForAnswer(session: RemoteSession) {
   // The signaling server forgets offers after 5 minutes or on a restart; a
   // session still waiting for a peer registers again under the same code so the
   // code the user shared keeps working until `remote stop`.
-  const renew = (why: string) => {
-    if (window.__shiroRemoteSession !== session) return;
-    console.log(`[remote] ${why}; registering the code again`);
-    const { code, panel, shadowShell, panelOpen, activityBuffer } = session;
-    session.panel = null; // keep the panel across the re-registration
-    cleanupSession(true);
-    startRemoteWithCode(code, undefined, panel, shadowShell, panelOpen, activityBuffer);
-  };
+  const renew = (why: string) => healSession(session, why);
 
   const poll = async () => {
     if (window.__shiroRemoteSession !== session || session.status === 'connected') {
@@ -783,9 +829,7 @@ async function pollForAnswer(session: RemoteSession) {
         console.log('[remote] Received answer, establishing connection...');
         // ICE failed (a peer without UDP, or NATs that won't meet): take
         // answers again, so the peer can retry or ask for the relay
-        session.pc.onconnectionstatechange = () => {
-          if (session.pc.connectionState === 'failed' && session.status !== 'connected') renew('WebRTC connection failed');
-        };
+        watchLink(session, session.pc);
         return;
       }
     } catch (e) {
@@ -839,9 +883,13 @@ function stopRemote(ctx: CommandContext): number {
 function cleanupSession(keepPanel = false) {
   const session = window.__shiroRemoteSession;
   if (session) {
+    if (session.heartbeat) clearInterval(session.heartbeat);
+    if (session.linkTimer) clearTimeout(session.linkTimer);
     if (session.dc) {
+      session.dc.onclose = null;
       session.dc.close();
     }
+    session.pc.onconnectionstatechange = null;
     session.pc.close();
     if (!keepPanel && session.panel) {
       session.panel.close();
@@ -928,6 +976,7 @@ export async function startRemoteWithCode(
   existingShell?: Shell | null,
   existingPanelOpen?: boolean,
   existingBuffer?: Array<{ type: LogType; message: string }>,
+  existingOutbox?: string[],
 ): Promise<boolean> {
   if (window.__shiroRemoteSession) {
     console.log('[remote] Session already active');
@@ -977,6 +1026,7 @@ export async function startRemoteWithCode(
     panel,
     activityBuffer,
     panelOpen,
+    outbox: existingOutbox ? [...existingOutbox] : [],
   };
 
   window.__shiroRemoteSession = session;
@@ -1019,7 +1069,9 @@ export async function startRemoteWithCode(
 
   // Register with signaling server
   try {
+    if (window.__shiroRemoteSession !== session) return false;
     await registerOffer(SIGNALING_URL, parts, { offer: pc.localDescription, candidates: iceCandidates, relay: session.relay });
+    if (window.__shiroRemoteSession !== session) return false;
 
     session.status = 'waiting';
     noteStatus(session);

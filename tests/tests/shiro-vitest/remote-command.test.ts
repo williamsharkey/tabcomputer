@@ -49,7 +49,11 @@ beforeEach(() => {
     return reply(404, { error: 'Not found' });
   }) as typeof fetch;
 });
-afterEach(() => {
+afterEach(async () => {
+  if ((window as any).__shiroRemoteSession) {
+    const { remoteCmd } = await import('@shiro/commands/remote');
+    await remoteCmd.exec({ args: ['stop'], stdout: '', stderr: '', env: {}, cwd: '/', stdin: '' } as any);
+  }
   globalThis.fetch = realFetch;
   delete (window as any).__shiroRemoteSession;
   delete (globalThis as any).RTCPeerConnection;
@@ -106,6 +110,37 @@ describe('remote start: what reaches the signaling server', () => {
     answerSealed = await sealSignal({ id: code.id, secret: 'a'.repeat(26) }, 'answer', { answer: { type: 'answer', sdp: 'v=0 attacker' }, candidates: [] });
     expect(await fetchAnswer('http://x.test', code)).toEqual({ bad: expect.stringMatching(/does not open/) });
     expect(session.pc.remote).toBeNull();
+    await startRemote(['stop']);
+  });
+
+  it('a link that dies after it connected puts the same code back up', async () => {
+    const { session } = await startRemote();
+    const code = parseRemoteCode(store.get('tabcomputer-remote-code')!);
+    answerSealed = await sealSignal(code, 'answer', { answer: { type: 'answer', sdp: 'v=0 peer' }, candidates: [] });
+    await until(() => typeof session.pc.onconnectionstatechange === 'function', 8000);
+    const offers = () => sent.filter((s) => s.url.endsWith('/offer')).length;
+    const before = offers();
+    session.status = 'connected';
+    session.pc.connectionState = 'failed';
+    session.pc.onconnectionstatechange();
+    await until(() => offers() > before);
+    expect((window as any).__shiroRemoteSession.code).toBe(store.get('tabcomputer-remote-code'));
+    await startRemote(['stop']);
+  }, 15000);
+
+  it('a line typed while the agent is gone is sent when the channel opens', async () => {
+    const { session } = await startRemote();
+    await until(() => sent.some((s) => s.url.endsWith('/offer')));
+    const sentMsgs: string[] = [];
+    session.dc.send = (s: string) => { sentMsgs.push(s); };
+    session.dc.readyState = 'connecting';
+    session.panel.onUserMessage('a joke');
+    expect(sentMsgs).toEqual([]);
+    expect(session.outbox).toEqual(['a joke']);
+    session.dc.readyState = 'open';
+    session.dc.onopen();
+    expect(sentMsgs.some((s) => s.includes('a joke'))).toBe(true);
+    expect(session.outbox).toEqual([]);
     await startRemote(['stop']);
   });
 

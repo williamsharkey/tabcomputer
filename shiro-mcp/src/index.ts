@@ -385,6 +385,32 @@ async function sendCommand(cmd: object): Promise<any> {
  * Polls for a new offer with the same code.
  */
 let reconnectActive = false;
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+/** A quiet peer is usually a dead one. Ask every 20s; no answer, join again. */
+function startHeartbeat(): void {
+  if (heartbeat) clearInterval(heartbeat);
+  heartbeat = setInterval(() => {
+    const conn = activeConnection;
+    if (!conn || conn.status !== "connected" || !conn.dc) return;
+    const requestId = `hb-${Date.now()}`;
+    const timer = setTimeout(() => {
+      conn.pendingRequests.delete(requestId);
+      if (activeConnection !== conn || conn.status !== "connected") return;
+      console.error("[shiro-mcp] Peer stopped answering; reconnecting");
+      conn.status = "disconnected";
+      try { conn.dc?.close(); } catch { /* already down */ }
+      try { conn.pc?.close(); } catch { /* already down */ }
+      attemptReconnect(conn.code);
+    }, 10000);
+    conn.pendingRequests.set(requestId, {
+      resolve: () => clearTimeout(timer),
+      reject: () => clearTimeout(timer),
+    });
+    try { conn.dc.sendMessage(JSON.stringify({ type: "ping", requestId })); }
+    catch { clearTimeout(timer); }
+  }, 20000);
+}
 
 async function attemptReconnect(code: string) {
   // Prevent multiple reconnect loops from racing
@@ -460,6 +486,11 @@ function handleIncoming(connection: RemoteConnection, msg: string | Buffer) {
     }
 
     // Handle user messages from the Shiro panel input
+    if (response.type === "ping") {
+      try { connection.dc?.sendMessage(JSON.stringify({ type: "pong", requestId: response.requestId, ts: Date.now() })); } catch { /* closed */ }
+      return;
+    }
+
     if (response.type === "user_message") {
       const message = String(response.message ?? "");
       notify("notifications/message", { level: "info", logger: "tabcomputer", data: message });
@@ -584,6 +615,7 @@ async function connectRelay(code: string, info: RelayInfo): Promise<string> {
     relay.onopen = () => { clearTimeout(timer); resolve(); };
   });
   connection.status = "connected";
+  startHeartbeat();
   relay.send(JSON.stringify({ type: "hello", name: "shiro-mcp" }));
   // The tab starts polling within its answer poll interval (5 s); a ping
   // confirms it is there before tools are used
@@ -629,6 +661,7 @@ async function connectWebRTC(code: string, offerData: OfferPayload): Promise<str
     dc.onOpen(() => {
       console.error("[shiro-mcp] Connected!");
       connection.status = "connected";
+      startHeartbeat();
       // Identify ourselves to the Shiro panel
       dc.sendMessage(JSON.stringify({ type: 'hello', name: 'shiro-mcp' }));
     });

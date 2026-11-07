@@ -223,6 +223,8 @@ export interface StatResult {
   isSymbolicLink(): boolean;
   /** A named pipe (FSNode.special === 'fifo'). */
   isFIFO(): boolean;
+  /** A character device (FSNode.special === 'chr'). */
+  isCharacterDevice(): boolean;
 }
 
 export function makeStat(node: FSNode): StatResult {

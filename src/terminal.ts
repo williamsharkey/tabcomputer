@@ -21,6 +21,33 @@ import { installFilePaste, pasteImagePaths } from './terminal-file-paste';
 import { readClipboardImage } from './utils/clipboard';
 import { isCommandLink, offerCommand, offeredCommand } from './terminal-links';
 
+/**
+ * Last index of a CSI (`ESC [`) or SS3 (`ESC O`) sequence starting at `i`, or
+ * -1. A mouse report is `ESC [ < btn ; col ; row M` (release ends in `m`).
+ * The line editor used to skip only `ESC [ <` and type the rest, so moving
+ * the pointer over a terminal Claude had left in mouse mode filled the
+ * prompt with `35;11;37M`.
+ */
+export function csiEnd(data: string, i: number): number {
+  if (data[i] !== '\x1b') return -1;
+  const kind = data[i + 1];
+  if (kind !== '[' && kind !== 'O') return -1;
+  if (kind === 'O') return i + 2 < data.length ? i + 2 : i + 1;
+  for (let j = i + 2; j < data.length; j++) {
+    const c = data.charCodeAt(j);
+    if (c >= 0x40 && c <= 0x7e) return j;
+    if (c < 0x20 || c > 0x3f) return j - 1;
+  }
+  return Math.max(i + 1, data.length - 1);
+}
+
+/** The first number of a CSI sequence (`ESC [ < 35 ; …` → 35). */
+function csiFirstParam(seq: string): number {
+  const body = seq.replace(/^\x1b\[/, '').replace(/^[?<>=]/, '');
+  const n = /^[0-9]*/.exec(body)?.[0];
+  return n ? Number(n) : 0;
+}
+
 /** The commands the banner's links type (drawHud). Offered from the start: a restored screen still shows an earlier load's banner */
 export const BANNER_COMMANDS = ['claude', 'gh auth login', 'remote start', 'help', 'finder'];
 for (const cmd of BANNER_COMMANDS) offerCommand(cmd);
@@ -839,6 +866,9 @@ export class ShiroTerminal {
   }
 
   private showPrompt() {
+    // A program that turned on mouse tracking (Claude Code's any-event mode)
+    // and did not turn it off keeps xterm sending a report for every move.
+    this.term.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l');
     const cwd = this.shell.cwd;
     const home = this.shell.env['HOME'] || '/home/user';
     const displayCwd = cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
@@ -977,18 +1007,19 @@ export class ShiroTerminal {
       for (let i = 0; i < data.length; i++) {
         const ch = data[i];
 
-        // Handle escape sequences
-        if (ch === '\x1b' && data[i + 1] === '[') {
-          const code = data[i + 2];
-          if (code === 'A') { this.rawModeCallback('ArrowUp'); i += 2; continue; }
-          if (code === 'B') { this.rawModeCallback('ArrowDown'); i += 2; continue; }
-          if (code === 'C') { this.rawModeCallback('ArrowRight'); i += 2; continue; }
-          if (code === 'D') { this.rawModeCallback('ArrowLeft'); i += 2; continue; }
-          if (code === 'H') { this.rawModeCallback('Home'); i += 2; continue; }
-          if (code === 'F') { this.rawModeCallback('End'); i += 2; continue; }
-          if (code === '3' && data[i + 3] === '~') { this.rawModeCallback('Delete'); i += 3; continue; }
-          // Unknown escape sequence - skip
-          i += 2;
+        // Handle escape sequences. An unknown one (a mouse report) is dropped whole.
+        if (ch === '\x1b' && (data[i + 1] === '[' || data[i + 1] === 'O')) {
+          const end = csiEnd(data, i);
+          const seq = data.slice(i, end + 1);
+          const final = data[end];
+          i = end;
+          if (final === 'A') { this.rawModeCallback('ArrowUp'); continue; }
+          if (final === 'B') { this.rawModeCallback('ArrowDown'); continue; }
+          if (final === 'C') { this.rawModeCallback('ArrowRight'); continue; }
+          if (final === 'D') { this.rawModeCallback('ArrowLeft'); continue; }
+          if (final === 'H') { this.rawModeCallback('Home'); continue; }
+          if (final === 'F') { this.rawModeCallback('End'); continue; }
+          if (final === '~' && csiFirstParam(seq) === 3) { this.rawModeCallback('Delete'); continue; }
           continue;
         }
 
@@ -1128,11 +1159,14 @@ export class ShiroTerminal {
         continue;
       }
 
-      // Escape sequences
-      if (ch === '\x1b' && data[i + 1] === '[') {
-        const code = data[i + 2];
-        if (code === 'A') { // Up arrow - history
-          i += 2;
+      // Escape sequences. A mouse report (`ESC [ < btn ; col ; row M`) is
+      // dropped whole: skipping only the `ESC [ <` typed `35;11;37M` at the prompt.
+      if (ch === '\x1b' && (data[i + 1] === '[' || data[i + 1] === 'O')) {
+        const end = csiEnd(data, i);
+        const seq = data.slice(i, end + 1);
+        const final = data[end];
+        i = end;
+        if (final === 'A') { // Up arrow - history
           if (this.shell.history.length > 0) {
             if (this.historyIndex === -1) {
               this.savedLine = this.lineBuffer;
@@ -1146,8 +1180,7 @@ export class ShiroTerminal {
           }
           continue;
         }
-        if (code === 'B') { // Down arrow
-          i += 2;
+        if (final === 'B') { // Down arrow
           if (this.historyIndex !== -1) {
             this.historyIndex++;
             if (this.historyIndex >= this.shell.history.length) {
@@ -1161,16 +1194,14 @@ export class ShiroTerminal {
           }
           continue;
         }
-        if (code === 'C') { // Right arrow
-          i += 2;
+        if (final === 'C') { // Right arrow
           if (this.cursorPos < this.lineBuffer.length) {
             this.cursorPos++;
             this.term.write('\x1b[C');
           }
           continue;
         }
-        if (code === 'D') { // Left arrow
-          i += 2;
+        if (final === 'D') { // Left arrow
           if (this.cursorPos > 0) {
             this.cursorPos--;
             this.term.write('\x1b[D');
@@ -1178,18 +1209,16 @@ export class ShiroTerminal {
           continue;
         }
         // Home (H) / End (F)
-        if (code === 'H') { i += 2; this.cursorPos = 0; this.redrawLine(); continue; }
-        if (code === 'F') { i += 2; this.cursorPos = this.lineBuffer.length; this.redrawLine(); continue; }
+        if (final === 'H') { this.cursorPos = 0; this.redrawLine(); continue; }
+        if (final === 'F') { this.cursorPos = this.lineBuffer.length; this.redrawLine(); continue; }
         // Delete key: \x1b[3~
-        if (code === '3' && data[i + 3] === '~') {
-          i += 3;
+        if (final === '~' && csiFirstParam(seq) === 3) {
           if (this.cursorPos < this.lineBuffer.length) {
             this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(this.cursorPos + 1);
             this.redrawLine();
           }
           continue;
         }
-        i += 2;
         continue;
       }
 
@@ -1327,9 +1356,9 @@ export class ShiroTerminal {
         continue;
       }
 
-      // Skip escape sequences
-      if (ch === '\x1b' && data[i + 1] === '[') {
-        i += 2;
+      // Skip a whole escape sequence (a mouse report is not a typed character)
+      if (ch === '\x1b' && (data[i + 1] === '[' || data[i + 1] === 'O')) {
+        i = csiEnd(data, i);
         continue;
       }
 

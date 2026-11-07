@@ -44,6 +44,19 @@ describe('a multi-line paste', () => {
     expect(await read('/tmp/out')).toBe('a\nb\nc d\n');
   });
 
+  it('a mouse report left on by a program is not typed at the prompt', async () => {
+    // SGR any-event tracking: ESC [ < 35 ; col ; row M, and a click's release ends in m.
+    await keys('\x1b[<35;11;37M\x1b[<35;12;37M\x1b[<0;23;35M\x1b[<0;23;35m');
+    await keys('echo clean >> out\r');
+    expect(await read('/tmp/out')).toBe('clean\n');
+  });
+
+  it('an arrow with parameters is still an arrow, not typed text', async () => {
+    await keys('echo abX');
+    await keys('\x1b[1;3D\x1b[3~ >> out\r');
+    expect(await read('/tmp/out')).toBe('ab\n');
+  });
+
   it('bracketed paste markers are ignored', async () => {
     await keys('\x1b[200~echo bp1 >> out\recho bp2 >> out\r\x1b[201~');
     expect(await read('/tmp/out')).toBe('bp1\nbp2\n');

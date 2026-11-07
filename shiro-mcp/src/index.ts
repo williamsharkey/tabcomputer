@@ -402,14 +402,14 @@ function startHeartbeat(): void {
       try { conn.dc?.close(); } catch { /* already down */ }
       try { conn.pc?.close(); } catch { /* already down */ }
       attemptReconnect(conn.code);
-    }, 10000);
+    }, 45000);
     conn.pendingRequests.set(requestId, {
       resolve: () => clearTimeout(timer),
       reject: () => clearTimeout(timer),
     });
     try { conn.dc.sendMessage(JSON.stringify({ type: "ping", requestId })); }
     catch { clearTimeout(timer); }
-  }, 20000);
+  }, 30000);
 }
 
 async function attemptReconnect(code: string) {

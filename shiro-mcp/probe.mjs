@@ -163,20 +163,29 @@ async function connect() {
 }
 
 let heartbeat = null;
+let missedPings = 0;
 function startHeartbeat() {
   if (heartbeat) clearInterval(heartbeat);
+  missedPings = 0;
+  // A busy page (Claude running) can take well over 10s to answer. One slow
+  // ping is not a dead peer; three in a row, each given 45s, is.
   heartbeat = setInterval(async () => {
     if (!connected) return;
-    try { await request({ type: 'ping' }, 10000); }
-    catch {
+    try {
+      await request({ type: 'ping' }, 45000);
+      missedPings = 0;
+    } catch {
       if (!connected) return;
+      missedPings++;
+      if (missedPings < 3) return;
       connected = false;
+      missedPings = 0;
       console.log('disconnected');
       log({ event: 'disconnected', why: 'ping' });
       try { dc?.close(); } catch { /* already down */ }
       reconnectLoop();
     }
-  }, 20000);
+  }, 30000);
 }
 
 let reconnecting = false;

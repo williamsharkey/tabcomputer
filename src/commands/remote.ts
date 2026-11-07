@@ -580,11 +580,11 @@ function startHeartbeat(session: RemoteSession, dc: RemoteChannel): void {
   session.heartbeat = setInterval(() => {
     if (window.__shiroRemoteSession !== session || session.healing) return;
     if (dc.readyState !== 'open') { healSession(session, 'Data channel closed'); return; }
-    const timer = setTimeout(() => healSession(session, 'The agent stopped answering'), 12000);
+    const timer = setTimeout(() => healSession(session, 'The agent stopped answering'), 45000);
     session.onPong = () => clearTimeout(timer);
     try { dc.send(JSON.stringify({ type: 'ping', requestId: `hb-${Date.now()}` })); }
     catch { clearTimeout(timer); healSession(session, 'Data channel closed'); }
-  }, 20000);
+  }, 30000);
 }
 
 function wireSession(session: RemoteSession, dc: RemoteChannel) {

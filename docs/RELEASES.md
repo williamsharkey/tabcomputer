@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 1045 | see `git log --grep "^Build 1045"` | 2026-11-07 | The shell's `/dev` matches the kernel's. `echo >/dev/kmsg` writes the kernel log instead of a regular file, and `cat` reads the records (#171). `/dev/null`, `/dev/tty`, `/dev/ptmx` and the other device nodes are character devices, so `[ -c /dev/null ]` is true (#172) |
 | 1044 | see `git log --grep "^Build 1044"` | 2026-11-07 | A busy page is no longer treated as a dead remote peer. The ping waits 45 seconds, and the outside probe only hangs up after three misses. A Claude session can keep the page busy without the link dropping |
 | 1043 | see `git log --grep "^Build 1043"` | 2026-11-07 | A remote link that dies after it had connected comes back. The tab registers the same code again when WebRTC fails, stays disconnected for 8 seconds, or the agent stops answering a ping. A line typed while the agent is gone is held and sent when the channel opens. `remote stop` still ends it |
 | 1042 | see `git log --grep "^Build 1042"` | 2026-11-07 | A line typed in the Remote window reaches the agent. MCP still cannot open a new chat turn from the server (revision 2026-07-28). shiro-mcp sends it as a logging notification, `wait` returns it, and a message that arrived while nothing was waiting is attached to the next tool result. `say` shows the reply on its own line in the window |

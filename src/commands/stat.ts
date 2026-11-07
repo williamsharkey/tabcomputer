@@ -11,19 +11,19 @@ const USAGE = "Try 'stat --help' for more information.\n";
 /** %F: GNU stat's names */
 function fileType(st: StatEntry): string {
   return st.type === 'dir' ? 'directory' : st.type === 'symlink' ? 'symbolic link' : st.fifo ? 'fifo'
-    : st.size === 0 ? 'regular empty file' : 'regular file';
+    : st.chr ? 'character special file' : st.size === 0 ? 'regular empty file' : 'regular file';
 }
 
 /** st_mode with its file-type bits */
 function fullMode(st: StatEntry): number {
-  const type = st.type === 'dir' ? 0o040000 : st.type === 'symlink' ? 0o120000 : st.fifo ? 0o010000 : 0o100000;
+  const type = st.type === 'dir' ? 0o040000 : st.type === 'symlink' ? 0o120000 : st.fifo ? 0o010000 : st.chr ? 0o020000 : 0o100000;
   return type | (st.mode & 0o7777);
 }
 
 /** %A: `drwxr-xr-x`, with setuid/setgid/sticky */
 function modeString(st: StatEntry): string {
   const m = st.mode & 0o7777;
-  const t = st.type === 'dir' ? 'd' : st.type === 'symlink' ? 'l' : st.fifo ? 'p' : '-';
+  const t = st.type === 'dir' ? 'd' : st.type === 'symlink' ? 'l' : st.fifo ? 'p' : st.chr ? 'c' : '-';
   const x = (bit: number, special: number, on: string, off: string) =>
     m & special ? (m & bit ? on : off) : m & bit ? 'x' : '-';
   return t + (m & 0o400 ? 'r' : '-') + (m & 0o200 ? 'w' : '-') + x(0o100, 0o4000, 's', 'S')

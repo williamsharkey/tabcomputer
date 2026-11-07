@@ -123,6 +123,8 @@ export interface StatEntry {
   nlink?: number;
   /** A named pipe (type 'file'): reading it waits for a writer, so walkers skip it */
   fifo?: boolean;
+  /** A character device (type 'file' with special 'chr') */
+  chr?: boolean;
 }
 
 /**
@@ -169,6 +171,7 @@ export async function statEntry(fs: FileSystem, path: string, follow = false): P
     ino: (s as { ino?: number }).ino,
     nlink: (s as { nlink?: number }).nlink,
     ...(s.isFIFO?.() ? { fifo: true } : {}),
+    ...(s.isCharacterDevice?.() ? { chr: true } : {}),
   };
   if (s.isSymbolicLink()) {
     try { result.target = await fs.readlink(path); } catch {}

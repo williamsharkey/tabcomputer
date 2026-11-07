@@ -275,6 +275,31 @@ describe('read in a pipeline inside a script', () => {
   });
 });
 
+describe('/dev devices', () => {
+  it('null, tty and ptmx are character devices, not regular files', async () => {
+    const r = await script('[ -c /dev/null ] && echo null-char; [ -f /dev/null ] && echo null-file || echo null-not-file; [ -c /dev/tty ] && echo tty; [ -c /dev/ptmx ] && echo ptmx; [ -c /dev/kmsg ] && echo kmsg; stat -c %F /dev/null\n');
+    expect(r.err).toBe('');
+    expect(r.out).toBe('null-char\nnull-not-file\ntty\nptmx\nkmsg\ncharacter special file\n');
+  });
+});
+
+describe('/dev/kmsg', () => {
+  it('a shell redirect logs to the kernel log instead of creating a file; cat reads the records', async () => {
+    const { KernelLog } = await import('../../../src/kernel/klog');
+    const g = globalThis as { __tabcomputerKlog?: unknown };
+    const saved = g.__tabcomputerKlog;
+    const klog = new KernelLog();
+    g.__tabcomputerKlog = klog;
+    const before = klog.lastSeq;
+    const r = await script("echo '<3>from the shell' >/dev/kmsg\necho 'plain line' >>/dev/kmsg\nls /dev | grep -x kmsg\ncat /dev/kmsg | grep -c 'from the shell'\ncat /dev/kmsg | tail -n 1\n");
+    g.__tabcomputerKlog = saved;
+    expect(r.err).toBe('');
+    expect(r.out).toMatch(/^kmsg\n1\n12,\d+,\d+,-;plain line\n$/);
+    const recs = klog.since(before);
+    expect(recs.map(x => [x.facility, x.level, x.text])).toEqual([[1, 3, 'from the shell'], [1, 4, 'plain line']]);
+  });
+});
+
 describe('/dev/full', () => {
   it('writes fail (exit 1), reads give zeros', async () => {
     const r = await script('echo hi >/dev/full 2>/dev/null || echo failed\nhead -c 3 /dev/full | od -An -tx1\n');

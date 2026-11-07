@@ -148,7 +148,7 @@ export interface FSNode {
    * A special file: 'fifo' is a named pipe (mkfifo). It is stored like an
    * empty regular file; the kernel attaches opens of it to a pipe.
    */
-  special?: 'fifo';
+  special?: 'fifo' | 'chr';
   /**
    * Inode number (st_ino), assigned when the node is created and kept by
    * writes, chmod, utimes and rename, so it is stable across reloads. Nodes
@@ -252,11 +252,11 @@ export function makeStat(node: FSNode): StatResult {
     rdev: 0,
     blksize: 4096,
     blocks: Math.ceil(node.size / 512),
-    isFile() { return node.type === 'file' && !node.special; }, // (a named pipe isn't a regular file)
+    isFile() { return node.type === 'file' && !node.special; }, // (a named pipe or device isn't a regular file)
     isDirectory() { return node.type === 'dir'; },
     isSymbolicLink() { return node.type === 'symlink'; },
     isBlockDevice() { return false; },
-    isCharacterDevice() { return false; },
+    isCharacterDevice() { return node.special === 'chr'; },
     isFIFO() { return node.special === 'fifo'; },
     isSocket() { return false; },
   } as any;
@@ -317,11 +317,27 @@ export interface VirtualFSProvider {
   lstat?(path: string): StatResult | null;
 }
 
+/**
+ * The kernel log (src/kernel/klog.ts), reached through its page global so
+ * this module doesn't import the kernel. The kernel module sets it.
+ */
+function pageKlog(): { writeUser(text: string): void; kmsgText(): string } | undefined {
+  return (globalThis as { __tabcomputerKlog?: { writeUser(text: string): void; kmsgText(): string } }).__tabcomputerKlog;
+}
+
+/** Character devices the shell can see. The kernel opens the same paths itself. */
+const DEV_CHR = new Set(['null', 'zero', 'full', 'random', 'urandom', 'kmsg', 'tty', 'ptmx']);
+
 /** /dev virtual provider */
 class DevProvider implements VirtualFSProvider {
-  handles(path: string): boolean {
-    return path === '/dev/null' || path === '/dev/zero' || path === '/dev/full' || path === '/dev/random' || path === '/dev/urandom' || path === '/dev' || path === '/dev/stdin' || path === '/dev/stdout' || path === '/dev/stderr' || path === '/dev/fd';
+  private name(path: string): string | null {
+    if (path === '/dev') return '';
+    if (!path.startsWith('/dev/') || path.includes('/', 5)) return null;
+    const name = path.slice(5);
+    if (DEV_CHR.has(name) || name === 'stdin' || name === 'stdout' || name === 'stderr' || name === 'fd') return name;
+    return null;
   }
+  handles(path: string): boolean { return this.name(path) !== null; }
   readFile(path: string, encoding?: 'utf8'): string | Uint8Array | null {
     if (path === '/dev/null') return encoding === 'utf8' ? '' : new Uint8Array(0);
     // A page of zeros / random bytes; as text, byte-exact (src/utils/byte-text.ts)
@@ -332,24 +348,38 @@ class DevProvider implements VirtualFSProvider {
       return encoding === 'utf8' ? decodeBytes(buf) : buf;
     }
     if (path === '/dev') return null; // directory
+    // The kernel log's records, as a kernel process reading /dev/kmsg sees them (without blocking at the end)
+    if (path === '/dev/kmsg') { const t = pageKlog()?.kmsgText() ?? ''; return encoding === 'utf8' ? t : encodeText(t); }
     return encoding === 'utf8' ? '' : new Uint8Array(0);
   }
   stat(path: string): StatResult | null {
     if (path === '/dev') return makeStat({ path, type: 'dir', content: null, mode: 0o755, mtime: 0, ctime: 0, size: 0 });
-    if (this.handles(path)) return makeStat({ path, type: 'file', content: new Uint8Array(0), mode: 0o666, mtime: 0, ctime: 0, size: 0 });
-    return null;
+    const name = this.name(path);
+    if (!name) return null;
+    const chr = DEV_CHR.has(name);
+    return makeStat({
+      path, type: 'file', content: new Uint8Array(0),
+      mode: name === 'kmsg' ? 0o644 : 0o666, mtime: 0, ctime: 0, size: 0,
+      ...(chr ? { special: 'chr' as const } : {}),
+    });
   }
   readdir(path: string): string[] | null {
     // shm: a real directory (shm_open's files), the rest synthetic
-    if (path === '/dev') return ['null', 'zero', 'full', 'random', 'urandom', 'stdin', 'stdout', 'stderr', 'fd', 'shm'];
+    if (path === '/dev') return ['null', 'zero', 'full', 'random', 'urandom', 'tty', 'ptmx', 'kmsg', 'stdin', 'stdout', 'stderr', 'fd', 'shm'];
     return null;
   }
   exists(path: string): boolean { return this.handles(path); }
-  writeFile(path: string): boolean {
+  writeFile(path: string, data?: Uint8Array | string): boolean {
     if (path === '/dev/null') return true; // silently discard
+    // A line for the kernel log, as a write to the kernel's /dev/kmsg (`echo '<3>msg' >/dev/kmsg`)
+    if (path === '/dev/kmsg') {
+      const text = typeof data === 'string' ? data : decodeBytes(data ?? new Uint8Array(0));
+      if (text) pageKlog()?.writeUser(text);
+      return true;
+    }
     // /dev/full: every write fails (`echo hi >/dev/full` exits 1, as on Linux)
     if (path === '/dev/full') throw fsError('ENOSPC', "ENOSPC: no space left on device, write '/dev/full'");
-    return this.handles(path); // other dev files: accept but discard
+    return this.handles(path); // other dev files: accept but discard, so a redirect does not create a regular file
   }
 }
 
@@ -2950,6 +2980,10 @@ export class FileSystem {
   /** Append to a file (created if missing). Appends in one flush window are
    *  committed as a single put of the final content. */
   async appendFile(path: string, data: Uint8Array | string): Promise<void> {
+    // /dev/kmsg takes just the new bytes: re-writing what it reads back would log
+    // every record again. Only it: other virtual files (/dom, /proc) keep
+    // read-modify-write, since the shell opens `>>` with appendFile(path, '').
+    if (path === '/dev/kmsg') return this.writeFile(path, data);
     let existing: Uint8Array;
     try {
       existing = await this.readFile(path) as Uint8Array;

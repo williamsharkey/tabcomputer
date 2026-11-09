@@ -279,7 +279,7 @@ if (wants('backend')) {
   f = await until(page, async () => { const x = await inner(page, WIN('pinger')); return (await x?.evaluate((first) => window.__ping?.ok && window.__ping.started !== first, first)) ? x : null; }, 15_000);
   check('a backend that dies is started again, and the window says so meanwhile', /Restarting Pinger/.test(cover ?? '') && !!f && (await portOf(page, 'pinger'))?.state === 'running' && !await page.evaluate(() => !!document.querySelector('.sd-win .tc-app-cover:not([hidden])')), cover ?? 'no cover seen');
 
-  // a reload: the session brings back both windows, and the backend with its window
+  // a reload lists both apps. Open brings each window back, and the backend with it.
   await side(page, 'app open shrink');
   await ready(page, WIN('shrink'));
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
@@ -287,10 +287,17 @@ if (wants('backend')) {
   await page.reload();
   await booted(page);
   const bootMs = Date.now() - r0;
+  await page.evaluate(async () => {
+    for (const cmd of ['app open pinger', 'app open shrink']) {
+      const card = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.cmd === cmd);
+      card?.querySelector('[data-act=open]')?.click();
+      await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+    }
+  });
   f = await ready(page, WIN('pinger'), 60_000);
   const backMs = Date.now() - r0;
   const g = await ready(page, WIN('shrink'), 30_000);
-  check('a reload restores the windows, and the backend with its window', !!f && !!g && (await f.evaluate(() => window.__ping.ok)) && (await portOf(page, 'pinger'))?.state === 'running', `desktop ${bootMs} ms, app interactive ${backMs} ms`);
+  check('a reload lists the apps; Open brings the windows back, and the backend with them', !!f && !!g && (await f.evaluate(() => window.__ping.ok)) && (await portOf(page, 'pinger'))?.state === 'running', `desktop ${bootMs} ms, app interactive ${backMs} ms`);
   check('the dock entries are there after the reload', await dockHas(page, 'pinger') && await dockHas(page, 'shrink'));
 
   // the last window closes: the backend stops

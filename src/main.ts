@@ -920,6 +920,8 @@ async function main() {
   watchSessionFs(fs);
   startNetTally();
   await terminal.start();
+  // The prompt is up. Output before this is not a new desktop session (session.ts sets this).
+  (globalThis as { __tabcomputerArmSession?: () => void }).__tabcomputerArmSession?.();
   fs.releaseKeyIndex();
   // The prompt is up: the next load of this tab is a normal one
   bootFinished();

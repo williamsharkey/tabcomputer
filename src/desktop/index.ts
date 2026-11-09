@@ -284,9 +284,9 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
   // Terminals start in the desktop's palette and font (no re-theme, re-measure later)
   ShiroTerminal.optionOverrides = { theme: terminalTheme(wm.theme()), fontFamily: TERMINAL_FONT, ...(phoneOn ? { fontSize: phoneFont() } : {}) };
 
-  // The first window: the main terminal, front and center (or where it was last time)
-  // (a phone shows one window at a time: of the last session only the apps that were open come back, docs/APPS.md "Lifecycle")
-  const session = loadSession().filter((s) => !wm.compact || /^app open /.test(s.restore?.cmd ?? ''));
+  // The first window: the main terminal, front and center (or where it was last time).
+  // A reload lists the saved session in one window; nothing else opens until a card is used.
+  const session = loadSession();
   const first = (() => {
     const wa = wm.workArea();
     const width = Math.min(860, Math.max(320, wa.width - 100));
@@ -1040,9 +1040,8 @@ export function bootDesktop(deps: DesktopDeps): Desktop {
         document.getElementById('boot-mark')?.remove();
         // the keyboard goes to the focused window (a DOM focus on the main terminal would raise it)
         const back = restoredFocus && restoredFocus !== first.win && restoredFocus.state !== 'closed' ? restoredFocus : null;
-        // The phone layout starts at Home, or in the app a reload came back to (its window may
-        // still be on its way: session.ts runs `app open ID`, and the window comes when the app is up)
-        if (phoneOn && phoneUI) phoneUI.arrive(back, session.find((s) => s.focused && s.id !== 'terminal')?.app);
+        // The phone shows Last session when this reload had one. Otherwise it starts at Home.
+        if (phoneOn && phoneUI) phoneUI.arrive(back && back.appId === 'last-session' ? back : null);
         else if (back) back.focus();
         else term.term.focus();
         performance.mark('shiro:desktop:revealed');

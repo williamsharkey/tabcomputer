@@ -1,10 +1,11 @@
-// Session restore on reload (src/desktop/session.ts, docs/DESKTOP.md "Layout after a reload"):
+// Session restore on reload (src/desktop/session.ts, src/desktop/last-session.ts):
 // two terminals (one cd'd somewhere with an exported variable and output, one
 // running a command that isn't known-safe), an mdview window and a fake agent
-// job (a `codex` on PATH that writes its session file) come back after a
-// reload: directory, variable, scrollback and the separator, the command
-// offered but not run, the window reopened, the agent resumed. Then the
-// preference (Settings → Appearance) goes off and a reload restores nothing.
+// job (a `codex` on PATH that writes its session file). A reload opens one
+// Last session window and leaves the main terminal fresh. View draws the saved
+// screen. Open brings mdview back. Resume is a button, and the agent is not
+// started until it is used. Then the preference (Settings → Appearance) goes
+// off and a reload shows nothing.
 //
 //   npm run build && PORT=5299 STATIC_DIR=$PWD/dist node server.mjs &
 //   node tests/browser/session-restore.mjs [URL]
@@ -71,29 +72,45 @@ try {
   }, null, { timeout: 30_000 }).then(() => true, () => false);
   check(tracked, 'the fake codex run is tracked (agent-resume finds its session file)');
   await page.waitForFunction(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview'), null, { timeout: 15_000 }).catch(() => {});
-  const before = await terminals();
   await page.waitForTimeout(4500); // a save (every 3 s while terminals print)
 
-  // ── reload ──
+  // ── reload: one window, the main terminal fresh ──
   await boot();
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(1500);
   const after = await terminals();
   const main = after.find((t) => t.id === 'terminal');
-  check(main && main.cwd === '/tmp' && main.foo === 'bar', `main terminal: its directory and variable (${main?.cwd}, FOO=${main?.foo})`);
-  check(main && main.screen.includes('hello-main') && main.screen.includes('restored after reload'), 'main terminal: its scrollback, then the separator');
-  const second = after.find((t) => t.screen.includes('second-output'));
-  check(second && second.cwd === '/home/user/proj', `second terminal: back, in its directory (${second?.cwd})`);
-  check(second && second.screen.includes('was running: echo second-output && sleep 300') && second.running === null,
-    `its command is offered, not run (running: ${second?.running})`);
-  const offered = await page.evaluate(() => {
-    const w = window.__shiroDesktop.windows().find((w) => w.content?.activeTerminal?.()?.getBufferContent().includes('second-output'));
-    return w?.content.activeTerminal().getBufferContent().trimEnd().split('\n').pop();
+  const cards = await page.evaluate(() => [...document.querySelectorAll('.sd-last-card')].map((c) => ({ title: c.dataset.title, status: c.dataset.status, kind: c.dataset.kind, cmd: c.dataset.cmd ?? '', acts: [...c.querySelectorAll('button')].map((b) => b.dataset.act) })));
+  check(after.length === 1 && main && main.cwd !== '/tmp' && main.foo === null && !main.screen.includes('hello-main') && !main.screen.includes('restored after reload'),
+    `main terminal stays fresh (${main?.cwd}, FOO=${main?.foo})`);
+  check(cards.some((c) => c.kind === 'terminal' && c.status === 'was running' && c.acts.includes('run')) && cards.some((c) => c.kind === 'agent' && c.status === 'can resume' && c.acts.includes('resume')) && cards.some((c) => c.cmd.startsWith('mdview')),
+    `Last session lists the terminal, the agent and mdview (${JSON.stringify(cards)})`);
+  check(!after.some((t) => (t.running ?? '').includes('codex')) && !(await page.evaluate(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview'))),
+    'nothing was resumed or reopened');
+  // View draws the saved screen. It does not type the command.
+  await page.evaluate(async () => {
+    const card = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.detail === '/tmp');
+    card?.querySelector('[data-act=view]')?.click();
+    await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
   });
-  check(!!offered && offered.endsWith('$ echo second-output && sleep 300'), `…typed on its prompt line (“${offered}”)`);
-  check(await page.evaluate(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview')), 'the mdview window reopened');
-  const agent = after.find((t) => t.screen.includes('resuming Codex'));
-  check(!!agent && (agent.running ?? '').startsWith('codex resume') && agent.running.includes(ID), `the agent resumes its session (${agent?.running})`);
-  check(after.length === before.length, `as many terminals as before (${before.length} → ${after.length})`);
+  await page.waitForTimeout(400);
+  const viewed = (await terminals()).find((t) => t.id === 'terminal');
+  check(viewed && viewed.cwd === '/tmp' && viewed.foo === 'bar' && viewed.screen.includes('hello-main') && viewed.screen.includes('restored after reload'),
+    `View: directory, variable, scrollback, one note (${viewed?.cwd}, FOO=${viewed?.foo})`);
+  await page.evaluate(async () => {
+    const card = [...document.querySelectorAll('.sd-last-card')].find((c) => /sleep 300/.test(c.dataset.title ?? ''));
+    card?.querySelector('[data-act=view]')?.click();
+    await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+  });
+  await page.waitForTimeout(400);
+  const second = (await terminals()).find((t) => t.screen.includes('second-output'));
+  check(second && second.cwd === '/home/user/proj' && second.running === null, `View: the other terminal, command not running (${second?.cwd}, ${second?.running})`);
+  await page.evaluate(async () => {
+    const card = [...document.querySelectorAll('.sd-last-card')].find((c) => (c.dataset.cmd ?? '').startsWith('mdview'));
+    card?.querySelector('[data-act=open]')?.click();
+    await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+  });
+  await page.waitForFunction(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview'), null, { timeout: 15_000 }).catch(() => {});
+  check(await page.evaluate(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview')), 'Open brings the mdview window back');
 
   // ── the preference off: nothing comes back ──
   await page.evaluate(() => window.__shiroDesktop.openApp('settings', { pane: 'appearance' }));
@@ -104,7 +121,7 @@ try {
   await page.waitForTimeout(2500);
   const off = await terminals();
   check(off.length === 1 && off[0].cwd !== '/tmp' && !off[0].screen.includes('restored after reload')
-    && !(await page.evaluate(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview' || w.appId === 'settings'))),
+    && !(await page.evaluate(() => window.__shiroDesktop.windows().some((w) => w.appId === 'mdview' || w.appId === 'settings' || w.appId === 'last-session'))),
   `with it off a reload restores nothing (${off.length} terminal, cwd ${off[0]?.cwd})`);
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join('; ')}` : ''}`);
 } catch (e) {

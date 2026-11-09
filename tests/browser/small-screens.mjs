@@ -164,6 +164,7 @@ for (const { name, phone, defaultBrowserType, ...device } of SIZES) {
   await page.evaluate(() => { localStorage.removeItem('tabcomputer-desktop-welcome'); sessionStorage.setItem('show-welcome', '1'); });
   await page.reload();
   await page.waitForSelector('.sd-welcome', { timeout: 30_000 }).catch(() => {});
+  await page.evaluate(() => window.__shiroDesktop?.windows().find((w) => w.appId === 'last-session')?.close());
   await page.waitForTimeout(600);
   await fits('the welcome');
   const demos = await page.$$eval('.sd-welcome-demo', els => els.length);

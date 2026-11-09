@@ -391,15 +391,19 @@ for (const device of [WIDE, PHONE]) {
       const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15_000 }), clickIn(page, 'expenses', f, '#export')]);
       check(`${D} table: exports as CSV`, dl.suggestedFilename() === 'expenses.csv', dl.suggestedFilename());
     }
-    // a reload: the window comes back and the data is there (a phone's desktop restores no windows: opened again there)
+    // a reload lists the app. Open brings the window back, and the data is there.
     const t3 = Date.now();
     await page.reload();
     await booted(page);
-    // (a phone's desktop brings back the apps that were open, and nothing else)
+    await page.evaluate(async () => {
+      const card = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.cmd === 'app open expenses');
+      card?.querySelector('[data-act=open]')?.click();
+      await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+    });
     f = await ready(page, 'expenses');
-    if (touch) check('phone table: the app\'s window comes back after a reload by itself; a terminal that was open does not', !!f && await page.evaluate(() => window.__tabcomputer.desktop.windows().filter((w) => w.appId === 'terminal').length === 1));
+    if (touch) check('phone table: Open brings the app back, and no extra terminal was opened', !!f && await page.evaluate(() => window.__tabcomputer.desktop.windows().filter((w) => w.appId === 'terminal').length === 1));
     const back = f ? await until(page, () => f.evaluate(() => (window.__app.rows.length === 4 ? window.__app.rows.map((r) => r[1]).join() : null))) : null;
-    time(`${D} table: a reload to the table with its data${' (its window restored)'}`, Date.now() - t3);
+    time(`${D} table: a reload, then Open, to the table with its data`, Date.now() - t3);
     check(`${D} table: a reload finds the data`, back === 'Train to Leeds,Lunch, with "Sam",Light bulbs,Stamps', String(back));
 
     if (!touch) {
@@ -740,8 +744,13 @@ if (wants('links')) {
   check('phone link: the pill is there to leave it', mode.pill, JSON.stringify(mode));
   await shot(page, 'phone-link');
   await page.reload();
+  await page.evaluate(async () => {
+    const card = [...document.querySelectorAll('.sd-last-card')].find((c) => (c.dataset.cmd ?? '').includes('jq-playground'));
+    card?.querySelector('[data-act=open]')?.click();
+    await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+  });
   f = await ready(page, 'jq-playground', 60_000);
-  check('phone link: a reload comes back to the app', !!f);
+  check('phone link: a reload lists the app; Open brings it back', !!f);
   await page.context().close();
 
   // the key row belongs to terminals

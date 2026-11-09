@@ -11,7 +11,7 @@
  * - The window watches its backend: while it restarts the page is covered by
  *   a line saying so; after repeated failures the cover shows the error and
  *   the backend's last output, with Retry.
- * - Session restore reopens the window with `app open ID` (`app dev DIR`),
+ * - Session restore lists the window. Open runs `app open ID` (`app dev DIR`),
  *   which starts the backend again.
  * - App mode (`app open ID --become`, `?app=ID&become`): the tab is the app,
  *   at /<id>; a reload comes back to it (main.ts, become.ts).

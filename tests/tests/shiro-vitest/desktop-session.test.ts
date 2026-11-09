@@ -186,7 +186,44 @@ describe('session restore: save and restore', () => {
     expect(windows[1].restore).toEqual({ cmd: 'mdview n.md', cwd: '/home/user' });
   });
 
-  it('restores: terminals get their tabs and follow-ups, commands run again and their windows go where they were', async () => {
+  it('the prompt before the session is armed does not replace the record', async () => {
+    const s = await import('@shiro/desktop/session');
+    localStorage.setItem(s.SESSION_KEY, JSON.stringify({ v: 2, windows: [{ id: 'w1', app: 'files', g: { x: 0, y: 0, width: 300, height: 200 }, state: 'normal', path: '/usr' }] }));
+    let dirty = true;
+    const t = wm.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
+    (t as any).content = {
+      cwd: () => '/home/user',
+      takeDirty: () => { const d = dirty; dirty = false; return d; },
+      tabStates: () => [{ main: true, cwd: '/home/user' }],
+    };
+    const stop = s.trackSession(wm, {});
+    dirty = true;
+    wm.createWindow({ appId: 'last-session', title: 'Last session' }).close();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(s.loadSession().map((w) => w.app)).toEqual(['files']);
+    s.armSessionTracking();
+    dirty = true;
+    t.move(80, 90);
+    await new Promise((r) => setTimeout(r, 600));
+    stop();
+    expect(s.loadSession().map((w) => w.app)).toEqual(['terminal']);
+  });
+
+  it('a quiet reload keeps the saved session (Last session is not part of it)', async () => {
+    const s = await import('@shiro/desktop/session');
+    localStorage.setItem(s.SESSION_KEY, JSON.stringify({ v: 2, windows: [{ id: 'w1', app: 'files', g: { x: 0, y: 0, width: 300, height: 200 }, state: 'normal', path: '/usr' }] }));
+    const t = wm.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
+    (t as any).content = { cwd: () => '/home/user', takeDirty: () => false, tabStates: () => [{ main: true, cwd: '/home/user' }] };
+    const stop = s.trackSession(wm, {});
+    s.armSessionTracking();
+    const card = wm.createWindow({ appId: 'last-session', title: 'Last session' });
+    card.close();
+    await new Promise((r) => setTimeout(r, 500));
+    stop();
+    expect(s.loadSession().map((w) => w.app)).toEqual(['files']);
+  });
+
+  it('opens Last session and nothing else; View, Run, Resume and Open do the rest', async () => {
     const s = await import('@shiro/desktop/session');
     const agent = { agent: 'claude' as const, sessionId: 'S1', argv: [], line: 'claude --resume S1', cwd: '/home/user/p' };
     const saved: any[] = [
@@ -201,22 +238,42 @@ describe('session restore: save and restore', () => {
     const opened: any[] = [];
     let claudeView: ReturnType<typeof fakeView> | null = null;
     const ran: string[] = [];
+    const written: string[] = [];
     const focused = await s.restoreSession(wm, saved, {
       openTerminal: (o) => { opened.push(o); const w = wm.createWindow({ appId: 'terminal', title: o.title ?? 'Terminal' }); claudeView = fakeView([]); (w as any).content = claudeView.view; return w; },
       // mdview opens its window at once; GUI apps later
       run: (cmd) => { ran.push(cmd); if (cmd.startsWith('mdview')) wm.createWindow({ appId: 'mdview', title: 'n.md' }); },
+      writeFile: async (path) => { written.push(path); },
     });
-    expect(opened).toEqual([{ cwd: '/home/user/p', title: 'Claude' }]);
-    // the main terminal: its command offered, typed but not run
-    expect(mainView.restored.typed).toEqual(['make test']);
+    expect(focused?.appId).toBe('last-session');
+    expect(opened).toEqual([]);
+    expect(ran).toEqual([]);
+    expect(written).toEqual([]);
+    expect(mainView.restored.typed).toEqual([]);
+    const titles = [...document.querySelectorAll('.sd-last-card')].map((c) => (c as HTMLElement).dataset.title);
+    expect(titles).toEqual(['make test', 'Claude · 2 tabs', 'Claude Code', 'n.md', 'gimp']);
+    expect(document.querySelectorAll('.sd-last-card[data-kind=agent] [data-act=resume]')).toHaveLength(1);
+    const click = async (sel: string) => {
+      (document.querySelector(sel) as HTMLButtonElement).click();
+      await (document.querySelector('.sd-last') as { __job?: Promise<void> }).__job;
+    };
+    // View draws the screen and remembers the line. It does not type it.
+    await click('.sd-last-card[data-title="make test"] [data-act=view]');
+    expect(mainView.restored.typed).toEqual([]);
     expect(mainView.restored.notes[0]).toBe(s.RESTORED_NOTE);
-    // the agent's session resumes once; the second tab had the same session (dedupe): its line is only offered
-    expect(claudeView!.restored.typed).toEqual(['claude --resume S1\r', 'claude']);
-    expect([mainView.restored.history, claudeView!.restored.history]).toEqual([['make test'], ['claude --resume S1', 'claude']]);
+    expect(mainView.restored.history).toEqual(['make test']);
+    await click('.sd-last-card[data-title="make test"] [data-act=run]');
+    expect(mainView.restored.typed).toEqual(['make test\r']);
+    expect(mainView.restored.tabs).toHaveLength(1);
+    // the agent's session resumes in a new terminal, once
+    await click('.sd-last-card[data-kind=agent] [data-act=resume]');
+    expect(opened).toEqual([{ cwd: '/home/user/p', title: 'Claude Code', command: 'claude --resume S1' }]);
+    expect(claudeView!.restored.typed).toEqual([]);
+    await click('[data-cmd="mdview n.md"] [data-act=open]');
+    await click('[data-cmd="gui gimp"] [data-act=open]');
     expect(ran).toEqual(['mdview n.md', 'gui gimp']);
     const mdWin = wm.windows().find((w) => w.appId === 'mdview')!;
     expect(mdWin.geometry()).toMatchObject({ x: 120, y: 80, width: 400, height: 300 });
-    expect(focused).toBe(mdWin);
     // GIMP's window comes later: it goes where it was
     const gimp = wm.createWindow({ appId: 'gimp', title: 'GIMP' });
     expect(gimp.geometry()).toMatchObject({ x: 200, y: 100, width: 600, height: 400 });

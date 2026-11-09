@@ -1,6 +1,6 @@
 // Papercuts from a classroom test (tabcomputer#128, #124), the parts only a browser shows:
 //  1. `desktop open code DIR` opens DIR, not the home folder
-//  2. a terminal reloaded four times shows one restore note and one prompt
+//  2. View on Last session, four reloads: one restore note and one prompt
 //  3. the welcome card's "Write some Python" runs the built-in python3
 //  4. `time` prints user and sys in the terminal's format; valgrind's hint
 //
@@ -93,6 +93,13 @@ try {
       await page.waitForTimeout(1500);
       await page.reload();
       await boot(page, false);
+      const fresh = await screen(page);
+      check(!fresh.some((l) => /before the page reloaded/.test(l) || /^marker-one/.test(l)), `reload ${i}: the main terminal is fresh until View`);
+      await page.evaluate(async () => {
+        const b = document.querySelector('.sd-last-card[data-kind=terminal] [data-act=view]');
+        b?.click();
+        await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+      });
       await page.waitForFunction(() => { const b = window.__tabcomputer.terminal.term.buffer.active; for (let i = 0; i < b.length; i++) if (/before the page reloaded/.test(b.getLine(i)?.translateToString(true) ?? '')) return true; return false; }, null, { timeout: 30_000 }).catch(() => {});
       await page.waitForTimeout(1500);
       const lines = await screen(page);

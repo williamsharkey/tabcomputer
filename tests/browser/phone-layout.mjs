@@ -705,12 +705,18 @@ async function link(width, height, theme) {
     check(`${T} link: the pill leaves it for Home, where the app now has its icon`, st.home && (await home(s)).pages[0].includes('count'), st);
     await tapOn(s, '.sd-home-page .sd-home-app[data-app=count] .sd-home-icon');
     await s.page.waitForTimeout(800);
-    // A reload comes back to the app
+    // A reload lists the app. Open brings it back.
     await s.page.waitForTimeout(3500);
     await boot(s.page, new URL('/', url).href);
+    await s.page.waitForFunction(() => window.__shiroDesktop?.focused()?.appId === 'last-session' || !!document.querySelector('.sd-last-card'), null, { timeout: 30_000 }).catch(() => {});
+    await s.page.evaluate(async () => {
+      const card = [...document.querySelectorAll('.sd-last-card')].find((c) => (c.dataset.cmd ?? '').includes('count'));
+      card?.querySelector('[data-act=open]')?.click();
+      await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+    });
     await s.page.waitForFunction(() => window.__shiroDesktop?.focused()?.appId === 'count', null, { timeout: 30_000 }).catch(() => {});
     st = await state(s);
-    check(`${T} link: a reload comes back to the app, not to Home`, st.focused === 'count' && !st.home && st.pill, st);
+    check(`${T} link: a reload lists the app; Open brings it back, not Home`, st.focused === 'count' && !st.home && st.pill, st);
     // A tab an earlier build's link left in app mode (the bar "‹ tabcomputer"): it opens in the phone layout now
     await s.page.evaluate(() => {
       localStorage.setItem('tabcomputer-become', JSON.stringify({ directory: '/home/user/Apps/count', port: 0, slug: 'count', title: 'Count', app: 'count', back: true }));

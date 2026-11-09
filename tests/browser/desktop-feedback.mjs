@@ -1,5 +1,5 @@
 // Desktop behaviour from user feedback (docs/DESKTOP.md):
-//  1. window order and the focused window survive a reload; safe-mode reset-layout forgets them
+//  1. a reload lists the windows on Last session instead of opening them; Open brings one back; safe-mode reset-layout forgets them
 //  2. the welcome card drags like a window
 //  3. a tall window (Apps) opens above the dock, not past it
 //  4. the menu bar follows the focused window's app (Code, opened by the `code` command)
@@ -86,21 +86,22 @@ try {
       for (const id of ['files', 'settings', 'apps', 'terminal']) wm.windows().find((w) => w.appId === id)?.focus();
     });
     await page.waitForTimeout(800);
-    const saved = await stack(page);
     await boot(page);
     await page.waitForTimeout(1500);
     const back = await stack(page);
-    const restorable = (o) => o.filter((a) => ['terminal', 'files', 'settings'].includes(a));
-    check(JSON.stringify(restorable(back.order)) === JSON.stringify(restorable(saved.order)) && back.focused === 'terminal',
-      `order and focus survive a reload (${restorable(saved.order).join(',')} focus ${saved.focused} → ${restorable(back.order).join(',')} focus ${back.focused})`);
-    // now Settings on top
-    await page.evaluate(() => window.__shiroDesktop.windows().find((w) => w.appId === 'settings')?.focus());
-    await page.waitForTimeout(800);
-    await boot(page);
-    await page.waitForTimeout(1500);
+    const titles = await page.evaluate(() => [...document.querySelectorAll('.sd-last-card')].map((c) => c.dataset.title));
+    check(back.order.includes('last-session') && !back.order.includes('files') && !back.order.includes('settings') && back.focused === 'last-session'
+      && titles.includes('Files') && titles.includes('Settings'),
+      `a reload lists the session instead of opening it (${back.order.join(',')} focus ${back.focused}; ${titles.join(', ')})`);
+    await page.evaluate(async () => {
+      const b = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.app === 'settings')?.querySelector('[data-act=open]');
+      b?.click();
+      await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+    });
+    await page.waitForTimeout(500);
     const s2 = await stack(page);
-    check(s2.focused === 'settings' && restorable(s2.order).at(-1) === 'settings' && await appName(page) === 'Settings',
-      `a window other than the main terminal keeps the focus (${restorable(s2.order).join(',')}, focus ${s2.focused}, menu bar “${await appName(page)}”)`);
+    check(s2.focused === 'settings' && await appName(page) === 'Settings',
+      `Open brings Settings back (${s2.order.join(',')}, focus ${s2.focused}, menu bar “${await appName(page)}”)`);
     const r = await sh(page, 'safe-mode reset-layout');
     const cleared = await page.evaluate(() => localStorage.getItem('tabcomputer-desktop-session'));
     check(r.code === 0 && (cleared === null || !JSON.parse(cleared).windows?.some((w) => w.focused && w.app === 'settings')), `safe-mode reset-layout forgets them (${r.out.trim().split('\n')[0]})`);

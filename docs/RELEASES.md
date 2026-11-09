@@ -6,6 +6,7 @@ session git proxy refuses tag pushes, so this file is the log. Newest first.
 
 | Build | Commit (main = deploy) | Date (UTC) | What shipped |
 |---|---|---|---|
+| 1047 | see `git log --grep "^Build 1047"` | 2026-11-09 | A reload opens one window, Last session, listing what was open. The main terminal stays at a fresh prompt. View shows a saved screen, Resume continues Claude Code, Codex or a server, Run starts a command that was still going, and Open brings a window back. Closing the window leaves the desktop clear and keeps the record |
 | 1046 | see `git log --grep "^Build 1046"` | 2026-11-07 | Build 1045 did not go live: `stat` called `isCharacterDevice` and the type did not list it. This build adds that method. The `/dev` changes from 1045 are in it |
 | 1045 | see `git log --grep "^Build 1045"` | 2026-11-07 | The shell's `/dev` matches the kernel's. `echo >/dev/kmsg` writes the kernel log instead of a regular file, and `cat` reads the records (#171). `/dev/null`, `/dev/tty`, `/dev/ptmx` and the other device nodes are character devices, so `[ -c /dev/null ]` is true (#172). The droplet build failed on a missing type, so this build did not become the live release |
 | 1044 | see `git log --grep "^Build 1044"` | 2026-11-07 | A busy page is no longer treated as a dead remote peer. The ping waits 45 seconds, and the outside probe only hangs up after three misses. A Claude session can keep the page busy without the link dropping |

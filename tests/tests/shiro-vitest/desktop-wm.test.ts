@@ -303,12 +303,16 @@ describe('quarters, launcher matching, session', () => {
     expect(saved[1]).toMatchObject({ app: 'files', path: '/usr/bin', state: 'snapped-right' });
     const opened: unknown[] = [];
     wm.registerApp({ id: 'files', name: 'Files', launch: (a) => { opened.push(a); return wm.createWindow({ appId: 'files' }); } });
-    await s.restoreSession(wm, saved, () => null);
+    const card = await s.restoreSession(wm, saved, () => null);
+    expect(card?.appId).toBe('last-session');
+    expect(opened).toEqual([]);
+    (document.querySelector('.sd-last-card[data-app=files] [data-act=open]') as HTMLButtonElement).click();
+    await (document.querySelector('.sd-last') as { __job?: Promise<void> }).__job;
     expect(opened).toEqual([{ newWindow: true, path: '/usr/bin' }]);
     expect(wm.windows().filter(w => w.appId === 'files').pop()!.state).toBe('snapped-right');
   });
 
-  it('keeps the stacking order and the focused window across a reload, the main terminal included', async () => {
+  it('saves the stacking order and the focused window, and a reload lists them instead of opening them', async () => {
     const s = await import('@shiro/desktop/session');
     localStorage.removeItem(s.SESSION_KEY);
     const stop = s.trackSession(wm);
@@ -320,18 +324,16 @@ describe('quarters, launcher matching, session', () => {
     stop();
     const saved = s.loadSession();
     expect(saved.map(w => [w.app, !!w.focused])).toEqual([['files', false], ['settings', false], ['terminal', true]]);
-    // the reload: the main terminal comes first (boot), the others reopen after it
     document.body.innerHTML = '';
     const root = document.createElement('div');
     document.body.appendChild(root);
     const wm2 = new WindowManager(root, { workArea: () => ({ x: 0, y: 30, width: 1000, height: 600 }) });
-    const t2 = wm2.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
+    wm2.createWindow({ id: 'terminal', appId: 'terminal', title: 'Terminal' });
     for (const id of ['files', 'settings']) wm2.registerApp({ id, name: id, launch: () => wm2.createWindow({ appId: id }) });
     const focused = await s.restoreSession(wm2, saved, () => null);
-    expect(wm2.windows().map(w => w.appId)).toEqual(['files', 'settings', 'terminal']);
-    expect(focused).toBe(t2);
-    // a session saved by an older build (no focus mark): stacked as listed, nothing to refocus
-    expect(await s.restoreSession(wm2, saved.map(({ focused: _, ...w }) => w), () => null)).toBe(null);
+    expect(wm2.windows().map(w => w.appId)).toEqual(['terminal', 'last-session']);
+    expect(focused?.appId).toBe('last-session');
+    expect([...document.querySelectorAll('.sd-last-card')].map(c => (c as HTMLElement).dataset.title)).toEqual(['Files', 'Settings', 'Terminal']);
   });
 });
 

@@ -1,27 +1,27 @@
 /**
- * Session restore across reloads (docs/DESKTOP.md "Layout after a reload"):
- * the windows that were open, where, in what state, in their stacking order
- * with the focused one marked, and what each showed:
+ * Session restore across reloads (docs/DESKTOP.md "Session restore on reload").
+ * What was open is saved as before. A reload does not reopen it. It opens one
+ * Last session window (last-session.ts): a card per window, and one more for
+ * each Claude Code or Codex session. The main terminal stays at a fresh prompt.
  *
- * - Terminal windows: every tab with its working directory, the exported
- *   variables it changed, a program's title and its last 2000 lines of
- *   scrollback (restored as text, then a dim "— restored after reload —").
- *   A line still running at the reload is offered on the prompt, typed but
- *   not run (a long one as `source /tmp/restore-N.sh`, the script holding it;
- *   claude as `claude --continue`), except known-safe long-runners
- *   (RESTARTABLE: servers) and Claude Code / Codex, which resume their own
- *   session (agent-resume.ts: `claude --resume ID`) by themselves.
- * - Files, Settings, Activity, About: their folder or pane.
- * - Windows a command opened (mdview, html, img, finder, Code, serve; GUI
- *   apps through `gui APP`): the command runs again in its directory.
+ * - View draws a terminal's saved screen and the one restore note.
+ * - Resume starts Claude Code or Codex (`claude --resume` / `codex resume`)
+ *   in a new terminal, or a known-safe server (RESTARTABLE) in the saved one.
+ * - Run starts a command that was still going. A long one is written to
+ *   `/tmp/restore-N.sh` only then.
+ * - Open runs the command that opened a window (mdview, Code, `gui APP`,
+ *   `app open`), or opens Files, Settings, Activity or About where it was.
+ *
+ * Closing Last session does not forget the record, and a quiet reload does
+ * not replace it with the fresh terminal. The record is replaced once the
+ * desktop actually changes (a window opens, a command runs).
  *
  * The description is small and goes to localStorage `tabcomputer-desktop-session`
  * (on window changes, every few seconds while terminals print, at pagehide);
  * scrollback goes to IndexedDB (session-store.ts), never blocking the page.
- * Restore runs after the first prompt (the main terminal's geometry at boot).
- * Off with Settings → Desktop "Restore session on reload" (`tabcomputer-restore-session`
- * = '0'), skipped (and said) after a load that froze, never in safe mode;
- * `safe-mode reset-layout` forgets it all.
+ * Off with Settings → Appearance "Restore session on reload"
+ * (`tabcomputer-restore-session` = '0'), skipped (and said) after a load that
+ * froze, never in safe mode; `safe-mode reset-layout` forgets it all.
  */
 
 import type { DesktopWindow, Geometry, WindowManager, WindowState } from './wm';
@@ -29,8 +29,9 @@ import type { TabState, TerminalView } from './terminal-app';
 import * as store from './session-store';
 import * as agentResume from '../agent-resume';
 import type { ResumeCommand } from '../agent-resume';
-import { isPlaceholder, rememberGeometry } from './launch-state';
+import { isPlaceholder } from './launch-state';
 import { RESTORED_NOTE } from './restore-note';
+import { lastSessionCards, openLastSession } from './last-session';
 
 export const SESSION_KEY = 'tabcomputer-desktop-session';
 /** '0': don't restore the session on reload (Settings → Desktop) */
@@ -120,17 +121,60 @@ export function snapshotSession(wm: WindowManager, base: Record<string, string>,
   return { windows, screens };
 }
 
+/** What a saved window is, apart from where it sits. A quiet reload matches this and is not written over the record. */
+function sessionFingerprint(windows: SavedWindow[]): string {
+  return JSON.stringify(windows.map((w) => ({
+    id: w.id, app: w.app, cwd: w.cwd, path: w.path, pane: w.pane, title: w.title,
+    tabs: w.tabs?.map((t) => ({
+      main: t.main, active: t.active, cwd: t.cwd, env: t.env, osc: t.osc, running: t.running,
+      agent: t.agent?.sessionId ?? null,
+    })),
+    cmd: w.restore?.cmd,
+  })));
+}
+
+/**
+ * The prompt and ~/.profile are drawn after tracking starts (main.ts). Until
+ * `armSessionTracking`, that output is not a new session and does not replace
+ * the saved one. A command after the prompt does.
+ */
+let armSession: (() => void) | null = null;
+let sessionArmed = false;
+export function armSessionTracking(): void {
+  sessionArmed = true;
+  armSession?.();
+}
+
 /** Keep the session saved as windows open, move and close, and as terminals print. Returns stop. */
 export function trackSession(wm: WindowManager, base: Record<string, string> = {}): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let screensDirty = true;
+  const viewsOf = () => wm.windows().map((w) => (w as { content?: any }).content).filter((c) => typeof c?.takeDirty === 'function') as TerminalView[];
+  const clearDirt = () => { for (const v of viewsOf()) v.takeDirty(); };
+  clearDirt();
+  let baseline = sessionFingerprint(snapshotSession(wm, base, false).windows);
+  let committed = false;
+  let activity = false;
+  let armed = sessionArmed;
+  const rebaseline = () => {
+    clearDirt();
+    baseline = sessionFingerprint(snapshotSession(wm, base, false).windows);
+    armed = true;
+  };
+  armSession = rebaseline;
+  (globalThis as { __tabcomputerArmSession?: () => void }).__tabcomputerArmSession = rebaseline;
+  if (sessionArmed) rebaseline();
   const save = (force = false) => {
     timer = null;
-    const views = wm.windows().map((w) => (w as { content?: any }).content).filter((c) => typeof c?.takeDirty === 'function') as TerminalView[];
+    const views = viewsOf();
     // (every view's flag is taken, so one print doesn't keep saving)
-    for (const v of views) if (v.takeDirty()) screensDirty = true;
+    for (const v of views) if (v.takeDirty()) { screensDirty = true; if (armed) activity = true; }
+    const light = snapshotSession(wm, base, false);
+    // A reload that only showed Last session must not replace the record with the fresh terminal.
+    if (!committed && !activity && sessionFingerprint(light.windows) === baseline) return;
+    committed = true;
     const withScreens = screensDirty || force;
-    const { windows, screens } = snapshotSession(wm, base, withScreens);
+    const { windows, screens } = withScreens ? snapshotSession(wm, base, true) : light;
     try { localStorage.setItem(SESSION_KEY, JSON.stringify({ v: 2, windows })); } catch { /* full or blocked */ }
     if (withScreens) { screensDirty = false; void store.putAll(screens); }
   };
@@ -140,14 +184,16 @@ export function trackSession(wm: WindowManager, base: Record<string, string> = {
   offs.push(agentResume.onChange(() => queue()));
   // terminals print without window events: look every few seconds
   const tick = setInterval(() => {
-    const views = wm.windows().map((w) => (w as { content?: any }).content).filter((c) => typeof c?.takeDirty === 'function') as TerminalView[];
-    if (views.some((v) => v.takeDirty())) { screensDirty = true; queue(0); }
+    if (viewsOf().some((v) => v.takeDirty())) { screensDirty = true; if (armed) { activity = true; queue(0); } }
   }, SAVE_EVERY_MS);
   const now = () => save(true);
   const hidden = () => { if (document.visibilityState === 'hidden') now(); };
   window.addEventListener('pagehide', now);
   document.addEventListener('visibilitychange', hidden);
   return () => {
+    if (armSession === rebaseline) armSession = null;
+    const g = globalThis as { __tabcomputerArmSession?: () => void };
+    if (g.__tabcomputerArmSession === rebaseline) g.__tabcomputerArmSession = undefined;
     offs.forEach(o => o()); clearInterval(tick);
     window.removeEventListener('pagehide', now); document.removeEventListener('visibilitychange', hidden);
     if (timer) clearTimeout(timer);
@@ -195,65 +241,20 @@ export interface RestoreDeps {
 }
 
 /**
- * Reopen the saved windows (the main terminal is already there), then stack
- * them all as they were. Returns the window that had the focus, for the
- * caller to focus once the desktop shows (null: none saved).
+ * Open the Last session window for `saved`. The main terminal is already
+ * there and stays as it is. Returns that window, or null when nothing was
+ * saved. Nothing is reopened until a card is used.
  */
 export async function restoreSession(wm: WindowManager, saved: SavedWindow[], deps: RestoreDeps | RestoreDeps['openTerminal']): Promise<DesktopWindow | null> {
   const d: RestoreDeps = typeof deps === 'function' ? { openTerminal: deps } : deps;
-  const placed: [SavedWindow, DesktopWindow][] = [];
-  // what each tab does after its screen is back; no agent session resumed twice
-  const agents = agentResume.dedupe(saved.flatMap((s) => (s.tabs ?? []).map((t) => t.agent ?? null)));
-  let k = 0;
-  let n = 0;
-  const follow = saved.map((s) => (s.tabs ?? []).map((t) => {
-    const f = followUp(t, agents[k++] ?? null, n + 1);
-    if (f.file) n++;
-    // (no way to write the script: the note says what ran, the line is left alone)
-    if (f.file && !d.writeFile) return { note: `${RESTORED_NOTE}\r\nwas running: ${t.running!.trim().split('\n')[0].slice(0, OFFER_MAX)}…` };
-    return f;
-  }));
-  await Promise.all(follow.flat().map((f) => (f.file ? d.writeFile!(f.file.path, f.file.text).catch(() => {}) : undefined)));
-  for (const [wi, s] of saved.entries()) {
-    let w: DesktopWindow | null = null;
-    try {
-      if (s.app === 'terminal') {
-        w = s.id === 'terminal' ? wm.get('terminal') ?? null : d.openTerminal({ cwd: s.tabs?.[0]?.cwd ?? s.cwd ?? '/home/user', title: s.title });
-        const view = (w as { content?: any } | null)?.content as TerminalView | undefined;
-        if (view && typeof view.restoreTabs === 'function') {
-          const tabs = await Promise.all((s.tabs ?? []).map(async (t, j) => ({ ...t, screen: (await store.get(screenKey(wi, j))) ?? '' })));
-          const f = follow[wi];
-          view.restoreTabs(tabs, (j) => f[j]?.note ?? RESTORED_NOTE, (j, term) => {
-            if (f[j]?.history) term.rememberCommand?.(f[j].history!);
-            if (f[j]?.run) term.injectInput(f[j].run + '\r');
-            else if (f[j]?.offer) term.injectInput(f[j].offer!);
-          }, s.id !== 'terminal');
-        }
-      } else if (s.restore) {
-        if (d.run) {
-          const before = new Set(wm.windows());
-          // A slow app's placeholder window (launch-ui.ts) is reserved where the window was
-          rememberGeometry(s.app, s.g);
-          d.run(s.restore.cmd, s.restore.cwd);
-          // a command's window may come later (GUI apps): place it when it does, for a while
-          w = wm.windows().find((x) => !before.has(x) && x.appId === s.app && !isPlaceholder(x)) ?? null;
-          if (!w) {
-            const off = wm.on('window-created', (nw) => {
-              // (not its placeholder, a splash screen or a menu: the app's own window)
-              if (!nw || nw.appId !== s.app || isPlaceholder(nw) || nw.options.splash || nw.options.override) return;
-              off(); clearTimeout(t);
-              place(nw, s, wm.workArea());
-            });
-            const t = setTimeout(off, 600_000);
-          }
-        }
-      } else {
-        w = await wm.openApp(s.app, { newWindow: true, ...(s.path ? { path: s.path } : {}), ...(s.pane ? { pane: s.pane } : {}) });
-      }
-    } catch (e) { console.warn('[desktop] restore', s.app, e); }
-    if (w) { if (s.id !== 'terminal') place(w, s, wm.workArea()); placed.push([s, w]); }
-  }
-  // Opening focused (raised) each window in turn, after the main terminal: restack bottom to top
-  for (const [s, w] of placed) if (s.state !== 'minimized' && w.state !== 'closed') w.focus();
-  return placed.find(([s, w]) => s.focused && w.state !== 'closed' && w.state !== 'minimized')?.[1] ?? null;
+  const cards = lastSessionCards(saved, followUp);
+  if (!cards.length) return null;
+  return openLastSession(wm, saved, cards, {
+    openTerminal: d.openTerminal,
+    run: d.run,
+    writeFile: d.writeFile,
+    place: (w, s) => place(w, s, wm.workArea()),
+    screen: async (wi, ti) => (await store.get(screenKey(wi, ti))) ?? '',
+    note: RESTORED_NOTE,
+  });
 }

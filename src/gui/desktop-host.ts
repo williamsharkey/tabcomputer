@@ -61,7 +61,7 @@ class DesktopCanvasWindow implements CanvasWindow {
       },
     };
     this.win = d.createWindow(options);
-    // Session restore (src/desktop/session.ts): a Debian GUI app's main window reopens with `gui APP`
+    // Session restore (src/desktop/session.ts): Open on its card runs `gui APP`
     const app = opts.appId ? (d as { app?(id: string): { order?: number } | undefined }).app?.(opts.appId) : undefined;
     if (app && (app.order ?? 0) >= 60 && !opts.override && !parent && opts.decorated) {
       (this.win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: `gui ${opts.appId}`, cwd: '/home/user' };

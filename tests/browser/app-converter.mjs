@@ -188,12 +188,17 @@ async function zipOf(page, sel, f) {
   f = await ready(page, WIN);
   check('opened again, it lists the results folder', !!f && await until(page, () => f.evaluate(() => window.__converter.marks.restored >= 6)), String(await f?.evaluate(() => window.__converter.marks.restored)));
 
-  // a reload of the tab: the session brings the window back
+  // a reload of the tab: Last session lists it; Open brings the window back
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   await page.reload();
   await booted(page);
+  await page.evaluate(async () => {
+    const card = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.cmd === 'app open converter');
+    card?.querySelector('[data-act=open]')?.click();
+    await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+  });
   f = await ready(page, WIN, 60_000);
-  check('a reload of the tab restores the window and the batch', !!f && await until(page, () => f.evaluate(() => window.__converter.marks.restored >= 6)));
+  check('a reload lists the app; Open brings the window and the batch back', !!f && await until(page, () => f.evaluate(() => window.__converter.marks.restored >= 6)));
 
   // ── become ──
   const became = await side(page, 'app open converter --become');

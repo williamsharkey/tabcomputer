@@ -124,7 +124,7 @@ export function open(ctx: AppContext, args?: Record<string, unknown>): DesktopWi
         <div class="sd-seg" role="radiogroup" aria-label="Layout">
           <button data-layout="auto" role="radio">Automatic</button><button data-layout="phone" role="radio">Phone</button><button data-layout="desktop" role="radio">Desktop</button>
         </div></div></div>
-      <div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Restore session on reload<div class="sd-small sd-muted">Terminals come back with their folder, variables and scrollback, and the windows that were open. A command that was running is offered again, not run (servers and Claude Code resume).</div></span>
+      <div class="sd-card" style="margin-bottom:10px"><div class="sd-row"><span class="sd-grow">Restore session on reload<div class="sd-small sd-muted">One window lists what was open. Nothing else opens until you ask. View shows a terminal. Resume continues Claude Code, Codex, or a server. Run starts a command that was still going.</div></span>
         <div class="sd-seg" role="radiogroup" aria-label="Restore session on reload">
           <button data-restore="1" role="radio">On</button><button data-restore="0" role="radio">Off</button>
         </div></div></div>

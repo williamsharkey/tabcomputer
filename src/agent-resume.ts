@@ -1,7 +1,7 @@
 /**
  * Which agent CLI each terminal is running, and the command that resumes it
- * after a reload (session restore: the desktop saves this with the window and
- * types it into the restored terminal).
+ * after a reload (session restore: the desktop saves this with the window.
+ * Last session's Resume runs it; a reload does not type it by itself).
  *
  * The terminal reports every line it runs (`lineStarted`/`lineEnded`). A line
  * whose command is `claude` or `codex` (after any VAR=value words) is tracked

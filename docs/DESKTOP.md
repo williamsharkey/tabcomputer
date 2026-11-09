@@ -140,27 +140,35 @@ destroyed), and the next Terminal window adopts it again.
   opens an app or file, or runs the command in a new Terminal window; the
   last entry always runs what you typed. Ctrl+Space no longer reaches the
   terminal (Ctrl+@ still sends NUL, e.g. for Emacs' set-mark).
-- **Session restore on reload** (`session.ts`, on by default; Settings →
-  Appearance "Restore session on reload"). Windows come back where they
-  were, maximized/snapped/minimized as they were, in their stacking order
-  (the main terminal included), and the window that had the focus gets it
-  back.
-  - Terminal windows: every tab with its working directory, the exported
-    variables it changed (secrets never stored), a program's title and its
-    last 2000 lines of scrollback, then a dim "— restored after reload —".
-    A line still running at the reload is typed on the prompt, not run,
-    under that one note: as it was when short, else as `source
-    /tmp/restore-N.sh` (the script holds the line, `cat` shows it), and
-    `claude --continue` for a claude whose session wasn't found. Known-safe servers (`RESTARTABLE`: `serve`,
-    `npm run dev`, `vite`, `python -m http.server`) start again, and Claude
-    Code or Codex resume their own session (`agent-resume.ts`).
-  - Files (its folder), Settings (its pane), Activity, About.
-  - Windows a command opened run that command again in its directory:
-    mdview, html, img, finder, Code, Monaco, a Preview (`serve open`), and a
-    Debian GUI app's main window (`gui APP`, once per app).
+- **Session restore on reload** (`session.ts`, `last-session.ts`, on by
+  default; Settings → Appearance "Restore session on reload"). A reload opens
+  one window, **Last session**, and nothing else from the saved session. The
+  main terminal stays where it was, empty, at a fresh prompt. Closing the
+  window leaves the desktop clear and does not forget the record, so the next
+  quiet reload shows it again. The record is replaced once the desktop
+  changes (a window opens, a command runs).
+  - One card per thing that was open: a title, the folder, a status word,
+    and the actions on the right. No scrollback on the card.
+  - A terminal: View opens it and draws its saved screen (the last 2000
+    lines, folder, exported variables, secrets never stored) with one dim
+    "— restored after reload —". Resume starts a known-safe server
+    (`RESTARTABLE`: `serve`, `npm run dev`, `vite`, `python -m http.server`).
+    Run starts any other command that was still going: as it was when short,
+    else as `source /tmp/restore-N.sh` (the script is written only then).
+    `claude --continue` when a Claude session was not found.
+  - Claude Code or Codex (`agent-resume.ts`) is its own card even when it
+    lived in a terminal. View shows that terminal's screen. Resume starts
+    `claude --resume` or `codex resume` in a new terminal. One session id is
+    resumed once.
+  - Files (its folder), Settings (its pane), Activity, About: Open brings
+    the window back.
+  - A window a command opened: Open runs that command in its directory.
+    mdview, html, img, finder, Code, Monaco, a Preview (`serve open`), a
+    Notebook, Studio, an installed app (`app open ID`), and a Debian GUI
+    app's main window (`gui APP`, once per app). The window goes where it was.
   - Saved small in localStorage `tabcomputer-desktop-session` (on window
     changes, every 3 s while terminals print, at pagehide), scrollback in
-    IndexedDB `tabcomputer-session`; never a blocking write. Restore runs
+    IndexedDB `tabcomputer-session`; never a blocking write. The window opens
     after the first prompt. Not in safe mode, and not after a load that froze
     (the watchdog's wedge record; the main terminal says so), so a session
     that freezes on restore can't loop. `safe-mode reset-layout` forgets it.
@@ -351,12 +359,14 @@ the screen's, so a tablet does not become a phone while its keyboard is up.
   which the app may take for a click where the first finger was.
 - **A link to an app** opens as the app on the whole screen (after the
   install question where the link needs one), with the pill to leave it by
-  and no bar back to the desktop; a reload comes back to the app. A tab that
+  and no bar back to the desktop. A reload lists it on Last session; Open
+  brings it back. A tab that
   an earlier build's link turned into the app (`becomeApp` with `back`) opens
   the same way. Only the terminal UI on a phone, which has no desktop under
   it, still makes the tab the app with that bar.
-- **At boot** it shows Home, with the main Terminal already open behind it;
-  only a reload that left an installed app in front comes back to that app.
+- **At boot** it shows Home, with the main Terminal already open behind it.
+  A reload that had something open shows Last session on the whole screen;
+  closing it is Home. Open on a card brings that app back.
 
 Measured by `tests/browser/phone-layout.mjs` in Chromium with a touch screen
 (on a build served by `server.mjs` on the same machine):
@@ -488,9 +498,9 @@ already `running` as started, not as cancelled.
   without installing next time. While starting: the process and the
   processes it started get SIGTERM, then SIGKILL after 2 s; nothing of the
   app's can be unsaved before its first window.
-- **Session restore.** A GUI app's saved window is reopened with `gui APP`,
-  so it comes back the same way; its saved geometry is the placeholder's.
-  An app that was still starting at the reload is not started again.
+- **Session restore.** A GUI app's saved window is a card. Open runs
+  `gui APP`, and the placeholder goes where the window was. An app that was
+  still starting at the reload is not started again.
 - Not covered: X programs started by hand (`xterm &`, a tool whose
   Terminal window runs `DISPLAY=:0 PROGRAM &`): no launch is recorded for
   them.
@@ -721,8 +731,8 @@ dock or windows moves afterwards unless the user acts.
   measured before JetBrains Mono arrived it is re-measured first), the
   installed packages (dock badges, optional programs), the Debian GUI apps
   (`registerGuiApps` resolves once installed apps are registered), the phone
-  layer (`mobile.ts`) and last session's windows (opened without their
-  animation; the main terminal keeps focus). Anything that takes longer than
+  layer (`mobile.ts`) and the Last session window (opened without its
+  animation). Anything that takes longer than
   1.5 s (`REVEAL_CAP_MS`) no longer holds it up.
 - `Desktop.holdReveal(promise)` adds a wait (main.ts uses it for the GUI
   apps). The mark `shiro:desktop:revealed` records when it appeared.

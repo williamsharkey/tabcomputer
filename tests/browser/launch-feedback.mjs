@@ -429,12 +429,18 @@ try {
     const page = await context.newPage();
     page.on('pageerror', (e) => console.log('pageerror', e.message));
     await boot(page);
+    check(await page.locator('.sd-launch-win[data-launch="gimp"]').count() === 0, 'restore: the saved app does not start until Open');
+    await page.evaluate(async () => {
+      const card = [...document.querySelectorAll('.sd-last-card')].find((c) => c.dataset.cmd === 'gui gimp');
+      card?.querySelector('[data-act=open]')?.click();
+      await (document.querySelector('.sd-last')?.__job ?? Promise.resolve());
+    });
     await page.waitForSelector('.sd-launch-win[data-launch="gimp"]', { timeout: 30_000 });
     let s = await look(page);
     const wa = await page.evaluate(() => window.__shiroDesktop.workArea());
-    check(s.stage === 'starting' && s.spawns === 1 && s.tile?.cls === 'sd-starting', 'restore: the saved app is starting, with its mark', `${s.stage}, ${s.spawns} start`);
-    check(s.ph?.rect.x === 380 && s.ph.rect.y === wa.y + 110 && s.ph.rect.w === 640 && s.ph.rect.h === 400 + 38 && s.ph.behind && s.focused === 'terminal',
-      'restore: its placeholder is where its window was, behind, the Terminal focused', JSON.stringify(s.ph?.rect));
+    check(s.stage === 'starting' && s.spawns === 1 && s.tile?.cls === 'sd-starting', 'restore: Open starts the saved app, with its mark', `${s.stage}, ${s.spawns} start`);
+    check(s.ph?.rect.x === 380 && s.ph.rect.y === wa.y + 110 && s.ph.rect.w === 640 && s.ph.rect.h === 400 + 38,
+      'restore: its placeholder is where its window was', JSON.stringify(s.ph?.rect));
     await shot(page, 'restore-dark');
     const w = await appWindow(page);
     check(w.rect.x === 380 && w.rect.y === wa.y + 110 && w.rect.w === 640 && w.rect.h === 400 + 38 && w.placeholders === 0, 'restore: the window takes that place', JSON.stringify(w.rect));

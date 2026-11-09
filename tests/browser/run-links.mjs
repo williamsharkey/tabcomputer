@@ -10,7 +10,7 @@
 //               made, a recipe the server redirects off the site, a run link in a frame; a
 //               repository of an account that does not exist and a public one without a script are
 //               said at once; one that may be private opens the sign-in sheet, and Not now leaves
-//               the plain message; one restore note after all those loads
+//               the plain message. A later load does not paint those lines back into the terminal.
 //   gh: / sh:   the whole script in a window with Run and Cancel (markup in it stays text);
 //               Cancel runs nothing, Run runs what was shown; it asks again on the next load
 //   safe mode   ?safe=1 skips the link
@@ -226,13 +226,12 @@ const shot = async (page, name) => { if (shots) { await page.waitForTimeout(500)
   check(said, 'maybe private: "Not now" leaves the plain message', (await mainScreen(page)).slice(-300));
   await page.close();
 
-  // Eight loads of this profile so far, each of which printed a line: the main terminal has one
-  // restore note, under what the earlier loads printed (#128)
+  // Those loads each printed a line. A reload does not paint them back into the main terminal.
   page = await load(ctx, '');
   await page.waitForTimeout(2500);
   const restored = await mainScreen(page);
   const notes = (restored.match(/the output above is from before the page reloaded/g) ?? []).length;
-  check(notes === 1 && (restored.match(/run link: /g) ?? []).length >= 6, 'reloads: one restore note, however many loads printed something', `${notes} notes\n${restored.slice(-900)}`);
+  check(notes === 0 && !(restored.match(/run link: /g) ?? []).length, 'reloads: the main terminal is not filled in from earlier loads', `${notes} notes\n${restored.slice(-900)}`);
   await shot(page, 'after-reloads');
   await page.close();
   page = await load(ctx, '?ui=terminal');

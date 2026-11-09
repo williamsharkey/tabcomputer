@@ -58,7 +58,7 @@ export async function openPreview(ctx: AppContext, port: number, path = '/', tit
 
   const load = async (p: string) => {
     current = p;
-    // session restore opens it again (its server comes back with the terminal that ran it)
+    // Last session lists it; Open runs this (its server comes back if that terminal is resumed)
     (win as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: `serve open ${port} '${p.replace(/'/g, `'\\''`)}'`, cwd: '/home/user' };
     addr.textContent = label(p);
     win.setTitle(name ? `${name} — ${label(p)}` : label(p));

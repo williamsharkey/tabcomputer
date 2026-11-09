@@ -599,7 +599,7 @@ export const codeEditorCmd: Command = {
         width: appDir && wa ? Math.min(1240, Math.max(960, wa.width - 40)) : 960, height: appDir && wa ? Math.min(700, Math.max(620, wa.height - 60)) : 620, minWidth: 360, minHeight: 220,
         content: { kind: 'iframe', srcdoc: buildEditorHtml(files, ctx.cwd, hint, phone, !!appDir) },
       });
-      // session restore opens it again; File ▸ Open… starts in its folder
+      // Last session lists it; Open runs this again. File ▸ Open… starts in its folder
       (dwin as { restoreCommand?: { cmd: string; cwd: string } }).restoreCommand = { cmd: commandLine('code', ctx.args), cwd: ctx.cwd };
       (dwin as { codeDir?: string }).codeDir = codeDir;
       // Saves from this window's editor only (another Code window has its own files), in the order they were sent
